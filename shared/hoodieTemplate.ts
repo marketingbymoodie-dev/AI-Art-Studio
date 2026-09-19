@@ -548,6 +548,15 @@ export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
 export type FrontBodyPanelPlacementBias = {
   chest?: PanelPlacementBiasPercent;
   pocket?: PanelPlacementBiasPercent;
+  /**
+   * PRINT-only override for pocket panels; falls back to `pocket` when
+   * absent. Exists because the customer-facing display mockup blank and
+   * Printify's manufacturing blank have different pocket geometry, so one
+   * shared bias value can't correctly align both — see
+   * `resolvePrintFrontBodyPanelBias`. Template-level, admin-calibrated,
+   * never customer-facing.
+   */
+  pocketPrint?: PanelPlacementBiasPercent;
 };
 
 export const FRONT_CHEST_PANEL_KEYS: HoodiePanelKey[] = ["front_left", "front_right"];
@@ -629,9 +638,19 @@ export function mergeFrontBodyPanelPlacementBias(
   stored?: FrontBodyPanelPlacementBias | null,
   override?: FrontBodyPanelPlacementBias | null,
 ): FrontBodyPanelPlacementBias {
+  // pocketPrint is intentionally NOT merged via mergePanelPlacementBiasPercent
+  // like chest/pocket — that helper always materializes a full object (never
+  // undefined), which would make `merged.pocketPrint ?? merged.pocket` never
+  // fall through to `pocket` even when no print override was ever set. Only
+  // include the key when either side actually has one, so "unset" stays
+  // truly absent and resolvePrintFrontBodyPanelBias's fallback works.
+  const hasPocketPrint = stored?.pocketPrint != null || override?.pocketPrint != null;
   return {
     chest: mergePanelPlacementBiasPercent(stored?.chest, override?.chest),
     pocket: mergePanelPlacementBiasPercent(stored?.pocket, override?.pocket),
+    ...(hasPocketPrint
+      ? { pocketPrint: mergePanelPlacementBiasPercent(stored?.pocketPrint, override?.pocketPrint) }
+      : {}),
   };
 }
 
@@ -645,6 +664,26 @@ export function resolveFrontBodyPanelBias(
   const merged = mergeFrontBodyPanelPlacementBias(group.panelPlacementBias, override);
   if (FRONT_CHEST_PANEL_KEYS.includes(panelKey)) return merged.chest ?? ZERO_PANEL_PLACEMENT_BIAS;
   if (FRONT_POCKET_PANEL_KEYS.includes(panelKey)) return merged.pocket ?? ZERO_PANEL_PLACEMENT_BIAS;
+  return null;
+}
+
+/**
+ * Same as `resolveFrontBodyPanelBias`, but pocket panels prefer `pocketPrint`
+ * when present, falling back to `pocket` (chest is identical to display).
+ * Use this ONLY at print/export call sites — on-screen preview must keep
+ * calling `resolveFrontBodyPanelBias` so display bias is unaffected.
+ */
+export function resolvePrintFrontBodyPanelBias(
+  group: Pick<DesignGroup, "panelPlacementBias">,
+  panelKey: HoodiePanelKey | null | undefined,
+  override?: FrontBodyPanelPlacementBias | null,
+): PanelPlacementBiasPercent | null {
+  if (!panelKey) return null;
+  const merged = mergeFrontBodyPanelPlacementBias(group.panelPlacementBias, override);
+  if (FRONT_CHEST_PANEL_KEYS.includes(panelKey)) return merged.chest ?? ZERO_PANEL_PLACEMENT_BIAS;
+  if (FRONT_POCKET_PANEL_KEYS.includes(panelKey)) {
+    return merged.pocketPrint ?? merged.pocket ?? ZERO_PANEL_PLACEMENT_BIAS;
+  }
   return null;
 }
 
@@ -1684,6 +1723,11 @@ export function restorePulloverFrontHoodZipFraming(
       changed = true;
       return {
         ...g,
+        // Only `pocket` (display bias) is reset to the pinned seed here —
+        // the `...g.panelPlacementBias` spread deliberately preserves any
+        // sibling `pocketPrint` (print bias) untouched. Do not widen this
+        // to also reset `pocketPrint`; the two are calibrated independently
+        // against different garment geometry (see FrontBodyPanelPlacementBias).
         panelPlacementBias: {
           ...g.panelPlacementBias,
           pocket: {

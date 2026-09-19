@@ -67,6 +67,7 @@ import {
   isSweatshirtBlueprint,
   migrateFrontPocketOutOfTrimGroup,
   resolveFrontBodyPanelBias,
+  resolvePrintFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
   applyPulloverNeckSeamBleedToBbox,
   PULLOVER_HOOD_SEAM_ALLOWANCE,
@@ -3955,8 +3956,11 @@ export function renderFlatPrintPanels(
         panelTargetLongEdge,
       );
       if (bakeLayer.mesh) {
+        // Print export: prefer the print-specific bias (falls back to
+        // display's `pocket` when unset) — this is the surface that ships
+        // to Printify, so it must never read the display-only value.
         const panelBias = group
-          ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
+          ? resolvePrintFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
           : null;
         artCanvas = renderHoodFlatPanel(bakeLayer, artwork, bakeRect, {
           fallbackSize: dims,
