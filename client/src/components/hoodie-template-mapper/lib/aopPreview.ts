@@ -1289,6 +1289,63 @@ export function artworkSourceRectForPanel(
   return synthesiseSeamAwareSourceRect(sample, groupRect, aw, ah, synthSide);
 }
 
+/**
+ * Artwork-pixel-space sample rectangle for a panel — the crop window read
+ * from the customer's raw uploaded design, before any mesh warp onto a
+ * mockup or print target shape. Verbatim duplication of renderHoodFlatPanel's
+ * own slice-computation sequence (same primitives, same order) so pocket vs
+ * front-body continuity can be inspected upstream of either blank's
+ * geometry, without touching renderHoodFlatPanel itself. Used by the AOP
+ * Panel Mapper's pocketPrint calibration overlay only — never called from
+ * the render/export paths.
+ */
+export function computeArtworkSampleRectForPanel(
+  layer: MaskLayer,
+  artwork: HTMLImageElement,
+  groupRect: DesignRectInfo,
+  options?: {
+    panelPlacementBias?: PanelPlacementBiasPercent | null;
+    blueprintId?: number | null;
+  },
+): Aabb | null {
+  const anchors = svgPathToAnchors(layer.maskPath);
+  const bb = aabbOf(anchors);
+  if (!bb) return null;
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const side: "left" | "right" | "none" = isLeggingsSidePanelKey(layer.panelKey)
+    ? "none"
+    : layer.panelKey
+      ? SEAM_PAIR_PANELS.left.includes(layer.panelKey)
+        ? "left"
+        : SEAM_PAIR_PANELS.right.includes(layer.panelKey)
+          ? "right"
+          : "none"
+      : "none";
+  let sampleBb = applyPanelPlacementBiasToBbox(bb, groupRect, options?.panelPlacementBias);
+  if (isKangarooPocketPanelKey(layer.panelKey)) {
+    sampleBb = applyPulloverPocketSampleWindow(
+      sampleBb,
+      groupRect.union.height,
+      layer.panelKey,
+      groupRect.effective,
+      options?.panelPlacementBias,
+      options?.blueprintId,
+    );
+  }
+  sampleBb = applyPulloverNeckSeamBleedToBbox(sampleBb, layer.panelKey, options?.blueprintId);
+  const rotForSlice = groupRect.rotationDeg ?? 0;
+  const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
+  return artworkSourceRectForPanel(
+    sampleBb,
+    layer.panelKey,
+    groupRect,
+    bakedForSlice.width,
+    bakedForSlice.height,
+    side,
+  );
+}
+
 /** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
 export function buildFlatMeshTargetPoints(
   mesh: MeshGrid,

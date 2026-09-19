@@ -14,19 +14,23 @@ import type {
   FrontBodyPanelPlacementBias,
   HoodieTemplate,
   HoodieView,
+  MaskLayer,
   PanelPlacementBiasPercent,
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
   designGroupsForBlueprint,
   FRONT_POCKET_PANEL_KEYS,
+  isKangarooPocketPanelKey,
   isZipHoodieBlueprint,
   mergeFrontBodyPanelPlacementBias,
   mergePanelPlacementBiasPercent,
   resolvePrintFrontBodyPanelBias,
+  SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
+  computeArtworkSampleRectForPanel,
   computeGroupRects,
   renderAopPreview,
   renderAopPreviewToCanvas,
@@ -122,6 +126,12 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // print panel thumbnails, so an admin calibrating pocketPrint can
   // compare the two without leaving this modal.
   const [showReferenceOverlay, setShowReferenceOverlay] = useState(false);
+  // Sample-rect calibration overlay: draws the front-body and pocket
+  // panels' artwork-pixel-space crop windows as outlined boxes directly
+  // on the raw uploaded artwork, so an admin calibrating pocketPrint can
+  // judge sample continuity without involving either blank's geometry
+  // (mockup or Printify). Default off — debug-only, not a customer view.
+  const [showSampleRectOverlay, setShowSampleRectOverlay] = useState(false);
 
   // Per-group, per-view artwork placement. Modal-local overrides win
   // over template defaults until "Save as defaults" copies them back.
@@ -164,6 +174,10 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   const designGroups: DesignGroup[] = useMemo(
     () => template.designGroups ?? designGroupsForBlueprint(template.blueprintId),
     [template.designGroups, template.blueprintId],
+  );
+  const hasPocketPanel = useMemo(
+    () => designGroups.some((g) => g.panelKeys.some((k) => FRONT_POCKET_PANEL_KEYS.includes(k))),
+    [designGroups],
   );
   const tileSettings: TileSettings = useMemo(() => {
     if (tileOverride) return tileOverride;
@@ -1073,6 +1087,27 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   groupPanelBiasOverrides={panelBiasOverrides}
                 />
               )}
+              {showFlatPanels && hasPocketPanel && (
+                <ToggleRow
+                  label="Show sample-rect overlay (pocketPrint calibration)"
+                  checked={showSampleRectOverlay}
+                  onChange={setShowSampleRectOverlay}
+                />
+              )}
+              {showFlatPanels &&
+                showSampleRectOverlay &&
+                hasPocketPanel &&
+                mode === "single-sheet" &&
+                artworkImg && (
+                  <SampleRectOverlayPreview
+                    template={template}
+                    artwork={artworkImg}
+                    groupPlacementOverrides={groupPlacementOverrides}
+                    groupSeamOverrides={seamOverrides}
+                    groupEnabledOverrides={enabledOverrides}
+                    groupPanelBiasOverrides={panelBiasOverrides}
+                  />
+                )}
               {layerSources.size > 0 && (
                 <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1 text-[10px] text-purple-200">
                   {preferLayerSources ? (
@@ -1406,6 +1441,165 @@ function FlatPanelThumbnails({
       <div className="mt-1 text-[10px] text-purple-200/70">
         These are the bitmaps that go to Printify. The back-of-hood reads
         from the matching front-of-hood panel above.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pocket/front-body sample-rect calibration overlay. Draws each panel
+ * pair's artwork-pixel-space crop window (computeArtworkSampleRectForPanel)
+ * as an outlined box on the raw uploaded artwork — sidesteps both the
+ * mockup's and Printify's garment shapes entirely, since continuity here
+ * is a property of the sample crops themselves, not of how they later get
+ * warped onto either blank. See docs in the plan for why a mesh-warped
+ * composite was rejected in favor of this approach.
+ */
+function SampleRectOverlayPreview({
+  template,
+  artwork,
+  groupPlacementOverrides,
+  groupSeamOverrides,
+  groupEnabledOverrides,
+  groupPanelBiasOverrides,
+}: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  groupSeamOverrides?: Record<string, number>;
+  groupEnabledOverrides?: Record<string, boolean>;
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
+}) {
+  const pairs = useMemo(() => {
+    const frontLayers = (template.views.front?.layers ?? []).filter(
+      (l): l is MaskLayer & { panelKey: NonNullable<MaskLayer["panelKey"]> } =>
+        !!l.mesh && l.visible && !l.isExclusion && !!l.panelKey,
+    );
+    const frontRects = computeGroupRects(template, "front", artwork, {
+      placementOverrides: groupPlacementOverrides,
+      seamOverrides: groupSeamOverrides,
+      enabledOverrides: groupEnabledOverrides,
+    });
+    const groupFor = (layer: MaskLayer) =>
+      template.designGroups?.find((g) =>
+        layer.panelKey ? g.panelKeys.includes(layer.panelKey) : false,
+      );
+    const pocketLayers = frontLayers.filter((l) => isKangarooPocketPanelKey(l.panelKey));
+    const chestLayers = frontLayers.filter((l) => !isKangarooPocketPanelKey(l.panelKey));
+
+    const out: Array<{ label: string; chest: ReturnType<typeof computeArtworkSampleRectForPanel>; pocket: ReturnType<typeof computeArtworkSampleRectForPanel> }> = [];
+    for (const pocketLayer of pocketLayers) {
+      const group = groupFor(pocketLayer);
+      const rect = group ? frontRects.get(group.id) : null;
+      if (!group || !rect || !rect.enabled) continue;
+
+      const side = SEAM_PAIR_PANELS.left.includes(pocketLayer.panelKey)
+        ? "left"
+        : SEAM_PAIR_PANELS.right.includes(pocketLayer.panelKey)
+          ? "right"
+          : "none";
+      const chestLayer =
+        side === "none"
+          ? chestLayers.find((l) => groupFor(l)?.id === group.id)
+          : chestLayers.find((l) => SEAM_PAIR_PANELS[side].includes(l.panelKey));
+      if (!chestLayer) continue;
+
+      const chestBias = resolvePrintFrontBodyPanelBias(
+        group,
+        chestLayer.panelKey,
+        groupPanelBiasOverrides?.[group.id],
+      );
+      const pocketBias = resolvePrintFrontBodyPanelBias(
+        group,
+        pocketLayer.panelKey,
+        groupPanelBiasOverrides?.[group.id],
+      );
+      out.push({
+        label: `${chestLayer.name || chestLayer.panelKey} ↔ ${pocketLayer.name || pocketLayer.panelKey}`,
+        chest: computeArtworkSampleRectForPanel(chestLayer, artwork, rect, {
+          panelPlacementBias: chestBias,
+          blueprintId: template.blueprintId,
+        }),
+        pocket: computeArtworkSampleRectForPanel(pocketLayer, artwork, rect, {
+          panelPlacementBias: pocketBias,
+          blueprintId: template.blueprintId,
+        }),
+      });
+    }
+    return out;
+  }, [
+    template,
+    artwork,
+    groupPlacementOverrides,
+    groupSeamOverrides,
+    groupEnabledOverrides,
+    groupPanelBiasOverrides,
+  ]);
+
+  const dataUrls = useMemo(() => {
+    const aw = artwork.naturalWidth || artwork.width;
+    const ah = artwork.naturalHeight || artwork.height;
+    if (!(aw > 0) || !(ah > 0)) return [];
+    const MAX_DIM = 640;
+    const scale = Math.min(1, MAX_DIM / Math.max(aw, ah));
+    return pairs.map((p) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(aw * scale));
+      canvas.height = Math.max(1, Math.round(ah * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return { label: p.label, dataUrl: null };
+      ctx.drawImage(artwork, 0, 0, aw, ah, 0, 0, canvas.width, canvas.height);
+      const drawRect = (
+        r: { x: number; y: number; width: number; height: number } | null,
+        color: string,
+      ) => {
+        if (!r) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(r.x * scale, r.y * scale, r.width * scale, r.height * scale);
+      };
+      drawRect(p.chest, "#38bdf8");
+      drawRect(p.pocket, "#f472b6");
+      return { label: p.label, dataUrl: canvas.toDataURL("image/png") };
+    });
+  }, [pairs, artwork]);
+
+  if (dataUrls.length === 0) {
+    return (
+      <div className="mt-1 rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[10px] text-slate-500">
+        No pocket/front-body pair found on the front view.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1 rounded border border-fuchsia-900/40 bg-fuchsia-950/20 px-2 py-1.5">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-fuchsia-200">
+        Sample-rect overlay
+      </div>
+      {dataUrls.map((d) =>
+        d.dataUrl ? (
+          <img
+            key={d.label}
+            src={d.dataUrl}
+            alt={d.label}
+            className="mb-1 w-full rounded"
+          />
+        ) : null,
+      )}
+      <div className="text-[10px] leading-snug text-fuchsia-200/70">
+        Blue = front-body sample window · Pink = pocket sample window
+        (pocketPrint bias) — edges should touch/continue for seamless art
+        across the seam. Assumes 0° placement rotation. This shows the
+        artwork crop windows only, not how either warps onto the mockup or
+        Printify's blank.
+      </div>
+      <div className="mt-1 text-[10px] leading-snug text-amber-300/80">
+        Pre-warp model only: this shows source-crop adjacency, not the
+        post-warp seam on Printify's blank (buildFlatMeshTargetPoints runs
+        after this). Use it to get pocketPrint into the right neighborhood
+        and catch gross art errors — a value is only certified by a real
+        test order confirming the actual print file, not by this view.
       </div>
     </div>
   );
