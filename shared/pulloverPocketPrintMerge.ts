@@ -319,8 +319,14 @@ export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
   if (!(scale > 0) || scale === 1) return bb;
   const cx = bb.x + bb.width / 2;
   const cy = bb.y + bb.height / 2;
-  const w = bb.width * scale;
-  const h = bb.height * scale;
+  // Sample-window scale is INVERSE to on-garment art size: a larger window
+  // samples more source art into the same panel, printing the art smaller.
+  // Divide so the `scale` field reads intuitively everywhere — scale > 1
+  // means bigger art on the garment, matching the group Scale control and
+  // the slider label. One call site (applyPocketAuthoredSampleToBbox), so
+  // this inverts display and print pocket sampling together.
+  const w = bb.width / scale;
+  const h = bb.height / scale;
   return { ...bb, x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
