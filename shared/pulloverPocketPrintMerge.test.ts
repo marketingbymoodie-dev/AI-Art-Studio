@@ -502,3 +502,64 @@ describe("pocket source inset (sewn fold)", () => {
     );
   });
 });
+
+/**
+ * Direction of the pocket sample-window scale. The sample window is INVERSE to
+ * on-garment art size: a larger window samples more source art into the same
+ * panel, so the printed art comes out smaller. `scale` therefore divides, so
+ * the field reads intuitively everywhere (scale > 1 = bigger art on the
+ * garment), matching the group Scale control and the slider labels.
+ *
+ * These assertions exist because nothing else pins the direction: the zip
+ * wiring tests above compare applyPulloverPocketSampleWindow against
+ * applyPocketAuthoredSampleToBbox, and both sides call this same function, so
+ * they stay green whichever way the operator points. Without the cases below a
+ * silent re-inversion would ship undetected.
+ */
+describe("applyPocketSourceScaleToBbox direction + centring", () => {
+  const base = { x: 0, y: 0, width: 100, height: 100 };
+
+  it("scale > 1 SHRINKS the sample window (enlarges printed art)", () => {
+    expect(applyPocketSourceScaleToBbox(base, 2)).toEqual({
+      x: 25,
+      y: 25,
+      width: 50,
+      height: 50,
+    });
+  });
+
+  it("scale < 1 GROWS the sample window (shrinks printed art)", () => {
+    expect(applyPocketSourceScaleToBbox(base, 0.5)).toEqual({
+      x: -50,
+      y: -50,
+      width: 200,
+      height: 200,
+    });
+  });
+
+  it("scales about the rect centre, not a corner", () => {
+    const centre = (b: { x: number; y: number; width: number; height: number }) => ({
+      cx: b.x + b.width / 2,
+      cy: b.y + b.height / 2,
+    });
+    const offset = { x: 40, y: 120, width: 60, height: 80 };
+    for (const scale of [2, 0.5, 1.2, 0.8]) {
+      const out = applyPocketSourceScaleToBbox(offset, scale);
+      expect(centre(out).cx).toBeCloseTo(centre(offset).cx, 10);
+      expect(centre(out).cy).toBeCloseTo(centre(offset).cy, 10);
+      expect(out.width).toBeCloseTo(offset.width / scale, 10);
+      expect(out.height).toBeCloseTo(offset.height / scale, 10);
+    }
+  });
+
+  it("is a no-op at scale 1 and for non-positive scale", () => {
+    expect(applyPocketSourceScaleToBbox(base, 1)).toBe(base);
+    expect(applyPocketSourceScaleToBbox(base, 0)).toBe(base);
+    expect(applyPocketSourceScaleToBbox(base, -2)).toBe(base);
+  });
+
+  it("preserves sibling fields on the passed bbox", () => {
+    const tagged = { ...base, position: "pocket_left" as const };
+    expect(applyPocketSourceScaleToBbox(tagged, 2).position).toBe("pocket_left");
+  });
+});
