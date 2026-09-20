@@ -313,10 +313,21 @@ export type MeshSourceRotation = number;
  *
  * Length invariant: `targetPoints.length === cols * rows`.
  */
-/** Max mesh columns (mapper slider + engine clamp). Wide panels e.g. collar strips. */
-export const MAX_MESH_COLS = 24;
-/** Max mesh rows (mapper slider + engine clamp). */
-export const MAX_MESH_ROWS = 16;
+/**
+ * Max mesh columns — mapper slider clamp (authoring only). Enforced solely by
+ * `createDefaultMesh` / `resizeMesh`, i.e. only when an operator initialises,
+ * resets, or resizes a mesh in the mapper UI. There is NO engine clamp: the
+ * renderer (`drawMeshWarp`), the print path (`buildFlatMeshTargetPoints`),
+ * `normalizeHoodieTemplate`, and template save/publish all accept any
+ * `cols`/`rows` that satisfy `targetPoints.length === cols * rows`. Raising
+ * this value cannot alter how an already-stored mesh renders.
+ *
+ * Headroom sized for high-curvature AOP panels (skirts, dresses) and wide thin
+ * panels (collar strips) that need dense sampling.
+ */
+export const MAX_MESH_COLS = 40;
+/** Max mesh rows — mapper slider clamp (authoring only). See MAX_MESH_COLS. */
+export const MAX_MESH_ROWS = 40;
 
 export type MeshGrid = {
   /** 2..{@link MAX_MESH_COLS} — number of columns in the control grid. */

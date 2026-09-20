@@ -55,6 +55,7 @@ import {
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
+  MAX_MESH_ROWS,
   defaultPlacerEditorForBlueprint,
   defaultPrintFileLayoutForBlueprint,
   resolvePlacerEditor,
@@ -1181,12 +1182,26 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
 });
 
 describe("mesh grid limits", () => {
-  it("allows up to 24 columns for wide collar strips", () => {
-    expect(MAX_MESH_COLS).toBe(24);
+  it("allows up to 40 columns for high-curvature products", () => {
+    expect(MAX_MESH_COLS).toBe(40);
     const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 10 }, 24, 3);
     expect(mesh.cols).toBe(24);
     expect(mesh.rows).toBe(3);
     expect(mesh.targetPoints).toHaveLength(72);
+  });
+
+  it("allows up to 40 rows for high-curvature products", () => {
+    expect(MAX_MESH_ROWS).toBe(40);
+    const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 200 }, 3, 40);
+    expect(mesh.cols).toBe(3);
+    expect(mesh.rows).toBe(40);
+    expect(mesh.targetPoints).toHaveLength(120);
+  });
+
+  it("clamps requests above the ceiling instead of honouring them", () => {
+    const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 100 }, 99, 99);
+    expect(mesh.cols).toBe(MAX_MESH_COLS);
+    expect(mesh.rows).toBe(MAX_MESH_ROWS);
   });
 });
 
