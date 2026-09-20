@@ -2190,6 +2190,30 @@ function GroupsPanel({
                                   onPanelBiasChange(g.id, "pocket", { offsetXPercent })
                                 }
                               />
+                              <PlacementSlider
+                                label="Pocket panels scale"
+                                unit="×"
+                                value={panelBias.pocket?.scale ?? 1}
+                                min={0.5}
+                                max={1.5}
+                                step={0.01}
+                                precision={2}
+                                onChange={(scale) =>
+                                  onPanelBiasChange(g.id, "pocket", { scale })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket panels seam"
+                                unit="%"
+                                value={(panelBias.pocket?.seamAllowance ?? seam) * 100}
+                                min={0}
+                                max={15}
+                                step={0.5}
+                                precision={1}
+                                onChange={(v) =>
+                                  onPanelBiasChange(g.id, "pocket", { seamAllowance: v / 100 })
+                                }
+                              />
                             </>
                           )}
                           {showPocketPrintBias && (
@@ -2241,6 +2265,18 @@ function GroupsPanel({
                                 precision={2}
                                 onChange={(scale) =>
                                   onPanelBiasChange(g.id, "pocketPrint", { scale })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket print seam"
+                                unit="%"
+                                value={(pocketPrintEffective?.seamAllowance ?? panelBias.pocket?.seamAllowance ?? seam) * 100}
+                                min={0}
+                                max={15}
+                                step={0.5}
+                                precision={1}
+                                onChange={(v) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { seamAllowance: v / 100 })
                                 }
                               />
                             </>
