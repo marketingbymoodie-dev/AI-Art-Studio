@@ -1001,6 +1001,13 @@ function buildEffectiveRenderConfig(
           offsetX: isZipHoodieBlueprint(template.blueprintId) ? 0 : pocket.offsetX,
           offsetY: pocket.offsetY,
           scale: pocket.scale,
+          // seamAllowance is template-authored (admin mapper slider) and has no
+          // placer control, so it is NOT part of PocketSamplePlacement — read it
+          // straight from the template. This literal previously omitted it, so
+          // the pocket-only seam override never reached the display render.
+          ...(g.panelPlacementBias?.pocket?.seamAllowance != null
+            ? { seamAllowance: g.panelPlacementBias.pocket.seamAllowance }
+            : {}),
         },
       },
     };
