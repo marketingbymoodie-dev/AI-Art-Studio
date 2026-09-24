@@ -1059,9 +1059,9 @@ function samplingBboxAndSeamForLayer(
   layerRect: DesignRectInfo,
   template: HoodieTemplate,
   panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
-): { bb: Aabb; seamOverride: number | undefined } {
+): { bb: Aabb; seamCal: PocketSeamCal | undefined } {
   const group = findGroupForPanel(template.designGroups, layer.panelKey);
-  if (!group) return { bb, seamOverride: undefined };
+  if (!group) return { bb, seamCal: undefined };
   const bias = resolveFrontBodyPanelBias(
     group,
     layer.panelKey,
@@ -1080,7 +1080,7 @@ function samplingBboxAndSeamForLayer(
   }
   return {
     bb: applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId),
-    seamOverride: pocketBiasSeam(bias, layer.panelKey),
+    seamCal: pocketSeamCal(bias, layer.panelKey),
   };
 }
 
@@ -1118,13 +1118,22 @@ export function artworkSliceSamplesMural(
   return artworkSliceMuralCoverage(slice, aw, ah) >= ARTWORK_SLICE_MIN_COVERAGE;
 }
 
+/**
+ * A pocket seam override travels with the scale it was calibrated at. A seam
+ * that diverges from the group seam drifts with artwork scale, and the
+ * correction for that drift is meaningless without knowing where the seam was
+ * measured — so the two are one value, not two arguments a call site could
+ * supply half of.
+ */
+export type PocketSeamCal = { seam: number; calibrationScale?: number };
+
 function synthesiseSeamAwareSourceRect(
   bb: Aabb,
   rect: DesignRectInfo,
   aw: number,
   ah: number,
   side: "left" | "right" | "none",
-  seamOverride?: number | null,
+  seamCal?: PocketSeamCal | null,
 ): Aabb {
   const eff = rect.effective;
   if (eff.width <= 0 || eff.height <= 0) {
@@ -1141,10 +1150,48 @@ function synthesiseSeamAwareSourceRect(
   // a non-zero offsetX — even an accidental 4 px offset on Front
   // body — because the rel coords then sat just below/above 0.5.
   const seam = rect.hasSeamPair
-    ? (seamOverride != null ? seamOverride : rect.seamAllowance)
+    ? (seamCal?.seam != null ? seamCal.seam : rect.seamAllowance)
     : 0;
-  const relLeft = (bb.x - eff.x) / eff.width;
-  const relRight = (bb.x + bb.width - eff.x) / eff.width;
+  // Seam-divergence drift correction. A pocket seam differing from the group
+  // seam displaces pocket art relative to body art by
+  //     (x_c - eff.x) * dSeam / (1 - seamGroup)
+  // and `eff.x = anchor.x - base.width * s / 2`, so that displacement is
+  // LINEAR in the group placement scale `s`: the two halves drift
+  // equal-and-opposite, so the pocket-to-pocket spread drifts at twice that.
+  // Cancel it relative to the scale the seam was calibrated at, so one
+  // calibration holds at every artwork scale instead of only the one it was
+  // measured at. `eff.width === base.width * s` exactly (computeGroupRects:
+  // rotation/aspect are baked into `base` BEFORE the scale, and placement
+  // offsets move `eff.x` only), so this recovers the same `s` that caused the
+  // drift. Closed form matches measured k to 0.8% on the left half; linear to
+  // 0.08 px rms over s = 1.57 / 2.35 / 3.13, on both display and print.
+  //
+  // MEASURED RESIDUAL, DELIBERATELY UNCORRECTED: the halves' k sum to
+  // -0.20 px per unit s rather than 0, reproducibly and on both surfaces, so
+  // this symmetric model is slightly wrong in a consistent way. Over a 2x
+  // scale range that is ~0.3 px, below the +/-0.7 px measurement error bar.
+  // Do not "fix" it without a metric that can actually resolve it.
+  const seamGroup = rect.seamAllowance;
+  const calScale = seamCal?.calibrationScale;
+  let relAdj = 0;
+  if (
+    rect.hasSeamPair &&
+    (side === "left" || side === "right") &&
+    seamCal?.seam != null &&
+    calScale != null &&
+    rect.base.width > 0 &&
+    seamGroup < 1
+  ) {
+    const dSeam = seamCal.seam - seamGroup;
+    if (dSeam !== 0) {
+      const sNow = eff.width / rect.base.width;
+      const driftLeft =
+        ((rect.base.width / 2) * (sNow - calScale) * dSeam) / (1 - seamGroup);
+      relAdj = (side === "left" ? driftLeft : -driftLeft) / eff.width;
+    }
+  }
+  const relLeft = (bb.x - eff.x) / eff.width + relAdj;
+  const relRight = (bb.x + bb.width - eff.x) / eff.width + relAdj;
   let uLeft: number;
   let uRight: number;
   if (side === "left" && seam > 0) {
@@ -1261,7 +1308,7 @@ export function clipSampleBbToSeamHalf(
   rect: DesignRectInfo,
   side: "left" | "right" | "none",
   panelKey?: HoodiePanelKey | null,
-  seamOverride?: number | null,
+  seamCal?: PocketSeamCal | null,
 ): Aabb {
   if (side !== "left" && side !== "right") return bb;
   const union = rect.union;
@@ -1275,7 +1322,7 @@ export function clipSampleBbToSeamHalf(
   // Pocket-specific seam override (fraction) wins over the shared group
   // value when supplied; everything else inherits rect.seamAllowance
   // exactly as before, so non-pocket callers are byte-for-byte unchanged.
-  const baseSeam = seamOverride != null ? seamOverride : rect.seamAllowance;
+  const baseSeam = seamCal?.seam != null ? seamCal.seam : rect.seamAllowance;
   const seam = Math.max(
     0,
     baseSeam > 0
@@ -1307,13 +1354,13 @@ export function clipSampleBbToSeamHalf(
  * rect.seamAllowance, unchanged). Chest/hood/sleeve always pass undefined, so
  * their geometry is byte-for-byte identical to pre-change.
  */
-function pocketBiasSeam(
+function pocketSeamCal(
   bias: PanelPlacementBiasPercent | null | undefined,
   panelKey: HoodiePanelKey | null | undefined,
-): number | undefined {
+): PocketSeamCal | undefined {
   if (bias?.seamAllowance == null) return undefined;
   if (!isKangarooPocketPanelKey(panelKey)) return undefined;
-  return bias.seamAllowance;
+  return { seam: bias.seamAllowance, calibrationScale: bias.seamCalibrationScale };
 }
 
 export function artworkSourceRectForPanel(
@@ -1324,7 +1371,7 @@ export function artworkSourceRectForPanel(
   ah: number,
   seamSide: "left" | "right" | "none",
   _legsMirrored?: boolean,
-  seamOverride?: number | null,
+  seamCal?: PocketSeamCal | null,
 ): Aabb {
   // Leggings always use full-panel place (Sync/Mirror only change transforms/flip).
   if (isLeggingsSidePanelKey(panelKey)) {
@@ -1335,7 +1382,7 @@ export function artworkSourceRectForPanel(
     groupRect,
     seamSide,
     panelKey,
-    seamOverride,
+    seamCal,
   );
   // Front pullover hoods are mirrored in photo space (wearer's right is
   // image-left). Anatomical L/R UV remap would shift the right hood onto
@@ -1348,7 +1395,7 @@ export function artworkSourceRectForPanel(
     aw,
     ah,
     synthSide,
-    seamOverride,
+    seamCal,
   );
 }
 
@@ -1407,7 +1454,7 @@ export function computeArtworkSampleRectForPanel(
     bakedForSlice.height,
     side,
     undefined,
-    pocketBiasSeam(options?.panelPlacementBias, layer.panelKey),
+    pocketSeamCal(options?.panelPlacementBias, layer.panelKey),
   );
 }
 
@@ -1680,7 +1727,7 @@ export function renderHoodFlatPanel(
       bakedForSlice.height,
       side,
       options?.legsMirrored,
-      pocketBiasSeam(options?.panelPlacementBias, frontLayer.panelKey),
+      pocketSeamCal(options?.panelPlacementBias, frontLayer.panelKey),
     );
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
@@ -2951,7 +2998,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
-            sampled.seamOverride,
+            sampled.seamCal,
           );
         }
       } else {
@@ -3010,7 +3057,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
-            sampled.seamOverride,
+            sampled.seamCal,
           );
           if (artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)) {
             const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);

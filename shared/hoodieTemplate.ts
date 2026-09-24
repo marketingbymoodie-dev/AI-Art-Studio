@@ -556,6 +556,29 @@ export type PanelPlacementBiasPercent = {
    * compression) for that panel only. Absent = inherit group seam (no-op).
    */
   seamAllowance?: number;
+  /**
+   * Group placement scale at which `seamAllowance` above was calibrated.
+   *
+   * A pocket seam that DIFFERS from the group seam displaces pocket art
+   * relative to body art by `(x_c - eff.x) * dSeam / (1 - seamGroup)`, and
+   * `eff.x = anchor.x - base.width * s / 2` — so the displacement is LINEAR
+   * in the group placement scale `s`. Measured on real renders: the two
+   * pocket halves drift equal-and-opposite at ~2.9 px per unit `s` each, so
+   * the pocket-to-pocket spread drifts ~5.9 px per unit `s`; confirmed linear
+   * to 0.08 px rms over s = 1.57 / 2.35 / 3.13 on both display and print.
+   *
+   * `synthesiseSeamAwareSourceRect` cancels that drift relative to THIS
+   * scale, so the calibration holds at every artwork scale instead of only
+   * the one it was measured at. Storing it beside the seam (rather than
+   * assuming 1.0) keeps the correction exactly zero where the calibration
+   * was actually verified, and keeps it correct if the seam is later
+   * recalibrated at a different scale.
+   *
+   * Absent = no drift correction (seam behaves as it did before this field
+   * existed). Meaningless without `seamAllowance`; ignored when the pocket
+   * seam equals the group seam, since there is then no divergence to drift.
+   */
+  seamCalibrationScale?: number;
 };
 
 export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
@@ -645,6 +668,8 @@ export function mergePanelPlacementBiasPercent(
   const offsetY = override?.offsetY ?? base?.offsetY;
   const scale = override?.scale ?? base?.scale;
   const seamAllowance = override?.seamAllowance ?? base?.seamAllowance;
+  const seamCalibrationScale =
+    override?.seamCalibrationScale ?? base?.seamCalibrationScale;
   return {
     offsetXPercent: override?.offsetXPercent ?? base?.offsetXPercent ?? 0,
     offsetYPercent: override?.offsetYPercent ?? base?.offsetYPercent ?? 0,
@@ -652,6 +677,7 @@ export function mergePanelPlacementBiasPercent(
     ...(offsetY != null ? { offsetY } : {}),
     ...(scale != null ? { scale } : {}),
     ...(seamAllowance != null ? { seamAllowance } : {}),
+    ...(seamCalibrationScale != null ? { seamCalibrationScale } : {}),
   };
 }
 

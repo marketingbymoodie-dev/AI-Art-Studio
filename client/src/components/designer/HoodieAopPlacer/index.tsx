@@ -1008,6 +1008,12 @@ function buildEffectiveRenderConfig(
           ...(g.panelPlacementBias?.pocket?.seamAllowance != null
             ? { seamAllowance: g.panelPlacementBias.pocket.seamAllowance }
             : {}),
+          // Same reason as seamAllowance above: template-authored, no placer
+          // control, and dropped entirely if this literal does not name it —
+          // which would leave the seam drift correction blind on display.
+          ...(g.panelPlacementBias?.pocket?.seamCalibrationScale != null
+            ? { seamCalibrationScale: g.panelPlacementBias.pocket.seamCalibrationScale }
+            : {}),
         },
       },
     };
