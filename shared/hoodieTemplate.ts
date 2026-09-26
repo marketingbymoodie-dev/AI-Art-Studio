@@ -1670,20 +1670,6 @@ function sleeveSourceRectIsCalibrated(
   return Boolean(rect && rect.width > 0 && rect.height > 0);
 }
 
-function pulloverPocketBiasCleared(
-  group: Pick<DesignGroup, "panelPlacementBias">,
-): boolean {
-  const pocket = group.panelPlacementBias?.pocket;
-  if (!pocket) return true;
-  return (
-    Math.abs(pocket.offsetXPercent ?? 0) < 1e-9 &&
-    Math.abs(pocket.offsetYPercent ?? 0) < 1e-9 &&
-    Math.abs((pocket.offsetX ?? 0) - PULLOVER_POCKET_SAMPLE_OFFSET_X) < 1e-9 &&
-    Math.abs((pocket.offsetY ?? 0) - PULLOVER_POCKET_SAMPLE_OFFSET_Y) < 1e-9 &&
-    Math.abs((pocket.scale ?? 1) - PULLOVER_POCKET_SAMPLE_SCALE) < 1e-9
-  );
-}
-
 function pulloverFrontPlacementIsSeed(
   front: { scale: number; offsetX: number; offsetY: number; rotationDeg?: number } | undefined,
   seed: { scale: number; offsetX: number; offsetY: number },
@@ -1757,34 +1743,29 @@ export function restorePulloverFrontHoodZipFraming(
   const nextGroups = groups.map((g) => {
     if (g.id === "front-body") {
       const front = g.placement?.front;
+      // Pocket bias is NOT enforced here — see the panelPlacementBias note
+      // below. Only the placement seed decides whether this group is rewritten.
       if (
         pulloverFrontPlacementIsSeed(front, {
           scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
           offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
           offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
-        }) &&
-        pulloverPocketBiasCleared(g)
+        })
       ) {
         return g;
       }
       changed = true;
       return {
         ...g,
-        // Only `pocket` (display bias) is reset to the pinned seed here —
-        // the `...g.panelPlacementBias` spread deliberately preserves any
-        // sibling `pocketPrint` (print bias) untouched. Do not widen this
-        // to also reset `pocketPrint`; the two are calibrated independently
-        // against different garment geometry (see FrontBodyPanelPlacementBias).
-        panelPlacementBias: {
-          ...g.panelPlacementBias,
-          pocket: {
-            offsetXPercent: 0,
-            offsetYPercent: 0,
-            offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
-            offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-            scale: PULLOVER_POCKET_SAMPLE_SCALE,
-          },
-        },
+        // panelPlacementBias is carried through UNTOUCHED. This function seeds
+        // the pullover's front/hood PLACEMENT (the two-zip-ratio framing that
+        // `6e5902df` introduced and that nothing derives at runtime). It used
+        // to also reset `pocket` to the pinned seed on every load, which made
+        // display pocket calibration impossible — any measured value was
+        // reverted before it could render. `pocketPrint` was already exempt
+        // (preserved by the spread), so print was calibratable and display was
+        // not; this removes that split. Fresh templates still start at the
+        // seed via `defaultPulloverDesignGroups`.
         placement: {
           ...g.placement,
           front: {

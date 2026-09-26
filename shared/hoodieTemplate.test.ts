@@ -516,15 +516,12 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
     ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    // Placement is still healed (above), but the POCKET BIAS survives: the
+    // load-time stamp no longer resets it, so a calibrated display pocket
+    // value reaches the render instead of being reverted.
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
-    ).toEqual({
-      offsetXPercent: 0,
-      offsetYPercent: 0,
-      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
-      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-      scale: PULLOVER_POCKET_SAMPLE_SCALE,
-    });
+    ).toEqual({ offsetXPercent: 9.7, offsetYPercent: -2.4 });
   });
 
   it("heals the previous Preview Studio operator seeds to the current defaults", () => {
@@ -571,9 +568,10 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
     expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    // Pocket bias is carried through the placement heal, not reset.
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.scale,
-    ).toBe(PULLOVER_POCKET_SAMPLE_SCALE);
+    ).toBe(1);
   });
 
   it("stamps operator defaults even when the published template is authored", () => {
@@ -632,13 +630,10 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(front.placement.front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
     expect(front.placement.front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
     expect(front.placement.front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
-    expect(front.panelPlacementBias?.pocket).toEqual({
-      offsetXPercent: 0,
-      offsetYPercent: 0,
-      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
-      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-      scale: PULLOVER_POCKET_SAMPLE_SCALE,
-    });
+    // Placement defaults are stamped even over an authored template, but the
+    // authored POCKET bias survives both normalize passes — that separation is
+    // what makes display pocket calibration possible at all.
+    expect(front.panelPlacementBias?.pocket).toEqual(authoredPocket);
     expect(front.panelKeys).toContain("front_pocket");
   });
 
@@ -714,12 +709,10 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     const front = healed.designGroups!.find((g) => g.id === "front-body")!;
     expect(front.placement.front.rotationDeg).toBe(0);
     expect(front.placement.front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    // Rotation/placement are stamped; the pocket bias is NOT. An authored
+    // pocket calibration must reach the render untouched.
     expect(front.panelPlacementBias?.pocket).toEqual({
-      offsetXPercent: 0,
-      offsetYPercent: 0,
-      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
-      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
-      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+      offsetXPercent: 0, offsetYPercent: 0, offsetX: 8, offsetY: -3, scale: 1.2,
     });
   });
 
@@ -761,9 +754,11 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
     expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
     expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    // The leftover session's placement is overwritten, but its pocket bias
+    // survives — placement seeding and pocket calibration are now separate.
     expect(
       healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.scale,
-    ).toBe(PULLOVER_POCKET_SAMPLE_SCALE);
+    ).toBe(1);
   });
 
   it("heals a zero hood seam allowance so L/R do not share the centre mural", () => {
