@@ -549,6 +549,15 @@ export type PanelPlacementBiasPercent = {
   /** Pullover pocket sample-window scale, applied AFTER finished inset. */
   scale?: number;
   /**
+   * Pocket sample-window WIDTH-only scale, applied after `scale` and before
+   * the offsets, about the window centre. Same direction as `scale` (> 1 =
+   * wider art on the garment). Exists because Printify's pullover mockup
+   * squeezes the pocket horizontally more than the body, so pocket/body
+   * continuity needs a horizontal correction that uniform `scale` would also
+   * apply vertically. Set on `pocketPrint` only (print); absent = no-op.
+   */
+  scaleX?: number;
+  /**
    * Pocket-only seam-allowance override (fraction, same units/range as
    * DesignGroup.seamAllowance, 0..0.15). When present on a POCKET panel's
    * resolved bias, replaces the shared group seam in BOTH seam mechanisms
@@ -667,6 +676,7 @@ export function mergePanelPlacementBiasPercent(
   const offsetX = override?.offsetX ?? base?.offsetX;
   const offsetY = override?.offsetY ?? base?.offsetY;
   const scale = override?.scale ?? base?.scale;
+  const scaleX = override?.scaleX ?? base?.scaleX;
   const seamAllowance = override?.seamAllowance ?? base?.seamAllowance;
   const seamCalibrationScale =
     override?.seamCalibrationScale ?? base?.seamCalibrationScale;
@@ -676,6 +686,7 @@ export function mergePanelPlacementBiasPercent(
     ...(offsetX != null ? { offsetX } : {}),
     ...(offsetY != null ? { offsetY } : {}),
     ...(scale != null ? { scale } : {}),
+    ...(scaleX != null ? { scaleX } : {}),
     ...(seamAllowance != null ? { seamAllowance } : {}),
     ...(seamCalibrationScale != null ? { seamCalibrationScale } : {}),
   };

@@ -1236,6 +1236,18 @@ describe("front-body panel placement bias", () => {
     expect(resolveFrontBodyPanelBias(group, "back")).toBeNull();
   });
 
+  it("carries pocket scaleX through the merge; override wins; absent stays absent", () => {
+    expect(
+      mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.1 }, { scaleX: 1.176 }),
+    ).toEqual({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.176 });
+    expect(
+      mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.176 }, { offsetY: -17.5 }),
+    ).toEqual({ offsetXPercent: 0, offsetYPercent: 0, offsetY: -17.5, scaleX: 1.176 });
+    expect(
+      "scaleX" in mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scale: 1 }, null),
+    ).toBe(false);
+  });
+
   it("falls back to zero bias when group has no stored defaults", () => {
     expect(resolveFrontBodyPanelBias({}, "front_left")).toEqual(ZERO_PANEL_PLACEMENT_BIAS);
   });

@@ -17,6 +17,7 @@ import {
   applyPocketLiveSampleToBbox,
   applyPocketSourceInsetToBbox,
   applyPocketSourceScaleToBbox,
+  applyPocketSourceScaleXToBbox,
   applyZipPocketSampleToBbox,
   ZIP_POCKET_UP_FRAC,
   ZIP_POCKET_ZIPPER_INSET_FRAC,
@@ -561,5 +562,45 @@ describe("applyPocketSourceScaleToBbox direction + centring", () => {
   it("preserves sibling fields on the passed bbox", () => {
     const tagged = { ...base, position: "pocket_left" as const };
     expect(applyPocketSourceScaleToBbox(tagged, 2).position).toBe("pocket_left");
+  });
+});
+
+/**
+ * scaleX is the pocketPrint width-only correction (Printify squeezes the
+ * pullover pocket horizontally more than the body). It must never touch y or
+ * height — a uniform-scale regression would move the pocket vertically.
+ */
+describe("applyPocketSourceScaleXToBbox (width-only)", () => {
+  const base = { x: 40, y: 120, width: 60, height: 80 };
+
+  it("scaleX > 1 narrows the window about its centre x; y and height untouched", () => {
+    const out = applyPocketSourceScaleXToBbox(base, 1.176);
+    expect(out.width).toBeCloseTo(60 / 1.176, 10);
+    expect(out.x + out.width / 2).toBeCloseTo(base.x + base.width / 2, 10);
+    expect(out.y).toBe(base.y);
+    expect(out.height).toBe(base.height);
+  });
+
+  it("is a no-op at 1 and for non-positive values", () => {
+    expect(applyPocketSourceScaleXToBbox(base, 1)).toBe(base);
+    expect(applyPocketSourceScaleXToBbox(base, 0)).toBe(base);
+    expect(applyPocketSourceScaleXToBbox(base, -2)).toBe(base);
+  });
+
+  it("applyPocketAuthoredSampleToBbox: absent scaleX is byte-identical to before", () => {
+    const bias = { offsetX: 3.3, offsetY: -17.5, scale: 1 };
+    expect(applyPocketAuthoredSampleToBbox(base, bias)).toEqual({
+      ...base,
+      x: base.x + 3.3,
+      y: base.y - 17.5,
+    });
+  });
+
+  it("applyPocketAuthoredSampleToBbox: scaleX narrows about centre, then offsets shift", () => {
+    const out = applyPocketAuthoredSampleToBbox(base, { offsetX: 3.3, offsetY: -17.5, scaleX: 1.176 });
+    expect(out.width).toBeCloseTo(60 / 1.176, 10);
+    expect(out.x + out.width / 2).toBeCloseTo(base.x + base.width / 2 + 3.3, 10);
+    expect(out.y).toBeCloseTo(base.y - 17.5, 10);
+    expect(out.height).toBe(base.height);
   });
 });

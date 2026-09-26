@@ -2268,6 +2268,18 @@ function GroupsPanel({
                                 }
                               />
                               <PlacementSlider
+                                label="Pocket print width (scale X)"
+                                unit="×"
+                                value={pocketPrintEffective?.scaleX ?? 1}
+                                min={0.8}
+                                max={1.4}
+                                step={0.01}
+                                precision={3}
+                                onChange={(scaleX) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { scaleX })
+                                }
+                              />
+                              <PlacementSlider
                                 label="Pocket print seam"
                                 unit="%"
                                 value={(pocketPrintEffective?.seamAllowance ?? panelBias.pocket?.seamAllowance ?? seam) * 100}

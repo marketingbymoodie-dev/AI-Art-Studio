@@ -330,6 +330,20 @@ export function applyPocketSourceScaleToBbox<T extends MockupBbox>(
   return { ...bb, x: cx - w / 2, y: cy - h / 2, width: w, height: h };
 }
 
+/**
+ * Width-only counterpart of `applyPocketSourceScaleToBbox`: narrows/widens
+ * the window about its centre x; y and height are untouched, so it can never
+ * move the pocket vertically. scaleX > 1 = wider art on the garment.
+ */
+export function applyPocketSourceScaleXToBbox<T extends MockupBbox>(
+  bb: T,
+  scaleX: number,
+): T {
+  if (!(scaleX > 0) || scaleX === 1) return bb;
+  const w = bb.width / scaleX;
+  return { ...bb, x: bb.x + bb.width / 2 - w / 2, width: w };
+}
+
 /** Inset the unsewn grey pocket AABB to the finished sewn face (all four edges). */
 export function applyFinishedPocketSampleToBbox<T extends MockupBbox>(
   bb: T,
@@ -392,13 +406,17 @@ export function applyPocketLiveSampleToBbox<T extends MockupBbox>(
  */
 export function applyPocketAuthoredSampleToBbox<T extends MockupBbox>(
   bb: T,
-  bias?: { offsetX?: number; offsetY?: number; scale?: number } | null,
+  bias?: { offsetX?: number; offsetY?: number; scale?: number; scaleX?: number } | null,
 ): T {
   if (!bias) return bb;
   const scale = bias.scale ?? 1;
   let next = bb;
   if (scale > 0 && scale !== 1) {
     next = applyPocketSourceScaleToBbox(next, scale);
+  }
+  const scaleX = bias.scaleX ?? 1;
+  if (scaleX > 0 && scaleX !== 1) {
+    next = applyPocketSourceScaleXToBbox(next, scaleX);
   }
   const dx = bias.offsetX ?? 0;
   const dy = bias.offsetY ?? 0;
@@ -415,7 +433,7 @@ export function applyPulloverPocketSampleWindow<T extends MockupBbox>(
   frontMaskH: number,
   panelKey?: HoodiePanelKey | null,
   effective?: { y: number; height: number } | null,
-  bias?: { offsetX?: number; offsetY?: number; scale?: number } | null,
+  bias?: { offsetX?: number; offsetY?: number; scale?: number; scaleX?: number } | null,
   blueprintId?: number | null,
 ): T {
   const inset = applyPocketLiveSampleToBbox(bb, frontMaskH, panelKey, effective);
