@@ -87,10 +87,12 @@ export function printSafeDestRect(
  * per axis (x and y scaled independently), which printed body panels ~15-30%
  * wide against Printify's placeholders.
  *
- * Zip front halves and pockets anchor on their ZIPPER edge (art-space: the
- * left seam side's max-x edge, the right side's min-x edge), so the window
- * only grows outward toward the side seam — widening about the centre would
- * pull art from across the zipper and print it on both halves.
+ * Zip front halves and pockets anchor on their ZIPPER edge, so the window only
+ * grows outward toward the side seam — widening about the centre (or from the
+ * wrong edge) pulls art from across the zipper and prints it on both halves.
+ * The mockup is a front view, so the wearer's-left pieces (front_left,
+ * pocket_left) hold the design's RIGHT half: their zipper is the slice's
+ * min-x edge; the right pieces' zipper is their max-x edge.
  */
 export type TrueAspectAnchor = "center" | "min" | "max";
 
@@ -102,10 +104,10 @@ const PULLOVER_TRUE_ASPECT_PRINT_ANCHORS: Partial<Record<HoodiePanelKey, TrueAsp
 
 const ZIP_TRUE_ASPECT_PRINT_ANCHORS: Partial<Record<HoodiePanelKey, TrueAspectAnchor>> = {
   back: "center",
-  front_left: "max",
-  pocket_left: "max",
-  front_right: "min",
-  pocket_right: "min",
+  front_left: "min",
+  pocket_left: "min",
+  front_right: "max",
+  pocket_right: "max",
 };
 
 export function printTrueAspectAnchor(

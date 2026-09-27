@@ -83,10 +83,11 @@ describe("printTrueAspectAnchor", () => {
   });
 
   it("zip halves and pockets hold their zipper edge; back widens about the centre", () => {
-    expect(printTrueAspectAnchor("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
-    expect(printTrueAspectAnchor("pocket_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
-    expect(printTrueAspectAnchor("front_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
-    expect(printTrueAspectAnchor("pocket_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
+    // Wearer's-left pieces hold the design's right half: zipper = min-x edge.
+    expect(printTrueAspectAnchor("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
+    expect(printTrueAspectAnchor("pocket_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
+    expect(printTrueAspectAnchor("front_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
+    expect(printTrueAspectAnchor("pocket_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
     expect(printTrueAspectAnchor("back", ZIP_HOODIE_BLUEPRINT_ID)).toBe("center");
   });
 });
@@ -114,7 +115,7 @@ describe("sliceAtDestAspect", () => {
 });
 
 describe("sliceAtDestAspect anchors", () => {
-  // Zip left half: zipper at the slice's max-x edge.
+  // A zip right-side piece: zipper at the slice's max-x edge.
   const half = { x: 40, y: 250, width: 250, height: 650 };
 
   it("max anchor keeps the max-x edge fixed and grows toward min-x", () => {
