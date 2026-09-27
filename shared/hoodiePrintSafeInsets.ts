@@ -78,3 +78,42 @@ export function printSafeDestRect(
     height: Math.max(1, flatH - y - bottom),
   };
 }
+
+/**
+ * Pullover print panels drawn at the artwork's TRUE aspect. Every other panel
+ * still stretches its sample window to fill the placeholder per axis (x and y
+ * scaled independently), which on the pullover printed the body ~25% wide
+ * (front) / ~15% wide (back) against Printify's near-square placeholders.
+ */
+const PULLOVER_TRUE_ASPECT_PRINT_PANELS = new Set<HoodiePanelKey>([
+  "front",
+  "back",
+  "front_pocket",
+]);
+
+export function printDrawsAtTrueAspect(
+  panelKey: HoodiePanelKey | null | undefined,
+  blueprintId?: number | null,
+): boolean {
+  return (
+    !!panelKey &&
+    isPulloverHoodieBlueprint(blueprintId) &&
+    PULLOVER_TRUE_ASPECT_PRINT_PANELS.has(panelKey)
+  );
+}
+
+/**
+ * Reshape an artwork sample window to the destination's aspect so the
+ * slice → dest map is one uniform scale (dest.height / slice.height) on both
+ * axes. Height and centre x are kept, so vertical placement is unchanged; the
+ * window widens (or narrows) horizontally. Anything it reaches past the
+ * artwork's edges draws transparent — blank stays blank.
+ */
+export function sliceAtDestAspect<T extends { x: number; y: number; width: number; height: number }>(
+  slice: T,
+  destAspect: number,
+): T {
+  if (!(destAspect > 0) || !(slice.height > 0)) return slice;
+  const width = slice.height * destAspect;
+  return { ...slice, x: slice.x + slice.width / 2 - width / 2, width };
+}

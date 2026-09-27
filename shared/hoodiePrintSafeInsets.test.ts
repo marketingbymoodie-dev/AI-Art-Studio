@@ -5,8 +5,10 @@ import {
 } from "./hoodieTemplate";
 import { PULLOVER_POCKET_FINISHED_INSET } from "./pulloverPocketPrintMerge";
 import {
+  printDrawsAtTrueAspect,
   printSafeDestRect,
   printSafeInsetsForPanel,
+  sliceAtDestAspect,
 } from "./hoodiePrintSafeInsets";
 
 describe("printSafeInsetsForPanel", () => {
@@ -51,5 +53,40 @@ describe("printSafeInsetsForPanel", () => {
       bottom: 0.15,
     });
     expect(dest).toEqual({ x: 100, y: 100, width: 700, height: 1600 });
+  });
+});
+
+describe("printDrawsAtTrueAspect", () => {
+  it("pullover front, back and pocket only", () => {
+    for (const k of ["front", "back", "front_pocket"] as const) {
+      expect(printDrawsAtTrueAspect(k, PULOVER_HOODIE_BLUEPRINT_ID)).toBe(true);
+    }
+    for (const k of ["left_sleeve", "left_hood", "waistband"] as const) {
+      expect(printDrawsAtTrueAspect(k, PULOVER_HOODIE_BLUEPRINT_ID)).toBe(false);
+    }
+    expect(printDrawsAtTrueAspect("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe(false);
+    expect(printDrawsAtTrueAspect("front", null)).toBe(false);
+  });
+});
+
+describe("sliceAtDestAspect", () => {
+  const slice = { x: 10, y: 300, width: 575, height: 774 };
+
+  it("matches the dest aspect by width only: height, y and centre x kept", () => {
+    const out = sliceAtDestAspect(slice, 3511 / 3557);
+    expect(out.width / out.height).toBeCloseTo(3511 / 3557, 12);
+    expect(out.height).toBe(slice.height);
+    expect(out.y).toBe(slice.y);
+    expect(out.x + out.width / 2).toBeCloseTo(slice.x + slice.width / 2, 12);
+  });
+
+  it("gives one uniform slice->dest scale on both axes", () => {
+    const out = sliceAtDestAspect(slice, 3200 / 1597);
+    expect(3200 / out.width).toBeCloseTo(1597 / out.height, 10);
+  });
+
+  it("is a no-op for degenerate input", () => {
+    expect(sliceAtDestAspect(slice, 0)).toBe(slice);
+    expect(sliceAtDestAspect({ ...slice, height: 0 }, 1)).toEqual({ ...slice, height: 0 });
   });
 });

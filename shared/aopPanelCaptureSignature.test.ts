@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AOP_PRINT_RENDER_VERSION,
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
@@ -43,6 +44,7 @@ describe("canonicalAopPanelCaptureSignature", () => {
 
   it("re-canonicalizes legacy persist JSON (different key order, no trimEnabled)", () => {
     const legacy = JSON.stringify({
+      printRenderVersion: AOP_PRINT_RENDER_VERSION,
       mode: baseState.mode,
       artworkUrl: baseState.artworkUrl,
       backgroundColor: baseState.backgroundColor,
@@ -208,6 +210,7 @@ describe("hashAopCaptureSignature round-trip (ATC vs persist-then-server)", () =
 
     // Shuffled key order in the stored JSON must not 409 a correct capture.
     const shuffled = JSON.stringify({
+      printRenderVersion: AOP_PRINT_RENDER_VERSION,
       pocketSample: pulloverPlacerState.pocketSample,
       wrapBackMode: pulloverPlacerState.wrapBackMode,
       legsMirrored: pulloverPlacerState.legsMirrored,
@@ -291,5 +294,57 @@ describe("evaluateAopSnapshotFreeze fail-safe", () => {
     expect(hashAopCaptureSignature(null)).toBeNull();
     expect(hashAopCaptureSignature("")).toBeNull();
     expect(expectedAopCaptureHashFromLiveState({})).toBeNull();
+  });
+});
+
+describe("print render version forces one re-bake of stored panels", () => {
+  // Exactly what persist wrote before the version field existed.
+  const preVersionCanonical = JSON.stringify({
+    mode: baseState.mode,
+    artworkUrl: baseState.artworkUrl,
+    backgroundColor: baseState.backgroundColor,
+    tileSettings: baseState.tileSettings,
+    trimEnabled: baseState.trimEnabled,
+    pocketsEnabled: baseState.pocketsEnabled,
+    placements: baseState.placements,
+    enabled: baseState.enabled,
+    sleevesMirrored: baseState.sleevesMirrored,
+    legsSynced: baseState.legsSynced,
+    legsMirrored: baseState.legsMirrored,
+    wrapBackMode: baseState.wrapBackMode,
+    pocketSample: null,
+  });
+
+  it("a pre-version stored signature never matches live state (reuse misses, panels re-bake)", () => {
+    expect(aopPanelCaptureSignaturesMatch(preVersionCanonical, baseState)).toBe(false);
+    expect(
+      aopCanReuseStoredPanels({
+        storedSignature: preVersionCanonical,
+        liveState: baseState,
+        lastPersistedState: baseState,
+        hasRestoredPanels: true,
+        hasPendingChanges: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("a stored signature from an older render version also misses", () => {
+    const older = JSON.stringify({ ...JSON.parse(preVersionCanonical), printRenderVersion: AOP_PRINT_RENDER_VERSION - 1 });
+    expect(aopPanelCaptureSignaturesMatch(older, baseState)).toBe(false);
+  });
+
+  it("after re-persist under the current version, reuse matches again", () => {
+    const persisted = canonicalAopPanelCaptureSignature(baseState);
+    expect(JSON.parse(persisted!).printRenderVersion).toBe(AOP_PRINT_RENDER_VERSION);
+    expect(aopPanelCaptureSignaturesMatch(persisted, baseState)).toBe(true);
+    expect(storedAopCaptureHash(persisted)).toBe(expectedAopCaptureHashFromLiveState(baseState));
+  });
+
+  it("pre-version stored signatures hash exactly as before (in-flight cart _aop_cap still freezes)", () => {
+    expect(parseStoredAopPanelCaptureSignature(preVersionCanonical)).toBe(preVersionCanonical);
+    const oldLineCap = hashAopCaptureSignature(preVersionCanonical);
+    expect(
+      evaluateAopSnapshotFreeze({ expectedCaptureHash: oldLineCap, storedSignature: preVersionCanonical }),
+    ).toEqual({ ok: true });
   });
 });

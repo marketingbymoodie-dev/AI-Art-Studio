@@ -8,6 +8,19 @@
 
 const CAPTURE_MODES = new Set(["place", "pattern"]);
 
+/**
+ * Bump whenever print-panel rendering changes what a stored panel looks like,
+ * so every design persisted under the old render misses reuse once and
+ * re-bakes (the capture fields alone never change on a code/template change).
+ * Live state is stamped with this; a stored signature carries the version it
+ * was persisted under. Stored signatures from before this field existed omit
+ * it and canonicalize byte-identically to before, so hashes already stamped on
+ * in-flight cart lines still freeze.
+ *
+ * 1 — pullover front/back/pocket print at true artwork aspect (2026-09).
+ */
+export const AOP_PRINT_RENDER_VERSION = 1;
+
 export type AopPanelCaptureSource = {
   mode?: unknown;
   artworkUrl?: unknown;
@@ -22,13 +35,27 @@ export type AopPanelCaptureSource = {
   legsMirrored?: unknown;
   wrapBackMode?: unknown;
   pocketSample?: unknown;
+  printRenderVersion?: unknown;
 };
 
+/** Live placer state (persist + ATC): stamped with the current render version. */
 export function canonicalAopPanelCaptureSignature(
   raw: unknown,
 ): string | null {
   if (!raw || typeof raw !== "object") return null;
-  const s = raw as AopPanelCaptureSource;
+  return canonicalize({
+    printRenderVersion: AOP_PRINT_RENDER_VERSION,
+    ...(raw as AopPanelCaptureSource),
+  });
+}
+
+/** Stored signature: keeps whatever version it was persisted under (none = legacy). */
+function canonicalStoredAopPanelCaptureSignature(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  return canonicalize(raw as AopPanelCaptureSource);
+}
+
+function canonicalize(s: AopPanelCaptureSource): string | null {
   if (!CAPTURE_MODES.has(String(s.mode || ""))) return null;
   const artworkUrl = typeof s.artworkUrl === "string" ? s.artworkUrl.trim() : "";
   if (!artworkUrl) return null;
@@ -49,6 +76,9 @@ export function canonicalAopPanelCaptureSignature(
     legsMirrored: s.legsMirrored ?? null,
     wrapBackMode: s.wrapBackMode ?? null,
     pocketSample: s.pocketSample ?? null,
+    ...(s.printRenderVersion !== undefined
+      ? { printRenderVersion: s.printRenderVersion }
+      : {}),
   });
 }
 
@@ -114,12 +144,12 @@ export function parseStoredAopPanelCaptureSignature(
     const trimmed = raw.trim();
     if (!trimmed) return null;
     try {
-      return canonicalAopPanelCaptureSignature(JSON.parse(trimmed));
+      return canonicalStoredAopPanelCaptureSignature(JSON.parse(trimmed));
     } catch {
       return null;
     }
   }
-  return canonicalAopPanelCaptureSignature(raw);
+  return canonicalStoredAopPanelCaptureSignature(raw);
 }
 
 /**
@@ -181,7 +211,7 @@ export function aopPanelCaptureSignaturesMatch(
   if (!("pocketSample" in storedRec) && currentRec.pocketSample !== undefined) {
     storedForCompare = { ...storedForCompare, pocketSample: currentRec.pocketSample };
   }
-  const a = canonicalAopPanelCaptureSignature(storedForCompare);
+  const a = canonicalStoredAopPanelCaptureSignature(storedForCompare);
   const b = canonicalAopPanelCaptureSignature(currentRec);
   return !!a && !!b && a === b;
 }

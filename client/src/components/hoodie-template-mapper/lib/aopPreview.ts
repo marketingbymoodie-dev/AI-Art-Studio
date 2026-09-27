@@ -88,8 +88,10 @@ import {
   applyPulloverPocketSampleWindow,
 } from "@shared/pulloverPocketPrintMerge";
 import {
+  printDrawsAtTrueAspect,
   printSafeDestRect,
   printSafeInsetsForPanel,
+  sliceAtDestAspect,
   type PrintSafeInsets,
 } from "@shared/hoodiePrintSafeInsets";
 import {
@@ -1740,11 +1742,17 @@ export function renderHoodFlatPanel(
     return canvas;
   }
   const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
-  const bakedSlice = slice;
   const insets = options?.mapDestToSafe
     ? printSafeInsetsForPanel(frontLayer.panelKey, options.blueprintId)
     : null;
   const dest = insets ? printSafeDestRect(flatW, flatH, insets) : null;
+  // Print, pullover body + pocket: one uniform slice→dest scale instead of
+  // filling the placeholder per axis (see printDrawsAtTrueAspect).
+  const bakedSlice =
+    options?.mapDestToSafe &&
+    printDrawsAtTrueAspect(frontLayer.panelKey, options.blueprintId)
+      ? sliceAtDestAspect(slice, (dest?.width ?? flatW) / (dest?.height ?? flatH))
+      : slice;
   // Print: UV 0–1 → Safe rect (preview uses sewn mesh dest). Preview
   // bridge leaves dest null so the full placeholder still feeds the
   // back-view warp. Customer Place rotation is pre-baked into artSource.

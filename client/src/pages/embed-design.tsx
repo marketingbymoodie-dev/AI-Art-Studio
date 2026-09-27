@@ -19643,7 +19643,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                   : "w-2 h-2 bg-foreground/60"
                               }`}
                             />
-                            {!(isMobile && item.kind === "artwork") ? (
+                            {item.kind !== "artwork" ? (
                             <span
                               className={`text-[10px] leading-tight font-medium ${
                                 selectedMockupIndex === idx
