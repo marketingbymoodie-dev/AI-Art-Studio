@@ -18,8 +18,9 @@ const CAPTURE_MODES = new Set(["place", "pattern"]);
  * in-flight cart lines still freeze.
  *
  * 1 — pullover front/back/pocket print at true artwork aspect (2026-09).
+ * 2 — zip front halves/back/pockets print at true artwork aspect (2026-09).
  */
-export const AOP_PRINT_RENDER_VERSION = 1;
+export const AOP_PRINT_RENDER_VERSION = 2;
 
 export type AopPanelCaptureSource = {
   mode?: unknown;

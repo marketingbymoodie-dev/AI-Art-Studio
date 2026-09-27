@@ -8,6 +8,7 @@ import {
   printDrawsAtTrueAspect,
   printSafeDestRect,
   printSafeInsetsForPanel,
+  printTrueAspectAnchor,
   sliceAtDestAspect,
 } from "./hoodiePrintSafeInsets";
 
@@ -57,15 +58,36 @@ describe("printSafeInsetsForPanel", () => {
 });
 
 describe("printDrawsAtTrueAspect", () => {
-  it("pullover front, back and pocket only", () => {
+  it("pullover front, back and pocket; zip halves, back and pockets", () => {
     for (const k of ["front", "back", "front_pocket"] as const) {
       expect(printDrawsAtTrueAspect(k, PULOVER_HOODIE_BLUEPRINT_ID)).toBe(true);
     }
     for (const k of ["left_sleeve", "left_hood", "waistband"] as const) {
       expect(printDrawsAtTrueAspect(k, PULOVER_HOODIE_BLUEPRINT_ID)).toBe(false);
     }
-    expect(printDrawsAtTrueAspect("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe(false);
+    for (const k of ["front_left", "front_right", "back", "pocket_left", "pocket_right"] as const) {
+      expect(printDrawsAtTrueAspect(k, ZIP_HOODIE_BLUEPRINT_ID)).toBe(true);
+    }
+    for (const k of ["left_sleeve", "left_hood", "waistband", "left_cuff_panel"] as const) {
+      expect(printDrawsAtTrueAspect(k, ZIP_HOODIE_BLUEPRINT_ID)).toBe(false);
+    }
     expect(printDrawsAtTrueAspect("front", null)).toBe(false);
+  });
+});
+
+describe("printTrueAspectAnchor", () => {
+  it("pullover panels widen about the centre", () => {
+    for (const k of ["front", "back", "front_pocket"] as const) {
+      expect(printTrueAspectAnchor(k, PULOVER_HOODIE_BLUEPRINT_ID)).toBe("center");
+    }
+  });
+
+  it("zip halves and pockets hold their zipper edge; back widens about the centre", () => {
+    expect(printTrueAspectAnchor("front_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
+    expect(printTrueAspectAnchor("pocket_left", ZIP_HOODIE_BLUEPRINT_ID)).toBe("max");
+    expect(printTrueAspectAnchor("front_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
+    expect(printTrueAspectAnchor("pocket_right", ZIP_HOODIE_BLUEPRINT_ID)).toBe("min");
+    expect(printTrueAspectAnchor("back", ZIP_HOODIE_BLUEPRINT_ID)).toBe("center");
   });
 });
 
@@ -88,5 +110,24 @@ describe("sliceAtDestAspect", () => {
   it("is a no-op for degenerate input", () => {
     expect(sliceAtDestAspect(slice, 0)).toBe(slice);
     expect(sliceAtDestAspect({ ...slice, height: 0 }, 1)).toEqual({ ...slice, height: 0 });
+  });
+});
+
+describe("sliceAtDestAspect anchors", () => {
+  // Zip left half: zipper at the slice's max-x edge.
+  const half = { x: 40, y: 250, width: 250, height: 650 };
+
+  it("max anchor keeps the max-x edge fixed and grows toward min-x", () => {
+    const out = sliceAtDestAspect(half, 0.5071, "max");
+    expect(out.x + out.width).toBeCloseTo(half.x + half.width, 10);
+    expect(out.width).toBeCloseTo(650 * 0.5071, 10);
+    expect(out.y).toBe(half.y);
+    expect(out.height).toBe(half.height);
+  });
+
+  it("min anchor keeps the min-x edge fixed and grows toward max-x", () => {
+    const out = sliceAtDestAspect(half, 0.5071, "min");
+    expect(out.x).toBe(half.x);
+    expect(out.width).toBeCloseTo(650 * 0.5071, 10);
   });
 });
