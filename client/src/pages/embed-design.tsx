@@ -2011,6 +2011,12 @@ export interface EmbedDesignProps {
       };
   /** Preview Studio: Save / test-order actions sit above Generate + Upload. */
   testerActions?: ReactNode;
+  /**
+   * Admin tester only: controls pinned to the top of the main preview box, and
+   * (when set) an image shown in that box in place of the flat preview — e.g.
+   * the "See it worn" lifestyle mockup. The storefront never passes this.
+   */
+  testerPreview?: { toolbar?: ReactNode; imageUrl?: string | null; caption?: string | null };
 }
 
 /**
@@ -2309,7 +2315,7 @@ function resolvePostGenMockupUrl(
   return null;
 }
 
-export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDesignProps = {}) {
+export default function EmbedDesign({ embeddedContext, testerActions, testerPreview }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
   // Detect runtime mode. When hosted in-process by the admin tester or merchant design
@@ -20438,6 +20444,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               data-testid="container-mockup"
               data-appai-wheel-forward="true"
             >
+              {testerPreview?.imageUrl ? (
+                <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-background">
+                  <img
+                    src={testerPreview.imageUrl}
+                    alt="Lifestyle mockup"
+                    className="max-h-full max-w-full object-contain"
+                    data-testid="img-see-it-worn"
+                  />
+                  {testerPreview.caption ? (
+                    <p className="absolute bottom-1 left-2 right-2 truncate text-center text-[11px] text-muted-foreground">
+                      {testerPreview.caption}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {testerPreview?.toolbar ? (
+                <div className="pointer-events-none absolute left-2 right-2 top-2 z-40 flex justify-center">
+                  <div className="pointer-events-auto">{testerPreview.toolbar}</div>
+                </div>
+              ) : null}
               <div className="absolute inset-0">
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;

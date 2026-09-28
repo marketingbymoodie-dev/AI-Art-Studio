@@ -21,6 +21,7 @@ import {
   fillLifestyleTemplate,
   joinPanelList,
   lifestyleGarmentForBlueprint,
+  lifestyleFlatsPresent,
   lifestyleImageInput,
   lifestylePanelManifest,
   sanitiseLifestyleSetting,
@@ -194,7 +195,7 @@ async function printPanelArtCoverage(url: string): Promise<number> {
     const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  const bgKey = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  const bgKey = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0][0];
   const bg = [((bgKey >> 8) & 15) * 16 + 8, ((bgKey >> 4) & 15) * 16 + 8, (bgKey & 15) * 16 + 8];
   let art = 0;
   for (let i = 0; i < data.length; i += 3) {
@@ -245,9 +246,9 @@ async function prepareLifestyle(jobId: string, gender: LifestyleGender): Promise
     throw new LifestyleMockupError("Lifestyle mockups support zip and pullover hoodies only", 400, "UNSUPPORTED_PRODUCT");
   }
   const ds = parseDesignState(job.designState);
-  const front = ds.hoodieAopMockups?.front;
-  const back = ds.hoodieAopMockups?.back;
-  if (typeof front !== "string" || typeof back !== "string" || !front || !back) {
+  const front = ds.hoodieAopMockups?.front as string;
+  const back = ds.hoodieAopMockups?.back as string;
+  if (!lifestyleFlatsPresent(ds)) {
     throw new LifestyleMockupError(
       "This design has no saved front/back renders yet — apply the placement first",
       409,
@@ -282,7 +283,7 @@ type NanoBananaResult = {
 async function runNanoBanana(prompt: string, imageInput: string[]): Promise<NanoBananaResult> {
   const pred = await runReplicateModel(
     NANO_BANANA_MODEL,
-    { prompt, image_input: imageInput, aspect_ratio: "16:9", output_format: "png" },
+    { prompt, image_input: imageInput, aspect_ratio: "1:1", output_format: "png" },
     POLL_TIMEOUT_MS,
   );
   const out = Array.isArray(pred.output) ? pred.output[0] : pred.output;
@@ -412,7 +413,7 @@ async function prepareLifestyleChecksOnly(jobId: string): Promise<void> {
     throw new LifestyleMockupError("Lifestyle mockups support zip and pullover hoodies only", 400, "UNSUPPORTED_PRODUCT");
   }
   const ds = parseDesignState(job.designState);
-  if (!ds.hoodieAopMockups?.front || !ds.hoodieAopMockups?.back) {
+  if (!lifestyleFlatsPresent(ds)) {
     throw new LifestyleMockupError(
       "This design has no saved front/back renders yet — apply the placement first",
       409,
@@ -428,9 +429,7 @@ export async function lifestyleFlatsReady(jobId: string): Promise<boolean> {
     .from(generationJobs)
     .where(eq(generationJobs.id, jobId))
     .limit(1);
-  const ds = parseDesignState(job?.designState);
-  return typeof ds.hoodieAopMockups?.front === "string" && typeof ds.hoodieAopMockups?.back === "string"
-    && !!ds.hoodieAopMockups.front && !!ds.hoodieAopMockups.back;
+  return lifestyleFlatsPresent(parseDesignState(job?.designState));
 }
 
 export async function listLifestyleMockups(jobId: string): Promise<LifestyleMockupRow[]> {

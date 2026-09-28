@@ -29,13 +29,13 @@ export function lifestyleGarmentForBlueprint(
   return null;
 }
 
-// Finalised templates (2026-09-29), verbatim. Do not reword without re-testing:
+// Finalised templates (2026-09-29, + placement-lock line), verbatim. Do not reword without re-testing:
 // the "reference image N" numbering must match LIFESTYLE_REFERENCE_ORDER.
 const ZIP_TEMPLATE = `A single wide image: two photographs of the same {GENDER} person in the same location, side by side. LEFT = front view, RIGHT = rear view. Treat each half as its own independent photograph — the print on each figure's hoodie comes ONLY from that half's reference and must never appear on the other figure.
 
 LEFT hoodie: front print exactly as reference image 1. Printed: {FRONT_PRINTED_PANELS}. Plain (no artwork): {FRONT_PLAIN_PANELS}.
 RIGHT hoodie: back print exactly as reference image 2. Printed: {BACK_PRINTED_PANELS}. Plain: {BACK_PLAIN_PANELS}.
-Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images.
+Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images. Place the artwork on the garment at the same height, scale and position as in the reference flat — centred high on the front, filling the same area, not shifted down toward the waist.
 
 Garment: a full-zip hoodie, with the zip running the full length of the front. The hood has NO drawstrings of any kind — no cords, ties or aglets at the hood opening. Only the inner lining seen inside the hood opening is white — a fixed feature of the garment. The outer of the hood shows exactly the colour and/or print that appears on the hood in the front and back reference flats — match the flats exactly, whatever that colour is (printed, garment colour, or white). Hand-warmer pockets sit across the lower front exactly like the close-up in reference image 3 — same shape, seam and opening — with the print continuing over them and the seam and soft shadow still visible (front figure only).
 
@@ -49,7 +49,7 @@ const PULLOVER_TEMPLATE = `A single wide image: two photographs of the same {GEN
 
 LEFT hoodie: front print exactly as reference image 1. Printed: {FRONT_PRINTED_PANELS}. Plain (no artwork): {FRONT_PLAIN_PANELS}.
 RIGHT hoodie: back print exactly as reference image 2. Printed: {BACK_PRINTED_PANELS}. Plain: {BACK_PLAIN_PANELS}.
-Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images.
+Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images. Place the artwork on the garment at the same height, scale and position as in the reference flat — centred high on the front, filling the same area, not shifted down toward the waist.
 
 Garment: a pullover hoodie with no zip. The hood has white knotted drawstrings, always. Only the inner lining seen inside the hood opening is white — a fixed feature of the garment. The outer of the hood shows exactly the colour and/or print that appears on the hood in the front and back reference flats — match the flats exactly, whatever that colour is (printed, garment colour, or white). A kangaroo pouch pocket sits across the lower front exactly like the close-up in reference image 3 — same shape, seam and opening — with the print continuing over it and the seam and soft shadow still visible (front figure only).
 
@@ -100,6 +100,17 @@ export function lifestyleImageInput(refs: {
   pocket: string;
 }): string[] {
   return LIFESTYLE_REFERENCE_ORDER.map((k) => refs[k]);
+}
+
+/**
+ * Both flats persisted (what a generation needs). Single source of truth for
+ * the UI readiness flag and the server-side generate check, so the button can
+ * never enable on a front-only state.
+ */
+export function lifestyleFlatsPresent(designState: Record<string, any> | null | undefined): boolean {
+  const m = designState?.hoodieAopMockups;
+  const ok = (u: unknown) => typeof u === "string" && /^https?:\/\//.test(u);
+  return !!m && ok(m.front) && ok(m.back);
 }
 
 /** Subset of the placer / capture-signature state that decides printed vs plain. */

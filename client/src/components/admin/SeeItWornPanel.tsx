@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Loader2, Shirt } from "lucide-react";
 import { apiRequest, parseApiErrorMessage, queryClient } from "@/lib/queryClient";
@@ -12,21 +12,24 @@ type ListResponse = { mockups: LifestyleMockupRow[]; maxPerGender: number; flats
 
 const APPLY_FIRST = "Apply the placement first — See it worn needs the design's saved front and back.";
 
+export type SeeItWornView = "flat" | "worn";
+
 /**
- * Admin-only "See it worn": on-demand AI lifestyle mockup for the current
- * tester design (zip / pullover hoodies). One cached generation per gender,
- * with capped re-rolls; the server does the work and this panel polls.
+ * Admin-only "See it worn" state for the current tester design: one cached
+ * generation per gender, capped re-rolls. The server does the work; this polls.
  */
-export function SeeItWornPanel({ jobId }: { jobId: string }) {
+export function useSeeItWorn(jobId: string | null) {
   const [gender, setGender] = useState<LifestyleGender>("female");
+  const [view, setView] = useState<SeeItWornView>("flat");
   const { toast } = useToast();
   const queryKey = ["/api/admin/lifestyle-mockups", jobId];
 
   const { data } = useQuery<ListResponse>({
     queryKey,
+    enabled: !!jobId,
     queryFn: async () =>
-      (await apiRequest("GET", `/api/admin/lifestyle-mockups?jobId=${encodeURIComponent(jobId)}`)).json(),
-    // Poll while a generation runs, and while waiting for Apply to save the flats.
+      (await apiRequest("GET", `/api/admin/lifestyle-mockups?jobId=${encodeURIComponent(jobId!)}`)).json(),
+    // Poll while a generation runs, and while waiting for Apply to save BOTH flats.
     refetchInterval: (query) => {
       const d = query.state.data;
       if (d?.mockups.some((m) => m.status === "pending")) return 3000;
@@ -38,6 +41,7 @@ export function SeeItWornPanel({ jobId }: { jobId: string }) {
     mutationFn: async (reroll: boolean) =>
       (await apiRequest("POST", "/api/admin/lifestyle-mockups", { jobId, gender, reroll })).json(),
     onError: (error) => {
+      // Never surface the raw 409 body; a missing-flats race gets the Apply hint.
       const flatsMissing = ((error as Error)?.message ?? "").includes("FLATS_MISSING");
       toast({
         title: flatsMissing ? "Apply the placement first" : "Couldn't start See it worn",
@@ -47,75 +51,99 @@ export function SeeItWornPanel({ jobId }: { jobId: string }) {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   });
-  const flatsReady = data?.flatsReady === true;
 
   const rows = (data?.mockups ?? []).filter((m) => m.gender === gender);
   const latest = rows[0];
-  const shown = rows.find((m) => m.status === "succeeded");
-  const pending = latest?.status === "pending";
-  const used = rows.filter((m) => m.status !== "failed").length;
-  const max = data?.maxPerGender ?? 4;
-  // Request errors surface as toasts; only a failed generation shows inline.
-  const errorText = latest?.status === "failed" ? latest.error : null;
+  const shown = rows.find((m) => m.status === "succeeded") ?? null;
 
+  // A new image for this gender switches the preview to it; a new design resets to the flat.
+  const shownId = shown?.id ?? null;
+  useEffect(() => {
+    if (shownId != null) setView("worn");
+  }, [shownId]);
+  useEffect(() => {
+    setView("flat");
+  }, [jobId]);
+
+  return {
+    gender,
+    setGender,
+    view: shown ? view : ("flat" as SeeItWornView),
+    setView,
+    shown,
+    pending: latest?.status === "pending",
+    failed: latest?.status === "failed" ? latest.error ?? "Generation failed" : null,
+    flatsReady: data?.flatsReady === true,
+    loaded: !!data,
+    used: rows.filter((m) => m.status !== "failed").length,
+    max: data?.maxPerGender ?? 4,
+    start: (reroll: boolean) => start.mutate(reroll),
+    starting: start.isPending,
+  };
+}
+
+export type SeeItWorn = ReturnType<typeof useSeeItWorn>;
+
+/** Compact controls for the top of the main preview box. */
+export function SeeItWornToolbar({ sw }: { sw: SeeItWorn }) {
+  const busy = sw.pending || sw.starting;
   return (
-    <div className="space-y-2 rounded-md border p-3" data-testid="panel-see-it-worn">
-      <div className="flex flex-wrap items-center gap-2">
-        <ToggleGroup
-          type="single"
-          value={gender}
-          onValueChange={(v) => v && setGender(v as LifestyleGender)}
+    <div
+      className="flex flex-wrap items-center gap-1.5 rounded-md bg-background/90 p-1 shadow-sm backdrop-blur"
+      data-testid="toolbar-see-it-worn"
+    >
+      <ToggleGroup
+        type="single"
+        value={sw.gender}
+        onValueChange={(v) => v && sw.setGender(v as LifestyleGender)}
+        size="sm"
+      >
+        <ToggleGroupItem value="female" data-testid="toggle-lifestyle-female">Female</ToggleGroupItem>
+        <ToggleGroupItem value="male" data-testid="toggle-lifestyle-male">Male</ToggleGroupItem>
+      </ToggleGroup>
+      {!sw.shown ? (
+        <Button
           size="sm"
+          onClick={() => sw.start(false)}
+          disabled={!sw.flatsReady || busy}
+          title={sw.flatsReady ? undefined : APPLY_FIRST}
+          data-testid="button-see-it-worn"
         >
-          <ToggleGroupItem value="female" data-testid="toggle-lifestyle-female">Female</ToggleGroupItem>
-          <ToggleGroupItem value="male" data-testid="toggle-lifestyle-male">Male</ToggleGroupItem>
-        </ToggleGroup>
-        {!shown ? (
-          <Button
+          {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Shirt className="h-4 w-4 mr-1.5" />}
+          {sw.pending ? "Generating…" : "See it worn"}
+        </Button>
+      ) : (
+        <>
+          <ToggleGroup
+            type="single"
+            value={sw.view}
+            onValueChange={(v) => v && sw.setView(v as SeeItWornView)}
             size="sm"
-            onClick={() => start.mutate(false)}
-            disabled={!flatsReady || pending || start.isPending}
-            title={flatsReady ? undefined : APPLY_FIRST}
-            data-testid="button-see-it-worn"
           >
-            {pending || start.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Shirt className="h-4 w-4 mr-2" />
-            )}
-            {pending ? "Generating…" : "See it worn"}
-          </Button>
-        ) : (
+            <ToggleGroupItem value="flat" data-testid="toggle-view-flat">Flat</ToggleGroupItem>
+            <ToggleGroupItem value="worn" data-testid="toggle-view-worn">Worn</ToggleGroupItem>
+          </ToggleGroup>
           <Button
             size="sm"
             variant="outline"
-            onClick={() => start.mutate(true)}
-            disabled={pending || start.isPending || used >= max}
+            onClick={() => sw.start(true)}
+            disabled={busy || sw.used >= sw.max}
             data-testid="button-see-it-worn-reroll"
           >
-            {pending || start.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-            {pending ? "Generating…" : `Re-roll (${Math.max(0, max - used)} left)`}
+            {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+            {sw.pending ? "Generating…" : `Re-roll (${Math.max(0, sw.max - sw.used)} left)`}
           </Button>
-        )}
-      </div>
-      {data && !flatsReady && !shown ? (
-        <p className="text-xs text-muted-foreground" data-testid="text-see-it-worn-apply-first">{APPLY_FIRST}</p>
+        </>
+      )}
+      {sw.loaded && !sw.flatsReady && !sw.shown ? (
+        <span className="px-1 text-xs text-muted-foreground" data-testid="text-see-it-worn-apply-first">
+          Apply the placement first
+        </span>
       ) : null}
-      {errorText ? (
-        <p className="text-xs text-destructive" data-testid="text-see-it-worn-error">{errorText}</p>
-      ) : null}
-      {shown?.imageUrl ? (
-        <div className="space-y-1">
-          <img
-            src={shown.imageUrl}
-            alt={`Lifestyle mockup (${gender})`}
-            className="w-full rounded-md border"
-            data-testid="img-see-it-worn"
-          />
-          <p className="text-xs text-muted-foreground">
-            Setting: {shown.setting ?? "—"} · ${Number(shown.costUsd ?? 0).toFixed(3)} · seed {shown.seed ?? "n/a"}
-          </p>
-        </div>
+      {sw.failed ? (
+        <span className="px-1 text-xs text-destructive" data-testid="text-see-it-worn-error" title={sw.failed}>
+          Generation failed — try Re-roll
+        </span>
       ) : null}
     </div>
   );

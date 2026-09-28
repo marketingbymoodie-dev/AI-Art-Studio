@@ -13,7 +13,7 @@ import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
 import { lifestyleGarmentForBlueprint } from "@shared/lifestyleMockup";
-import { SeeItWornPanel } from "@/components/admin/SeeItWornPanel";
+import { SeeItWornToolbar, useSeeItWorn } from "@/components/admin/SeeItWornPanel";
 import type { ProductType } from "@shared/schema";
 import {
   AlertDialog,
@@ -348,6 +348,18 @@ export default function AdminCreateProduct() {
     (Array.isArray(productTypesRaw) ? productTypesRaw : []).find((pt) => pt.id === selectedProductTypeId)
       ?.printifyBlueprintId ?? null,
   );
+  const seeItWorn = useSeeItWorn(lifestyleGarment ? testerJobId : null);
+  const testerPreview =
+    lifestyleGarment && testerJobId
+      ? {
+          toolbar: <SeeItWornToolbar sw={seeItWorn} />,
+          imageUrl: seeItWorn.view === "worn" ? seeItWorn.shown?.imageUrl ?? null : null,
+          caption:
+            seeItWorn.view === "worn" && seeItWorn.shown
+              ? `${seeItWorn.shown.setting ?? ""} · ${Number(seeItWorn.shown.costUsd ?? 0).toFixed(3)}`
+              : null,
+        }
+      : undefined;
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -393,7 +405,6 @@ export default function AdminCreateProduct() {
           {testOrderLabel}
         </Button>
       </div>
-      {testerJobId && lifestyleGarment ? <SeeItWornPanel jobId={testerJobId} /> : null}
       {syncingPrintFiles ? (
         <p className="text-xs text-muted-foreground" data-testid="text-design-saving">
           Syncing placement for the test order — usually a few seconds.
@@ -555,6 +566,7 @@ export default function AdminCreateProduct() {
                 key={selectedProductTypeId}
                 embeddedContext={embeddedContext}
                 testerActions={testerActions}
+                testerPreview={testerPreview}
               />
             </CardContent>
           </Card>

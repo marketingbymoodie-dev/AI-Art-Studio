@@ -4,6 +4,7 @@ import {
   joinPanelList,
   lifestyleGarmentForBlueprint,
   lifestyleImageInput,
+  lifestyleFlatsPresent,
   lifestylePanelManifest,
   lifestylePartStateFromCoverage,
   LIFESTYLE_TEMPLATES,
@@ -44,11 +45,22 @@ describe("lifestyle templates", () => {
     for (const g of ["zip", "pullover"] as const) {
       expect(LIFESTYLE_TEMPLATES[g]).toContain("exactly like the close-up in reference image 3");
       expect(LIFESTYLE_TEMPLATES[g]).not.toMatch(/reference image 4|4 = /);
+      expect(LIFESTYLE_TEMPLATES[g]).toContain("not shifted down toward the waist.");
     }
   });
 
   it("orders reference images 1-3 as the templates number them", () => {
     expect(lifestyleImageInput({ frontFlat: "F", backFlat: "B", pocket: "P" })).toEqual(["F", "B", "P"]);
+  });
+});
+
+describe("lifestyleFlatsPresent", () => {
+  it("requires BOTH hosted front and back flats", () => {
+    expect(lifestyleFlatsPresent({ hoodieAopMockups: { front: "https://x/f.png" } })).toBe(false);
+    expect(lifestyleFlatsPresent({ hoodieAopMockups: { front: "https://x/f.png", back: null } })).toBe(false);
+    expect(lifestyleFlatsPresent({ hoodieAopMockups: { front: "https://x/f.png", back: "data:image/png;base64,AA" } })).toBe(false);
+    expect(lifestyleFlatsPresent({})).toBe(false);
+    expect(lifestyleFlatsPresent({ hoodieAopMockups: { front: "https://x/f.png", back: "https://x/b.png" } })).toBe(true);
   });
 });
 
