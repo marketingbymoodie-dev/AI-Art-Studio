@@ -3,9 +3,9 @@
  *
  * One Replicate google/nano-banana call per (design + gender): a single wide
  * image of the same person front + back, built from a fixed per-garment prompt
- * template and four reference images in a LOAD-BEARING order (the template
- * names "reference image 1/2/3/4"):
- *   1 = front design flat, 2 = back design flat, 3 = plain hoodie, 4 = pocket close-up.
+ * template and three reference images in a LOAD-BEARING order (the template
+ * names "reference image 1/2/3"):
+ *   1 = front design flat, 2 = back design flat, 3 = pocket close-up.
  */
 import { isPulloverHoodieBlueprint, isZipHoodieBlueprint } from "./hoodieTemplate";
 
@@ -29,7 +29,7 @@ export function lifestyleGarmentForBlueprint(
   return null;
 }
 
-// Finalised templates (2026-09-28), verbatim. Do not reword without re-testing:
+// Finalised templates (2026-09-29), verbatim. Do not reword without re-testing:
 // the "reference image N" numbering must match LIFESTYLE_REFERENCE_ORDER.
 const ZIP_TEMPLATE = `A single wide image: two photographs of the same {GENDER} person in the same location, side by side. LEFT = front view, RIGHT = rear view. Treat each half as its own independent photograph — the print on each figure's hoodie comes ONLY from that half's reference and must never appear on the other figure.
 
@@ -37,13 +37,13 @@ LEFT hoodie: front print exactly as reference image 1. Printed: {FRONT_PRINTED_P
 RIGHT hoodie: back print exactly as reference image 2. Printed: {BACK_PRINTED_PANELS}. Plain: {BACK_PLAIN_PANELS}.
 Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images.
 
-Garment: a full-zip hoodie, with the zip running the full length of the front. The hood has NO drawstrings. The inside lining of the hood is white material if ever seen in either the front or back view. Hand-warmer pockets sit across the lower front exactly like the close-up in reference image 4 — same shape, seam and opening — with the print continuing over them and the seam and soft shadow still visible (front figure only).
+Garment: a full-zip hoodie, with the zip running the full length of the front. The hood has NO drawstrings of any kind — no cords, ties or aglets at the hood opening. Only the inner lining seen inside the hood opening is white — a fixed feature of the garment. The outer of the hood shows exactly the colour and/or print that appears on the hood in the front and back reference flats — match the flats exactly, whatever that colour is (printed, garment colour, or white). Hand-warmer pockets sit across the lower front exactly like the close-up in reference image 3 — same shape, seam and opening — with the print continuing over them and the seam and soft shadow still visible (front figure only).
 
 Scene: an ordinary, everyday {SETTING} — clearly a different place from anything shown in the artwork.
 Model: a relatable but stylish {GENDER} person, natural looks but a little more attractive than average — not a professional fashion model — in a casual posture, mid-walk or a natural action suited to the scene. Never looking directly at the camera; no eye contact.
 Look: shot like a casual smartphone photo, golden-hour lighting, no retouching, slightly imperfect, authentic real-person feel.
 
-References: 1 = front design flat, 2 = back design flat, 3 = plain zip hoodie, 4 = zip pocket close-up.`;
+References: 1 = front design flat, 2 = back design flat, 3 = zip pocket close-up.`;
 
 const PULLOVER_TEMPLATE = `A single wide image: two photographs of the same {GENDER} person in the same location, side by side. LEFT = front view, RIGHT = rear view. Treat each half as its own independent photograph — the print on each figure's hoodie comes ONLY from that half's reference and must never appear on the other figure.
 
@@ -51,13 +51,13 @@ LEFT hoodie: front print exactly as reference image 1. Printed: {FRONT_PRINTED_P
 RIGHT hoodie: back print exactly as reference image 2. Printed: {BACK_PRINTED_PANELS}. Plain: {BACK_PLAIN_PANELS}.
 Do not copy the front artwork onto the back figure or the back onto the front. Do not add artwork to any plain panel. The artwork appears ONLY on the hoodie. Maintain the garment colours based on the front and back reference images.
 
-Garment: a pullover hoodie with no zip. The hood has white knotted drawstrings, always. The inside lining of the hood is white material if ever seen in either the front or back view. A kangaroo pouch pocket sits across the lower front exactly like the close-up in reference image 4 — same shape, seam and opening — with the print continuing over it and the seam and soft shadow still visible (front figure only).
+Garment: a pullover hoodie with no zip. The hood has white knotted drawstrings, always. Only the inner lining seen inside the hood opening is white — a fixed feature of the garment. The outer of the hood shows exactly the colour and/or print that appears on the hood in the front and back reference flats — match the flats exactly, whatever that colour is (printed, garment colour, or white). A kangaroo pouch pocket sits across the lower front exactly like the close-up in reference image 3 — same shape, seam and opening — with the print continuing over it and the seam and soft shadow still visible (front figure only).
 
 Scene: an ordinary, everyday {SETTING} — clearly a different place from anything shown in the artwork.
 Model: a relatable but stylish {GENDER} person, natural looks but a little more attractive than average — not a professional fashion model — in a casual posture, mid-walk or a natural action suited to the scene. Never looking directly at the camera; no eye contact.
 Look: shot like a casual smartphone photo, golden-hour lighting, no retouching, slightly imperfect, authentic real-person feel.
 
-References: 1 = front design flat, 2 = back design flat, 3 = plain pullover hoodie, 4 = pullover pocket close-up.`;
+References: 1 = front design flat, 2 = back design flat, 3 = pullover pocket close-up.`;
 
 export const LIFESTYLE_TEMPLATES: Record<LifestyleGarment, string> = {
   zip: ZIP_TEMPLATE,
@@ -92,12 +92,11 @@ export function fillLifestyleTemplate(garment: LifestyleGarment, slots: Lifestyl
 }
 
 /** Reference images in the exact order the templates number them. */
-export const LIFESTYLE_REFERENCE_ORDER = ["frontFlat", "backFlat", "blank", "pocket"] as const;
+export const LIFESTYLE_REFERENCE_ORDER = ["frontFlat", "backFlat", "pocket"] as const;
 
 export function lifestyleImageInput(refs: {
   frontFlat: string;
   backFlat: string;
-  blank: string;
   pocket: string;
 }): string[] {
   return LIFESTYLE_REFERENCE_ORDER.map((k) => refs[k]);

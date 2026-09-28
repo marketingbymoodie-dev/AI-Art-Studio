@@ -319,6 +319,7 @@ import {
 } from "./adminProductTypeAccess";
 import {
   LifestyleMockupError,
+  lifestyleFlatsReady,
   lifestyleJobProductTypeId,
   listLifestyleMockups,
   requestLifestyleMockup,
@@ -17662,7 +17663,11 @@ ${orientationExtra}
       if (!jobId) return res.status(400).json({ error: "jobId required" });
       const denied = await lifestyleAccess(req, jobId);
       if (denied) return res.status(denied.status).json(denied);
-      res.json({ mockups: await listLifestyleMockups(jobId), maxPerGender: LIFESTYLE_MAX_PER_DESIGN_GENDER });
+      res.json({
+        mockups: await listLifestyleMockups(jobId),
+        maxPerGender: LIFESTYLE_MAX_PER_DESIGN_GENDER,
+        flatsReady: await lifestyleFlatsReady(jobId),
+      });
     } catch (error: any) {
       console.error("[lifestyle] list failed:", error);
       res.status(500).json({ error: error?.message || "Failed to list lifestyle mockups" });

@@ -39,17 +39,16 @@ describe("lifestyle templates", () => {
   });
 
   it("keeps the garment-specific lines", () => {
-    expect(LIFESTYLE_TEMPLATES.zip).toContain("The hood has NO drawstrings.");
+    expect(LIFESTYLE_TEMPLATES.zip).toContain("The hood has NO drawstrings of any kind");
     expect(LIFESTYLE_TEMPLATES.pullover).toContain("The hood has white knotted drawstrings, always.");
+    for (const g of ["zip", "pullover"] as const) {
+      expect(LIFESTYLE_TEMPLATES[g]).toContain("exactly like the close-up in reference image 3");
+      expect(LIFESTYLE_TEMPLATES[g]).not.toMatch(/reference image 4|4 = /);
+    }
   });
 
-  it("orders reference images 1-4 as the templates number them", () => {
-    expect(lifestyleImageInput({ frontFlat: "F", backFlat: "B", blank: "H", pocket: "P" })).toEqual([
-      "F",
-      "B",
-      "H",
-      "P",
-    ]);
+  it("orders reference images 1-3 as the templates number them", () => {
+    expect(lifestyleImageInput({ frontFlat: "F", backFlat: "B", pocket: "P" })).toEqual(["F", "B", "P"]);
   });
 });
 

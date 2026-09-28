@@ -3,7 +3,7 @@
  *
  * One Replicate google/nano-banana call per (design + gender) renders the same
  * person front + back side by side, from the design's own front/back flat
- * renders plus per-garment static references (blank hoodie, pocket close-up).
+ * renders plus a per-garment static pocket close-up.
  * The prompt is a fixed per-garment template (shared/lifestyleMockup.ts) whose
  * {SETTING} comes from a small Replicate-hosted text model on the design's own
  * description, and whose printed/plain panel lists are read from the job's
@@ -59,7 +59,11 @@ export class LifestyleMockupError extends Error {
   }
 }
 
-/** Per-garment static references, stored once in the hoodie-templates bucket. */
+/**
+ * Per-garment static references, stored once in the hoodie-templates bucket.
+ * Only the pocket close-up is sent (reference 3); the blank-hoodie photo is
+ * kept in the bucket but no longer part of the prompt.
+ */
 export function lifestyleAssetPaths(garment: LifestyleGarment): { blank: string; pocket: string } {
   return {
     blank: `lifestyle/${garment}/blank.png`,
@@ -67,14 +71,10 @@ export function lifestyleAssetPaths(garment: LifestyleGarment): { blank: string;
   };
 }
 
-function lifestyleAssetUrls(garment: LifestyleGarment): { blank: string; pocket: string } {
-  const paths = lifestyleAssetPaths(garment);
-  const blank = publicHoodieTemplateUrl(paths.blank);
-  const pocket = publicHoodieTemplateUrl(paths.pocket);
-  if (!blank || !pocket) {
-    throw new LifestyleMockupError("Supabase is not configured", 500, "STORAGE_UNCONFIGURED");
-  }
-  return { blank, pocket };
+function lifestylePocketUrl(garment: LifestyleGarment): string {
+  const pocket = publicHoodieTemplateUrl(lifestyleAssetPaths(garment).pocket);
+  if (!pocket) throw new LifestyleMockupError("Supabase is not configured", 500, "STORAGE_UNCONFIGURED");
+  return pocket;
 }
 
 function replicateToken(): string {
@@ -268,8 +268,7 @@ async function prepareLifestyle(jobId: string, gender: LifestyleGender): Promise
     backPrinted: joinPanelList(manifest.backPrinted),
     backPlain: joinPanelList(manifest.backPlain),
   });
-  const refs = lifestyleAssetUrls(garment);
-  const imageInput = lifestyleImageInput({ frontFlat: front, backFlat: back, blank: refs.blank, pocket: refs.pocket });
+  const imageInput = lifestyleImageInput({ frontFlat: front, backFlat: back, pocket: lifestylePocketUrl(garment) });
   return { garment, prompt, setting, imageInput };
 }
 
@@ -420,6 +419,18 @@ async function prepareLifestyleChecksOnly(jobId: string): Promise<void> {
       "FLATS_MISSING",
     );
   }
+}
+
+/** Whether the design's front and back flats are saved (what "See it worn" needs). */
+export async function lifestyleFlatsReady(jobId: string): Promise<boolean> {
+  const [job] = await db
+    .select({ designState: generationJobs.designState })
+    .from(generationJobs)
+    .where(eq(generationJobs.id, jobId))
+    .limit(1);
+  const ds = parseDesignState(job?.designState);
+  return typeof ds.hoodieAopMockups?.front === "string" && typeof ds.hoodieAopMockups?.back === "string"
+    && !!ds.hoodieAopMockups.front && !!ds.hoodieAopMockups.back;
 }
 
 export async function listLifestyleMockups(jobId: string): Promise<LifestyleMockupRow[]> {
