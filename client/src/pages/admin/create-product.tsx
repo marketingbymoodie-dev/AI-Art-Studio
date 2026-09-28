@@ -12,6 +12,8 @@ import { FlaskConical, Loader2, Package, Save } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
+import { lifestyleGarmentForBlueprint } from "@shared/lifestyleMockup";
+import { SeeItWornPanel } from "@/components/admin/SeeItWornPanel";
 import type { ProductType } from "@shared/schema";
 import {
   AlertDialog,
@@ -83,9 +85,11 @@ export default function AdminCreateProduct() {
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
   const [rateLimitedUntil, setRateLimitedUntil] = useState<number | undefined>();
   const [retryWaitSec, setRetryWaitSec] = useState(0);
+  const [testerJobId, setTesterJobId] = useState<string | null>(null);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
+    setTesterJobId(status.jobId ?? null);
     setTesterPanelStatus(status.aopPanels);
     setPlacementEditorOpen(!!status.placementEditorOpen);
     setRateLimitedUntil(status.rateLimitedUntil);
@@ -98,6 +102,7 @@ export default function AdminCreateProduct() {
       flatClipSides: [],
     };
     setTesterHasDesign(false);
+    setTesterJobId(null);
     setTesterPanelStatus("none");
     setRateLimitedUntil(undefined);
     setRetryWaitSec(0);
@@ -339,6 +344,10 @@ export default function AdminCreateProduct() {
           : testerHasDesign
             ? "Send a Test Order to Printify"
             : "Generate artwork first";
+  const lifestyleGarment = lifestyleGarmentForBlueprint(
+    (Array.isArray(productTypesRaw) ? productTypesRaw : []).find((pt) => pt.id === selectedProductTypeId)
+      ?.printifyBlueprintId ?? null,
+  );
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -384,6 +393,7 @@ export default function AdminCreateProduct() {
           {testOrderLabel}
         </Button>
       </div>
+      {testerJobId && lifestyleGarment ? <SeeItWornPanel jobId={testerJobId} /> : null}
       {syncingPrintFiles ? (
         <p className="text-xs text-muted-foreground" data-testid="text-design-saving">
           Syncing placement for the test order — usually a few seconds.

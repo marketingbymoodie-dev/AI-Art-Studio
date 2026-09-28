@@ -1801,6 +1801,37 @@ export const creatorCustomerEarned = pgTable(
   ],
 );
 
+/**
+ * AI lifestyle mockups ("See it worn", admin-only for now). One row per
+ * Replicate google/nano-banana generation; doubles as the per-(design + gender)
+ * cache, the re-roll/daily caps, and the per-call cost log.
+ */
+export const lifestyleMockups = pgTable(
+  "lifestyle_mockups",
+  {
+    id: serial("id").primaryKey(),
+    generationJobId: varchar("generation_job_id").notNull(),
+    gender: text("gender").notNull(),
+    garment: text("garment").notNull(),
+    status: text("status").notNull(),
+    imageUrl: text("image_url"),
+    prompt: text("prompt"),
+    setting: text("setting"),
+    seed: text("seed"),
+    predictionId: text("prediction_id"),
+    predictTimeSec: decimal("predict_time_sec", { precision: 10, scale: 3 }),
+    costUsd: decimal("cost_usd", { precision: 10, scale: 4 }),
+    error: text("error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => [
+    index("lifestyle_mockups_job_gender_idx").on(table.generationJobId, table.gender, table.createdAt),
+    index("lifestyle_mockups_created_idx").on(table.createdAt),
+  ],
+);
+export type LifestyleMockupRow = typeof lifestyleMockups.$inferSelect;
+
 export const creatorGenerationCosts = pgTable(
   "creator_generation_costs",
   {

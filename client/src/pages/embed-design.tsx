@@ -13314,6 +13314,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           setMockupFailed(false);
           setMockupError(null);
           setMockupsStale(false);
+          // "See it worn" needs both flats on the job; host the back and
+          // persist the pair off the critical path.
+          const backCanvas = result.renderView("back");
+          const testerJobId = savedJobIdRef.current;
+          const testerShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+          if (backCanvas && testerJobId && testerShop) {
+            void ensureHostedUrl(backCanvas.toDataURL("image/jpeg", 0.85))
+              .then((backHosted) =>
+                safeFetch(`${API_BASE}/api/storefront/save-state`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    jobId: testerJobId,
+                    shop: testerShop,
+                    designState: { hoodieAopMockups: { front: frontHosted, back: backHosted } },
+                  }),
+                }),
+              )
+              .catch((err) => console.warn("[HoodieAopApply] Tester back render persist failed:", err));
+          }
         } catch (err: any) {
           console.warn("[HoodieAopApply] Tester preview upload failed:", err);
         }

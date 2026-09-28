@@ -1402,6 +1402,28 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "lifestyle_mockups",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "lifestyle_mockups" (
+        "id" serial PRIMARY KEY,
+        "generation_job_id" varchar NOT NULL,
+        "gender" text NOT NULL,
+        "garment" text NOT NULL,
+        "status" text NOT NULL,
+        "image_url" text,
+        "prompt" text,
+        "setting" text,
+        "seed" text,
+        "prediction_id" text,
+        "predict_time_sec" numeric(10, 3),
+        "cost_usd" numeric(10, 4),
+        "error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "completed_at" timestamp
+      )
+    `,
+  },
+  {
     name: "creator_generation_costs",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
@@ -2252,6 +2274,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_customer_shop_visits_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_customer_shop_visits_uidx"
       ON "creator_customer_shop_visits" ("customer_id", "creator_id")`,
+  },
+  {
+    name: "lifestyle_mockups_job_gender_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "lifestyle_mockups_job_gender_idx"
+      ON "lifestyle_mockups" ("generation_job_id", "gender", "created_at")`,
+  },
+  {
+    name: "lifestyle_mockups_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "lifestyle_mockups_created_idx"
+      ON "lifestyle_mockups" ("created_at")`,
   },
   {
     name: "creator_generation_costs_job_uidx",

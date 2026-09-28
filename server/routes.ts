@@ -318,6 +318,13 @@ import {
   adminProductTypeAccessError,
 } from "./adminProductTypeAccess";
 import {
+  LifestyleMockupError,
+  lifestyleJobProductTypeId,
+  listLifestyleMockups,
+  requestLifestyleMockup,
+} from "./lifestyle-mockup";
+import { LIFESTYLE_GENDERS, LIFESTYLE_MAX_PER_DESIGN_GENDER } from "@shared/lifestyleMockup";
+import {
   merchantManifestFromCanonical,
   resolveCanonicalFlatCalibration,
 } from "./canonicalFlatCalibration";
@@ -17638,6 +17645,49 @@ ${orientationExtra}
   // merchant can verify, in Printify, that the print file matches the on-screen
   // design BEFORE going live. Never sends to production / never charges.
   // Mandatory per-product pre-launch check for flat/mesh on-the-fly products.
+  // "See it worn" AI lifestyle mockups (admin-only while unproven). POST starts
+  // (or returns the cached) generation for a design + gender; GET lists them.
+  const lifestyleAccess = async (req: any, jobId: string) => {
+    const merchant = await storage.getMerchantByUserId(req.user.claims.sub);
+    if (!merchant) return { status: 404, error: "Merchant not found" };
+    const productTypeId = await lifestyleJobProductTypeId(jobId);
+    const productType = productTypeId != null ? await storage.getProductType(productTypeId) : undefined;
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    return accessErr ? { status: accessErr.status, error: accessErr.error, code: accessErr.code } : null;
+  };
+
+  app.get("/api/admin/lifestyle-mockups", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const jobId = String(req.query.jobId ?? "");
+      if (!jobId) return res.status(400).json({ error: "jobId required" });
+      const denied = await lifestyleAccess(req, jobId);
+      if (denied) return res.status(denied.status).json(denied);
+      res.json({ mockups: await listLifestyleMockups(jobId), maxPerGender: LIFESTYLE_MAX_PER_DESIGN_GENDER });
+    } catch (error: any) {
+      console.error("[lifestyle] list failed:", error);
+      res.status(500).json({ error: error?.message || "Failed to list lifestyle mockups" });
+    }
+  });
+
+  app.post("/api/admin/lifestyle-mockups", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const jobId = String(req.body?.jobId ?? "");
+      const gender = req.body?.gender;
+      if (!jobId) return res.status(400).json({ error: "jobId required" });
+      if (!LIFESTYLE_GENDERS.includes(gender)) return res.status(400).json({ error: "gender must be male or female" });
+      const denied = await lifestyleAccess(req, jobId);
+      if (denied) return res.status(denied.status).json(denied);
+      const row = await requestLifestyleMockup(jobId, gender, req.body?.reroll === true);
+      res.json({ mockup: row });
+    } catch (error: any) {
+      if (error instanceof LifestyleMockupError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      console.error("[lifestyle] request failed:", error);
+      res.status(500).json({ error: error?.message || "Failed to start lifestyle mockup" });
+    }
+  });
+
   app.post("/api/admin/product-types/:id/test-printify-order", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
