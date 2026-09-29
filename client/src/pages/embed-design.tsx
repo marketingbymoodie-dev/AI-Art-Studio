@@ -290,6 +290,7 @@ import {
   canonicalAopPanelCaptureSignature,
   expectedAopCaptureHashFromLiveState,
   parseStoredAopPanelCaptureSignature,
+  placerStateFromStoredCaptureSignature,
 } from "@shared/aopPanelCaptureSignature";
 import {
   aopLifestyleMockupNotice,
@@ -6247,9 +6248,15 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       // placer reads this via its `initialState` prop on first render and
       // seeds the customer's last placement / mode / link state so they
       // resume exactly where they left off.
-      if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
+      // Designs Applied in Preview Studio were saved without hoodieAopPlacerState;
+      // their placement + background survive only in the capture signature.
+      const restoredPlacerState =
+        ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object'
+          ? ds.hoodieAopPlacerState
+          : placerStateFromStoredCaptureSignature(ds.aopPanelCaptureSignature);
+      if (restoredPlacerState) {
         setHoodieAopPlacerState({
-          ...(ds.hoodieAopPlacerState as HoodieAopPlacerState),
+          ...(restoredPlacerState as HoodieAopPlacerState),
           // Same URL the AOP fallback / placer key uses — otherwise first
           // mount drops placements and reseeds template defaults.
           artworkUrl: absUrl,
@@ -6277,10 +6284,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       }
       storedAopPanelCaptureSignatureRef.current =
         ds.aopPanelCaptureSignature ?? null;
-      lastPersistedAopCaptureStateRef.current =
-        ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object"
-          ? ds.hoodieAopPlacerState
-          : null;
+      lastPersistedAopCaptureStateRef.current = restoredPlacerState ?? null;
       // Mesh composites matching the placer (not Printify cameras). Restore
       // these as Front/Back so reopen matches what the customer last applied.
       const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
@@ -6587,7 +6591,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         const aopResumeReady =
           useAopCustomizer &&
           hasPrintFiles &&
-          !!(ds?.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object");
+          (!!(ds?.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object") ||
+            !!placerStateFromStoredCaptureSignature(ds?.aopPanelCaptureSignature));
         emitTesterDesignStatus({
           jobId: designId,
           aopPanels:
@@ -13225,7 +13230,13 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             body: JSON.stringify({
               jobId: panelJobId,
               shop: panelSaveShop,
-              designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
+              designState: {
+                aopPrintPanelUrls,
+                aopPanelCaptureSignature: panelCaptureSignature,
+                // Tester Apply returns before the storefront persist below, so the
+                // placer state (background colour, placements) must ride along here.
+                ...(isAdminTester ? { hoodieAopPlacerState: persistState } : {}),
+              },
             }),
           });
           // A non-2xx here means the panels are hosted but the job never
@@ -19546,6 +19557,26 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                       </Button>
                     </div>
                   )}
+                  {/* Saved designs reopen straight into the placer, which replaces the
+                      preview box — keep See it worn reachable here too. */}
+                  {testerPreview?.toolbar ? (
+                    <div className="flex justify-center">{testerPreview.toolbar}</div>
+                  ) : null}
+                  {testerPreview?.imageUrl ? (
+                    <div className="relative mx-auto flex aspect-square w-full max-w-[520px] items-center justify-center bg-background">
+                      <img
+                        src={testerPreview.imageUrl}
+                        alt="Lifestyle mockup"
+                        className="max-h-full max-w-full object-contain"
+                        data-testid="img-see-it-worn-placer"
+                      />
+                      {testerPreview.caption ? (
+                        <p className="absolute bottom-1 left-2 right-2 truncate text-center text-[11px] text-muted-foreground">
+                          {testerPreview.caption}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <HoodieAopPlacer
                     // Re-mount when the customer regenerates artwork or
                     // switches products so the placer re-seeds initialState

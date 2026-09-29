@@ -8,6 +8,7 @@ import {
   expectedAopCaptureHashFromLiveState,
   hashAopCaptureSignature,
   parseStoredAopPanelCaptureSignature,
+  placerStateFromStoredCaptureSignature,
   storedAopCaptureHash,
 } from "./aopPanelCaptureSignature";
 
@@ -346,5 +347,23 @@ describe("print render version forces one re-bake of stored panels", () => {
     expect(
       evaluateAopSnapshotFreeze({ expectedCaptureHash: oldLineCap, storedSignature: preVersionCanonical }),
     ).toEqual({ ok: true });
+  });
+});
+
+describe("placerStateFromStoredCaptureSignature", () => {
+  it("recovers background + placements from a stored signature, dropping nulls and the version", () => {
+    const stored = canonicalAopPanelCaptureSignature({ ...baseState, backgroundColor: "#F0D19A", wrapBackMode: undefined });
+    const out = placerStateFromStoredCaptureSignature(stored)!;
+    expect(out.backgroundColor).toBe("#F0D19A");
+    expect(out.mode).toBe("place");
+    expect(out.tileSettings).toEqual({ tileInches: 4 });
+    expect(out).not.toHaveProperty("printRenderVersion");
+    expect(out).not.toHaveProperty("wrapBackMode");
+    expect(placerStateFromStoredCaptureSignature(JSON.parse(stored!))!.backgroundColor).toBe("#F0D19A");
+  });
+
+  it("returns null for missing or unparseable signatures", () => {
+    expect(placerStateFromStoredCaptureSignature(null)).toBeNull();
+    expect(placerStateFromStoredCaptureSignature("{not json")).toBeNull();
   });
 });

@@ -154,6 +154,20 @@ export function parseStoredAopPanelCaptureSignature(
 }
 
 /**
+ * Placer state recovered from a stored capture signature, for designs saved
+ * without `hoodieAopPlacerState` (Preview Studio Apply never persisted it).
+ * Null fields are dropped so the placer fills them from template defaults.
+ */
+export function placerStateFromStoredCaptureSignature(
+  raw: unknown,
+): Record<string, unknown> | null {
+  const canonical = parseStoredAopPanelCaptureSignature(raw);
+  if (!canonical) return null;
+  const { printRenderVersion: _version, ...fields } = JSON.parse(canonical) as Record<string, unknown>;
+  return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== null));
+}
+
+/**
  * ATC reuse: skip panel rebuild only on a definite signature match.
  *
  * After Saved-Design load the AOP fallback remounts HoodieAopPlacer, which
