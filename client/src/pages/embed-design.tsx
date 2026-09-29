@@ -10442,9 +10442,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     setReferencePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
     resetQuoteFlow();
-    setPackConcepts(null);
-    setPackConceptPick(null);
-    setPackStoredRefs([]);
+    // Pack styles keep their brief (stored photos + chosen concept), like the prompt,
+    // so "Start Fresh" → Create Artwork regenerates the same idea.
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
