@@ -367,7 +367,50 @@ export type ComposeLayeredPromptInput = {
   isAllOverPrint?: boolean;
   isPatternStyle?: boolean;
   outputMode?: string | null;
+  /**
+   * Style-pack layers. Absent = legacy compose, byte-identical to before.
+   * Present = the prompt is exempt from the 900-char tail cut (compressPrompt
+   * `packLayered`), so identity instructions are never lost.
+   */
+  packLayers?: PackPromptLayers | null;
 };
+
+/** Reusable pack-level layers around a pack style's own scenario (the style layer). */
+export type PackPromptLayers = {
+  /** Pack creative direction, applied to every style in the pack. */
+  creativeBase?: string | null;
+  /** Numbered reference-image roles + likeness rules (only when photos are supplied). */
+  referenceIdentity?: string | null;
+  humor?: string | null;
+  relationship?: string | null;
+  /** Generated concept (visual joke) from the pack concept engine. */
+  concept?: string | null;
+  /** Exact punchline text, rendered verbatim. Empty = no text requested. */
+  punchline?: string | null;
+  textRule?: string | null;
+  /** Pack-specific renderer lines on top of the locked base (never a second base). */
+  rendererExtra?: string | null;
+  /** Light/dark garment colour constraints (apparel only). */
+  garmentColour?: string | null;
+};
+
+/** Final order when pack layers are present (legacy compose is unchanged). */
+export const PACK_LAYER_ORDER = [
+  "base",
+  "extras",
+  "creativeBase",
+  "referenceIdentity",
+  "humor",
+  "relationship",
+  "style",
+  "subStyle",
+  "user",
+  "concept",
+  "punchline",
+  "textRule",
+  "rendererExtra",
+  "garmentColour",
+] as const;
 
 export type ComposeLayeredPromptResult = {
   prompt: string;
@@ -379,6 +422,8 @@ export type ComposeLayeredPromptResult = {
   fontLayer: string;
   artLayer: string;
   userLayer: string;
+  /** True when pack layers were composed — the caller must skip the 900-char tail cut. */
+  packLayered?: boolean;
   nativeTransparent: boolean;
   chromaHexMentions: number;
 };
@@ -448,13 +493,29 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     base,
   );
   const userLayer = composeUserInputLayer(input.userInput, input.userSlotSchema);
-  const prompt = dedupeConsecutiveParagraphs(
-    [base, ...extras, styleLayer, intentLayer, subStyleLayer, fontLayer, artLayer, userLayer]
-      .filter(Boolean)
-      .join("\n\n"),
-  );
+  const pack = input.packLayers;
+  const prompt = pack
+    ? dedupeConsecutiveParagraphs(
+        composePackLayerList(pack, base, {
+          extras,
+          styleLayer,
+          intentLayer,
+          subStyleLayer,
+          fontLayer,
+          artLayer,
+          userLayer,
+        })
+          .filter(Boolean)
+          .join("\n\n"),
+      )
+    : dedupeConsecutiveParagraphs(
+        [base, ...extras, styleLayer, intentLayer, subStyleLayer, fontLayer, artLayer, userLayer]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
   return {
     prompt,
+    ...(pack ? { packLayered: true } : {}),
     category,
     base,
     styleLayer,
@@ -466,6 +527,44 @@ export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeL
     nativeTransparent,
     chromaHexMentions: countChromaHexMentions(prompt),
   };
+}
+
+function composePackLayerList(
+  pack: PackPromptLayers,
+  base: string,
+  core: {
+    extras: string[];
+    styleLayer: string;
+    intentLayer: string;
+    subStyleLayer: string;
+    fontLayer: string;
+    artLayer: string;
+    userLayer: string;
+  },
+): string[] {
+  const clean = (v: string | null | undefined) =>
+    stripLockedBaseEcho(stripChromaFromStyleLayer((v || "").trim()), base);
+  const punchline = (pack.punchline || "").trim().replace(/"/g, "'");
+  return [
+    base,
+    ...core.extras,
+    clean(pack.creativeBase),
+    // Identity rules are pack text, not style text: kept verbatim.
+    (pack.referenceIdentity || "").trim(),
+    clean(pack.humor),
+    clean(pack.relationship),
+    core.styleLayer,
+    core.intentLayer,
+    core.subStyleLayer,
+    core.fontLayer,
+    core.artLayer,
+    core.userLayer,
+    clean(pack.concept),
+    punchline ? `${LITERAL_TEXT_INSTRUCTION}: "${punchline}"` : "",
+    clean(pack.textRule),
+    clean(pack.rendererExtra),
+    clean(pack.garmentColour),
+  ];
 }
 
 export function wrapLayeredArtworkPrompt(

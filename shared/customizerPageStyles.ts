@@ -4,6 +4,7 @@
  */
 
 import { canonicalCreatorStyleName } from "./creatorMarketplace";
+import { isPackOnlyStyle } from "./stylePacks";
 import {
   type CustomizerPageStyleCategory,
   type StylePresetCategory,
@@ -24,7 +25,9 @@ export {
 
 export type CustomizerPageStyleConfig =
   | { mode: "category"; category: CustomizerPageStyleCategory }
-  | { mode: "selected"; presetIds: string[] };
+  | { mode: "selected"; presetIds: string[] }
+  /** Style pack (shared/stylePacks.ts). The server resolves it to `selected` before any client sees it. */
+  | { mode: "pack"; packId: string };
 
 export function parseCustomizerPageStyleConfig(
   raw: unknown,
@@ -49,6 +52,9 @@ export function parseCustomizerPageStyleConfig(
     const ids = o.presetIds.map(String).filter(Boolean);
     if (ids.length > 0) return { mode: "selected", presetIds: [...new Set(ids)] };
   }
+  if (o.mode === "pack" && typeof o.packId === "string" && o.packId.trim()) {
+    return { mode: "pack", packId: o.packId.trim() };
+  }
   return null;
 }
 
@@ -68,6 +74,7 @@ export function remapCustomizerStyleConfigAfterGraphicsRetire(
     }
     return { config: raw, changed: false };
   }
+  if (parsed.mode === "pack") return { config: raw, changed: false };
   const nextIds = parsed.presetIds.map((id) => idMap.get(String(id)) ?? String(id));
   const deduped = [...new Set(nextIds)];
   const changed =
@@ -85,6 +92,9 @@ export function validateCustomizerPageStyleConfig(
   }
   if (config.mode === "selected" && config.presetIds.length === 0) {
     return "Select at least one art style.";
+  }
+  if (config.mode === "pack" && !config.packId) {
+    return "Choose a style pack.";
   }
   return null;
 }
@@ -243,13 +253,20 @@ export function filterStylePresetsForPage<
   const deduped = dedupeStylePresets(presets);
   const cfg = config ?? defaultStyleConfigForDesignerType(designerType);
   let filtered = deduped;
-  if (cfg.mode === "selected") {
+  if (cfg.mode === "pack") {
+    // Unresolved pack (server resolves packs first): fail closed.
+    filtered = [];
+  } else if (cfg.mode === "selected") {
     const idSet = new Set(cfg.presetIds.map(String));
     filtered = deduped.filter((p) => idSet.has(String(p.id)));
-  } else if (cfg.category !== "all") {
-    filtered = deduped.filter(
-      (p) => p.category === cfg.category || p.category === "all" || !p.category,
-    );
+  } else {
+    // Pack-only styles are never part of a category bundle.
+    filtered = deduped.filter((p) => !isPackOnlyStyle(p as { visibility?: string | null }));
+    if (cfg.category !== "all") {
+      filtered = filtered.filter(
+        (p) => p.category === cfg.category || p.category === "all" || !p.category,
+      );
+    }
   }
   return collapseStyleNameTwins(
     filtered,

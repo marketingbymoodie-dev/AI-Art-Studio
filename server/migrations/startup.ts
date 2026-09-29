@@ -102,6 +102,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "background_selector_enabled", type: "BOOLEAN" },
   { table: "style_presets",         column: "default_background_color",    type: "TEXT" },
   { table: "style_presets",         column: "background_required",         type: "BOOLEAN" },
+  // Style packs. Nullable, no backfill: null = standard style, today's behaviour.
+  { table: "style_presets",         column: "visibility",                  type: "TEXT" },
+  { table: "style_presets",         column: "input_capabilities",          type: "JSONB" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -1424,6 +1427,47 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "style_packs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_packs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "merchant_id" varchar,
+        "slug" text NOT NULL,
+        "name" text NOT NULL,
+        "description" text,
+        "prompt_profile_key" text,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "sort_order" integer DEFAULT 0 NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_pack_items",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_pack_items" (
+        "id" serial PRIMARY KEY,
+        "pack_id" varchar NOT NULL,
+        "catalog_slug" text,
+        "style_preset_id" integer,
+        "sort_order" integer DEFAULT 0 NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_pack_merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_pack_merchants" (
+        "id" serial PRIMARY KEY,
+        "pack_id" varchar NOT NULL,
+        "merchant_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_generation_costs",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
@@ -2279,6 +2323,19 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "lifestyle_mockups_job_gender_idx",
     sql: `CREATE INDEX IF NOT EXISTS "lifestyle_mockups_job_gender_idx"
       ON "lifestyle_mockups" ("generation_job_id", "gender", "created_at")`,
+  },
+  {
+    name: "style_packs_slug_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_packs_slug_idx" ON "style_packs" ("slug")`,
+  },
+  {
+    name: "style_pack_items_pack_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_pack_items_pack_idx" ON "style_pack_items" ("pack_id")`,
+  },
+  {
+    name: "style_pack_merchants_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "style_pack_merchants_uidx"
+      ON "style_pack_merchants" ("pack_id", "merchant_id")`,
   },
   {
     name: "lifestyle_mockups_created_idx",

@@ -331,6 +331,7 @@ function formatStyleConfigSummary(
   if (config.mode === "category") {
     return STYLE_CATEGORY_LABELS[config.category] ?? config.category;
   }
+  if (config.mode === "pack") return "Style pack";
   const names = config.presetIds
     .map((id) => styles.find((s) => String(s.id) === id)?.name ?? null)
     .filter(Boolean) as string[];

@@ -290,6 +290,10 @@ import {
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
+import { loadStylePackForMerchant, resolvePageStyleConfig } from "./style-packs";
+import { packLayersForCompose, preparePackGeneration, type PackGenerationContext } from "./pack-generation";
+import { normalizeReferenceImages, type TaggedReferenceImage } from "@shared/referenceImages";
+import { isPackOnlyStyle, parseStyleInputCapabilities } from "@shared/stylePacks";
 import {
   parseCustomizerPageStyleConfig,
   validateCustomizerPageStyleConfig,
@@ -2365,9 +2369,11 @@ export async function registerRoutes(
 
       console.log(`[CONFIG] DB done ${Date.now() - t0}ms, ${dbStyles.length} styles`);
 
+      // Pack-only styles are never part of the global fallback list.
+      const publicDbStyles = dbStyles.filter((s) => !isPackOnlyStyle(s));
       const stylePresets = dedupeStylePresets(
-        dbStyles.length > 0
-          ? dbStyles.map((s) => {
+        publicDbStyles.length > 0
+          ? publicDbStyles.map((s) => {
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
               // promptPlaceholder: prefer DB value (merchant-editable), fall back to hardcoded default
               const hardcoded = findCatalogPreset(s);
@@ -2756,6 +2762,9 @@ export async function registerRoutes(
       let styleGenerationQuality: string | null = null;
       let styleUserSlotSchema: unknown = null;
       let styleOptionsAdmin: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const adminTaggedRefs = normalizeReferenceImages(referenceImagesArr, referenceImage);
+      let adminPackCtx: PackGenerationContext | null = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2763,6 +2772,14 @@ export async function registerRoutes(
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
           const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
           if (selectedStyle) {
+            const packPrep = await preparePackGeneration({
+              style: selectedStyle as any,
+              merchantId,
+              body: req.body,
+              referenceImages: adminTaggedRefs,
+            });
+            if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+            adminPackCtx = packPrep.ctx;
             styleName = selectedStyle.name || "";
             catalogSlugAdmin = resolveCatalogSlug(selectedStyle);
             styleOutputModeAdmin = (selectedStyle as any).outputMode ?? null;
@@ -3050,7 +3067,7 @@ ${orientationExtra}
         subStyleLayer: subStyleAdminRaw,
         styleOptionId: styleOptionIdAdmin,
       });
-      const layeredAdmin = composeLayeredPrompt({
+      const layeredAdminInput = {
         category: styleCategory,
         isApparelGeneration: isApparel,
         generationModel: styleGen.model,
@@ -3064,20 +3081,19 @@ ${orientationExtra}
         isAllOverPrint,
         isPatternStyle: usePatternAopAdmin,
         outputMode: styleOutputModeAdmin,
-      });
+      };
+      const layeredAdmin = composeLayeredPrompt(layeredAdminInput);
       let fullPrompt = wrapLayeredArtworkPrompt(layeredAdmin, sizingRequirements);
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
       // Resolve customer reference image(s) — Preview Studio sends `referenceImages[]`
       const customerImageUrls: string[] = [];
-      const rawRefImagesAdmin: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
-        ? referenceImagesArr
-        : referenceImage ? [referenceImage] : [];
-      for (const refImg of rawRefImagesAdmin.slice(0, 5)) {
+      let customerTaggedAdmin: TaggedReferenceImage[] = [];
+      for (const tagged of adminTaggedRefs) {
+        const refImg = tagged.url;
         try {
           let resolvedUrl: string | null = null;
-          if (typeof refImg !== "string") continue;
           if (refImg.startsWith("data:")) {
             resolvedUrl = refImg;
           } else if (refImg.startsWith("http")) {
@@ -3088,6 +3104,7 @@ ${orientationExtra}
           }
           if (resolvedUrl) {
             customerImageUrls.push(resolvedUrl);
+            customerTaggedAdmin.push({ ...tagged, url: resolvedUrl });
             console.log(`[Generate] Reference image ${customerImageUrls.length}: type=${resolvedUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${resolvedUrl.length} chars`);
           }
         } catch (refErr) {
@@ -3098,6 +3115,7 @@ ${orientationExtra}
         const stripped = await stripReuseReferenceUrls(customerImageUrls);
         customerImageUrls.length = 0;
         customerImageUrls.push(...stripped);
+        customerTaggedAdmin = stripped.map((url, i) => ({ ...(customerTaggedAdmin[i] ?? { role: "other" as const, label: null }), url }));
       }
       const customerImageUrl: string | null = customerImageUrls[0] || null;
 
@@ -3114,7 +3132,20 @@ ${orientationExtra}
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
 
       // When reference images are provided, instruct the model how to use them
-      if (imageInputUrls.length > 0) {
+      if (adminPackCtx) {
+        fullPrompt = wrapLayeredArtworkPrompt(
+          composeLayeredPrompt({
+            ...layeredAdminInput,
+            packLayers: packLayersForCompose(adminPackCtx, {
+              isApparel,
+              colorTier: isApparel ? colorTier : null,
+              styleImageCount: allStyleBaseUrls.length,
+              customerImages: customerTaggedAdmin,
+            }),
+          }),
+          sizingRequirements,
+        );
+      } else if (imageInputUrls.length > 0) {
         let refInstruction: string;
         if (effectiveStyleBaseUrl && customerImageUrls.length > 0) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
@@ -3149,6 +3180,7 @@ ${orientationExtra}
         generationQuality: styleGen.quality,
         nativeTransparent: styleGen.nativeTransparent,
         layered: true,
+        ...(adminPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -3384,6 +3416,9 @@ console.log("[api/shopify/generate] saved image", result);
       let regenStyleCategory = "apparel";
       let regenUserSlotSchema: unknown = null;
       let regenCatalogSlug: string | null = null;
+      let regenPromptPrefixDark: string | null = null;
+      let regenOutputMode: string | null = null;
+      let regenStyleName = "";
       
       if (stylePreset) {
         const merchantId = productType?.merchantId;
@@ -3392,7 +3427,25 @@ console.log("[api/shopify/generate] saved image", result);
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
           const selectedStyle = dbStyles.find((s: { id: number }) => s.id.toString() === stylePreset);
           if (selectedStyle) {
+            // Pack concept + punchline are not stored on the design, so a pack
+            // style cannot be rebuilt faithfully here; never regenerate it bare.
+            const packPrep = await preparePackGeneration({
+              style: selectedStyle as any,
+              merchantId,
+              body: {},
+              referenceImages: [],
+            });
+            if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+            if (packPrep.ctx) {
+              return res.status(409).json({
+                error: "REGENERATE_NOT_SUPPORTED",
+                message: "Create this design again from the style to change the garment tier.",
+              });
+            }
             matchedDbStyle = true;
+            regenPromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+            regenOutputMode = (selectedStyle as any).outputMode ?? null;
+            regenStyleName = (selectedStyle as any).name || "";
             regenGenerationModel = (selectedStyle as any).generationModel ?? null;
             regenGenerationQuality = (selectedStyle as any).generationQuality ?? null;
             regenStyleCategory = (selectedStyle as any).category || "apparel";
@@ -3407,6 +3460,8 @@ console.log("[api/shopify/generate] saved image", result);
             stylePromptPrefix = hardcodedStyle.promptPrefix;
             regenStyleCategory = hardcodedStyle.category || regenStyleCategory;
             regenCatalogSlug = hardcodedStyle.id;
+            regenStyleName = regenStyleName || hardcodedStyle.name;
+            regenOutputMode = regenOutputMode ?? (hardcodedStyle as any).outputMode ?? null;
             if (!matchedDbStyle) {
               regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
             }
@@ -3414,28 +3469,46 @@ console.log("[api/shopify/generate] saved image", result);
         }
       }
 
-      const regenGen = resolveStyleGeneration({
-        generationModel: regenGenerationModel,
-        generationQuality: regenGenerationQuality,
-      });
+      // Same resolution as the generate routes: floating styles stay on
+      // gpt-image-2, the DB dark prefix is honoured, AOP prefixes are sanitised.
+      const regenGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: regenGenerationModel,
+          generationQuality: regenGenerationQuality,
+          outputMode: regenOutputMode,
+          catalogSlug: regenCatalogSlug,
+        },
+        productType?.designerType,
+      );
+      const regenIsAllOverPrint = !!(productType as any)?.isAllOverPrint;
+      if (regenIsAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
+      }
 
       const prompt = originalDesign.prompt;
       const regenStyleLayer = resolveStyleLayerRaw({
         lightPrefix: stylePromptPrefix,
+        darkPrefix: regenPromptPrefixDark,
         colorTier: newColorTier === "dark" ? "dark" : "light",
         stylePresetId: stylePreset,
         catalogSlug: regenCatalogSlug,
+        styleName: regenStyleName,
         category: regenStyleCategory,
         isApparelGeneration: true,
+        generationModel: regenGen.model,
+        outputMode: regenOutputMode,
       });
       const layeredRegen = composeLayeredPrompt({
         category: regenStyleCategory,
         isApparelGeneration: true,
         generationModel: regenGen.model,
+        catalogSlug: regenCatalogSlug,
         styleLayer: regenStyleLayer,
         userInput: prompt,
         userSlotSchema: regenUserSlotSchema,
-        isAllOverPrint: !!(productType as any)?.isAllOverPrint,
+        isAllOverPrint: regenIsAllOverPrint,
+        isPatternStyle: !!(regenIsAllOverPrint && styleIsPatternMaker(regenStyleName, stylePromptPrefix, regenCatalogSlug)),
+        outputMode: regenOutputMode,
       });
       const fullPrompt = wrapLayeredArtworkPrompt(layeredRegen);
 
@@ -3804,6 +3877,17 @@ console.log("[shopify/session] installation ok", {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle) {
+          const packPrep = await preparePackGeneration({
+            style: selectedStyle as any,
+            merchantId: installation.merchantId,
+            body: req.body,
+            referenceImages: normalizeReferenceImages(referenceImagesArr, referenceImage),
+          });
+          if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+          // Pack prompt layers are composed on the storefront + Preview Studio routes only.
+          if (packPrep.ctx) {
+            return res.status(400).json({ error: "STYLE_NOT_SUPPORTED_HERE", message: "This style is not available in this editor." });
+          }
           styleName = selectedStyle.name || "";
           catalogSlugEmbed = resolveCatalogSlug(selectedStyle);
           embedOutputMode = (selectedStyle as any).outputMode ?? null;
@@ -4063,10 +4147,9 @@ ${orientationExtra}
 
       // Resolve customer reference image(s) — supports both single and array
       const embedCustomerImageUrls: string[] = [];
-      const rawRefImages: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
-        ? referenceImagesArr
-        : referenceImage ? [referenceImage] : [];
-      for (const refImg of rawRefImages.slice(0, 5)) {
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const rawRefImages: string[] = normalizeReferenceImages(referenceImagesArr, referenceImage).map((r) => r.url);
+      for (const refImg of rawRefImages) {
         try {
           let resolvedUrl: string | null = null;
           if (refImg.startsWith("data:")) {
@@ -6950,6 +7033,8 @@ ${orientationExtra}
         ),
         generationModel: s.generationModel ?? null,
         outputMode: s.outputMode ?? (hardcoded as any)?.outputMode ?? null,
+        visibility: s.visibility ?? null,
+        inputCapabilities: parseStyleInputCapabilities(s.inputCapabilities),
         ...styleBackgroundApiFields({
           catalogSlug: resolveCatalogSlug(s),
           backgroundSelectorEnabled: s.backgroundSelectorEnabled ?? null,
@@ -6999,7 +7084,7 @@ ${orientationExtra}
     styleConfig: CustomizerPageStyleConfig;
     stylePresets: ReturnType<typeof mapDbStylesForDesigner>;
   }> {
-    const styleConfig = await resolveStyleConfigForProductType(
+    let styleConfig = await resolveStyleConfigForProductType(
       productType.id,
       productType.designerType,
     );
@@ -7023,6 +7108,7 @@ ${orientationExtra}
         typeof mapDbStylesForDesigner
       >;
     }
+    styleConfig = await resolvePageStyleConfig(styleConfig, productType.merchantId, stylePresets);
     stylePresets = filterStylePresetsForPage(
       stylePresets,
       styleConfig,
@@ -8390,9 +8476,12 @@ ${orientationExtra}
       }
     }
 
-    const pageStyleConfig =
+    const pageStyleConfig = await resolvePageStyleConfig(
       parseCustomizerPageStyleConfig(page.styleConfig) ??
-      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+        defaultStyleConfigForDesignerType(designerConfig?.designerType),
+      installation?.merchantId,
+      stylePresets,
+    );
     // Creator assignment is the catalog — do not drop styles because the
     // customizer page was saved as Apparel-only / selected merchant IDs.
     if (!creatorStorefrontStyles) {
@@ -8618,6 +8707,8 @@ ${orientationExtra}
         decorBackgroundFill: decorBackgroundFillSf,
       } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const sfTaggedRefs = normalizeReferenceImages(referenceImagesArrSf, referenceImage);
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required", reqId, stage: "validation" });
@@ -8971,6 +9062,7 @@ ${orientationExtra}
       let sfGenerationQuality: string | null = null;
       let sfUserSlotSchema: unknown = null;
       let sfStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
+      let sfPackCtx: PackGenerationContext | null = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8996,6 +9088,16 @@ ${orientationExtra}
           return true;
         });
         if (selectedStyle) {
+          const packPrep = await preparePackGeneration({
+            style: selectedStyle as any,
+            merchantId: installation.merchantId,
+            body: req.body,
+            referenceImages: sfTaggedRefs,
+          });
+          if (!packPrep.ok) {
+            return res.status(packPrep.status).json({ ...packPrep.body, reqId, stage: "style" });
+          }
+          sfPackCtx = packPrep.ctx;
           styleName = selectedStyle.name || "";
           catalogSlugSf = resolveCatalogSlug(selectedStyle);
           sfOutputMode = (selectedStyle as any).outputMode ?? null;
@@ -9284,7 +9386,7 @@ ${orientationExtra}
         subStyleLayer: subStyleSfRaw,
         styleOptionId: styleOptionIdSf,
       });
-      const layeredSf = composeLayeredPrompt({
+      const layeredSfInput = {
         category: sfStyleCategory,
         isApparelGeneration: isApparel,
         generationModel: sfStyleGen.model,
@@ -9298,7 +9400,8 @@ ${orientationExtra}
         isAllOverPrint,
         isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf)),
         outputMode: sfOutputMode,
-      });
+      };
+      const layeredSf = composeLayeredPrompt(layeredSfInput);
       let fullPrompt = wrapLayeredArtworkPrompt(layeredSf, sizingRequirements);
 
       // Capture appUrl from request before responding (used for reference image resolution in worker)
@@ -9350,10 +9453,9 @@ ${orientationExtra}
 
           // Resolve customer reference image(s) — supports both single and array
           const sfCustomerImageUrls: string[] = [];
-          const sfRawRefImages: string[] = Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0
-            ? referenceImagesArrSf
-            : referenceImage ? [referenceImage] : [];
-          for (const refImg of sfRawRefImages.slice(0, 5)) {
+          let sfCustomerTagged: TaggedReferenceImage[] = [];
+          for (const tagged of sfTaggedRefs) {
+            const refImg = tagged.url;
             try {
               let resolvedUrl: string | null = null;
               if (refImg.startsWith("data:")) {
@@ -9365,6 +9467,7 @@ ${orientationExtra}
               }
               if (resolvedUrl) {
                 sfCustomerImageUrls.push(resolvedUrl);
+                sfCustomerTagged.push({ ...tagged, url: resolvedUrl });
                 const urlType = resolvedUrl.startsWith("data:") ? "data-url" : "http-url";
                 console.log(`${W} Reference image ${sfCustomerImageUrls.length}: type=${urlType}, size=${resolvedUrl.length} chars`);
                 if (sfCustomerImageUrls.length === 1) {
@@ -9379,6 +9482,7 @@ ${orientationExtra}
             const stripped = await stripReuseReferenceUrls(sfCustomerImageUrls);
             sfCustomerImageUrls.length = 0;
             sfCustomerImageUrls.push(...stripped);
+            sfCustomerTagged = stripped.map((url, i) => ({ ...(sfCustomerTagged[i] ?? { role: "other" as const, label: null }), url }));
           }
           const sfCustomerImageUrl: string | null = sfCustomerImageUrls[0] || null;
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
@@ -9395,7 +9499,22 @@ ${orientationExtra}
           for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
-          if (sfImageInputUrls.length > 0) {
+          if (sfPackCtx) {
+            // Pack prompts carry numbered image roles + identity rules inside the
+            // composed layers (never prepended, never truncated).
+            fullPrompt = wrapLayeredArtworkPrompt(
+              composeLayeredPrompt({
+                ...layeredSfInput,
+                packLayers: packLayersForCompose(sfPackCtx, {
+                  isApparel,
+                  colorTier: isApparel ? sfColorTier : null,
+                  styleImageCount: sfStyleRefs.length,
+                  customerImages: sfCustomerTagged,
+                }),
+              }),
+              sizingRequirements,
+            );
+          } else if (sfImageInputUrls.length > 0) {
             let refInstruction: string;
             if (effectiveSfStyleBaseUrl && sfCustomerImageUrls.length > 0) {
               refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The remaining image(s) are the customer's subject(s) — incorporate them as focal elements. Do NOT duplicate subjects.`;
@@ -9433,6 +9552,7 @@ ${orientationExtra}
             generationQuality: sfStyleGen.quality,
             nativeTransparent: sfStyleGen.nativeTransparent,
             layered: true,
+            ...(sfPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
@@ -21914,6 +22034,11 @@ ${orientationExtra}
     const existing = await storage.getCustomizerPageByHandle(shop, handle);
     if (existing) return res.status(409).json({ error: `Handle "${handle}" is already in use` });
 
+    const packConfig = parseCustomizerPageStyleConfig(incomingStyleConfig);
+    if (packConfig?.mode === "pack" && !(await loadStylePackForMerchant(packConfig.packId, installation.merchantId))) {
+      return res.status(400).json({ error: "That style pack isn't available to this store.", code: "STYLE_PACK_UNAVAILABLE" });
+    }
+
     // If a productTypeId is provided but no shopify product exists yet, auto-send it to Shopify as a draft.
     let resolvedBaseProductId = baseProductId;
     let ptForSync: any | undefined;
@@ -22602,6 +22727,9 @@ ${orientationExtra}
       }
       const styleErr = validateCustomizerPageStyleConfig(parsed);
       if (styleErr) return res.status(400).json({ error: styleErr });
+      if (parsed.mode === "pack" && !(await loadStylePackForMerchant(parsed.packId, installation.merchantId))) {
+        return res.status(400).json({ error: "That style pack isn't available to this store.", code: "STYLE_PACK_UNAVAILABLE" });
+      }
       updates.styleConfig = parsed as any;
     }
 
@@ -24253,9 +24381,12 @@ ${orientationExtra}
       stylePresets = hardcodedStylePresetsForDesigner();
     }
 
-    const pageStyleConfig =
+    const pageStyleConfig = await resolvePageStyleConfig(
       parseCustomizerPageStyleConfig(page.styleConfig) ??
-      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+        defaultStyleConfigForDesignerType(designerConfig?.designerType),
+      installation?.merchantId,
+      stylePresets,
+    );
     stylePresets = filterStylePresetsForPage(
       stylePresets,
       pageStyleConfig,

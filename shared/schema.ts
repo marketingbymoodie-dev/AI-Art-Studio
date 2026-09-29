@@ -570,9 +570,67 @@ export const stylePresets = pgTable("style_presets", {
   /** "#RRGGBB" | "none" | null (inherit). */
   defaultBackgroundColor: text("default_background_color"),
   backgroundRequired: boolean("background_required"),
+  /** Null = standard. "pack_only" = only reachable through an assigned style pack (shared/stylePacks.ts). */
+  visibility: text("visibility"),
+  /** Declared customer inputs (StyleInputCapabilities). Null = legacy style, today's behaviour. */
+  inputCapabilities: jsonb("input_capabilities"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+/**
+ * Curated style set a store/page can expose (`customizer_pages.style_config`
+ * `{mode:"pack", packId}`). merchant_id null = platform pack, usable only by
+ * merchants listed in `style_pack_merchants`.
+ */
+export const stylePacks = pgTable(
+  "style_packs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    merchantId: varchar("merchant_id"),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** Code-level prompt profile (shared/stylePackProfiles.ts). Null = no pack layers. */
+    promptProfileKey: text("prompt_profile_key"),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_packs_slug_idx").on(table.slug)],
+);
+
+/** Pack membership, keyed by catalog slug so one pack maps onto every merchant's own rows. */
+export const stylePackItems = pgTable(
+  "style_pack_items",
+  {
+    id: serial("id").primaryKey(),
+    packId: varchar("pack_id").notNull(),
+    catalogSlug: text("catalog_slug"),
+    /** Merchant custom styles (catalog_slug null). */
+    stylePresetId: integer("style_preset_id"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_pack_items_pack_idx").on(table.packId)],
+);
+
+/** Explicit assignment of a platform pack to a merchant. */
+export const stylePackMerchants = pgTable(
+  "style_pack_merchants",
+  {
+    id: serial("id").primaryKey(),
+    packId: varchar("pack_id").notNull(),
+    merchantId: varchar("merchant_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("style_pack_merchants_uidx").on(table.packId, table.merchantId)],
+);
+
+export type StylePack = typeof stylePacks.$inferSelect;
+export type StylePackItem = typeof stylePackItems.$inferSelect;
+export type StylePackMerchant = typeof stylePackMerchants.$inferSelect;
 
 export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
   id: true,

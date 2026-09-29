@@ -15,6 +15,8 @@
  * - We poll the prediction until it finishes.
  */
 
+import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
+
 type ReplicatePrediction = {
   id: string;
   status: "starting" | "processing" | "succeeded" | "failed" | "canceled";
@@ -123,6 +125,15 @@ import {
   type GenerationQuality,
 } from "@shared/styleGeneration";
 
+/** Pack generations (transparencyCheck "enforce"): opaque twice in a row. Never falls back to chroma. */
+export class GptImage2OpaqueOutputError extends Error {
+  code = "NATIVE_TRANSPARENCY_FAILED";
+  constructor() {
+    super("gpt-image-2 returned an opaque image twice; transparent artwork is required for this style.");
+    this.name = "GptImage2OpaqueOutputError";
+  }
+}
+
 export class GptImage2TransparentRejectedError extends Error {
   status: number;
   body: string;
@@ -151,6 +162,16 @@ export type GenerateImageParams = {
   nativeTransparent?: boolean;
   /** Layered compose already applied the locked base — do not re-inject chroma. */
   layered?: boolean;
+  /**
+   * Style-pack compose (ComposeLayeredPromptResult.packLayered): exempt from the
+   * 900-char tail cut so creative base + reference identity are never dropped.
+   */
+  packLayered?: boolean;
+  /**
+   * gpt-image-2 alpha check. "log" (default) only reports opaque output;
+   * "enforce" retries once, then throws GptImage2OpaqueOutputError.
+   */
+  transparencyCheck?: "log" | "enforce";
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -179,6 +200,8 @@ function mapToSupportedAspectRatio(aspectRatio?: string): string {
 }
 
 const PROMPT_MAX_LENGTH = 900;
+/** Pack prompts are never cut; above this we only warn. */
+const PACK_PROMPT_WARN_LENGTH = 6000;
 
 /**
  * Strip the verbose canvas-requirements block injected by the route handler and
@@ -260,6 +283,7 @@ export function compressPrompt(
   cylindricalWrap?: boolean,
   nativeTransparent?: boolean,
   layered?: boolean,
+  packLayered?: boolean,
 ): string {
   const artworkMatch = raw.match(/=== ARTWORK DESCRIPTION ===\s*([\s\S]*)/);
   const artworkSection = artworkMatch?.[1]?.trim() || "";
@@ -277,6 +301,14 @@ export function compressPrompt(
       dedupeConsecutiveParagraphs(stripVerboseRequirementBlocks(raw)),
     );
     if (monoHint) compressed = `${monoHint}${compressed}`;
+    // Pack prompts are composed deliberately long (creative base, identity,
+    // text rule…); the legacy tail cut would drop the head. Legacy unchanged.
+    if (packLayered) {
+      if (compressed.length > PACK_PROMPT_WARN_LENGTH) {
+        console.warn(`[layered] pack prompt is ${compressed.length} chars (> ${PACK_PROMPT_WARN_LENGTH})`);
+      }
+      return compressed;
+    }
     if (compressed.length > PROMPT_MAX_LENGTH) {
       compressed = compressed.slice(compressed.length - PROMPT_MAX_LENGTH);
     }
@@ -517,6 +549,7 @@ export async function generateImageBase64(
     params.cylindricalWrap,
     nativeTransparent,
     params.layered === true,
+    params.layered === true && params.packLayered === true,
   );
 
   if (params.layered === true) {
@@ -541,9 +574,28 @@ export async function generateImageBase64(
     console.log(
       `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
     );
-    const created = await createGptImage2Prediction(token, input);
-    console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
-    return pollAndDownload(token, created);
+    const enforce = params.transparencyCheck === "enforce";
+    for (let attempt = 1; ; attempt++) {
+      const created = await createGptImage2Prediction(token, input);
+      console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
+      const result = await pollAndDownload(token, created);
+      let opaque = false;
+      try {
+        const report = await measureTransparency(result.data);
+        opaque = isOpaqueNativeOutput(report);
+        const summary =
+          `hasAlpha=${report.hasAlpha} transparent=${report.transparentFraction.toFixed(3)} ` +
+          `opaqueBorder=${report.opaqueBorderFraction.toFixed(3)}`;
+        if (opaque) console.warn(`[Replicate] gpt-image-2 returned OPAQUE output (${summary}) attempt=${attempt}`);
+        else console.log(`[Replicate] gpt-image-2 transparency ok (${summary})`);
+      } catch (err) {
+        // The check never blocks a result it could not read.
+        console.warn("[Replicate] gpt-image-2 transparency check failed:", err);
+      }
+      if (!opaque || !enforce) return result;
+      if (attempt >= 2) throw new GptImage2OpaqueOutputError();
+      console.log("[Replicate] gpt-image-2 retrying once for native transparency");
+    }
   }
 
   const version = getReplicateModelVersion();
