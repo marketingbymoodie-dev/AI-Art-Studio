@@ -8,6 +8,7 @@
  */
 import type { PackPromptLayers } from "./promptLayers";
 import type { StyleInputCapabilities } from "./stylePacks";
+import { PETPOSTEROUS_PROMPT_PROFILE } from "./packs/petposterous";
 
 export type StylePackOption = { id: string; label: string; fragment: string };
 
@@ -36,6 +37,8 @@ const PROFILES = new Map<string, StylePackPromptProfile>();
 export function registerStylePackProfile(profile: StylePackPromptProfile): void {
   PROFILES.set(profile.key, profile);
 }
+
+registerStylePackProfile(PETPOSTEROUS_PROMPT_PROFILE);
 
 export function getStylePackProfile(key: string | null | undefined): StylePackPromptProfile | null {
   return key ? PROFILES.get(key) ?? null : null;

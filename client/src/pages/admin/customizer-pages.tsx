@@ -392,6 +392,8 @@ export default function AdminCustomizerPages() {
   const [formCustomPlaceholder, setFormCustomPlaceholder] = useState("");
   const [formStyleConfig, setFormStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   const [editStyleConfig, setEditStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
+  /** "" = classic customizer (no store experience profile). */
+  const [editExperienceProfileId, setEditExperienceProfileId] = useState("");
   const [handleTouched, setHandleTouched] = useState(false);
   const [titleTouched, setTitleTouched] = useState(false);
 
@@ -549,6 +551,13 @@ export default function AdminCustomizerPages() {
     ensureCatalogProductMutation.mutate(bpId);
   }, [pendingCreateBlueprintId, blanksData]);
 
+  const { data: experienceProfilesData } = useQuery<{
+    profiles: Array<{ id: string; slug: string; name: string; stylePackId: string | null }>;
+  }>({
+    queryKey: ["/api/appai/experience-profiles"],
+  });
+  const experienceProfiles = experienceProfilesData?.profiles ?? [];
+
   const { data: adminStyles = [] } = useQuery<Array<{ id: number; name: string; category?: string | null }>>({
     queryKey: ["/api/admin/styles"],
   });
@@ -624,6 +633,10 @@ export default function AdminCustomizerPages() {
       }
     })();
   }, [editTarget?.id, editBlank?.productTypeId, editBlank?.description, editBlank?.printifyBlueprintId]);
+
+  useEffect(() => {
+    setEditExperienceProfileId(String((editTarget as any)?.experienceProfileId || ""));
+  }, [editTarget?.id]);
 
   useEffect(() => {
     if (!editTarget) {
@@ -769,6 +782,8 @@ export default function AdminCustomizerPages() {
         description: editDescription,
         styleConfig: editStyleConfig,
         baseMockupImages: curated,
+        // Only stores with assignable profiles send this; classic stores' PATCH is unchanged.
+        ...(experienceProfiles.length > 0 ? { experienceProfileId: editExperienceProfileId || null } : {}),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -4172,6 +4187,32 @@ export default function AdminCustomizerPages() {
                   value={editStyleConfig}
                   onChange={setEditStyleConfig}
                 />
+              )}
+
+              {experienceProfiles.length > 0 && (
+                <div className="space-y-2" data-testid="section-experience-profile">
+                  <Label>Store experience</Label>
+                  <Select
+                    value={editExperienceProfileId || "__classic__"}
+                    onValueChange={(v) => setEditExperienceProfileId(v === "__classic__" ? "" : v)}
+                  >
+                    <SelectTrigger data-testid="select-experience-profile">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__classic__">Classic customizer</SelectItem>
+                      {experienceProfiles.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Changes this page's branding, wording and creative controls. A profile with a style pack
+                    replaces the art styles above.
+                  </p>
+                </div>
               )}
 
               <div className="space-y-2">

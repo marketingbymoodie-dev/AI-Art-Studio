@@ -70,6 +70,7 @@ async function packControlOptions(stylePackId: string | null) {
   return {
     humorOptions: profile.humorOptions.map(strip),
     relationshipOptions: profile.relationshipOptions.map(strip),
+    conceptWriter: !!profile.concept?.system?.trim(),
   };
 }
 

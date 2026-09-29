@@ -290,7 +290,10 @@ import {
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
-import { loadStylePackForMerchant, resolvePageStyleConfig } from "./style-packs";
+import { loadStylePackForMerchant, resolveGeneratePack, resolvePageStyleConfig } from "./style-packs";
+import { generatePackConceptOptions } from "./pack-concept-engine";
+import { getStylePackProfile } from "@shared/stylePackProfiles";
+import { parsePersonalityTraits } from "@shared/creativeBrief";
 import {
   effectiveStyleConfigForPage,
   listExperienceProfilesForMerchant,
@@ -298,7 +301,14 @@ import {
   resolvePageExperience,
 } from "./experience-profiles";
 import type { PublicExperienceProfile } from "@shared/experienceProfile";
-import { packLayersForCompose, preparePackGeneration, type PackGenerationContext } from "./pack-generation";
+import { publicCreativeBrief } from "./customer-references";
+import {
+  creativeBriefFromContext,
+  hostPackReferences,
+  packLayersForCompose,
+  preparePackGeneration,
+  type PackGenerationContext,
+} from "./pack-generation";
 import { normalizeReferenceImages, type TaggedReferenceImage } from "@shared/referenceImages";
 import { isPackOnlyStyle, parseStyleInputCapabilities } from "@shared/stylePacks";
 import {
@@ -2766,6 +2776,7 @@ export async function registerRoutes(
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
       let styleVectorizeEnabled: boolean | null = null;
       let styleGenerationModel: string | null = null;
+      let styleGenerationModelDecor: string | null = null;
       let styleGenerationQuality: string | null = null;
       let styleUserSlotSchema: unknown = null;
       let styleOptionsAdmin: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
@@ -2797,6 +2808,7 @@ export async function registerRoutes(
             stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
             styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
             styleGenerationModel = (selectedStyle as any).generationModel ?? null;
+            styleGenerationModelDecor = (selectedStyle as any).generationModelDecor ?? null;
             styleGenerationQuality = (selectedStyle as any).generationQuality ?? null;
             styleUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
             styleOptionsAdmin = (selectedStyle as any).options ?? null;
@@ -2904,6 +2916,7 @@ export async function registerRoutes(
           generationQuality: styleGenerationQuality,
           outputMode: styleOutputModeAdmin,
           catalogSlug: catalogSlugAdmin,
+          generationModelDecor: styleGenerationModelDecor,
         },
         productType?.designerType,
       );
@@ -8689,6 +8702,50 @@ ${orientationExtra}
     }
   });
 
+  /**
+   * Style-pack concept writer (Quotes pattern): three concepts before any image.
+   * The style must be a pack style the shop's merchant may use, whose pack
+   * profile has a concept writer. Never debits a credit.
+   */
+  app.post("/api/storefront/concept-options", async (req: Request, res: Response) => {
+    try {
+      const shop = normalizeMyshopifyShopDomain(String(req.body?.shop || ""));
+      const installation = shop ? await getAuthorizedInstallation(shop) : null;
+      if (!installation?.merchantId) return res.status(401).json({ error: "Shop not authorized" });
+      const styleId = String(req.body?.styleId || "").trim();
+      const styles = await storage.getStylePresetsByMerchant(installation.merchantId);
+      const style = styles.find((s) => String(s.id) === styleId && s.isActive);
+      if (!style) return res.status(404).json({ error: "Style not found" });
+      const { allowed, pack } = await resolveGeneratePack(
+        style as any,
+        installation.merchantId,
+        typeof req.body?.stylePackId === "string" ? req.body.stylePackId : null,
+      );
+      const profile = allowed && pack ? getStylePackProfile(pack.pack.promptProfileKey) : null;
+      if (!profile) return res.status(404).json({ error: "This style has no concept writer" });
+      const f = (req.body?.fields && typeof req.body.fields === "object" ? req.body.fields : {}) as Record<string, unknown>;
+      const text = (v: unknown, max = 400) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
+      const labelOf = (opts: Array<{ id: string; label: string }>, id: unknown) =>
+        opts.find((o) => o.id === id)?.label ?? "";
+      const subStyle = (findCatalogPreset(style as any) as any)?.options?.choices?.find((c: any) => c.id === f.subStyle);
+      const traits = parsePersonalityTraits(f.personalityTraits);
+      const options = await generatePackConceptOptions(profile, [
+        ["style", `${style.name}${subStyle ? ` — ${subStyle.name}` : ""}`],
+        ["pet", [text(f.petName, 40), text(f.species, 40)].filter(Boolean).join(", ")],
+        ["personality", traits.join(", ")],
+        ["behaviour", text(f.behavior)],
+        ["humour", labelOf(profile.humorOptions, f.humor)],
+        ["relationship", labelOf(profile.relationshipOptions, f.relationship)],
+        ["owner in the picture", f.hasOwnerPhoto === true ? "yes" : ""],
+      ]);
+      return res.json({ options });
+    } catch (err: any) {
+      console.warn("[concept-options] route", err?.stack || err?.message || err);
+      const status = Number(err?.status) || 500;
+      return res.status(status).json({ error: err?.message || "Concept writer is unavailable" });
+    }
+  });
+
   // ==================== STOREFRONT GENERATE (NO SESSION TOKEN) ====================
   // Used by storefront embeds where App Bridge session tokens are not available.
   // Validates shop domain + active installation instead of session token.
@@ -9083,6 +9140,7 @@ ${orientationExtra}
       let sfStyleBaseImageUrls: string[] = [];
       let sfVectorizeEnabled: boolean | null = null;
       let sfGenerationModel: string | null = null;
+      let sfGenerationModelDecor: string | null = null;
       let sfGenerationQuality: string | null = null;
       let sfUserSlotSchema: unknown = null;
       let sfStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
@@ -9132,6 +9190,7 @@ ${orientationExtra}
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
           sfGenerationModel = (selectedStyle as any).generationModel ?? null;
+          sfGenerationModelDecor = (selectedStyle as any).generationModelDecor ?? null;
           sfGenerationQuality = (selectedStyle as any).generationQuality ?? null;
           sfUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
           sfStyleOptions = (selectedStyle as any).options ?? null;
@@ -9255,6 +9314,7 @@ ${orientationExtra}
           generationQuality: sfGenerationQuality,
           outputMode: sfOutputMode,
           catalogSlug: catalogSlugSf,
+          generationModelDecor: sfGenerationModelDecor,
         },
         productType?.designerType,
       );
@@ -9478,7 +9538,26 @@ ${orientationExtra}
           // Resolve customer reference image(s) — supports both single and array
           const sfCustomerImageUrls: string[] = [];
           let sfCustomerTagged: TaggedReferenceImage[] = [];
-          for (const tagged of sfTaggedRefs) {
+          // Pack generations: photos go to the private bucket (signed URLs to the
+          // model) and the structured creative brief is stored on the job.
+          let sfRefsToResolve = sfTaggedRefs;
+          if (sfPackCtx) {
+            const hosted = await hostPackReferences({
+              shop: installation.shopDomain,
+              jobId,
+              refs: sfTaggedRefs,
+              log: (m) => console.log(`${W} ${m}`),
+            });
+            sfRefsToResolve = hosted.refs;
+            await storage.updateGenerationJob(jobId, {
+              creativeBrief: creativeBriefFromContext(sfPackCtx, {
+                styleSlug: catalogSlugSf,
+                subStyle: typeof styleOptionIdSf === "string" && styleOptionIdSf ? styleOptionIdSf : null,
+                references: hosted.brief,
+              }),
+            } as any);
+          }
+          for (const tagged of sfRefsToResolve) {
             const refImg = tagged.url;
             try {
               let resolvedUrl: string | null = null;
@@ -9495,7 +9574,10 @@ ${orientationExtra}
                 const urlType = resolvedUrl.startsWith("data:") ? "data-url" : "http-url";
                 console.log(`${W} Reference image ${sfCustomerImageUrls.length}: type=${urlType}, size=${resolvedUrl.length} chars`);
                 if (sfCustomerImageUrls.length === 1) {
-                  await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : resolvedUrl });
+                  // Pack photos are private: never record a (signed, expiring) URL here.
+                  await storage.updateGenerationJob(jobId, {
+                    referenceImageUrl: sfPackCtx ? "private-reference" : urlType === "data-url" ? "data-url-provided" : resolvedUrl,
+                  });
                 }
               }
             } catch (refErr) {
@@ -9887,7 +9969,12 @@ ${orientationExtra}
           artworksRemaining = creditsRemaining;
         }
 
+        // Pack generations only; legacy responses are unchanged (no key).
+        const statusBrief = (job as any).creativeBrief
+          ? await publicCreativeBrief((job as any).creativeBrief, completeInstall?.shopDomain ?? shop)
+          : null;
         return res.json({
+          ...(statusBrief ? { creativeBrief: statusBrief } : {}),
           status: "complete",
           imageUrl: job.designImageUrl,
           thumbnailUrl: job.thumbnailUrl,
@@ -10350,8 +10437,18 @@ ${orientationExtra}
       if (styleName) designState.styleName = styleName;
       const promptText =
         typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
+      const forkShop = shop.toLowerCase().replace(/^https?:\/\//, "");
+      // Carry a style-pack creative brief over from the source design (same shop only).
+      let forkBrief: unknown = null;
+      if (typeof req.body?.sourceJobId === "string" && req.body.sourceJobId) {
+        const sourceJob = await storage.getGenerationJob(req.body.sourceJobId).catch(() => undefined);
+        if (sourceJob && sourceJob.shop === forkShop && (sourceJob as any).creativeBrief) {
+          forkBrief = (sourceJob as any).creativeBrief;
+        }
+      }
       const job = await storage.createGenerationJob({
-        shop: shop.toLowerCase().replace(/^https?:\/\//, ""),
+        ...(forkBrief ? { creativeBrief: forkBrief } : {}),
+        shop: forkShop,
         sessionId: null,
         customerId: customerId ? String(customerId) : null,
         status: "complete",
@@ -10423,6 +10520,7 @@ ${orientationExtra}
         referenceImageUrl: source.referenceImageUrl,
         designImageUrl: source.designImageUrl,
         thumbnailUrl: source.thumbnailUrl,
+        ...((source as any).creativeBrief ? { creativeBrief: (source as any).creativeBrief } : {}),
         designState: {
           ...prevRest,
           ...patch,
@@ -11987,8 +12085,16 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      // A request that carries an identity token must be for that customer. Pack
+      // creative briefs (pet names, private photo links) only go to token-verified
+      // requests; token-less callers (theme Saved Designs nav) keep today's list.
+      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      if (tokenIdentity && tokenIdentity.customerId !== String(customerId)) {
+        return res.status(403).json({ error: "Customer mismatch" });
+      }
+      const briefsAllowed = !!tokenIdentity;
       const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
-      console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
+      console.log(`[MyDesigns] shop=${shop} customerId=${customerId} token=${briefsAllowed ? "verified" : "none"}`);
       const fetchedRows = await db
         .select()
         .from(generationJobs)
@@ -12040,6 +12146,7 @@ ${orientationExtra}
               productTypeId: customizerPages.productTypeId,
               handle: customizerPages.handle,
               title: customizerPages.title,
+              experienceProfileId: customizerPages.experienceProfileId,
             })
             .from(customizerPages)
             .where(
@@ -12050,8 +12157,10 @@ ${orientationExtra}
               )
             );
           const typeCounts: Record<string, number> = {};
+          // Store-profile pages (e.g. Petposterous) never take part in handle
+          // inference, so classic designs keep resolving to their own page.
           for (const p of pages) {
-            if (!p.productTypeId) continue;
+            if (!p.productTypeId || p.experienceProfileId) continue;
             const key = String(p.productTypeId);
             typeCounts[key] = (typeCounts[key] || 0) + 1;
           }
@@ -12060,7 +12169,7 @@ ${orientationExtra}
           // otherwise stamp the wrong product onto Saved Designs.
           for (const p of pages) {
             if (p.handle && p.title) titleByHandle[p.handle] = p.title;
-            if (!p.productTypeId) continue;
+            if (!p.productTypeId || p.experienceProfileId) continue;
             const key = String(p.productTypeId);
             if (typeCounts[key] === 1) handleMap[key] = p.handle;
           }
@@ -12222,6 +12331,17 @@ ${orientationExtra}
         visitedShops = [];
       }
 
+      const briefById = new Map<string, unknown>();
+      if (briefsAllowed) {
+        await Promise.all(
+          rows
+            .filter((r) => (r as any).creativeBrief)
+            .map(async (r) => {
+              const b = await publicCreativeBrief((r as any).creativeBrief, installation.shopDomain).catch(() => null);
+              if (b) briefById.set(r.id, b);
+            }),
+        );
+      }
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
@@ -12248,6 +12368,7 @@ ${orientationExtra}
             ? pickOriginPage(String(d.creatorId), resolvedHandle, ptId)
             : null;
           return {
+          ...(briefById.has(d.id) ? { creativeBrief: briefById.get(d.id) } : {}),
           id: d.id,
           artworkUrl:
             proxyUrl(d.designImageUrl) ||

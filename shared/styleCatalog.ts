@@ -5,6 +5,7 @@
  */
 
 import { STYLE_PRESETS } from "./schema";
+import { findPackStyleDefinition } from "./packStyleCatalog";
 
 export type CatalogStyle = (typeof STYLE_PRESETS)[number];
 
@@ -55,7 +56,7 @@ function nameAliasRows(): Array<{ name: string; slug: string; category?: string 
 
 export function isCatalogSlug(slug: string | null | undefined): boolean {
   const key = norm(slug);
-  return !!key && STYLE_PRESETS.some((p) => p.id === key);
+  return !!key && (STYLE_PRESETS.some((p) => p.id === key) || !!findPackStyleDefinition(key));
 }
 
 export function inferCatalogSlug(
@@ -96,6 +97,10 @@ export function findCatalogPreset(row: {
   category?: string | null;
 }): CatalogStyle | undefined {
   const slug = resolveCatalogSlug(row);
+  // Pack-only style definitions (shared/packStyleCatalog.ts) share the catalog shape for
+  // the fields callers read (options, promptPlaceholder, outputMode, userSlotSchema).
+  const pack = findPackStyleDefinition(slug);
+  if (pack) return pack as unknown as CatalogStyle;
   if (slug) return STYLE_PRESETS.find((p) => p.id === slug);
   const id = String(row.id || "").trim();
   if (id) return STYLE_PRESETS.find((p) => p.id === id);

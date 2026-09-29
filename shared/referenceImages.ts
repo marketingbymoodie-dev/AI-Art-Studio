@@ -16,6 +16,11 @@ export type TaggedReferenceImage = {
   role: ReferenceImageRole;
   /** Customer-given name, e.g. the pet's name. */
   label: string | null;
+  /**
+   * A previously stored private photo (creative brief reuse). The server signs
+   * it only after checking it belongs to the requesting shop; url is "" until then.
+   */
+  storagePath?: string;
 };
 
 function parseRole(v: unknown): ReferenceImageRole {
@@ -51,7 +56,9 @@ export function normalizeReferenceImages(
     if (item && typeof item === "object") {
       const o = item as Record<string, unknown>;
       const url = typeof o.url === "string" ? o.url : "";
+      const storagePath = typeof o.storagePath === "string" && o.storagePath ? o.storagePath : "";
       if (url) out.push({ url, role: parseRole(o.role), label: parseLabel(o.label) });
+      else if (storagePath) out.push({ url: "", role: parseRole(o.role), label: parseLabel(o.label), storagePath });
     }
   }
   return out;

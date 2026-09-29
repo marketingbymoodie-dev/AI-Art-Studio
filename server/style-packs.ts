@@ -8,9 +8,11 @@
  */
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "./db";
-import { stylePackItems, stylePackMerchants, stylePacks, type StylePack } from "@shared/schema";
+import { stylePackItems, stylePackMerchants, stylePacks, stylePresets, type StylePack } from "@shared/schema";
+import { PACK_STYLE_CATALOG } from "@shared/packStyleCatalog";
 import type { CustomizerPageStyleConfig } from "@shared/customizerPageStyles";
 import {
+  STYLE_VISIBILITY_PACK_ONLY,
   isPackOnlyStyle,
   packContainsStyle,
   resolvePackPresetIds,
@@ -111,4 +113,61 @@ export async function resolveGeneratePack(
   // Standard styles keep today's behaviour; pack layers only apply when the
   // caller explicitly names a pack the style belongs to.
   return { allowed: true, pack: requestedPackId ? hit : null };
+}
+
+/**
+ * Create/refresh one merchant's pack-only style rows from the code catalog
+ * (shared/packStyleCatalog.ts), keyed by catalog slug. Only ever called on an
+ * explicit pack assignment — never by boot seeding. Content fields are
+ * refreshed; is_active is set on insert only, so later merchant/admin
+ * visibility choices survive re-provisioning.
+ */
+export async function provisionPackStylesForMerchant(
+  packSlug: string,
+  merchantId: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<{ inserted: string[]; updated: string[] }> {
+  const defs = PACK_STYLE_CATALOG[packSlug];
+  if (!defs) throw new Error(`No pack style catalog for ${packSlug}`);
+  const existing = await db
+    .select({ id: stylePresets.id, catalogSlug: stylePresets.catalogSlug })
+    .from(stylePresets)
+    .where(eq(stylePresets.merchantId, merchantId));
+  const bySlug = new Map(existing.filter((r) => r.catalogSlug).map((r) => [r.catalogSlug!, r.id]));
+  const inserted: string[] = [];
+  const updated: string[] = [];
+  for (let i = 0; i < defs.length; i++) {
+    const d = defs[i];
+    const content = {
+      name: d.name,
+      promptPrefix: d.promptPrefix,
+      category: d.category,
+      promptPlaceholder: d.promptPlaceholder ?? null,
+      descriptionOptional: !!d.descriptionOptional,
+      visibility: STYLE_VISIBILITY_PACK_ONLY,
+      inputCapabilities: d.inputCapabilities,
+      generationModel: d.generationModel,
+      generationModelDecor: d.generationModelDecor,
+      generationQuality: d.generationQuality ?? null,
+      updatedAt: new Date(),
+    };
+    const id = bySlug.get(d.id);
+    if (id != null) {
+      updated.push(d.id);
+      if (!opts.dryRun) await db.update(stylePresets).set(content).where(eq(stylePresets.id, id));
+    } else {
+      inserted.push(d.id);
+      if (!opts.dryRun) {
+        await db.insert(stylePresets).values({
+          ...content,
+          merchantId,
+          catalogSlug: d.id,
+          isActive: d.launchActive,
+          sortOrder: 1000 + i,
+          creatorScope: "merchant",
+        });
+      }
+    }
+  }
+  return { inserted, updated };
 }

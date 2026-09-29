@@ -289,6 +289,14 @@ import {
   parsePublicExperienceProfile,
   type PublicExperienceProfile,
 } from "@shared/experienceProfile";
+import { parseStyleInputCapabilities } from "@shared/stylePacks";
+import { parseCreativeBrief, type PublicCreativeBrief } from "@shared/creativeBrief";
+import { ConceptOptionsPicker } from "@/components/designer/ConceptOptionsPicker";
+import {
+  PackCreativeControls,
+  choiceLabel,
+  type PackCreativeState,
+} from "@/components/designer/PackCreativeControls";
 import {
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
@@ -1109,6 +1117,9 @@ function themeSnapshotFromHostStorage(): Record<string, string> | null {
     return null;
   }
 }
+
+/** Style-pack concept writer option (server/pack-concept-engine.ts). */
+type PackConceptOptionClient = { funnyTruth: string; visualJoke: string; punchline: string; subjectPriority: string };
 
 /** Store experience profile colours on top of the store theme (only keys the profile sets). */
 function applyExperienceBrandVars(brand: PublicExperienceProfile["brand"] | null | undefined) {
@@ -2853,6 +2864,25 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
   /** Store experience profile (branding/copy/controls). Null = classic customizer. */
   const [experienceProfile, setExperienceProfile] = useState<PublicExperienceProfile | null>(null);
+  // Style-pack creative inputs (only used when a pack style is active).
+  const [packState, setPackState] = useState<PackCreativeState>({
+    petName: "",
+    species: "",
+    personality: [],
+    humor: "",
+    relationship: "",
+    wordsMode: "suggest",
+    exactWords: "",
+  });
+  const [packConcepts, setPackConcepts] = useState<PackConceptOptionClient[] | null>(null);
+  const [packConceptPick, setPackConceptPick] = useState<number | null>(null);
+  const [packConceptLoading, setPackConceptLoading] = useState(false);
+  /** Stored private photos from a reloaded brief (reused on regenerate). */
+  const [packStoredRefs, setPackStoredRefs] = useState<PublicCreativeBrief["referenceImages"]>([]);
+  /** Role per uploaded File (pet / owner); untagged files are sent as legacy strings. */
+  const referenceRoleMapRef = useRef(new WeakMap<File, "pet" | "owner">());
+  const pendingUploadRoleRef = useRef<"pet" | "owner">("pet");
+  const packConceptKeyRef = useRef("");
   const experienceProfileRef = useRef<PublicExperienceProfile | null>(null);
   experienceProfileRef.current = experienceProfile;
   // Profile colours win over the store theme; the theme handlers re-apply them too.
@@ -6120,7 +6150,46 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
-  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; catalogSlug?: string | null; styleName?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
+  /** Restore a style-pack design's inputs, chosen concept and stored photos (creative brief). */
+  const restorePackBrief = (raw: unknown, stylePresetId: string | null | undefined) => {
+    const brief = parseCreativeBrief(raw);
+    if (!brief) {
+      setPackStoredRefs([]);
+      return;
+    }
+    const controls = experienceProfileRef.current?.controls;
+    const idFor = (options: Array<{ id: string; label: string }> | undefined, label: string | null) =>
+      (label && options?.find((o) => o.label === label)?.id) || "";
+    setPackState({
+      petName: brief.petName ?? "",
+      species: idFor(controls?.species?.options, brief.species),
+      personality: brief.personalityTraits.map((t) => idFor(controls?.personality?.options, t)).filter(Boolean),
+      humor: brief.humor ?? "",
+      relationship: brief.relationship ?? "",
+      wordsMode: brief.wordsMode,
+      exactWords: brief.wordsMode === "exact" ? brief.punchline ?? "" : "",
+    });
+    if (brief.subStyle) setSelectedStyleOption(brief.subStyle);
+    packConceptKeyRef.current = `${stylePresetId ?? ""}|${brief.subStyle ?? ""}`;
+    if (brief.visualJoke) {
+      setPackConcepts([
+        {
+          funnyTruth: brief.funnyTruth ?? "",
+          visualJoke: brief.visualJoke,
+          punchline: brief.punchline ?? "",
+          subjectPriority: brief.subjectPriority ?? "",
+        },
+      ]);
+      setPackConceptPick(0);
+    }
+    const signed = Array.isArray((raw as any)?.referenceImages) ? ((raw as any).referenceImages as any[]) : [];
+    setPackStoredRefs(
+      brief.referenceImages.map((r) => ({ ...r, url: signed.find((x) => x?.path === r.path)?.url ?? null })),
+    );
+  };
+
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; catalogSlug?: string | null; styleName?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null; creativeBrief?: unknown }) => {
+    restorePackBrief(topLevel.creativeBrief, topLevel.stylePreset ?? ds?.stylePreset ?? null);
     aopEditorDismissedRef.current = false;
     flatEditorDismissedRef.current = false;
     const abs = (u?: string) => {
@@ -6682,6 +6751,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       stylePreset: design.stylePreset,
       mockupUrls: design.mockupUrls,
       productTypeId: design.productTypeId,
+      creativeBrief: (design as any).creativeBrief,
     });
     setBridgeLoadDesignId(clickedId);
     return true;
@@ -7424,7 +7494,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
-    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
+    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId, creativeBrief: (d as any).creativeBrief });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId, productTypeConfig]);
 
@@ -7462,7 +7532,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             return;
           }
           loadDesignAppliedRef.current = true;
-          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
+          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId, creativeBrief: status.creativeBrief });
         })
         .catch(() => {});
     }, delay);
@@ -9637,7 +9707,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       quoteArtBrief?: string;
       quoteFontSuggestion?: string;
       quotesVoice?: string;
-      referenceImages?: string[];
+      /** Legacy string[]; pack styles send role-tagged objects. */
+      referenceImages?: string[] | Array<Record<string, string | null>>;
+      stylePackId?: string;
+      packInputs?: Record<string, unknown>;
       baseImageUrl?: string;
       shop?: string;
       sessionToken?: string;
@@ -10196,6 +10269,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
+    const uploadRole = pendingUploadRoleRef.current;
+    pendingUploadRoleRef.current = "pet";
+    for (const file of files) referenceRoleMapRef.current.set(file, uploadRole);
     setReferenceImages(prev => {
       const remaining = 5 - prev.length;
       return [...prev, ...files.slice(0, remaining)];
@@ -10256,6 +10332,76 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     quotesMode && !quotesVerbatim && Array.isArray(quoteOptions) && quoteOptions.length === 3;
   const quotesNeedWrite = quotesMode && !quotesVerbatim && !quotesShowOptions;
 
+  // Style-pack styles (visibility pack_only) on a page with a store experience profile.
+  const packStyleActive = !!experienceProfile && (quotesActivePreset as any)?.visibility === "pack_only";
+  const packCaps = packStyleActive ? parseStyleInputCapabilities((quotesActivePreset as any)?.inputCapabilities) : null;
+  const packConceptMode = packStyleActive && !!experienceProfile?.conceptWriter;
+  // 3 fresh ideas, or the 1 saved concept of a reloaded design.
+  const packShowConcepts = packConceptMode && Array.isArray(packConcepts) && packConcepts.length > 0;
+  const packNeedConcepts = packConceptMode && !packShowConcepts;
+  const packHumor = packState.humor || packCaps?.humor.default || "";
+  const packRelationship = packState.relationship || packCaps?.relationship.default || "";
+  const resetPackConcepts = () => {
+    setPackConcepts(null);
+    setPackConceptPick(null);
+  };
+  const packConceptWords = (c: PackConceptOptionClient | undefined) =>
+    packState.wordsMode === "none" ? "" : packState.wordsMode === "exact" ? packState.exactWords.trim() : c?.punchline ?? "";
+
+  // Concepts belong to one style + sub-style; changing either asks for new ideas.
+  // A restored design sets the key first so its saved concept survives the restore.
+  useEffect(() => {
+    const key = `${selectedPreset}|${selectedStyleOption}`;
+    if (packConceptKeyRef.current === key) return;
+    packConceptKeyRef.current = key;
+    setPackConcepts(null);
+    setPackConceptPick(null);
+  }, [selectedPreset, selectedStyleOption]);
+
+  const runPackConcepts = async () => {
+    if (!experienceProfile || !selectedPreset) return;
+    const controls = experienceProfile.controls;
+    setPackConceptLoading(true);
+    try {
+      const res = await safeFetch(
+        `${API_BASE}/api/storefront/concept-options`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: storefrontJsonHeaders(),
+          body: JSON.stringify({
+            shop: shopDomain || undefined,
+            styleId: selectedPreset,
+            stylePackId: experienceProfile.stylePackId || undefined,
+            fields: {
+              petName: packState.petName,
+              species: choiceLabel(controls.species?.options, packState.species),
+              personalityTraits: packState.personality.map((id) => choiceLabel(controls.personality?.options, id)),
+              behavior: prompt,
+              humor: packHumor,
+              relationship: packRelationship,
+              subStyle: selectedStyleOption || undefined,
+              hasOwnerPhoto: referenceImages.some((f) => referenceRoleMapRef.current.get(f) === "owner"),
+            },
+          }),
+        },
+        20_000,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
+        toast({ title: "Could not write ideas", description: data.error || "Try again in a moment.", variant: "destructive" });
+        return;
+      }
+      packConceptKeyRef.current = `${selectedPreset}|${selectedStyleOption}`;
+      setPackConcepts(data.options);
+      setPackConceptPick(null);
+    } catch {
+      toast({ title: "Could not write ideas", description: "Try again in a moment.", variant: "destructive" });
+    } finally {
+      setPackConceptLoading(false);
+    }
+  };
+
   const resetQuoteFlow = () => {
     setQuoteOptions(null);
     setQuotePickIndex(null);
@@ -10296,6 +10442,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     setReferencePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = "";
     resetQuoteFlow();
+    setPackConcepts(null);
+    setPackConceptPick(null);
+    setPackStoredRefs([]);
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -10427,7 +10576,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
   const handleQuotesOrGenerateClick = () => {
     if (generateInFlightRef.current || generateMutation.isPending) return;
-    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity && !quotesNeedWrite) {
+    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity && !quotesNeedWrite && !packNeedConcepts) {
       notifyInsufficientCredits();
       return;
     }
@@ -10449,16 +10598,22 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       void runQuoteOptions(prompt);
       return;
     }
+    if (packNeedConcepts) {
+      void runPackConcepts();
+      return;
+    }
     handleGenerate();
   };
 
   const quotesOrGenerateDisabled = (() => {
     if (!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate)) return true;
-    if (generateInFlightRef.current || generateMutation.isPending || quoteWriting) return true;
+    if (generateInFlightRef.current || generateMutation.isPending || quoteWriting || packConceptLoading) return true;
     if (customerTermsEnabled && !storefrontTerms.accepted) return true;
     if (shippingBlocksGenerate) return true;
     if (quotesNeedWrite) return !prompt.trim();
     if (quotesShowOptions) return quotePickIndex == null;
+    if (packNeedConcepts) return !prompt.trim();
+    if (packShowConcepts) return packConceptPick == null || (packState.wordsMode === "exact" && !packState.exactWords.trim());
     if (quotesVerbatim) return !detectQuotesVerbatimInput(prompt).text;
     return !prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find((p) => p.id === selectedPreset)?.descriptionOptional;
   })();
@@ -10554,7 +10709,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim() && !quotesNow) {
+    const packNow = packStyleActive && (activePreset as any)?.visibility === "pack_only";
+    if (packConceptMode && packConceptPick == null) return;
+    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim() && !quotesNow && !packNow) {
       const mismatch = detectStylePromptMismatch(
         typedPrompt,
         activePreset.promptSuffix,
@@ -10671,7 +10828,51 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             ? quoteOptions?.[quotePickIndex]?.font_suggestion
             : undefined,
         quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
-        referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
+        referenceImages: packNow
+          ? (() => {
+              // Role-tagged only for pack styles; stored brief photos are re-signed server-side.
+              const tagged: Array<Record<string, string | null>> = packStoredRefs.map((r) => ({
+                storagePath: r.path,
+                role: r.role,
+                label: r.label,
+              }));
+              referenceImagesBase64.forEach((b64, i) => {
+                const role = (referenceImages[i] && referenceRoleMapRef.current.get(referenceImages[i])) || "pet";
+                tagged.push({ url: b64, role, label: role === "pet" ? packState.petName.trim() || null : null });
+              });
+              return tagged.length > 0 ? (tagged as any) : undefined;
+            })()
+          : referenceImagesBase64.length > 0
+            ? referenceImagesBase64
+            : undefined,
+        ...(packNow
+          ? (() => {
+              const concept = packConceptPick != null ? packConcepts?.[packConceptPick] : undefined;
+              const controls = experienceProfile?.controls;
+              const hasPetPhoto =
+                packStoredRefs.some((r) => r.role === "pet") ||
+                referenceImages.some((file) => (referenceRoleMapRef.current.get(file) || "pet") === "pet");
+              return {
+                stylePackId: experienceProfile?.stylePackId || undefined,
+                packInputs: {
+                  humor: packHumor || undefined,
+                  relationship: packRelationship || undefined,
+                  visualJoke: concept?.visualJoke,
+                  funnyTruth: concept?.funnyTruth,
+                  subjectPriority: concept?.subjectPriority,
+                  punchline: concept?.punchline ?? "",
+                  conceptIndex: packConceptPick ?? undefined,
+                  wordsMode: packState.wordsMode,
+                  exactWords: packState.exactWords.trim() || undefined,
+                  petName: packState.petName.trim() || undefined,
+                  species: choiceLabel(controls?.species?.options, packState.species) || undefined,
+                  personalityTraits: packState.personality.map((id) => choiceLabel(controls?.personality?.options, id)),
+                  behavior: typedPrompt.trim() || undefined,
+                  personalized: hasPetPhoto,
+                },
+              };
+            })()
+          : {}),
         reuseRegenerate: !!reuseRegenerateBasePrompt,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
@@ -14370,6 +14571,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 stylePreset: originStyle.stylePreset,
                 catalogSlug: originStyle.catalogSlug,
                 styleName: originStyle.styleName,
+                // Carries a style-pack creative brief to the new job (server checks same shop).
+                sourceJobId: savedJobIdRef.current || undefined,
               }),
             });
             if (forkRes.ok) {
@@ -14647,6 +14850,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 undefined,
               catalogSlug: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).catalogSlug || undefined,
               styleName: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).styleName || undefined,
+              sourceJobId: savedJobIdRef.current || undefined,
             }),
           });
           if (forkRes.ok) {
@@ -16893,15 +17097,15 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
-            {generateMutation.isPending || quoteWriting ? (
+            {generateMutation.isPending || quoteWriting || packConceptLoading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : "Generating..."}</span>
+                <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : packConceptLoading ? "Writing ideas..." : "Generating..."}</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 mr-2" />
-                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : xc("generateButtonLabel", "Generate Artwork")}</span>
+                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : packNeedConcepts ? xc("conceptButtonLabel", "Give me 3 ideas") : xc("generateButtonLabel", "Generate Artwork")}</span>
               </>
             )}
           </Button>
@@ -17257,6 +17461,131 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   })();
   // Prompt textarea reused in the mobile Prompt sheet (same value/onChange as
   // desktop, including the "start fresh when a saved design is loaded" guard).
+  /** Quotes' three rows (desktop + mobile), unchanged markup via ConceptOptionsPicker. */
+  const quotesPickerNode = quotesShowOptions ? (
+    <ConceptOptionsPicker
+      rows={quoteRowDrafts.map((line) => ({ primary: line }))}
+      pick={quotePickIndex}
+      onPick={(i) => {
+        if (quoteEditingIndex != null && quoteEditingIndex !== i) {
+          commitQuoteRowEdit(quoteEditingIndex);
+        }
+        setQuotePickIndex(i);
+      }}
+      idStem="quote"
+      boxTestId="quotes-options-box"
+      edit={{
+        editingIndex: quoteEditingIndex,
+        onChange: (i, value) => {
+          const next = [...quoteRowDrafts];
+          next[i] = value;
+          setQuoteRowDrafts(next);
+          setQuotePickIndex(i);
+        },
+        onCommit: (i) => commitQuoteRowEdit(i),
+        onBegin: (i) => beginQuoteRowEdit(i),
+        onRevert: (i) => {
+          setQuoteRowDrafts((prev) => {
+            const next = [...prev];
+            next[i] = quoteEditSeedRef.current;
+            return next;
+          });
+          setQuoteEditingIndex(null);
+        },
+        ariaLabel: (i) => `Edit quote ${i + 1}`,
+      }}
+      newLink={{ label: "New theme", onClick: () => resetQuoteFlow(), testId: "button-quotes-new-theme" }}
+      moreLink={{
+        label: "More quotes",
+        onClick: () => void runQuoteOptions(quoteTheme),
+        disabled: quoteWriting || !quoteTheme,
+        testId: "button-quotes-more",
+      }}
+    />
+  ) : null;
+
+  /** Style-pack concepts: punchline + short visual idea; the rest stays hidden. */
+  const packPickerNode = packShowConcepts ? (
+    <ConceptOptionsPicker
+      rows={packConcepts!.map((c) => ({
+        primary: packState.wordsMode === "none" ? "No words" : packConceptWords(c) || "No words",
+        secondary: c.visualJoke,
+      }))}
+      pick={packConceptPick}
+      onPick={setPackConceptPick}
+      idStem="concept"
+      boxTestId="concept-options-box"
+      newLink={{ label: "Change the story", onClick: resetPackConcepts, testId: "button-concepts-new" }}
+      moreLink={{
+        label: "3 more ideas",
+        onClick: () => void runPackConcepts(),
+        disabled: packConceptLoading,
+        testId: "button-concepts-more",
+      }}
+    />
+  ) : null;
+
+  const packOwnerAllowed = packStyleActive && packCaps?.ownerPhoto !== "unsupported";
+  /** Stored photos from a reloaded design + the secondary owner upload. Pack styles only. */
+  const packUploadExtrasNode = packStyleActive ? (
+    <div className="space-y-1.5" data-testid="pack-upload-extras">
+      {packStoredRefs.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {packStoredRefs.map((r, idx) => (
+            <div key={r.path} className="relative shrink-0">
+              {r.url ? (
+                <img src={r.url} alt={r.label || r.role} className="w-9 h-9 object-cover rounded" data-testid={`img-stored-reference-${idx}`} />
+              ) : (
+                <div className="w-9 h-9 rounded bg-muted" />
+              )}
+              {r.role === "owner" ? (
+                <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+              ) : null}
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                onClick={() => setPackStoredRefs((prev) => prev.filter((_, i) => i !== idx))}
+                data-testid={`button-clear-stored-reference-${idx}`}
+              >
+                <X className="w-2.5 h-2.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {packOwnerAllowed && referenceImages.length + packStoredRefs.length < 5 ? (
+        <button
+          type="button"
+          className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => {
+            pendingUploadRoleRef.current = "owner";
+            fileInputRef.current?.click();
+          }}
+          data-testid="button-add-owner-photo"
+        >
+          + {xc("ownerUploadLabel", "Add owner photo")} <span className="text-[11px]">(optional)</span>
+        </button>
+      ) : null}
+    </div>
+  ) : null;
+  const isOwnerReference = (idx: number) =>
+    packStyleActive && !!referenceImages[idx] && referenceRoleMapRef.current.get(referenceImages[idx]) === "owner";
+
+  const packControlsNode =
+    packStyleActive && experienceProfile ? (
+      <PackCreativeControls
+        profile={experienceProfile}
+        capabilities={packCaps}
+        state={{ ...packState, humor: packHumor, relationship: packRelationship }}
+        onChange={(patch) => {
+          setPackState((prev) => ({ ...prev, ...patch }));
+          if (!("wordsMode" in patch) && !("exactWords" in patch)) resetPackConcepts();
+        }}
+      />
+    ) : null;
+
   const mPromptNode = (() => {
     const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
     const _descOptional = !!_activePresetForLabel?.descriptionOptional;
@@ -17273,6 +17602,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         {reuseRegenerateBasePrompt ? (
           <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{reuseRegenerateBasePrompt}</p>
         ) : null}
+        {packControlsNode}
+        {quotesShowOptions ? quotesPickerNode : packShowConcepts ? packPickerNode : (
         <Textarea
           id="prompt-mobile"
           data-testid="input-prompt-mobile"
@@ -17313,6 +17644,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           }}
           className="min-h-[96px] text-sm"
         />
+        )}
       </div>
     );
   })();
@@ -17340,6 +17672,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           ? `${referencePreviews.length} image${referencePreviews.length === 1 ? "" : "s"} attached`
           : xc("uploadCaption", "Reference images (optional, up to 5)")}
       </p>
+      {packUploadExtrasNode}
       {referencePreviews.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {referencePreviews.map((preview, idx) => (
@@ -17350,6 +17683,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 className="w-12 h-12 object-cover rounded"
                 data-testid={`img-reference-preview-mobile-${idx}`}
               />
+              {isOwnerReference(idx) ? (
+                <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+              ) : null}
               <Button
                 type="button"
                 variant="destructive"
@@ -19060,15 +19396,15 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
-                      {generateMutation.isPending || quoteWriting ? (
+                      {generateMutation.isPending || quoteWriting || packConceptLoading ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : "Generating..."}</span>
+                          <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : packConceptLoading ? "Writing ideas..." : "Generating..."}</span>
                         </>
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : xc("generateButtonLabel", "Generate Artwork")}</span>
+                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : packNeedConcepts ? xc("conceptButtonLabel", "Give me 3 ideas") : xc("generateButtonLabel", "Generate Artwork")}</span>
                         </>
                       )}
                     </Button>
@@ -19173,6 +19509,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   <p className="hidden md:block text-xs text-muted-foreground mt-1 text-center">
                     {xc("uploadCaption", "Reference Images (optional, up to 5)")}
                   </p>
+                  {packUploadExtrasNode ? <div className="hidden md:block mt-1.5">{packUploadExtrasNode}</div> : null}
                   {referencePreviews.length > 0 && (
                     <div className="hidden md:flex flex-wrap gap-1.5 mt-1.5">
                       {referencePreviews.map((preview, idx) => (
@@ -19183,6 +19520,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                             className="w-9 h-9 object-cover rounded"
                             data-testid={`img-reference-preview-${idx}`}
                           />
+                          {isOwnerReference(idx) ? (
+                            <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+                          ) : null}
                           <Button
                             type="button"
                             variant="destructive"
@@ -19318,116 +19658,11 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     {reuseRegenerateBasePrompt}
                   </p>
                 ) : null}
+                {packControlsNode}
                 {quotesShowOptions ? (
-                  <div
-                    className="rounded-md border bg-background"
-                    data-testid="quotes-options-box"
-                  >
-                    {quoteRowDrafts.map((line, i) => {
-                      const selected = quotePickIndex === i;
-                      const editing = quoteEditingIndex === i;
-                      return (
-                        <div
-                          key={i}
-                          className={`flex items-start gap-2 border-b last:border-b-0 px-2 py-2 ${
-                            selected ? "bg-muted" : ""
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            className={`mt-0.5 h-6 w-6 shrink-0 rounded-full text-xs font-semibold ${
-                              selected
-                                ? "bg-foreground text-background"
-                                : "border border-border text-muted-foreground"
-                            }`}
-                            onClick={() => {
-                              if (quoteEditingIndex != null && quoteEditingIndex !== i) {
-                                commitQuoteRowEdit(quoteEditingIndex);
-                              }
-                              setQuotePickIndex(i);
-                            }}
-                            data-testid={`button-quote-option-${i}`}
-                          >
-                            {i + 1}
-                          </button>
-                          {editing ? (
-                            <textarea
-                              className="min-h-[40px] w-full resize-none bg-transparent text-sm outline-none"
-                              value={line}
-                              autoFocus
-                              onChange={(e) => {
-                                const next = [...quoteRowDrafts];
-                                next[i] = e.target.value;
-                                setQuoteRowDrafts(next);
-                                setQuotePickIndex(i);
-                              }}
-                              onBlur={() => commitQuoteRowEdit(i)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && !e.shiftKey) {
-                                  e.preventDefault();
-                                  (e.currentTarget as HTMLTextAreaElement).blur();
-                                }
-                                if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  setQuoteRowDrafts((prev) => {
-                                    const next = [...prev];
-                                    next[i] = quoteEditSeedRef.current;
-                                    return next;
-                                  });
-                                  setQuoteEditingIndex(null);
-                                }
-                              }}
-                              data-testid={`input-quote-option-${i}`}
-                            />
-                          ) : (
-                            <p
-                              className="min-h-[40px] w-full text-sm leading-snug"
-                              data-testid={`text-quote-option-${i}`}
-                            >
-                              {line}
-                            </p>
-                          )}
-                          <button
-                            type="button"
-                            className="mt-0.5 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                            aria-label={`Edit quote ${i + 1}`}
-                            onMouseDown={(e) => e.preventDefault()}
-                            onClick={() => {
-                              if (editing) {
-                                commitQuoteRowEdit(i);
-                              } else {
-                                beginQuoteRowEdit(i);
-                              }
-                            }}
-                            data-testid={`button-quote-edit-${i}`}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                    <div className="flex items-center justify-between px-2 py-1.5">
-                      <button
-                        type="button"
-                        className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-                        onClick={() => {
-                          resetQuoteFlow();
-                        }}
-                        data-testid="button-quotes-new-theme"
-                      >
-                        New theme
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[11px] text-muted-foreground underline-offset-2 hover:underline disabled:opacity-50"
-                        disabled={quoteWriting || !quoteTheme}
-                        onClick={() => void runQuoteOptions(quoteTheme)}
-                        data-testid="button-quotes-more"
-                      >
-                        More quotes
-                      </button>
-                    </div>
-                  </div>
+                  quotesPickerNode
+                ) : packShowConcepts ? (
+                  packPickerNode
                 ) : (
                 <Textarea
                   id="prompt"

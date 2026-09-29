@@ -204,11 +204,17 @@ export type PublicExperienceProfile = {
   };
   /** The profile's style pack, when any (for generate/concept requests). */
   stylePackId: string | null;
+  /** The pack has a concept writer (3 ideas before any image). */
+  conceptWriter: boolean;
 };
 
 export function publicExperienceProfile(
   row: { slug: string; config: unknown; stylePackId?: string | null },
-  packOptions?: { humorOptions?: ExperienceChoice[]; relationshipOptions?: ExperienceChoice[] } | null,
+  packOptions?: {
+    humorOptions?: ExperienceChoice[];
+    relationshipOptions?: ExperienceChoice[];
+    conceptWriter?: boolean;
+  } | null,
 ): PublicExperienceProfile {
   const cfg = parseExperienceProfileConfig(row.config);
   return {
@@ -221,6 +227,7 @@ export function publicExperienceProfile(
       ...(packOptions?.relationshipOptions?.length ? { relationshipOptions: packOptions.relationshipOptions } : {}),
     },
     stylePackId: row.stylePackId ?? null,
+    conceptWriter: packOptions?.conceptWriter === true,
   };
 }
 
@@ -249,5 +256,6 @@ export function parsePublicExperienceProfile(raw: unknown): PublicExperienceProf
       relationshipOptions: choices(o.controls?.relationshipOptions),
     },
     stylePackId: typeof o.stylePackId === "string" ? o.stylePackId : null,
+    conceptWriter: o.conceptWriter === true,
   };
 }

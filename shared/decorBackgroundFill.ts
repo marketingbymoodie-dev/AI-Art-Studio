@@ -205,12 +205,19 @@ export function resolveStyleGenerationForProduct(
     generationQuality?: string | null;
     outputMode?: string | null;
     catalogSlug?: string | null;
+    /** Model on non-apparel products (style_presets.generation_model_decor). Null = generationModel. */
+    generationModelDecor?: string | null;
   } | null,
   designerType?: string | null,
 ) {
+  const dt = (designerType || "").toLowerCase();
+  const decorOverride =
+    style?.generationModelDecor && dt !== "apparel" && dt !== "all-over-print"
+      ? style.generationModelDecor
+      : null;
   const generationModel = isFloatingCatalogStyle(style)
     ? GENERATION_MODEL_GPT_IMAGE_2
-    : style?.generationModel;
+    : decorOverride ?? style?.generationModel;
   return resolveStyleGeneration({
     generationModel,
     generationQuality: style?.generationQuality,
