@@ -2032,6 +2032,7 @@
           freshDesignAllowed: config.freshDesignAllowed !== false,
           stylePresets: config.stylePresets || [],
           styleConfig: config.styleConfig || null,
+          experienceProfile: config.experienceProfile || null,
         }, iframeOrigin || '*');
         console.log(B, 'Sent DESIGNER_CONFIG to iframe:', config.inlineDesignerConfig.name || config.inlineDesignerConfig.id);
       } catch(e) {
@@ -2150,6 +2151,7 @@
       }
       if (payload.styleConfig !== undefined) {
         config.styleConfig = payload.styleConfig;
+        config.experienceProfile = payload.experienceProfile || null;
       }
     }
 
@@ -3479,6 +3481,7 @@
     studioConfig.shopifyVariants = pageCfg.variants || [];
     studioConfig.stylePresets = pageCfg.stylePresets || [];
     studioConfig.styleConfig = pageCfg.styleConfig || null;
+    studioConfig.experienceProfile = pageCfg.experienceProfile || null;
     studioConfig.customizerPageHandle = handle;
     if (typeof studioConfig.__pushDesignerConfig === 'function') {
       studioConfig.__pushDesignerConfig();

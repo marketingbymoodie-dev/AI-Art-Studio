@@ -285,6 +285,11 @@ import {
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
 import {
+  experienceCopy,
+  parsePublicExperienceProfile,
+  type PublicExperienceProfile,
+} from "@shared/experienceProfile";
+import {
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
   canonicalAopPanelCaptureSignature,
@@ -1103,6 +1108,16 @@ function themeSnapshotFromHostStorage(): Record<string, string> | null {
   } catch {
     return null;
   }
+}
+
+/** Store experience profile colours on top of the store theme (only keys the profile sets). */
+function applyExperienceBrandVars(brand: PublicExperienceProfile["brand"] | null | undefined) {
+  if (!brand) return;
+  const t: Record<string, string> = {};
+  if (brand.accentColor || brand.primaryColor) t.buttonBg = (brand.accentColor || brand.primaryColor)!;
+  if (brand.surfaceColor) t.backgroundColor = brand.surfaceColor;
+  if (brand.textColor) t.textColor = brand.textColor;
+  if (Object.keys(t).length) applyStoreThemeVars(t);
 }
 
 /** Merchant theme CSS variables — same mapping as AI_ART_STUDIO_THEME. */
@@ -2836,6 +2851,17 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const lastDesignerProductTypeRef = useRef("");
   const refetchStylePresetsRef = useRef<() => Promise<void>>(async () => {});
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
+  /** Store experience profile (branding/copy/controls). Null = classic customizer. */
+  const [experienceProfile, setExperienceProfile] = useState<PublicExperienceProfile | null>(null);
+  const experienceProfileRef = useRef<PublicExperienceProfile | null>(null);
+  experienceProfileRef.current = experienceProfile;
+  // Profile colours win over the store theme; the theme handlers re-apply them too.
+  useEffect(() => {
+    applyExperienceBrandVars(experienceProfile?.brand);
+  }, [experienceProfile]);
+  /** Store copy override, else the classic literal passed in. */
+  const xc = (key: Parameters<typeof experienceCopy>[1], fallback: string) =>
+    experienceCopy(experienceProfile, key, fallback);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   /** Disabled customizer pages may reopen a saved design for ATC, but not Start Fresh / new generate. */
@@ -3142,6 +3168,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         const pageCfg = await pageRes.json();
         if (takePresets(pageCfg.stylePresets) && pageCfg.styleConfig !== undefined && !isCreatorStorefront) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(pageCfg.experienceProfile));
         }
         return;
       }
@@ -3155,6 +3182,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         const designerCfg = await designerRes.json();
         if (designerCfg.styleConfig !== undefined) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(designerCfg.experienceProfile));
         }
         takePresets(designerCfg.stylePresets);
         return;
@@ -3176,6 +3204,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         const designerCfg = await designerRes.json();
         if (designerCfg.styleConfig !== undefined) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(designerCfg.experienceProfile));
         }
         takePresets(designerCfg.stylePresets);
       }
@@ -5611,8 +5640,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               }
               if (isCreatorStorefront) {
                 setPageStyleConfig(null);
+                setExperienceProfile(null);
               } else if (pageCfg.styleConfig !== undefined) {
                 setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+                setExperienceProfile(parsePublicExperienceProfile(pageCfg.experienceProfile));
               }
               if (Array.isArray(pageCfg.variants) && pageCfg.variants.length > 0) {
                 const mapped = pageCfg.variants.map((v: any) => ({
@@ -5652,6 +5683,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               }
               if (pageCfg.themeSnapshot && typeof pageCfg.themeSnapshot === "object") {
                 applyStoreThemeVars(pageCfg.themeSnapshot as Record<string, string>);
+                applyExperienceBrandVars(experienceProfileRef.current?.brand);
               }
               if (typeof pageCfg.storeName === "string" && pageCfg.storeName.trim()) {
                 setMerchantStoreName(pageCfg.storeName.trim());
@@ -5808,6 +5840,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           // page-filtered styles the live store embeds (not global /api/config).
           if (designerConfig.styleConfig !== undefined) {
             setPageStyleConfig(parseCustomizerPageStyleConfig(designerConfig.styleConfig));
+            setExperienceProfile(parsePublicExperienceProfile(designerConfig.experienceProfile));
           }
           if (Array.isArray(designerConfig.stylePresets) && designerConfig.stylePresets.length > 0) {
             setStylePresets(designerConfig.stylePresets);
@@ -6883,6 +6916,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setExperienceProfile(parsePublicExperienceProfile(config.experienceProfile));
     setConfigLoading(false);
 
     try {
@@ -7082,6 +7116,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setExperienceProfile(parsePublicExperienceProfile(config.experienceProfile));
     setConfigLoading(false);
     setIsInAppProductSwitching(false);
 
@@ -15070,6 +15105,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         }
         if (event.data.styleConfig !== undefined && applyParentPresets) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(event.data.experienceProfile));
         }
         if (typeof event.data.freshDesignAllowed === "boolean") {
           setFreshDesignAllowed(event.data.freshDesignAllowed);
@@ -15167,6 +15203,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       // Store theme: apply merchant's colors, fonts and radius to the iframe's CSS variables
       if (type === "AI_ART_STUDIO_THEME" && event.data.theme) {
         applyStoreThemeVars(event.data.theme as Record<string, string>);
+        applyExperienceBrandVars(experienceProfileRef.current?.brand);
         console.log('[Design Studio] Applied store theme CSS variables');
       }
 
@@ -16864,7 +16901,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             ) : (
               <>
                 <Sparkles className="w-4 h-4 mr-2" />
-                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : "Generate Artwork"}</span>
+                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : xc("generateButtonLabel", "Generate Artwork")}</span>
               </>
             )}
           </Button>
@@ -17226,7 +17263,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     return (
       <div className="space-y-1">
         <Label htmlFor="prompt-mobile" className="text-xs">
-          {quotesMode ? "Theme" : "Describe your artwork"}
+          {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
           {reuseRegenerateBasePrompt ? (
             <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional changes)</span>
           ) : _descOptional ? (
@@ -17245,8 +17282,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             if (isQuotesActivePreset(activePreset)) return activePreset?.promptPlaceholder || QUOTES_PLACEHOLDER;
             const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
             if (literal) return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
-            if (activePreset?.descriptionOptional) return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
-            return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+            if (activePreset?.descriptionOptional) return activePreset.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+            return activePreset?.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
           })()}
           value={prompt}
           onChange={(e) => {
@@ -17296,12 +17333,12 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             ? "Max 5 images"
             : referenceImages.length > 0
               ? `Upload another (${referenceImages.length}/5)`
-              : "Upload"}
+              : xc("uploadLabel", "Upload")}
       </Button>
       <p className="text-xs text-muted-foreground text-center">
         {referencePreviews.length > 0
           ? `${referencePreviews.length} image${referencePreviews.length === 1 ? "" : "s"} attached`
-          : "Reference images (optional, up to 5)"}
+          : xc("uploadCaption", "Reference images (optional, up to 5)")}
       </p>
       {referencePreviews.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -17348,7 +17385,12 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       )}
       {isMobile && (
         <MobileCustomizerShell
-          brandName={shellBrandName}
+          brandName={
+            experienceProfile?.brand?.name && !isCreatorStorefront
+              ? resolveMobileShellBrandName({ profileBrandName: experienceProfile.brand.name })
+              : shellBrandName
+          }
+          brandLogoUrl={isCreatorStorefront ? undefined : experienceProfile?.brand?.logoUrl}
           isLoggedIn={isLoggedIn}
           creditsLabel={creditBreakdown?.total ?? 0}
           onBack={() => {
@@ -17547,7 +17589,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               id: "prompt",
               label: "Prompt",
               icon: <Type />,
-              title: "Describe your artwork",
+              title: xc("promptLabel", "Describe your artwork"),
               subtitle: "Generate from text, or upload your own image.",
               content: (
                 <div className="space-y-2">
@@ -17700,7 +17742,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   Working…
                 </>
               ) : reuseDialog?.applyHere ? (
-                "Regenerate from"
+                xc("regenerateButtonLabel", "Regenerate from")
               ) : (
                 "Use as reference"
               )}
@@ -17756,7 +17798,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   Working…
                 </>
               ) : (
-                "Regenerate from"
+                xc("regenerateButtonLabel", "Regenerate from")
               )}
             </Button>
             <Button
@@ -18330,7 +18372,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   )}
                   {isLoggedIn && (
                     <StudioMenuIconButton
-                      label={`Saved Designs${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
+                      label={`${xc("savedDesignsLabel", "Saved Designs")}${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
                       icon={Images}
                       active={showSavedDesigns}
                       danger={savedDesigns.length >= galleryLimit}
@@ -18357,7 +18399,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     />
                   )}
                   <StudioMenuIconButton
-                    label="Art Class newsletter"
+                    label={xc("emailCaptureMenuLabel", "Art Class newsletter")}
                     icon={GraduationCap}
                     active={showArtClassSignup}
                     onClick={() => {
@@ -18389,7 +18431,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     <Card className="border-primary bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Sign in or create account</h3>
+                          <h3 className="text-sm font-semibold">{xc("accountHeading", "Sign in or create account")}</h3>
                           <button
                             onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -18398,7 +18440,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                           </button>
                         </div>
                         <p className="text-xs text-muted-foreground mb-3">
-                          Save designs, track credits, and pick up where you left off. New here? We&apos;ll create your account automatically.
+                          {xc("accountBody", "Save designs, track credits, and pick up where you left off. New here? We'll create your account automatically.")}
                         </p>
                         {otpError && (
                           <p className="text-destructive text-xs mb-2">{otpError}</p>
@@ -18581,7 +18623,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                           />
                         ) : null}
                         <div className="mb-3 rounded-md border bg-muted/50 p-3">
-                          <p className="text-sm font-medium mb-1">Studio Art Class</p>
+                          <p className="text-sm font-medium mb-1">{xc("emailCaptureHeading", "Studio Art Class")}</p>
                           <StudioNewsletterSignup
                             source="store_user"
                             shopDomain={shopDomain}
@@ -18589,11 +18631,12 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                             customerId={storefrontCustomerId || customer?.id}
                             variant="compact"
                             hideIntro
+                            buttonLabel={experienceProfile?.copy?.emailCaptureButton}
                             onCreditGranted={() => void refreshStorefrontWallet()}
                           />
                         </div>
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Saved Designs ({galleryGenerateSlots}/{galleryLimit})</h3>
+                          <h3 className="text-sm font-semibold">{xc("savedDesignsLabel", "Saved Designs")} ({galleryGenerateSlots}/{galleryLimit})</h3>
                           <button
                             onClick={() => setShowSavedDesigns(false)}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -18601,6 +18644,11 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                             <X className="w-4 h-4" />
                           </button>
                         </div>
+                        {experienceProfile?.copy?.savedDesignsIntro ? (
+                          <p className="mb-3 text-xs text-muted-foreground" data-testid="text-saved-designs-intro">
+                            {experienceProfile.copy.savedDesignsIntro}
+                          </p>
+                        ) : null}
                         {galleryGenerateSlots >= galleryLimit - 4 && galleryGenerateSlots < galleryLimit && (
                           <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
                             You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
@@ -18808,7 +18856,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Studio Art Class</h3>
+                          <h3 className="text-sm font-semibold">{xc("emailCaptureHeading", "Studio Art Class")}</h3>
                           <button
                             type="button"
                             onClick={() => setShowArtClassSignup(false)}
@@ -18823,6 +18871,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                           creatorUsername={creatorUsernameParam}
                           customerId={storefrontCustomerId || customer?.id}
                           variant="compact"
+                          introText={experienceProfile?.copy?.emailCaptureBody}
+                          buttonLabel={experienceProfile?.copy?.emailCaptureButton}
                           onCreditGranted={() => void refreshStorefrontWallet()}
                         />
                       </CardContent>
@@ -19018,7 +19068,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : "Generate Artwork"}</span>
+                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : xc("generateButtonLabel", "Generate Artwork")}</span>
                         </>
                       )}
                     </Button>
@@ -19118,10 +19168,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     data-testid="button-upload-reference"
                   >
                     <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
-                    {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
+                    {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : xc("uploadLabel", "Upload")}
                   </Button>
                   <p className="hidden md:block text-xs text-muted-foreground mt-1 text-center">
-                    Reference Images (optional, up to 5)
+                    {xc("uploadCaption", "Reference Images (optional, up to 5)")}
                   </p>
                   {referencePreviews.length > 0 && (
                     <div className="hidden md:flex flex-wrap gap-1.5 mt-1.5">
@@ -19251,7 +19301,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 return (
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
-                  {quotesMode ? "Theme" : "Describe your artwork"}
+                  {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
                   {reuseRegenerateBasePrompt ? (
                     <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
                       (optional changes)
@@ -19395,9 +19445,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                       return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
                     }
                     if (activePreset?.descriptionOptional) {
-                      return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+                      return activePreset.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
                     }
-                    return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+                    return activePreset?.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
                   })()}
                   value={prompt}
                   onChange={(e) => {
@@ -20961,14 +21011,14 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             </button>
           </div>
           <p className="text-sm text-muted-foreground">
-            You've reached your {galleryLimit}-design limit. To generate a new design, open your <strong>Saved Designs</strong> gallery and delete one or more designs you no longer need.
+            You've reached your {galleryLimit}-design limit. To generate a new design, open your <strong>{xc("savedDesignsLabel", "Saved Designs")}</strong> gallery and delete one or more designs you no longer need.
           </p>
           <div className="flex gap-2 pt-1">
             <button
               className="flex-1 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
               onClick={() => { setShowGalleryFullModal(false); setShowSavedDesigns(true); }}
             >
-              Open Saved Designs
+              Open {xc("savedDesignsLabel", "Saved Designs")}
             </button>
             <button
               className="px-4 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors"

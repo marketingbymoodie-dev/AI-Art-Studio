@@ -574,6 +574,8 @@ export const stylePresets = pgTable("style_presets", {
   visibility: text("visibility"),
   /** Declared customer inputs (StyleInputCapabilities). Null = legacy style, today's behaviour. */
   inputCapabilities: jsonb("input_capabilities"),
+  /** Model on non-apparel (decor) products. Null = same as generation_model. */
+  generationModelDecor: text("generation_model_decor"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -627,6 +629,41 @@ export const stylePackMerchants = pgTable(
   },
   (table) => [uniqueIndex("style_pack_merchants_uidx").on(table.packId, table.merchantId)],
 );
+
+/**
+ * Store experience profile: how a store presents the shared customizer
+ * (brand, copy, extra creative controls). merchant_id null = platform profile,
+ * usable only by merchants in `experience_profile_merchants`. Config shape:
+ * shared/experienceProfile.ts.
+ */
+export const experienceProfiles = pgTable(
+  "experience_profiles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    merchantId: varchar("merchant_id"),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    stylePackId: varchar("style_pack_id"),
+    isActive: boolean("is_active").notNull().default(true),
+    config: jsonb("config"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("experience_profiles_slug_idx").on(table.slug)],
+);
+
+export const experienceProfileMerchants = pgTable(
+  "experience_profile_merchants",
+  {
+    id: serial("id").primaryKey(),
+    profileId: varchar("profile_id").notNull(),
+    merchantId: varchar("merchant_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("experience_profile_merchants_uidx").on(table.profileId, table.merchantId)],
+);
+
+export type ExperienceProfileRow = typeof experienceProfiles.$inferSelect;
 
 export type StylePack = typeof stylePacks.$inferSelect;
 export type StylePackItem = typeof stylePackItems.$inferSelect;
@@ -1039,6 +1076,8 @@ export const customizerPages = pgTable("customizer_pages", {
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
   styleConfig: json("style_config"),
+  /** Store experience profile (branding/copy/controls). Null = classic customizer. */
+  experienceProfileId: varchar("experience_profile_id"),
   /**
    * Regional sibling group link (PARKED design — docs/Shipping-rates-plan/
    * regional-siblings-choice-and-slugs-design-notes.md §1). Pure linking
@@ -1084,6 +1123,8 @@ export const generationJobs = pgTable("generation_jobs", {
   thumbnailUrl: text("thumbnail_url"),
   mockupUrls: json("mockup_urls"),              // Saved Printify mockup URLs (array of strings)
   designState: json("design_state"),             // Full design state snapshot (transform, size, color, preset)
+  /** Server-owned structured creative brief (style packs). Null on legacy generations. */
+  creativeBrief: jsonb("creative_brief"),
   designId: text("design_id"),
   errorMessage: text("error_message"),
   /** How merchant/customer billing applies on success: merchant | customer_paid | customer_free | session */

@@ -291,6 +291,13 @@ import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
 import { loadStylePackForMerchant, resolvePageStyleConfig } from "./style-packs";
+import {
+  effectiveStyleConfigForPage,
+  listExperienceProfilesForMerchant,
+  loadExperienceProfileForMerchant,
+  resolvePageExperience,
+} from "./experience-profiles";
+import type { PublicExperienceProfile } from "@shared/experienceProfile";
 import { packLayersForCompose, preparePackGeneration, type PackGenerationContext } from "./pack-generation";
 import { normalizeReferenceImages, type TaggedReferenceImage } from "@shared/referenceImages";
 import { isPackOnlyStyle, parseStyleInputCapabilities } from "@shared/stylePacks";
@@ -6900,10 +6907,11 @@ ${orientationExtra}
       };
 
       // Match storefront: same merchant styles + page allow-list (not /api/config).
-      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets } =
+      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets, experienceProfile: ptExperience } =
         await resolveStylePresetsForProductType(productType as any);
       (designerConfig as any).styleConfig = pageStyleConfig;
       (designerConfig as any).stylePresets = pageStylePresets;
+      if (ptExperience) (designerConfig as any).experienceProfile = ptExperience;
 
       console.log(
         `[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}` +
@@ -6988,6 +6996,14 @@ ${orientationExtra}
     productTypeId: number,
     designerType?: string | null,
   ): Promise<CustomizerPageStyleConfig> {
+    return (await resolveStyleSourceForProductType(productTypeId, designerType)).config;
+  }
+
+  /** Newest page's style config + the page itself (for its experience profile). */
+  async function resolveStyleSourceForProductType(
+    productTypeId: number,
+    designerType?: string | null,
+  ): Promise<{ config: CustomizerPageStyleConfig; page: { experienceProfileId?: string | null } | null }> {
     try {
       const pages = await storage.listCustomizerPagesByProductTypeId(productTypeId);
       // Prefer active pages; newest first (list is createdAt ascending).
@@ -6997,15 +7013,18 @@ ${orientationExtra}
       ];
       for (const page of ordered) {
         const cfg = parseCustomizerPageStyleConfig(page.styleConfig);
-        if (cfg) return cfg;
+        if (cfg) return { config: cfg, page };
       }
+      // A profile page may carry no style config of its own (its pack comes from the profile).
+      const profiled = ordered.find((p) => p.experienceProfileId);
+      if (profiled) return { config: defaultStyleConfigForDesignerType(designerType), page: profiled };
     } catch (e) {
       console.warn(
         `[styleConfig] Failed to load customizer pages for pt ${productTypeId}:`,
         e,
       );
     }
-    return defaultStyleConfigForDesignerType(designerType);
+    return { config: defaultStyleConfigForDesignerType(designerType), page: null };
   }
 
   /** Map DB style rows the same way `/api/proxy/customizer-page` does. */
@@ -7083,11 +7102,12 @@ ${orientationExtra}
   }): Promise<{
     styleConfig: CustomizerPageStyleConfig;
     stylePresets: ReturnType<typeof mapDbStylesForDesigner>;
+    experienceProfile: PublicExperienceProfile | null;
   }> {
-    let styleConfig = await resolveStyleConfigForProductType(
-      productType.id,
-      productType.designerType,
-    );
+    const source = await resolveStyleSourceForProductType(productType.id, productType.designerType);
+    const experience = await resolvePageExperience(source.page, productType.merchantId);
+    let styleConfig =
+      effectiveStyleConfigForPage(source.page ? source.config : null, experience?.row) ?? source.config;
     let stylePresets: ReturnType<typeof mapDbStylesForDesigner> = [];
     try {
       const merchantId = productType.merchantId;
@@ -7114,7 +7134,7 @@ ${orientationExtra}
       styleConfig,
       productType.designerType,
     ) as ReturnType<typeof mapDbStylesForDesigner>;
-    return { styleConfig, stylePresets };
+    return { styleConfig, stylePresets, experienceProfile: experience?.public ?? null };
   }
 
   async function hydratePrintifyBothCostsFromPlatform(pt: any): Promise<any> {
@@ -7594,6 +7614,7 @@ ${orientationExtra}
           const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
           (fastConfig as any).styleConfig = fastStyles.styleConfig;
           (fastConfig as any).stylePresets = fastStyles.stylePresets;
+          if (fastStyles.experienceProfile) (fastConfig as any).experienceProfile = fastStyles.experienceProfile;
           return res.json(fastConfig);
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
@@ -7748,6 +7769,7 @@ ${orientationExtra}
       const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
       (designerConfig as any).styleConfig = sfStyles.styleConfig;
       (designerConfig as any).stylePresets = sfStyles.stylePresets;
+      if (sfStyles.experienceProfile) (designerConfig as any).experienceProfile = sfStyles.experienceProfile;
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -8476,8 +8498,9 @@ ${orientationExtra}
       }
     }
 
+    const pageExperience = await resolvePageExperience(page, installation?.merchantId);
     const pageStyleConfig = await resolvePageStyleConfig(
-      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      effectiveStyleConfigForPage(parseCustomizerPageStyleConfig(page.styleConfig), pageExperience?.row) ??
         defaultStyleConfigForDesignerType(designerConfig?.designerType),
       installation?.merchantId,
       stylePresets,
@@ -8516,6 +8539,7 @@ ${orientationExtra}
       variants,
       stylePresets,
       styleConfig: pageStyleConfig,
+      experienceProfile: pageExperience?.public ?? null,
       freshDesignAllowed: page.status === "active" || page.status === "preview",
       presentment,
       storeName,
@@ -22637,6 +22661,13 @@ ${orientationExtra}
   }));
 
   /** PATCH /api/appai/customizer-pages/:id */
+  /** Store experience profiles this store may assign to its pages (own + assigned platform profiles). */
+  app.get("/api/appai/experience-profiles", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    res.json({ profiles: await listExperienceProfilesForMerchant(resolved.installation.merchantId) });
+  }));
+
   app.patch("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
@@ -22731,6 +22762,17 @@ ${orientationExtra}
         return res.status(400).json({ error: "That style pack isn't available to this store.", code: "STYLE_PACK_UNAVAILABLE" });
       }
       updates.styleConfig = parsed as any;
+    }
+
+    if (req.body.experienceProfileId !== undefined) {
+      const profileId =
+        typeof req.body.experienceProfileId === "string" && req.body.experienceProfileId.trim()
+          ? req.body.experienceProfileId.trim()
+          : null;
+      if (profileId && !(await loadExperienceProfileForMerchant(profileId, installation.merchantId))) {
+        return res.status(400).json({ error: "That store profile isn't available to this store.", code: "EXPERIENCE_PROFILE_UNAVAILABLE" });
+      }
+      updates.experienceProfileId = profileId;
     }
 
     const nextStatus = updates.status ?? dbPage.status;
@@ -24381,8 +24423,9 @@ ${orientationExtra}
       stylePresets = hardcodedStylePresetsForDesigner();
     }
 
+    const pageExperience = await resolvePageExperience(page, installation?.merchantId);
     const pageStyleConfig = await resolvePageStyleConfig(
-      parseCustomizerPageStyleConfig(page.styleConfig) ??
+      effectiveStyleConfigForPage(parseCustomizerPageStyleConfig(page.styleConfig), pageExperience?.row) ??
         defaultStyleConfigForDesignerType(designerConfig?.designerType),
       installation?.merchantId,
       stylePresets,
@@ -24424,6 +24467,7 @@ ${orientationExtra}
       variants,
       stylePresets,
       styleConfig: pageStyleConfig,
+      experienceProfile: pageExperience?.public ?? null,
       productPublished,
       // Disabled pages: saved designs may ATC; new blank sessions cannot start.
       freshDesignAllowed: page.status === "active" || page.status === "preview",

@@ -105,6 +105,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   // Style packs. Nullable, no backfill: null = standard style, today's behaviour.
   { table: "style_presets",         column: "visibility",                  type: "TEXT" },
   { table: "style_presets",         column: "input_capabilities",          type: "JSONB" },
+  // Experience profiles. Nullable, no backfill: null = classic behaviour.
+  { table: "style_presets",         column: "generation_model_decor",      type: "TEXT" },
+  { table: "customizer_pages",      column: "experience_profile_id",       type: "VARCHAR" },
+  { table: "generation_jobs",       column: "creative_brief",              type: "JSONB" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
@@ -1468,6 +1472,33 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "experience_profiles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "experience_profiles" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "merchant_id" varchar,
+        "slug" text NOT NULL,
+        "name" text NOT NULL,
+        "style_pack_id" varchar,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "config" jsonb,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "experience_profile_merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "experience_profile_merchants" (
+        "id" serial PRIMARY KEY,
+        "profile_id" varchar NOT NULL,
+        "merchant_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_generation_costs",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
@@ -2336,6 +2367,15 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "style_pack_merchants_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "style_pack_merchants_uidx"
       ON "style_pack_merchants" ("pack_id", "merchant_id")`,
+  },
+  {
+    name: "experience_profiles_slug_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "experience_profiles_slug_idx" ON "experience_profiles" ("slug")`,
+  },
+  {
+    name: "experience_profile_merchants_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "experience_profile_merchants_uidx"
+      ON "experience_profile_merchants" ("profile_id", "merchant_id")`,
   },
   {
     name: "lifestyle_mockups_created_idx",

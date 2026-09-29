@@ -26,6 +26,8 @@ export type MobileSheetSlot = {
 export type MobileCustomizerShellProps = {
   /** Storefront-scoped label — never hardcode in the parent. */
   brandName?: string;
+  /** Store experience profile logo; replaces the dot when set. */
+  brandLogoUrl?: string;
   isLoggedIn: boolean;
   creditsLabel?: string | number;
   onBack: () => void;
@@ -77,6 +79,7 @@ export type MobileCustomizerShellProps = {
  */
 export function MobileCustomizerShell({
   brandName = DEFAULT_MOBILE_SHELL_BRAND,
+  brandLogoUrl,
   isLoggedIn,
   creditsLabel,
   onBack,
@@ -227,7 +230,11 @@ export function MobileCustomizerShell({
           onClick={onHome ?? onBack}
           data-testid="button-mobile-home"
         >
-          <span className="appai-mshell-dot" />
+          {brandLogoUrl ? (
+            <img src={brandLogoUrl} alt="" className="appai-mshell-logo" style={{ height: 20, width: "auto", maxWidth: 28, objectFit: "contain" }} />
+          ) : (
+            <span className="appai-mshell-dot" />
+          )}
           <span className="appai-mshell-brand-label">{brandName}</span>
         </button>
 

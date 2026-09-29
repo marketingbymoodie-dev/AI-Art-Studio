@@ -18,11 +18,14 @@ export function resolveMobileShellBrandName(input: {
   creatorStoreName?: string | null;
   merchantStoreName?: string | null;
   shopNameParam?: string | null;
+  /** Store experience profile brand name (never applies to creator storefronts). */
+  profileBrandName?: string | null;
 }): string {
   if (input.isCreatorStorefront) {
     return trimName(input.creatorStoreName) || DEFAULT_MOBILE_SHELL_BRAND;
   }
   return (
+    trimName(input.profileBrandName) ||
     trimName(input.shopNameParam) ||
     trimName(input.merchantStoreName) ||
     DEFAULT_MOBILE_SHELL_BRAND

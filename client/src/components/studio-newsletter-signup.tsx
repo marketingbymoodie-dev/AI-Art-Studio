@@ -15,6 +15,9 @@ type Props = {
   variant?: "default" | "muted" | "luxe" | "compact";
   className?: string;
   hideIntro?: boolean;
+  /** Store experience profile copy. Absent = the Studio Art Class wording. */
+  introText?: string;
+  buttonLabel?: string;
   /** Fired when a Studio Credit was actually granted (so the badge can refresh). */
   onCreditGranted?: (amount: number) => void;
 };
@@ -29,6 +32,8 @@ export function StudioNewsletterSignup({
   variant = "default",
   className = "",
   hideIntro = false,
+  introText,
+  buttonLabel,
   onCreditGranted,
 }: Props) {
   const [email, setEmail] = useState("");
@@ -93,7 +98,7 @@ export function StudioNewsletterSignup({
     >
       {!hideIntro && (
         <p className={isLuxe ? "text-sm text-white/70 mb-2" : "text-sm text-muted-foreground mb-2"}>
-          Join the Studio Art Class list. Discover prompt tips and tricks, inspiration from others and more.
+          {introText || "Join the Studio Art Class list. Discover prompt tips and tricks, inspiration from others and more."}
         </p>
       )}
       {done ? (
@@ -120,7 +125,7 @@ export function StudioNewsletterSignup({
             variant={isMuted ? "outline" : "default"}
             onClick={() => void join()}
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Join"}
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : buttonLabel || "Join"}
           </Button>
         </div>
       )}
