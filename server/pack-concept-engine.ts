@@ -20,7 +20,7 @@ export const PACK_CONCEPT_OPTION_COUNT = 3;
 const OUTPUT_CONTRACT = `Return ONLY JSON: {"options":[{"funny_truth": string, "visual_joke": string, "punchline": string, "subject_priority": string}, ...]}
 Exactly THREE options. No markdown, no commentary.
 - funny_truth: the recognisable truth that makes it funny (one sentence).
-- visual_joke: the single image that communicates it (one or two sentences, visual only).
+- visual_joke: the single image that communicates it — ONE concise sentence, at most 25 words, visual only.
 - punchline: the words on the design, or "" when the image is stronger without text. No wrapping quotation marks.
 - subject_priority: what must stay recognisable from the customer's photos.`;
 

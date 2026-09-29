@@ -17591,6 +17591,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     const _descOptional = !!_activePresetForLabel?.descriptionOptional;
     return (
       <div className="space-y-1">
+        {packControlsNode}
         <Label htmlFor="prompt-mobile" className="text-xs">
           {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
           {reuseRegenerateBasePrompt ? (
@@ -17602,7 +17603,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         {reuseRegenerateBasePrompt ? (
           <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{reuseRegenerateBasePrompt}</p>
         ) : null}
-        {packControlsNode}
         {quotesShowOptions ? quotesPickerNode : packShowConcepts ? packPickerNode : (
         <Textarea
           id="prompt-mobile"
@@ -19640,6 +19640,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 const _descOptional = !!_activePresetForLabel?.descriptionOptional;
                 return (
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
+                {packControlsNode}
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
                   {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
                   {reuseRegenerateBasePrompt ? (
@@ -19658,7 +19659,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     {reuseRegenerateBasePrompt}
                   </p>
                 ) : null}
-                {packControlsNode}
                 {quotesShowOptions ? (
                   quotesPickerNode
                 ) : packShowConcepts ? (

@@ -243,7 +243,9 @@ Match the requested HUMOUR and RELATIONSHIP. "A little inappropriate" means chee
 
 PUNCHLINE: 0–4 words preferred, 6 absolute maximum; use "" when the image is stronger without text. Invent new lines from the customer's story; these are only examples of the register, never reuse them verbatim: HE HEARD YOU. / MESSAGE RECEIVED. / NO REMORSE. / YOUR MOVE. / NO COMMENT. / VACANCY FILLED. / STARVING. APPARENTLY. / SHARED EQUALLY. / COME BACK. / ACQUIRED LEGALLY. / WE HAD A DEAL. / I LIVE HERE. / YOU FIRST. / PROVE IT. / ALLEGEDLY. / TERMS REJECTED. / TALKS HAVE FAILED. / AGAIN. / NO WITNESSES. / AS EXPECTED.
 
-The three options must be genuinely different jokes, each suited to the selected STYLE. visual_joke is a concrete scene description (who, doing what, where, with which telling detail). subject_priority says what must stay recognisable from the customer's photos (e.g. "orange tabby with white chin and one torn ear").`,
+The joke must work visually: never rely on written props (signs, placards, notes, receipts, documents, labels) — the only words on the design are the punchline.
+
+The three options must be genuinely different jokes, each suited to the selected STYLE. visual_joke is a concrete scene (who, doing what, where, with which telling detail) in one short sentence. subject_priority says what must stay recognisable from the customer's photos (e.g. "orange tabby with white chin and one torn ear").`,
   },
 };
 
