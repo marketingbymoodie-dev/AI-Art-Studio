@@ -303,6 +303,8 @@ import {
 import type { PublicExperienceProfile } from "@shared/experienceProfile";
 import { publicCreativeBrief } from "./customer-references";
 import { identityMatches } from "./storefront-identity-check";
+import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
+import { resolveProvenCustomer, type IdentitySource } from "./storefront-identity-source";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -581,42 +583,46 @@ async function captureAopCustomerFlowSnapshot(params: {
   }
 }
 
-const STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
-
-function getIdentitySecret(): string {
-  const secret = process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("APPAI_IDENTITY_SECRET or SESSION_SECRET must be set");
-    }
-    return "appai-dev-identity-secret";
-  }
-  return secret;
-}
-
-function signStorefrontIdentityToken(customerId: string, shop: string): string {
-  return jwt.sign(
-    { sub: customerId, shop, typ: "storefront_identity" },
-    getIdentitySecret(),
-    { expiresIn: STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS },
-  );
-}
-
 function verifyStorefrontIdentityToken(req: Request): { customerId: string; shop?: string } | null {
-  const auth = req.headers.authorization || "";
-  if (!auth.toLowerCase().startsWith("bearer ")) return null;
-  try {
-    const payload = jwt.verify(auth.slice("bearer ".length), getIdentitySecret()) as jwt.JwtPayload;
-    if (!payload?.sub || payload.typ !== "storefront_identity") return null;
-    return { customerId: String(payload.sub), shop: typeof payload.shop === "string" ? payload.shop : undefined };
-  } catch {
-    return null;
-  }
+  return verifyStorefrontIdentityHeader(req.headers.authorization);
 }
 
 /** The request's identity token must belong to `customerId` (and to this shop when the token names one). */
 function storefrontIdentityMatches(req: Request, customerId: string, shop: string) {
   return identityMatches(verifyStorefrontIdentityToken(req), customerId, shop);
+}
+
+/**
+ * The customer a storefront request may act as — from proof only (token for
+ * this shop, proxy-signed Shopify customer, or anonymous session). A bare
+ * customer id never counts. See server/storefront-identity-source.ts.
+ */
+async function resolveProvenStorefrontCustomer(
+  req: Request,
+  shop: string,
+  claims: { shopifyCustomerId?: string | null; anonSessionId?: string | null },
+): Promise<{ customer: NonNullable<Awaited<ReturnType<typeof storage.getCustomer>>>; source: IdentitySource["kind"] } | null> {
+  const q = req.query as Record<string, string>;
+  const proxyVerified = typeof q.signature === "string" && verifyAppProxySignature(q);
+  return resolveProvenCustomer(
+    {
+      getCustomer: async (id) => {
+        const c = await storage.getCustomer(id);
+        if (c) await storage.ensureCustomerBalance(c.id);
+        return c;
+      },
+      resolveShopifyCustomer: (shopifyCustomerId) => resolveStorefrontCustomerIdentity({ shop, shopifyCustomerId }),
+      resolveAnonCustomer: (anonSessionId) => resolveStorefrontCustomerIdentity({ shop, anonSessionId }),
+      aliasTypes: async (id) => (await storage.getCustomerAliases(id).catch(() => [])).map((a) => a.aliasType),
+    },
+    {
+      shop,
+      token: verifyStorefrontIdentityToken(req),
+      proxy: { verified: proxyVerified, shop: q.shop, loggedInCustomerId: q.logged_in_customer_id },
+      claimedShopifyCustomerId: claims.shopifyCustomerId,
+      anonSessionId: claims.anonSessionId,
+    },
+  );
 }
 
 async function resolveStorefrontCustomerIdentity(args: { shop: string; customerId?: string | null; shopifyCustomerId?: string | null; anonSessionId?: string | null }) {
@@ -8915,17 +8921,24 @@ ${orientationExtra}
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
 
-      if (customerId) {
-        const tokenIdentity = verifyStorefrontIdentityToken(req);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-        customer = await resolveStorefrontCustomerIdentity({
-          shop,
-          customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
-          shopifyCustomerId: isInternalCustomer ? null : customerId,
-        }).catch((err) => {
-          console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
-          return null;
-        });
+      // Customer wallet only from proof (token / proxy-signed Shopify id); an
+      // unproven customerId falls through to the anonymous session path below.
+      const isInternalCustomer =
+        typeof customerId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const provenSf = customerId
+        ? await resolveProvenStorefrontCustomer(req, shop, {
+            shopifyCustomerId: isInternalCustomer ? null : String(customerId),
+          }).catch((err) => {
+            console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
+            return null;
+          })
+        : null;
+      if (customerId && !provenSf) {
+        console.warn(P, reqId, `customer ${customerId} not proven — using anonymous session`);
+      }
+      if (provenSf) {
+        customer = provenSf.customer;
 
         if (customer) {
           resolvedJobCustomerId = customer.id;
@@ -12723,13 +12736,18 @@ ${orientationExtra}
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) return res.status(403).json({ error: "Shop not authorized" });
 
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (typeof customerId === "string" ? customerId : null),
+      // Token (this shop) → proxy-signed Shopify customer → anonymous session.
+      // A body customerId alone never mints a token (it is only compared below).
+      const proven = await resolveProvenStorefrontCustomer(req, shop, {
         shopifyCustomerId: typeof shopifyCustomerId === "string" ? shopifyCustomerId : null,
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
+      if (!proven) {
+        return res.status(401).json({ error: "SIGN_IN_REQUIRED", message: "Sign in again to continue." });
+      }
+      const customer = proven.customer;
+      const signInRequired =
+        typeof customerId === "string" && !!customerId && customerId !== customer.id && proven.source !== "token";
       const creatorCtx = creatorContextFromRequest(req);
       const wallet = await resolveStorefrontWalletView({
         shop,
@@ -12763,6 +12781,8 @@ ${orientationExtra}
         ...wallet,
         email,
         signedIn,
+        // The stored id could not be proven (expired token): this is a fresh identity.
+        ...(signInRequired ? { identityReset: true } : {}),
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);

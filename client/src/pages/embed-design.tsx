@@ -292,6 +292,7 @@ import {
 import { parseStyleInputCapabilities } from "@shared/stylePacks";
 import { parseCreativeBrief, type PublicCreativeBrief } from "@shared/creativeBrief";
 import { ConceptOptionsPicker } from "@/components/designer/ConceptOptionsPicker";
+import { scheduleWalletSettleRefresh } from "@/lib/walletSettleRefresh";
 import {
   PackCreativeControls,
   choiceLabel,
@@ -3401,6 +3402,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     return headers;
   };
 
+  const refreshStorefrontWalletRef = useRef<() => Promise<number | null>>(async () => null);
+
   useEffect(() => {
     if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
     const shopifyCustomerId = loggedInCustomerIdFromHost() || null;
@@ -3625,8 +3628,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
   }, [anonSessionId, shopDomain, otpEmail]);
 
-  const refreshStorefrontWallet = useCallback(async () => {
-    if (!shopDomain || !storefrontCustomerId) return;
+  const refreshStorefrontWallet = useCallback(async (): Promise<number | null> => {
+    if (!shopDomain || !storefrontCustomerId) return null;
     try {
       const qs = new URLSearchParams({
         customerId: storefrontCustomerId,
@@ -3640,7 +3643,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           : {},
       });
       const data = await res.json();
-      if (!res.ok || !data?.ok) return;
+      if (!res.ok || !data?.ok) return null;
       setCustomer((prev) => {
         const next = {
           ...(prev || { id: storefrontCustomerId, isLoggedIn: false }),
@@ -3654,8 +3657,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
         setFreeGenerationLimit(data.freeGenerationLimit);
       }
+      return typeof data.freeGenerationsUsed === "number" ? data.freeGenerationsUsed : null;
     } catch {
       /* badge refresh is best-effort */
+      return null;
     }
   }, [
     shopDomain,
@@ -3664,6 +3669,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     creatorUsernameParam,
     creatorIdParam,
   ]);
+  refreshStorefrontWalletRef.current = refreshStorefrontWallet;
 
   useEffect(() => {
     if (!isStorefront || !shopDomain) return;
@@ -9958,6 +9964,14 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           };
           setCustomer(updatedCust);
           persistCustomerRecord(updatedCust);
+          // The free generation is charged just after the job is marked complete,
+          // so this status can predate the charge: re-read the wallet shortly after.
+          if (storefrontCustomerId) {
+            scheduleWalletSettleRefresh({
+              refresh: () => refreshStorefrontWalletRef.current(),
+              statusFreeUsed: nextFreeUsed,
+            });
+          }
 
           if (remaining > 0) {
             toast({
