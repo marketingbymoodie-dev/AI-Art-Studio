@@ -6160,7 +6160,11 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       return;
     }
 
-    safeFetch(`${API_BASE}/api/shared-designs/${sharedDesignId}`)
+    safeFetch(
+      `${API_BASE}/api/shared-designs/${sharedDesignId}` +
+        (anonSessionId ? `?sessionId=${encodeURIComponent(anonSessionId)}` : ''),
+      { headers: identityJsonHeaders() },
+    )
       .then(res => {
         if (!res.ok) {
           if (res.status === 410) {
@@ -8360,7 +8364,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             }
             void safeFetch(`${API_BASE}/api/storefront/save-state`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: identityJsonHeaders(),
               body: JSON.stringify({
                 jobId,
                 shop: shopDomain,
@@ -8769,7 +8773,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     try {
       const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop,
@@ -8959,7 +8963,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     const t = window.setTimeout(() => {
       void safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop: shopDomain,
@@ -9409,7 +9413,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
     await safeFetch(`${API_BASE}/api/storefront/save-state`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityJsonHeaders(),
       body: JSON.stringify({
         jobId,
         shop,
@@ -10171,7 +10175,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           const artworkAbs = toAbsoluteImageUrl(imageUrl);
           void safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId: data.jobId,
               shop: panelSaveShop,
@@ -10229,7 +10233,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         // Also save the full design state (transform, size, color, preset) so it can be fully restored
         safeFetch(`${API_BASE}/api/storefront/save-state`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: identityJsonHeaders(),
           body: JSON.stringify({
             jobId: data.jobId,
             shop: saveShop,
@@ -11865,7 +11869,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       const snap = hoodieAopPlacerStateRef.current ?? live;
       void safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop: shopDomain,
@@ -12448,7 +12452,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         try {
           const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop,
@@ -13538,7 +13542,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           if (isStale()) return;
           const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId: panelJobId,
               shop: panelSaveShop,
@@ -13653,7 +13657,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               .then((backHosted) =>
                 safeFetch(`${API_BASE}/api/storefront/save-state`, {
                   method: "POST",
-                  headers: { "Content-Type": "application/json" },
+                  headers: identityJsonHeaders(),
                   body: JSON.stringify({
                     jobId: testerJobId,
                     shop: testerShop,
@@ -13794,7 +13798,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           const jobId = savedJobIdRef.current;
           void safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
@@ -13957,7 +13961,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         if (currentHandle || currentTypeId) {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
@@ -14098,7 +14102,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       emitTesterDesignStatus({ jobId, aopPanels: "saving" });
       await safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop,
@@ -14241,7 +14245,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         try {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: panelSaveShop,
@@ -20301,7 +20305,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
                           method: "POST",
-                          headers: { "Content-Type": "application/json" },
+                          headers: identityJsonHeaders(),
                           body: JSON.stringify({
                             jobId: panelJobId,
                             shop: panelSaveShop,

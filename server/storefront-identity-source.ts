@@ -178,3 +178,25 @@ export function canCopyCreativeBrief(
 ): boolean {
   return !!source && !!ownerId && source.shop === forkShop && source.customerId === ownerId;
 }
+
+/**
+ * May this caller change a saved job/design (save-state, fork-placement)?
+ * A job id alone is never proof. Owned job → that proven customer; legacy
+ * session-only job → the proven anonymous session (or the account it was merged
+ * into); unowned job (Preview Studio / admin tester) → that shop's merchant studio.
+ */
+export function decideJobAccess(
+  job: { shop: string; customerId?: string | null; sessionId?: string | null } | null | undefined,
+  shop: string,
+  caller: { customerId: string | null; anonSessionIds: string[]; merchantStudio: boolean },
+): { ok: true } | { ok: false; status: 403 | 404; error: "DESIGN_NOT_FOUND" | "NOT_DESIGN_OWNER" } {
+  if (!job || normalizeShopForIdentity(job.shop) !== normalizeShopForIdentity(shop)) {
+    return { ok: false, status: 404, error: "DESIGN_NOT_FOUND" };
+  }
+  const owns = job.customerId
+    ? caller.customerId === job.customerId
+    : job.sessionId
+      ? caller.anonSessionIds.includes(job.sessionId)
+      : caller.merchantStudio;
+  return owns ? { ok: true } : { ok: false, status: 403, error: "NOT_DESIGN_OWNER" };
+}

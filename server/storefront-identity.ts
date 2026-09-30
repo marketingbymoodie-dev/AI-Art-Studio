@@ -12,7 +12,7 @@ import type { Request } from "express";
 import { storage } from "./storage";
 import { verifyAppProxySignature } from "./shopify-app-credentials";
 import { verifyStorefrontIdentityHeader } from "./storefront-identity-token";
-import { resolveVerifiedIdentity, type VerifiedIdentity } from "./storefront-identity-source";
+import { decideJobAccess, resolveVerifiedIdentity, type VerifiedIdentity } from "./storefront-identity-source";
 
 export type StorefrontCustomerRow = NonNullable<Awaited<ReturnType<typeof storage.getCustomer>>>;
 
@@ -97,4 +97,27 @@ export async function resolveCreatorVisitorCustomer(
 /** Internal customer UUID (vs. a numeric Shopify customer id). */
 export function isInternalCustomerId(v: unknown): boolean {
   return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+}
+
+/**
+ * Job/design access for save-state and fork-placement: the shared identity rule
+ * (token / proxy-signed Shopify customer / anonymous session) + decideJobAccess.
+ */
+export async function resolveStorefrontJobAccess(
+  req: Request,
+  shop: string,
+  job: { shop: string; customerId?: string | null; sessionId?: string | null } | null | undefined,
+  anonSessionId?: string | null,
+) {
+  const caller = await resolveVerifiedStorefrontIdentity(req, shop, { anonSessionId: anonSessionId || null });
+  const anonSessionIds: string[] = [];
+  let merchantStudio = false;
+  if (caller.ok) {
+    if (caller.kind === "anonymous") anonSessionIds.push(caller.anonSessionId);
+    for (const a of await storage.getCustomerAliases(caller.customer.id).catch(() => [])) {
+      if (a.aliasType === "anon_session" && a.aliasValue) anonSessionIds.push(String(a.aliasValue));
+      if (a.aliasType === "merchant_studio") merchantStudio = true;
+    }
+  }
+  return decideJobAccess(job, shop, { customerId: caller.ok ? caller.customer.id : null, anonSessionIds, merchantStudio });
 }

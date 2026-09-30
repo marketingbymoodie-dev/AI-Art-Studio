@@ -305,7 +305,7 @@ import { publicCreativeBrief } from "./customer-references";
 import { identityMatches } from "./storefront-identity-check";
 import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
 import { canClaimDesign, canCopyCreativeBrief, decideSessionMerge, isAuthenticatedAccount } from "./storefront-identity-source";
-import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
+import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveStorefrontJobAccess, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -10559,6 +10559,10 @@ ${orientationExtra}
       if (!source || source.shop !== String(shop).toLowerCase().replace(/^https?:\/\//, "")) {
         return res.status(404).json({ error: "Source design not found" });
       }
+      const access = await resolveStorefrontJobAccess(req, String(shop), source, req.body?.sessionId);
+      if (!access.ok) {
+        return res.status(access.status).json({ error: access.error });
+      }
       const prevState =
         source.designState && typeof source.designState === "object" && !Array.isArray(source.designState)
           ? (source.designState as Record<string, unknown>)
@@ -10617,6 +10621,10 @@ ${orientationExtra}
       const job = await storage.getGenerationJob(jobId);
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
+      }
+      const access = await resolveStorefrontJobAccess(req, shop, job, req.body?.sessionId);
+      if (!access.ok) {
+        return res.status(access.status).json({ error: access.error });
       }
       const prevState =
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
@@ -14439,17 +14447,22 @@ ${orientationExtra}
       await storage.incrementSharedDesignViewCount(sharedDesign.id);
 
       // Reward Ladder — share_design rung. Grant to the sharer when a different
-      // visitor opens the link. visitorKey/visitorCustomerId come from the client
-      // (appai_uid localStorage + logged-in identity when available).
+      // visitor opens the link. The viewer is the verified storefront identity
+      // (token / proxy-signed customer / anonymous session), never a claimed id;
+      // no proof → no grant. The page itself stays public.
       const ownerId = (sharedDesign as any).ownerCustomerId as string | null | undefined;
-      if (ownerId && sharedDesign.shopDomain) {
-        const visitorKey = typeof req.query.visitorKey === "string" ? req.query.visitorKey : null;
-        const visitorCustomerId = typeof req.query.customerId === "string" ? req.query.customerId : null;
+      const viewer =
+        ownerId && sharedDesign.shopDomain
+          ? await resolveVerifiedStorefrontIdentity(req, String(sharedDesign.shopDomain), {
+              anonSessionId: typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+            }).catch(() => null)
+          : null;
+      if (ownerId && sharedDesign.shopDomain && viewer?.ok) {
         void tryGrantShareDesign({
           shop: String(sharedDesign.shopDomain),
           ownerCustomerId: ownerId,
-          visitorCustomerId,
-          visitorKey,
+          visitorCustomerId: viewer.customer.id,
+          visitorKey: null,
           shareId: sharedDesign.id,
           creatorId:
             (sharedDesign as any).creatorId ||
