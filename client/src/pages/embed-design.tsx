@@ -291,6 +291,7 @@ import {
 } from "@shared/experienceProfile";
 import { parseStyleInputCapabilities } from "@shared/stylePacks";
 import { parseCreativeBrief, type PublicCreativeBrief } from "@shared/creativeBrief";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, petposterousLook, petposterousLooks, petposterousProductFamily } from "@shared/petposterousCreative";
 import { ConceptOptionsPicker } from "@/components/designer/ConceptOptionsPicker";
 import { scheduleWalletSettleRefresh } from "@/lib/walletSettleRefresh";
 import {
@@ -1120,7 +1121,7 @@ function themeSnapshotFromHostStorage(): Record<string, string> | null {
 }
 
 /** Style-pack concept writer option (server/pack-concept-engine.ts). */
-type PackConceptOptionClient = { funnyTruth: string; visualJoke: string; punchline: string; subjectPriority: string };
+type PackConceptOptionClient = { funnyTruth: string; visualJoke: string; punchline: string; subjectPriority: string; conceptFramework?: string };
 
 /** Store experience profile colours on top of the store theme (only keys the profile sets). */
 function applyExperienceBrandVars(brand: PublicExperienceProfile["brand"] | null | undefined) {
@@ -2878,6 +2879,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const [packConcepts, setPackConcepts] = useState<PackConceptOptionClient[] | null>(null);
   const [packConceptPick, setPackConceptPick] = useState<number | null>(null);
   const [packConceptLoading, setPackConceptLoading] = useState(false);
+  const [packVisualSystem, setPackVisualSystem] = useState("");
+  const [packMoreLooks, setPackMoreLooks] = useState(false);
   /** Stored private photos from a reloaded brief (reused on regenerate). */
   const [packStoredRefs, setPackStoredRefs] = useState<PublicCreativeBrief["referenceImages"]>([]);
   /** Role per uploaded File (pet / owner); untagged files are sent as legacy strings. */
@@ -6242,7 +6245,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       wordsMode: brief.wordsMode,
       exactWords: brief.wordsMode === "exact" ? brief.punchline ?? "" : "",
     });
-    if (brief.subStyle) setSelectedStyleOption(brief.subStyle);
+    setPackVisualSystem(brief.visualSystem ?? "");
+    if (brief.subStyle && brief.profileKey !== "petposterous") setSelectedStyleOption(brief.subStyle);
     packConceptKeyRef.current = `${stylePresetId ?? ""}|${brief.subStyle ?? ""}`;
     if (brief.visualJoke) {
       setPackConcepts([
@@ -6251,6 +6255,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           visualJoke: brief.visualJoke,
           punchline: brief.punchline ?? "",
           subjectPriority: brief.subjectPriority ?? "",
+          conceptFramework: brief.conceptFramework ?? "pp-owner-vs-pet",
         },
       ]);
       setPackConceptPick(0);
@@ -10413,9 +10418,27 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     quotesMode && !quotesVerbatim && Array.isArray(quoteOptions) && quoteOptions.length === 3;
   const quotesNeedWrite = quotesMode && !quotesVerbatim && !quotesShowOptions;
 
+  const petposterousV2 = experienceProfile?.slug === "petposterous" && !!experienceProfile?.stylePackId && !!experienceProfile?.conceptWriter;
+  // Keep one assigned DB style as the authorised pack/model carrier. Frameworks
+  // are chosen by the concept engine, never by customers as visual styles.
+  useEffect(() => {
+    if (!petposterousV2 || selectedPreset) return;
+    const carrier = filteredStylePresets.find((p) => p.catalogSlug === "pp-owner-vs-pet")
+      ?? filteredStylePresets.find((p) => p.catalogSlug?.startsWith("pp-"));
+    if (carrier) setSelectedPreset(carrier.id);
+  }, [petposterousV2, filteredStylePresets, selectedPreset]);
+  const packProductFamily = petposterousProductFamily(productTypeConfig, isApparel);
+  const packSelectedFramework = packConceptPick != null ? packConcepts?.[packConceptPick]?.conceptFramework : null;
+  const packLooks = petposterousLooks(packProductFamily, packSelectedFramework);
+  useEffect(() => {
+    if (packVisualSystem && petposterousLook(packVisualSystem)?.compatibility[packProductFamily] === "hidden") setPackVisualSystem("");
+  }, [packProductFamily, packVisualSystem]);
+
   // Style-pack styles (visibility pack_only) on a page with a store experience profile.
   const packStyleActive = !!experienceProfile && (quotesActivePreset as any)?.visibility === "pack_only";
-  const packCaps = packStyleActive ? parseStyleInputCapabilities((quotesActivePreset as any)?.inputCapabilities) : null;
+  const packCaps = packStyleActive ? parseStyleInputCapabilities(petposterousV2
+    ? { petPhoto: "optional", ownerPhoto: "optional", humor: { supported: true, default: "witty" }, relationship: { supported: true, default: "its-complicated" } }
+    : (quotesActivePreset as any)?.inputCapabilities) : null;
   const packConceptMode = packStyleActive && !!experienceProfile?.conceptWriter;
   // 3 fresh ideas, or the 1 saved concept of a reloaded design.
   const packShowConcepts = packConceptMode && Array.isArray(packConcepts) && packConcepts.length > 0;
@@ -10425,6 +10448,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const resetPackConcepts = () => {
     setPackConcepts(null);
     setPackConceptPick(null);
+    setPackVisualSystem("");
   };
   const packConceptWords = (c: PackConceptOptionClient | undefined) =>
     packState.wordsMode === "none" ? "" : packState.wordsMode === "exact" ? packState.exactWords.trim() : c?.punchline ?? "";
@@ -10459,6 +10483,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               species: choiceLabel(controls.species?.options, packState.species),
               personalityTraits: packState.personality.map((id) => choiceLabel(controls.personality?.options, id)),
               behavior: prompt,
+              wordsMode: packState.wordsMode,
+              exactWords: packState.exactWords,
               humor: packHumor,
               relationship: packRelationship,
               subStyle: selectedStyleOption || undefined,
@@ -10476,6 +10502,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       packConceptKeyRef.current = `${selectedPreset}|${selectedStyleOption}`;
       setPackConcepts(data.options);
       setPackConceptPick(null);
+      setPackVisualSystem("");
     } catch {
       toast({ title: "Could not write ideas", description: "Try again in a moment.", variant: "destructive" });
     } finally {
@@ -10693,7 +10720,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     if (quotesNeedWrite) return !prompt.trim();
     if (quotesShowOptions) return quotePickIndex == null;
     if (packNeedConcepts) return !prompt.trim();
-    if (packShowConcepts) return packConceptPick == null || (packState.wordsMode === "exact" && !packState.exactWords.trim());
+    if (packShowConcepts) return packConceptPick == null || (petposterousV2 && !packVisualSystem) || (packState.wordsMode === "exact" && !packState.exactWords.trim());
     if (quotesVerbatim) return !detectQuotesVerbatimInput(prompt).text;
     return !prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find((p) => p.id === selectedPreset)?.descriptionOptional;
   })();
@@ -10791,6 +10818,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
     const packNow = packStyleActive && (activePreset as any)?.visibility === "pack_only";
     if (packConceptMode && packConceptPick == null) return;
+    if (petposterousV2 && (!packVisualSystem || !Object.prototype.hasOwnProperty.call(PETPOSTEROUS_CONCEPT_FRAMEWORKS, packSelectedFramework || ""))) return;
     if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim() && !quotesNow && !packNow) {
       const mismatch = detectStylePromptMismatch(
         typedPrompt,
@@ -10814,7 +10842,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     // Build the prompt: prepend selected option fragment if present
     let fullPrompt = effectivePrompt;
     let resolvedBaseImageUrl: string | undefined;
-    if (activePreset?.options && selectedStyleOption !== "" && !quotesNow) {
+    if (activePreset?.options && selectedStyleOption !== "" && !quotesNow && !petposterousV2) {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
         fullPrompt = `${selectedChoice.promptFragment}. ${effectivePrompt}`;
@@ -10942,6 +10970,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   subjectPriority: concept?.subjectPriority,
                   punchline: concept?.punchline ?? "",
                   conceptIndex: packConceptPick ?? undefined,
+                  ...(petposterousV2 ? { visualSystem: packVisualSystem, conceptFramework: concept?.conceptFramework } : {}),
                   wordsMode: packState.wordsMode,
                   exactWords: packState.exactWords.trim() || undefined,
                   petName: packState.petName.trim() || undefined,
@@ -17259,7 +17288,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   // these via {!isMobile && …} at their original positions (byte-for-byte
   // output); MobileCustomizerShell renders the SAME element objects inside its
   // sheets. One instance per session — reused, never re-implemented.
-  const mStyleSelectorNode = (
+  const mStyleSelectorNode = petposterousV2 ? null : (
     <StyleSelector
       stylePresets={filteredStylePresets}
       selectedStyle={selectedPreset}
@@ -17295,7 +17324,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   );
   const mStyleHelperNode = (
     <div className="mt-0.5 min-h-[1rem]">
-      {selectedPreset === "" && (
+      {!petposterousV2 && selectedPreset === "" && (
         <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
       )}
     </div>
@@ -17489,7 +17518,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       </Select>
     </div>
   ) : null;
-  const mStyleSubOptionsNode = showPresetsParam && selectedPreset !== "" ? (() => {
+  const mStyleSubOptionsNode = !petposterousV2 && showPresetsParam && selectedPreset !== "" ? (() => {
     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
     if (!activePreset?.options) return null;
     const { label, choices } = activePreset.options;
@@ -17528,6 +17557,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     );
   })() : null;
   const mStyleBasePreviewNode = (() => {
+    if (petposterousV2) return null;
     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
     let previewUrl: string | undefined;
     if (selectedStyleOption !== "" && activePreset?.options) {
@@ -17590,13 +17620,14 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
   /** Style-pack concepts: punchline + short visual idea; the rest stays hidden. */
   const packPickerNode = packShowConcepts ? (
+    <>
     <ConceptOptionsPicker
       rows={packConcepts!.map((c) => ({
         primary: packState.wordsMode === "none" ? "No words" : packConceptWords(c) || "No words",
         secondary: c.visualJoke,
       }))}
       pick={packConceptPick}
-      onPick={setPackConceptPick}
+      onPick={(index) => { setPackConceptPick(index); setPackVisualSystem(""); setPackMoreLooks(false); }}
       idStem="concept"
       boxTestId="concept-options-box"
       newLink={{ label: "Change the story", onClick: resetPackConcepts, testId: "button-concepts-new" }}
@@ -17607,6 +17638,21 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         testId: "button-concepts-more",
       }}
     />
+    {petposterousV2 && packConceptPick != null ? (
+      <div className="space-y-2 pt-3" data-testid="petposterous-look-selector">
+        <Label>LOOK</Label>
+        <div className="flex flex-wrap gap-2">
+          {[...packLooks.recommended, ...(packMoreLooks ? packLooks.more : [])].map((look) => (
+            <Button key={look.id} type="button" variant={packVisualSystem === look.id ? "default" : "outline"}
+              aria-pressed={packVisualSystem === look.id} onClick={() => setPackVisualSystem(look.id)}
+              data-testid={`look-${look.id}`}>{look.label}</Button>
+          ))}
+        </div>
+        {packLooks.more.length ? <button type="button" className="text-xs underline" onClick={() => setPackMoreLooks(!packMoreLooks)}>{packMoreLooks ? "Fewer styles" : "More Styles"}</button> : null}
+        {!packVisualSystem ? <p className="text-xs text-muted-foreground">Choose a look for your artwork.</p> : null}
+      </div>
+    ) : null}
+    </>
   ) : null;
 
   const packOwnerAllowed = packStyleActive && packCaps?.ownerPhoto !== "unsupported";
@@ -19314,7 +19360,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
-                  {displayName || productTypeConfig?.name || productTitle}
+                  {petposterousV2 ? productTypeConfig?.name || displayName || productTitle : displayName || productTypeConfig?.name || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const sizeSelected = Boolean(selectedSize);

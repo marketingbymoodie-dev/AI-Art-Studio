@@ -22,6 +22,9 @@ export type CreativeBriefV1 = {
   stylePackId: string | null;
   styleSlug: string | null;
   subStyle: string | null;
+  conceptFramework?: string | null;
+  visualSystem?: string | null;
+  productRenderer?: string | null;
   petName: string | null;
   species: string | null;
   personalityTraits: string[];
@@ -87,6 +90,9 @@ export function parseCreativeBrief(raw: unknown): CreativeBriefV1 | null {
     stylePackId: str(o.stylePackId, 80),
     styleSlug: str(o.styleSlug, 80),
     subStyle: str(o.subStyle, 60),
+    ...(o.conceptFramework ? { conceptFramework: str(o.conceptFramework, 80) } : {}),
+    ...(o.visualSystem ? { visualSystem: str(o.visualSystem, 80) } : {}),
+    ...(o.productRenderer ? { productRenderer: str(o.productRenderer, 40) } : {}),
     petName: str(o.petName, 40),
     species: str(o.species, 40),
     personalityTraits: parsePersonalityTraits(o.personalityTraits),

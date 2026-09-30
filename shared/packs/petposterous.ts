@@ -249,7 +249,7 @@ PUNCHLINE: 0–4 words preferred, 6 absolute maximum; use "" when the image is s
 
 The joke must work visually: never rely on written props (signs, placards, notes, receipts, documents, labels) — the only words on the design are the punchline.
 
-The three options must be genuinely different jokes, each suited to the selected STYLE. visual_joke is a concrete scene (who, doing what, where, with which telling detail) in one short sentence. subject_priority says what must stay recognisable from the customer's photos (e.g. "orange tabby with white chin and one torn ear").`,
+The three options must be genuinely different jokes, each derived from the story and an appropriate internal joke framework. The visual LOOK is selected afterward. visual_joke is a concrete scene (who, doing what, where, with which telling detail) in one short sentence. subject_priority says what must stay recognisable from the customer's photos (e.g. "orange tabby with white chin and one torn ear").`,
   },
 };
 

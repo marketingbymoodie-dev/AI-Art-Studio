@@ -21,6 +21,7 @@ import {
   type CreativeBriefV1,
   type WordsMode,
 } from "@shared/creativeBrief";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, PETPOSTEROUS_PRODUCT_RENDERERS, petposterousLook, type PetposterousProductFamily } from "@shared/petposterousCreative";
 import { resolveGeneratePack } from "./style-packs";
 import { signReferencePath, storeReferenceDataUrl } from "./customer-references";
 
@@ -49,6 +50,9 @@ export type PackGenerationContext = {
   funnyTruth: string | null;
   subjectPriority: string | null;
   conceptIndex: number | null;
+  conceptFramework?: string | null;
+  visualSystem?: string | null;
+  productRenderer?: PetposterousProductFamily | null;
 };
 
 type Rejection = { status: number; body: Record<string, unknown> };
@@ -74,7 +78,10 @@ export async function preparePackGeneration(opts: {
   const inputs = (opts.body.packInputs && typeof opts.body.packInputs === "object"
     ? opts.body.packInputs
     : {}) as Record<string, unknown>;
-  const capabilities = parseStyleInputCapabilities(opts.style.inputCapabilities);
+  const v2 = inputs.visualSystem != null;
+  const capabilities = parseStyleInputCapabilities(v2 && String(opts.style.catalogSlug || "").startsWith("pp-")
+    ? { petPhoto: "optional", ownerPhoto: "optional", humor: { supported: true, default: "witty" }, relationship: { supported: true, default: "its-complicated" } }
+    : opts.style.inputCapabilities);
   const capError = checkReferenceInputs(
     capabilities,
     opts.referenceImages.map((r) => r.role),
@@ -87,6 +94,9 @@ export async function preparePackGeneration(opts: {
   const profile = pack ? getStylePackProfile(pack.pack.promptProfileKey) : null;
   if (!pack || !profile) return { ok: true, ctx: null };
 
+  if (v2 && (profile.key !== "petposterous" || !petposterousLook(inputs.visualSystem) || !Object.prototype.hasOwnProperty.call(PETPOSTEROUS_CONCEPT_FRAMEWORKS, String(inputs.conceptFramework)))) {
+    return { ok: false, status: 400, body: { error: "INVALID_CREATIVE_SYSTEM", message: "Choose a compatible look and concept." } };
+  }
   const wordsMode = parseWordsMode(inputs.wordsMode);
   const punchline =
     wordsMode === "none" ? "" : wordsMode === "exact" ? str(inputs.exactWords, 120) ?? str(inputs.punchline, 120) : str(inputs.punchline, 120);
@@ -117,6 +127,7 @@ export async function preparePackGeneration(opts: {
       funnyTruth: str(inputs.funnyTruth),
       subjectPriority: str(inputs.subjectPriority),
       conceptIndex: Number.isInteger(inputs.conceptIndex) ? (inputs.conceptIndex as number) : null,
+      ...(v2 ? { conceptFramework: String(inputs.conceptFramework), visualSystem: String(inputs.visualSystem) } : {}),
     },
   };
 }
@@ -131,7 +142,7 @@ export function packLayersForCompose(
     customerImages: TaggedReferenceImage[];
   },
 ): PackPromptLayers {
-  return buildPackPromptLayers({
+  const layers = buildPackPromptLayers({
     profile: ctx.profile,
     capabilities: ctx.capabilities,
     isApparel: opts.isApparel,
@@ -148,6 +159,16 @@ export function packLayersForCompose(
       identityRules: ctx.profile.referenceIdentity,
     }),
   });
+  if (ctx.profile.key === "petposterous" && ctx.visualSystem) {
+    const look = petposterousLook(ctx.visualSystem);
+    const family = ctx.productRenderer ?? (opts.isApparel ? "apparel" : "poster");
+    if (!look || look.compatibility[family] === "hidden") throw new Error("Look is unavailable for this product");
+    layers.suppressStyleLayers = true;
+    layers.conceptFramework = `JOKE FRAMEWORK: ${PETPOSTEROUS_CONCEPT_FRAMEWORKS[ctx.conceptFramework || ""] || "Specific pet behaviour with intentional agency."}`;
+    layers.visualSystem = look.prompt;
+    layers.rendererExtra = PETPOSTEROUS_PRODUCT_RENDERERS[family] + "\nPRODUCT AUTHORITY: the product renderer overrides any framework or look instruction about composition, background, scale and edges.";
+  }
+  return layers;
 }
 
 /** Subject facts + chosen visual joke, as one concept layer. */
@@ -174,6 +195,7 @@ export function creativeBriefFromContext(
     stylePackId: ctx.packId,
     styleSlug: opts.styleSlug,
     subStyle: opts.subStyle,
+    ...(ctx.visualSystem ? { conceptFramework: ctx.conceptFramework ?? null, visualSystem: ctx.visualSystem, productRenderer: ctx.productRenderer ?? null } : {}),
     petName: ctx.petName,
     species: ctx.species,
     personalityTraits: ctx.personalityTraits,

@@ -294,6 +294,7 @@ import { loadStylePackForMerchant, resolveGeneratePack, resolvePageStyleConfig }
 import { generatePackConceptOptions } from "./pack-concept-engine";
 import { getStylePackProfile } from "@shared/stylePackProfiles";
 import { parsePersonalityTraits } from "@shared/creativeBrief";
+import { petposterousProductFamily, petposterousLook } from "@shared/petposterousCreative";
 import {
   effectiveStyleConfigForPage,
   listExperienceProfilesForMerchant,
@@ -2890,6 +2891,10 @@ export async function registerRoutes(
         outputMode: styleOutputModeAdmin,
         catalogSlug: catalogSlugAdmin,
       });
+      if (adminPackCtx?.profile.key === "petposterous" && adminPackCtx.visualSystem) {
+        adminPackCtx.productRenderer = petposterousProductFamily(productType, isApparel);
+        if (petposterousLook(adminPackCtx.visualSystem)?.compatibility[adminPackCtx.productRenderer] === "hidden") return res.status(400).json({ error: "LOOK_NOT_AVAILABLE" });
+      }
       const styleGen = resolveStyleGenerationForProduct(
         {
           generationModel: styleGenerationModel,
@@ -8724,13 +8729,15 @@ ${orientationExtra}
       const subStyle = (findCatalogPreset(style as any) as any)?.options?.choices?.find((c: any) => c.id === f.subStyle);
       const traits = parsePersonalityTraits(f.personalityTraits);
       const options = await generatePackConceptOptions(profile, [
-        ["style", `${style.name}${subStyle ? ` — ${subStyle.name}` : ""}`],
+        ["style", profile.key === "petposterous" ? "" : `${style.name}${subStyle ? ` — ${subStyle.name}` : ""}`],
         ["pet", [text(f.petName, 40), text(f.species, 40)].filter(Boolean).join(", ")],
         ["personality", traits.join(", ")],
         ["behaviour", text(f.behavior)],
         ["humour", labelOf(profile.humorOptions, f.humor)],
         ["relationship", labelOf(profile.relationshipOptions, f.relationship)],
         ["owner in the picture", f.hasOwnerPhoto === true ? "yes" : ""],
+        ["words mode", text(f.wordsMode, 20)],
+        ["exact customer words", f.wordsMode === "exact" ? text(f.exactWords, 120) : ""],
       ]);
       return res.json({ options });
     } catch (err: any) {
@@ -9319,6 +9326,12 @@ ${orientationExtra}
         outputMode: sfOutputMode,
         catalogSlug: catalogSlugSf,
       });
+      if (sfPackCtx?.profile.key === "petposterous" && sfPackCtx.visualSystem) {
+        sfPackCtx.productRenderer = petposterousProductFamily(productType, isApparel);
+        if (petposterousLook(sfPackCtx.visualSystem)?.compatibility[sfPackCtx.productRenderer] === "hidden") {
+          return res.status(400).json({ error: "LOOK_NOT_AVAILABLE", message: "Choose a compatible look for this product." });
+        }
+      }
       const sfStyleGen = resolveStyleGenerationForProduct(
         {
           generationModel: sfGenerationModel,

@@ -377,6 +377,10 @@ export type ComposeLayeredPromptInput = {
 
 /** Reusable pack-level layers around a pack style's own scenario (the style layer). */
 export type PackPromptLayers = {
+  /** V2 uses separate framework/look layers instead of the legacy style scenario. */
+  conceptFramework?: string | null;
+  visualSystem?: string | null;
+  suppressStyleLayers?: boolean;
   /** Pack creative direction, applied to every style in the pack. */
   creativeBase?: string | null;
   /** Numbered reference-image roles + likeness rules (only when photos are supplied). */
@@ -553,16 +557,20 @@ function composePackLayerList(
     (pack.referenceIdentity || "").trim(),
     clean(pack.humor),
     clean(pack.relationship),
-    core.styleLayer,
-    core.intentLayer,
-    core.subStyleLayer,
+    pack.suppressStyleLayers ? "" : core.styleLayer,
+    pack.suppressStyleLayers ? "" : core.intentLayer,
+    pack.suppressStyleLayers ? "" : core.subStyleLayer,
     core.fontLayer,
     core.artLayer,
     core.userLayer,
     clean(pack.concept),
+    clean(pack.conceptFramework),
+    clean(pack.visualSystem),
+    // The physical product has final authority over a look's composition.
+    pack.visualSystem ? clean(pack.rendererExtra) : "",
     punchline ? `${LITERAL_TEXT_INSTRUCTION}: "${punchline}"` : "",
     clean(pack.textRule),
-    clean(pack.rendererExtra),
+    pack.visualSystem ? "" : clean(pack.rendererExtra),
     clean(pack.garmentColour),
   ];
 }
