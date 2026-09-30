@@ -18002,7 +18002,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               title: "Art style",
               subtitle: "How your artwork is generated.",
               content:
-                showPresetsParam && filteredStylePresets.length > 0 ? (
+                // Petposterous V2: no customer style choice (LOOK sits with the concepts).
+                !petposterousV2 && showPresetsParam && filteredStylePresets.length > 0 ? (
                   <div className="space-y-2">
                     {mStyleSelectorNode}
                     {mStyleHelperNode}
