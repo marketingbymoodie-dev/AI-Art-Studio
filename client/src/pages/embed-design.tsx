@@ -299,6 +299,7 @@ import {
   choiceLabel,
   type PackCreativeState,
 } from "@/components/designer/PackCreativeControls";
+import { PackCreativeWizard } from "@/components/designer/PackCreativeWizard";
 import {
   aopCanReuseStoredPanels,
   aopPanelCaptureSignaturesMatch,
@@ -2879,6 +2880,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const [packConcepts, setPackConcepts] = useState<PackConceptOptionClient[] | null>(null);
   const [packConceptPick, setPackConceptPick] = useState<number | null>(null);
   const [packConceptLoading, setPackConceptLoading] = useState(false);
+  const [packWizardStep, setPackWizardStep] = useState(0);
   const [packVisualSystem, setPackVisualSystem] = useState("");
   const [packMoreLooks, setPackMoreLooks] = useState(false);
   /** Stored private photos from a reloaded brief (reused on regenerate). */
@@ -10719,7 +10721,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     if (shippingBlocksGenerate) return true;
     if (quotesNeedWrite) return !prompt.trim();
     if (quotesShowOptions) return quotePickIndex == null;
-    if (packNeedConcepts) return !prompt.trim();
+    if (packNeedConcepts) return !prompt.trim() || (petposterousV2 && (packWizardStep !== 5 || (packState.wordsMode === "exact" && (!packState.exactWords.trim() || packState.exactWords.trim().split(/\s+/).length > 6))));
     if (packShowConcepts) return packConceptPick == null || (petposterousV2 && !packVisualSystem) || (packState.wordsMode === "exact" && !packState.exactWords.trim());
     if (quotesVerbatim) return !detectQuotesVerbatimInput(prompt).text;
     return !prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find((p) => p.id === selectedPreset)?.descriptionOptional;
@@ -17703,18 +17705,22 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const isOwnerReference = (idx: number) =>
     packStyleActive && !!referenceImages[idx] && referenceRoleMapRef.current.get(referenceImages[idx]) === "owner";
 
-  const packControlsNode =
-    packStyleActive && experienceProfile ? (
-      <PackCreativeControls
-        profile={experienceProfile}
-        capabilities={packCaps}
-        state={{ ...packState, humor: packHumor, relationship: packRelationship }}
-        onChange={(patch) => {
-          setPackState((prev) => ({ ...prev, ...patch }));
-          if (!("wordsMode" in patch) && !("exactWords" in patch)) resetPackConcepts();
-        }}
-      />
-    ) : null;
+  const packControlProps = experienceProfile ? {
+    profile: experienceProfile,
+    capabilities: packCaps,
+    state: { ...packState, humor: packHumor, relationship: packRelationship },
+    onChange: (patch: Partial<PackCreativeState>) => {
+      setPackState((prev) => ({ ...prev, ...patch }));
+      if (!("wordsMode" in patch) && !("exactWords" in patch)) resetPackConcepts();
+    },
+  } : null;
+  const packControlsNode = packStyleActive && packControlProps ? (
+    petposterousV2 ? <PackCreativeWizard {...packControlProps}
+      step={packWizardStep} onStepChange={setPackWizardStep} showingConcepts={packShowConcepts}
+      onEditStory={() => { resetPackConcepts(); setPackWizardStep(0); }} />
+      : <PackCreativeControls {...packControlProps} />
+  ) : null;
+  const showPackStory = !petposterousV2 || packWizardStep === 5 || packShowConcepts;
 
   const mPromptNode = (() => {
     const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
@@ -17722,6 +17728,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     return (
       <div className="space-y-1">
         {packControlsNode}
+        {showPackStory ? <>
         <Label htmlFor="prompt-mobile" className="text-xs">
           {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
           {reuseRegenerateBasePrompt ? (
@@ -17775,6 +17782,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           className="min-h-[96px] text-sm"
         />
         )}
+        </> : null}
       </div>
     );
   })();
@@ -19778,6 +19786,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 return (
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
                 {packControlsNode}
+                {showPackStory ? <>
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
                   {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
                   {reuseRegenerateBasePrompt ? (
@@ -19876,6 +19885,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   );
                 })()}
                 {renderPrimaryAction("md:hidden", "mobile")}
+                </> : null}
               </div>
                 );
               })()}
