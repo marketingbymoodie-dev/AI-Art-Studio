@@ -304,7 +304,8 @@ import type { PublicExperienceProfile } from "@shared/experienceProfile";
 import { publicCreativeBrief } from "./customer-references";
 import { identityMatches } from "./storefront-identity-check";
 import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
-import { decideSessionMerge, isAuthenticatedAccount, resolveVerifiedIdentity, type VerifiedIdentity } from "./storefront-identity-source";
+import { canClaimDesign, canCopyCreativeBrief, decideSessionMerge, isAuthenticatedAccount } from "./storefront-identity-source";
+import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -590,44 +591,6 @@ function verifyStorefrontIdentityToken(req: Request): { customerId: string; shop
 /** The request's identity token must belong to `customerId` (and to this shop when the token names one). */
 function storefrontIdentityMatches(req: Request, customerId: string, shop: string) {
   return identityMatches(verifyStorefrontIdentityToken(req), customerId, shop);
-}
-
-type StorefrontCustomerRow = NonNullable<Awaited<ReturnType<typeof storage.getCustomer>>>;
-
-/**
- * THE storefront identity rule (server/storefront-identity-source.ts): proven
- * customer (token for this shop / proxy-signed Shopify customer), else this
- * browser's anonymous-session customer (never a signed-in account), else an
- * explicit failure. Raw customer ids are only a consistency check.
- */
-async function resolveVerifiedStorefrontIdentity(
-  req: Request,
-  shop: string,
-  claims: { shopifyCustomerId?: string | null; anonSessionId?: string | null; customerId?: string | null } = {},
-  opts: { allowAnonymous?: boolean } = {},
-): Promise<VerifiedIdentity<StorefrontCustomerRow>> {
-  const q = req.query as Record<string, string>;
-  const proxyVerified = typeof q.signature === "string" && verifyAppProxySignature(q);
-  return resolveVerifiedIdentity<StorefrontCustomerRow>(
-    {
-      getCustomer: async (id) => {
-        const c = await storage.getCustomer(id);
-        if (c) await storage.ensureCustomerBalance(c.id);
-        return c;
-      },
-      resolveShopifyCustomer: (shopifyCustomerId) => resolveStorefrontCustomerIdentity({ shop, shopifyCustomerId }),
-      resolveAnonCustomer: (anonSessionId) => resolveStorefrontCustomerIdentity({ shop, anonSessionId }),
-      aliasTypes: async (id) => (await storage.getCustomerAliases(id).catch(() => [])).map((a) => a.aliasType),
-    },
-    {
-      shop,
-      token: verifyStorefrontIdentityToken(req),
-      proxy: { verified: proxyVerified, shop: q.shop, loggedInCustomerId: q.logged_in_customer_id },
-      claimedShopifyCustomerId: claims.shopifyCustomerId,
-      anonSessionId: claims.anonSessionId,
-    },
-    { allowAnonymous: opts.allowAnonymous, claimedCustomerId: claims.customerId },
-  );
 }
 
 async function resolveStorefrontCustomerIdentity(args: { shop: string; customerId?: string | null; shopifyCustomerId?: string | null; anonSessionId?: string | null }) {
@@ -3763,17 +3726,26 @@ console.log("[shopify/session] installation ok", {
         clientIp: ipKey,
       };
       
-      // If customer is logged in, create/get their customer record
+      // The session's customer pays for /api/shopify/generate and owns its jobs, so it
+      // is bound only to a proven identity (token for this shop, or proxy-signed Shopify
+      // customer). An unproven customerId gets an anonymous session instead.
       let internalCustomer = null;
       if (customerId) {
         try {
-          internalCustomer = await storage.getOrCreateShopifyCustomer(shop, customerId, customerEmail);
+          const owner = await resolveVerifiedStorefrontIdentity(
+            req,
+            shop,
+            { shopifyCustomerId: String(customerId) },
+            { allowAnonymous: false },
+          );
+          if (!owner.ok) throw new Error(`unverified customer claim (${owner.error})`);
+          internalCustomer = owner.customer;
           sessionData.customerId = customerId;
           sessionData.customerEmail = customerEmail;
           sessionData.customerName = customerName;
           sessionData.internalCustomerId = internalCustomer.id;
         } catch (e) {
-          console.error("Error creating Shopify customer:", e);
+          console.warn("[shopify/session] customer not attached:", (e as Error)?.message || e);
         }
       }
       
@@ -10144,12 +10116,12 @@ ${orientationExtra}
   // Persists a generation to a customer's account. Requires customerId.
   app.post("/api/storefront/save-design", async (req: Request, res: Response) => {
     try {
-      const { jobId, customerId, shop } = req.body;
+      const { jobId, customerId: claimedCustomerId, shop } = req.body;
 
       if (!jobId || !shop) {
         return res.status(400).json({ error: "jobId and shop are required" });
       }
-      if (!customerId) {
+      if (!claimedCustomerId) {
         return res.status(401).json({ error: "LOGIN_REQUIRED", message: "Please log in to save designs." });
       }
 
@@ -10162,6 +10134,14 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
+      // The design is saved to the verified caller only (token for this shop /
+      // proxy-signed Shopify customer); the body customerId must match it.
+      const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+      if (!owner.ok) {
+        return res.status(owner.status).json({ error: owner.error });
+      }
+      const customerId = owner.customer.id;
+
       const job = await storage.getGenerationJob(jobId);
       console.log(`[SaveDesign] jobId=${jobId} found=${!!job} jobShop=${job?.shop} reqShop=${shop} status=${job?.status} hasImage=${!!job?.designImageUrl} existingCustomerId=${job?.customerId}`);
       if (!job || job.shop !== shop) {
@@ -10171,6 +10151,10 @@ ${orientationExtra}
       // Only save if the job is complete (has an image)
       if (job.status !== 'complete' || !job.designImageUrl) {
         return res.status(400).json({ error: "Design generation is not complete yet" });
+      }
+      // Never take over a design that already belongs to someone else.
+      if (!canClaimDesign(job.customerId, customerId)) {
+        return res.status(403).json({ error: "DESIGN_OWNED_BY_ANOTHER_CUSTOMER" });
       }
 
       const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
@@ -10455,7 +10439,7 @@ ${orientationExtra}
   // Never reuse the source job id — that keeps the source productTypeId/pageHandle.
   app.post("/api/storefront/fork-design", async (req: Request, res: Response) => {
     try {
-      const { shop, artworkUrl, prompt, productTypeId, customerId, size, frameColor, pageHandle } =
+      const { shop, artworkUrl, prompt, productTypeId, customerId: claimedCustomerId, size, frameColor, pageHandle } =
         req.body || {};
       const stylePresetRaw =
         typeof req.body?.stylePreset === "string"
@@ -10509,11 +10493,22 @@ ${orientationExtra}
       const promptText =
         typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
       const forkShop = shop.toLowerCase().replace(/^https?:\/\//, "");
-      // Carry a style-pack creative brief over from the source design (same shop only).
+      // The fork belongs to the verified caller; a claimed customerId needs proof.
+      // No claim = anonymous fork (unowned), as before.
+      let customerId: string | null = null;
+      if (claimedCustomerId) {
+        const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+        if (!owner.ok) {
+          return res.status(owner.status).json({ error: owner.error });
+        }
+        customerId = owner.customer.id;
+      }
+      // Carry a style-pack creative brief over only from the caller's own source
+      // design (the brief holds private reference-photo paths).
       let forkBrief: unknown = null;
-      if (typeof req.body?.sourceJobId === "string" && req.body.sourceJobId) {
+      if (customerId && typeof req.body?.sourceJobId === "string" && req.body.sourceJobId) {
         const sourceJob = await storage.getGenerationJob(req.body.sourceJobId).catch(() => undefined);
-        if (sourceJob && sourceJob.shop === forkShop && (sourceJob as any).creativeBrief) {
+        if (canCopyCreativeBrief(sourceJob, forkShop, customerId) && (sourceJob as any).creativeBrief) {
           forkBrief = (sourceJob as any).creativeBrief;
         }
       }
@@ -10521,7 +10516,7 @@ ${orientationExtra}
         ...(forkBrief ? { creativeBrief: forkBrief } : {}),
         shop: forkShop,
         sessionId: null,
-        customerId: customerId ? String(customerId) : null,
+        customerId,
         status: "complete",
         prompt: promptText,
         userPrompt: promptText,
@@ -12851,18 +12846,20 @@ ${orientationExtra}
   // ==================== STOREFRONT COUPON REDEMPTION ====================
   app.post("/api/storefront/auth/redeem-coupon", async (req: Request, res: Response) => {
     try {
-      const { code, customerId, shop } = req.body;
-      if (!code || !customerId || !shop) {
+      const { code, customerId: claimedCustomerId, shop } = req.body;
+      if (!code || !claimedCustomerId || !shop) {
         return res.status(400).json({ error: "Code, customerId, and shop are required" });
       }
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const customer = await storage.getCustomer(customerId);
-      if (!customer) {
-        return res.status(404).json({ error: "Customer not found" });
+      // Credits (and the one-per-customer redemption) go to the proven caller only.
+      const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+      if (!owner.ok) {
+        return res.status(owner.status).json({ error: owner.error });
       }
+      const customer = owner.customer;
       const coupon = await storage.getCouponByCode(code);
       if (!coupon) {
         return res.status(404).json({ error: "Invalid coupon code" });

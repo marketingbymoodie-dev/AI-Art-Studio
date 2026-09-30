@@ -3395,6 +3395,16 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
   });
 
+  // Latest token for long-lived callbacks (save-design / fork-design) without widening their deps.
+  const storefrontIdentityTokenRef = useRef<string | null>(storefrontIdentityToken);
+  storefrontIdentityTokenRef.current = storefrontIdentityToken;
+  const identityJsonHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const t = storefrontIdentityTokenRef.current;
+    if (t) headers.Authorization = `Bearer ${t}`;
+    return headers;
+  };
+
   /** Saved-designs requests carry the visitor's identity token (server requires it). */
   const savedDesignsHeaders = (): Record<string, string> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -3494,6 +3504,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     if (storefrontCustomerId) qs.set("customerId", storefrontCustomerId);
     safeFetch(
       `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs?${qs}`,
+      { headers: storefrontIdentityToken ? { Authorization: `Bearer ${storefrontIdentityToken}` } : {} },
     )
       .then((r) => (r.ok ? r.json() : { designs: [] }))
       .then((data) => {
@@ -3515,6 +3526,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     creatorUsernameRaw,
     creatorUsernameParam,
     storefrontCustomerId,
+    storefrontIdentityToken,
   ]);
 
   useEffect(() => {
@@ -4338,7 +4350,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     try {
       const r = await safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           code,
           customerId: storefrontCustomerId,
@@ -7720,7 +7732,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
       safeFetch(`${API_BASE}/api/shopify/session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           shop: shopDomain,
           productId: productId,
@@ -9377,7 +9389,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
     const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-design`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityJsonHeaders(),
       credentials: 'include',
       body: JSON.stringify({ jobId, customerId, shop }),
     });
@@ -10178,7 +10190,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       if (isStorefront && saveCustomerId && data.jobId && merchantStudioSaveAllowed) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: identityJsonHeaders(),
           body: JSON.stringify({ jobId: data.jobId, customerId: saveCustomerId, shop: saveShop }),
         }).then(r => r.json()).then(saved => {
           console.log('[AutoSave] save-design response:', saved);
@@ -14625,7 +14637,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           if (shopDomain) {
             const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: identityJsonHeaders(),
               body: JSON.stringify({
                 shop: shopDomain,
                 artworkUrl: abs,
@@ -14899,7 +14911,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         try {
           const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               shop: shopDomain,
               artworkUrl: abs,
@@ -15047,7 +15059,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       try {
         const r = await safeFetch(
           `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs/${encodeURIComponent(design.jobId)}?${qs}`,
-          { method: "DELETE" },
+          {
+            method: "DELETE",
+            headers: storefrontIdentityToken ? { Authorization: `Bearer ${storefrontIdentityToken}` } : {},
+          },
         );
         if (!r.ok) {
           const data = await r.json().catch(() => ({}));
@@ -15067,7 +15082,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         setDeletingCreatorDesignId(null);
       }
     },
-    [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, toast],
+    [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, storefrontIdentityToken, toast],
   );
 
   const handleRecentCreatorDesignPick = useCallback((design: RecentCreatorDesign) => {
@@ -19030,6 +19045,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                             shopDomain={shopDomain}
                             creatorUsername={creatorUsernameParam}
                             customerId={storefrontCustomerId || customer?.id}
+                            identityToken={storefrontIdentityToken}
                             variant="compact"
                             hideIntro
                             buttonLabel={experienceProfile?.copy?.emailCaptureButton}
@@ -19273,6 +19289,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                           shopDomain={shopDomain}
                           creatorUsername={creatorUsernameParam}
                           customerId={storefrontCustomerId || customer?.id}
+                          identityToken={storefrontIdentityToken}
                           variant="compact"
                           introText={experienceProfile?.copy?.emailCaptureBody}
                           buttonLabel={experienceProfile?.copy?.emailCaptureButton}

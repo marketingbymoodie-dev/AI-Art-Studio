@@ -994,12 +994,24 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  /**
+   * Visitor identity for creator artwork: the browser's own creator session id
+   * (possession) plus — only when proven by the shared storefront identity rule —
+   * the customer's designs. A claimed customerId alone never lists or unlinks.
+   */
+  async function creatorVisitorIdentity(req: any, claimedCustomerId: string) {
+    const { resolveCreatorVisitorCustomer } = await import("../storefront-identity");
+    return resolveCreatorVisitorCustomer(req, getCreatorPlatformShopDomain(), claimedCustomerId);
+  }
+
   /** Recent completed artwork for this visitor — optional reuse on any product. */
   app.get("/api/creators/storefront/:username/recent-designs", async (req, res) => {
     if (!marketplaceGate(res)) return;
     try {
       const sessionId = String(req.query.sessionId || "").trim();
-      const customerId = String(req.query.customerId || "").trim();
+      const visitor = await creatorVisitorIdentity(req, String(req.query.customerId || "").trim());
+      if (!visitor.ok) return res.status(visitor.status).json({ error: visitor.error });
+      const customerId = visitor.customerId ?? "";
       if (!sessionId && !customerId) {
         return res.json({ designs: [], count: 0, limit: CREATOR_ARTWORK_LIMIT });
       }
@@ -1038,7 +1050,12 @@ export function registerCreatorMarketplaceRoutes(
     }
     try {
       const sessionId = String(req.query.sessionId || req.body?.sessionId || "").trim();
-      const customerId = String(req.query.customerId || req.body?.customerId || "").trim();
+      const visitor = await creatorVisitorIdentity(
+        req,
+        String(req.query.customerId || req.body?.customerId || "").trim(),
+      );
+      if (!visitor.ok) return res.status(visitor.status).json({ error: visitor.error });
+      const customerId = visitor.customerId ?? "";
       if (!sessionId && !customerId) {
         return res.status(400).json({ error: "sessionId or customerId is required." });
       }

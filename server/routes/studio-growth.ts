@@ -7,6 +7,7 @@ import {
   listStudioNewsletterSubscribers,
   subscribeToStudioNewsletter,
 } from "../studio-newsletter";
+import { resolveClaimedStorefrontCustomer } from "../storefront-identity";
 
 export function registerStudioGrowthRoutes(
   app: Express,
@@ -32,7 +33,13 @@ export function registerStudioGrowthRoutes(
       }
       const shopDomain = body.shop || body.shopDomain || null;
       const creatorUsername = body.creatorUsername || null;
-      const customerId = body.customerId || null;
+      // The signup credit goes only to a proven caller; an unproven customerId is
+      // dropped (the email still joins the list, just without a credit).
+      let customerId: string | null = null;
+      if (body.customerId && shopDomain) {
+        const owner = await resolveClaimedStorefrontCustomer(req, String(shopDomain), body.customerId);
+        customerId = owner.ok ? owner.customer.id : null;
+      }
       console.log("[newsletter] subscribe hit", {
         source,
         shop: shopDomain || null,

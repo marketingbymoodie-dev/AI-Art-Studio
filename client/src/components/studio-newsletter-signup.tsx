@@ -12,6 +12,8 @@ type Props = {
   shopDomain?: string | null;
   creatorUsername?: string | null;
   customerId?: string | null;
+  /** Storefront identity token: a customerId only earns the signup credit when this proves it. */
+  identityToken?: string | null;
   variant?: "default" | "muted" | "luxe" | "compact";
   className?: string;
   hideIntro?: boolean;
@@ -32,6 +34,7 @@ export function StudioNewsletterSignup({
   shopDomain,
   creatorUsername,
   customerId,
+  identityToken,
   variant = "default",
   className = "",
   hideIntro = false,
@@ -56,7 +59,10 @@ export function StudioNewsletterSignup({
         `${API_BASE}/api/studio/newsletter/subscribe`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(identityToken ? { Authorization: `Bearer ${identityToken}` } : {}),
+          },
           body: JSON.stringify({
             email,
             source,

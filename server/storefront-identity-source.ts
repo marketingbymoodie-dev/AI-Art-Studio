@@ -161,3 +161,20 @@ export function decideSessionMerge(args: {
   }
   return { ok: true, linkWallet: !!anonCustomer, alreadyMerged: false };
 }
+
+/** save-design: a job is saved to the verified owner only if nobody else owns it yet. */
+export function canClaimDesign(jobCustomerId: string | null | undefined, ownerId: string): boolean {
+  return !jobCustomerId || jobCustomerId === ownerId;
+}
+
+/**
+ * fork-design: a creative brief (private reference-photo paths) is copied only
+ * from the verified owner's own design on the same shop.
+ */
+export function canCopyCreativeBrief(
+  source: { shop: string; customerId?: string | null } | null | undefined,
+  forkShop: string,
+  ownerId: string | null,
+): boolean {
+  return !!source && !!ownerId && source.shop === forkShop && source.customerId === ownerId;
+}
