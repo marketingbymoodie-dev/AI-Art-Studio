@@ -845,6 +845,9 @@
    * isSignedIn()/hasStoredLoggedInIdentity() report signed in.
    */
   function persistLogin(email, data) {
+    // Pre-login anonymous identity token — proves the merged session was ours.
+    var priorAnonToken = null;
+    try { priorAnonToken = localStorage.getItem('appai_identity_token'); } catch (_) {}
     try {
       localStorage.setItem('appai_customer_id', data.customerId);
       if (data.identityToken) localStorage.setItem('appai_identity_token', data.identityToken);
@@ -863,11 +866,15 @@
       var anonSessionId = localStorage.getItem('appai_session');
       var shop = resolveShopDomain();
       if (anonSessionId && shop) {
+        var mergeHeaders = { 'Content-Type': 'application/json' };
+        if (data.identityToken) mergeHeaders.Authorization = 'Bearer ' + data.identityToken;
+        var mergeBody = { sessionId: anonSessionId, customerId: data.customerId, shop: shop };
+        if (priorAnonToken && priorAnonToken !== data.identityToken) mergeBody.anonIdentityToken = priorAnonToken;
         fetch(PROXY + '/api/storefront/merge-session', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: mergeHeaders,
           credentials: 'same-origin',
-          body: JSON.stringify({ sessionId: anonSessionId, customerId: data.customerId, shop: shop }),
+          body: JSON.stringify(mergeBody),
         }).catch(function () {});
       }
     } catch (_) {}

@@ -71,22 +71,90 @@ export type IdentityDeps<C extends { id: string; userId?: string | null }> = {
   aliasTypes(customerId: string): Promise<string[]>;
 };
 
-/** First provable identity, or null. The anonymous path never yields a signed-in account. */
+export type VerifiedIdentity<C> =
+  | { ok: true; kind: "customer"; via: "token" | "shopify"; customer: C }
+  | { ok: true; kind: "anonymous"; customer: C; anonSessionId: string }
+  | {
+      ok: false;
+      status: 401 | 403;
+      error: "IDENTITY_REQUIRED" | "IDENTITY_MISMATCH" | "SESSION_BELONGS_TO_ACCOUNT";
+    };
+
+/**
+ * The one storefront identity rule. Returns the proven customer (token for this
+ * shop, or proxy-signed Shopify customer), else the browser's anonymous-session
+ * customer (never a signed-in account), else an explicit failure. A claimed
+ * customer id is only ever a consistency check against the result.
+ */
+export async function resolveVerifiedIdentity<C extends { id: string; userId?: string | null }>(
+  deps: IdentityDeps<C>,
+  inputs: IdentityProofInputs,
+  opts: { allowAnonymous?: boolean; claimedCustomerId?: string | null } = {},
+): Promise<VerifiedIdentity<C>> {
+  const allowAnonymous = opts.allowAnonymous !== false;
+  let result: VerifiedIdentity<C> | null = null;
+  for (const src of identitySources(inputs)) {
+    if (src.kind === "token") {
+      const existing = await deps.getCustomer(src.customerId);
+      if (existing) {
+        result = { ok: true, kind: "customer", via: "token", customer: existing };
+        break;
+      }
+    } else if (src.kind === "shopify") {
+      result = { ok: true, kind: "customer", via: "shopify", customer: await deps.resolveShopifyCustomer(src.shopifyCustomerId) };
+      break;
+    } else if (src.kind === "anon" && allowAnonymous) {
+      const c = await deps.resolveAnonCustomer(src.anonSessionId);
+      if (isAuthenticatedAccount({ userId: c.userId, aliasTypes: await deps.aliasTypes(c.id) })) {
+        // This browser session was merged into a signed-in account: the session
+        // alone never stands in for that account (sign in again; rotate session).
+        return { ok: false, status: 401, error: "SESSION_BELONGS_TO_ACCOUNT" };
+      }
+      result = { ok: true, kind: "anonymous", customer: c, anonSessionId: src.anonSessionId };
+      break;
+    }
+  }
+  if (!result) return { ok: false, status: 401, error: "IDENTITY_REQUIRED" };
+  const claimed = typeof opts.claimedCustomerId === "string" ? opts.claimedCustomerId.trim() : "";
+  if (claimed && result.ok && claimed !== result.customer.id) {
+    const shopifyClaimOk = result.ok && result.kind === "customer" && result.via === "shopify" && claimed === verifiedShopifyCustomerId(inputs);
+    if (!shopifyClaimOk) return { ok: false, status: 403, error: "IDENTITY_MISMATCH" };
+  }
+  return result;
+}
+
+/** First provable identity, or null (bootstrap/generate helper over resolveVerifiedIdentity). */
 export async function resolveProvenCustomer<C extends { id: string; userId?: string | null }>(
   deps: IdentityDeps<C>,
   inputs: IdentityProofInputs,
 ): Promise<{ customer: C; source: IdentitySource["kind"] } | null> {
-  for (const src of identitySources(inputs)) {
-    if (src.kind === "token") {
-      const existing = await deps.getCustomer(src.customerId);
-      if (existing) return { customer: existing, source: "token" };
-    } else if (src.kind === "shopify") {
-      return { customer: await deps.resolveShopifyCustomer(src.shopifyCustomerId), source: "shopify" };
-    } else if (src.kind === "anon") {
-      const c = await deps.resolveAnonCustomer(src.anonSessionId);
-      if (isAuthenticatedAccount({ userId: c.userId, aliasTypes: await deps.aliasTypes(c.id) })) return null;
-      return { customer: c, source: "anon" };
-    }
+  const r = await resolveVerifiedIdentity(deps, inputs);
+  if (!r.ok) return null;
+  return { customer: r.customer, source: r.kind === "anonymous" ? "anon" : r.via };
+}
+
+/**
+ * Merge an anonymous browser session into a proven account? Pure decision so
+ * the rules are testable. Nothing is merged unless this returns ok.
+ */
+export function decideSessionMerge(args: {
+  /** Customer currently holding this session's anon alias (null = none yet). */
+  anonCustomer: { id: string; authenticated: boolean } | null;
+  targetCustomerId: string;
+  /** Pre-login anonymous token's customer when the caller sent one ("invalid" if it didn't verify). */
+  anonTokenCustomerId: string | null;
+}):
+  | { ok: true; linkWallet: boolean; alreadyMerged: boolean }
+  | { ok: false; status: 403; error: "SESSION_OWNED_BY_ANOTHER_ACCOUNT" | "SESSION_TOKEN_MISMATCH" } {
+  const { anonCustomer, targetCustomerId, anonTokenCustomerId } = args;
+  if (anonCustomer && anonCustomer.id === targetCustomerId) {
+    return { ok: true, linkWallet: false, alreadyMerged: true }; // idempotent re-merge
   }
-  return null;
+  if (anonCustomer?.authenticated) {
+    return { ok: false, status: 403, error: "SESSION_OWNED_BY_ANOTHER_ACCOUNT" };
+  }
+  if (anonTokenCustomerId != null && anonCustomer && anonTokenCustomerId !== anonCustomer.id) {
+    return { ok: false, status: 403, error: "SESSION_TOKEN_MISMATCH" };
+  }
+  return { ok: true, linkWallet: !!anonCustomer, alreadyMerged: false };
 }

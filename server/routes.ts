@@ -304,7 +304,7 @@ import type { PublicExperienceProfile } from "@shared/experienceProfile";
 import { publicCreativeBrief } from "./customer-references";
 import { identityMatches } from "./storefront-identity-check";
 import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
-import { resolveProvenCustomer, type IdentitySource } from "./storefront-identity-source";
+import { decideSessionMerge, isAuthenticatedAccount, resolveVerifiedIdentity, type VerifiedIdentity } from "./storefront-identity-source";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -592,19 +592,23 @@ function storefrontIdentityMatches(req: Request, customerId: string, shop: strin
   return identityMatches(verifyStorefrontIdentityToken(req), customerId, shop);
 }
 
+type StorefrontCustomerRow = NonNullable<Awaited<ReturnType<typeof storage.getCustomer>>>;
+
 /**
- * The customer a storefront request may act as — from proof only (token for
- * this shop, proxy-signed Shopify customer, or anonymous session). A bare
- * customer id never counts. See server/storefront-identity-source.ts.
+ * THE storefront identity rule (server/storefront-identity-source.ts): proven
+ * customer (token for this shop / proxy-signed Shopify customer), else this
+ * browser's anonymous-session customer (never a signed-in account), else an
+ * explicit failure. Raw customer ids are only a consistency check.
  */
-async function resolveProvenStorefrontCustomer(
+async function resolveVerifiedStorefrontIdentity(
   req: Request,
   shop: string,
-  claims: { shopifyCustomerId?: string | null; anonSessionId?: string | null },
-): Promise<{ customer: NonNullable<Awaited<ReturnType<typeof storage.getCustomer>>>; source: IdentitySource["kind"] } | null> {
+  claims: { shopifyCustomerId?: string | null; anonSessionId?: string | null; customerId?: string | null } = {},
+  opts: { allowAnonymous?: boolean } = {},
+): Promise<VerifiedIdentity<StorefrontCustomerRow>> {
   const q = req.query as Record<string, string>;
   const proxyVerified = typeof q.signature === "string" && verifyAppProxySignature(q);
-  return resolveProvenCustomer(
+  return resolveVerifiedIdentity<StorefrontCustomerRow>(
     {
       getCustomer: async (id) => {
         const c = await storage.getCustomer(id);
@@ -622,6 +626,7 @@ async function resolveProvenStorefrontCustomer(
       claimedShopifyCustomerId: claims.shopifyCustomerId,
       anonSessionId: claims.anonSessionId,
     },
+    { allowAnonymous: opts.allowAnonymous, claimedCustomerId: claims.customerId },
   );
 }
 
@@ -8304,13 +8309,18 @@ ${orientationExtra}
       let creditsRemaining = 0;
 
       if (customerId) {
+        // Wallet state only for the proven caller (token / proxy-signed Shopify
+        // customer) — never for a claimed id.
         const rawCustomerId = String(customerId);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
-        const customer = await resolveStorefrontCustomerIdentity({
-          shop: String(shop),
-          customerId: isInternalCustomer ? rawCustomerId : null,
-          shopifyCustomerId: isInternalCustomer ? null : rawCustomerId,
-        });
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
+        const verified = await resolveVerifiedStorefrontIdentity(
+          req,
+          String(shop),
+          { shopifyCustomerId: isInternalCustomer ? null : rawCustomerId, customerId: rawCustomerId },
+          { allowAnonymous: false },
+        );
+        if (!verified.ok) return res.status(verified.status).json({ error: verified.error });
+        const customer = verified.customer;
         const balance = await storage.ensureCustomerBalance(customer.id);
         generationsUsed = balance.freeGenerationsUsed || 0;
         creditsRemaining = balance.credits || 0;
@@ -8926,14 +8936,18 @@ ${orientationExtra}
       const isInternalCustomer =
         typeof customerId === "string" &&
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-      const provenSf = customerId
-        ? await resolveProvenStorefrontCustomer(req, shop, {
-            shopifyCustomerId: isInternalCustomer ? null : String(customerId),
-          }).catch((err) => {
+      const provenSfResult = customerId
+        ? await resolveVerifiedStorefrontIdentity(
+            req,
+            shop,
+            { shopifyCustomerId: isInternalCustomer ? null : String(customerId) },
+            { allowAnonymous: false },
+          ).catch((err) => {
             console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
             return null;
           })
         : null;
+      const provenSf = provenSfResult?.ok ? provenSfResult : null;
       if (customerId && !provenSf) {
         console.warn(P, reqId, `customer ${customerId} not proven — using anonymous session`);
       }
@@ -9025,6 +9039,12 @@ ${orientationExtra}
         });
 
         if (anonCustomer) {
+          const anonAliasTypes = (await storage.getCustomerAliases(anonCustomer.id).catch(() => [])).map((a) => a.aliasType);
+          if (isAuthenticatedAccount({ userId: anonCustomer.userId, aliasTypes: anonAliasTypes })) {
+            // This session was merged into a signed-in account; the session id alone
+            // never acts as that account (same rule as identity bootstrap).
+            return res.status(401).json({ error: "SIGN_IN_REQUIRED", rotateSession: true, message: "Please sign in again to continue." });
+          }
           resolvedJobCustomerId = anonCustomer.id;
           if (creatorCtx) {
             const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
@@ -10047,30 +10067,56 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      // Resolve the signed-in customer to our internal UUID. The client can send
-      // either the internal id (bearer token / bootstrap) or a Shopify customer id.
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      // Target account: proven only (identity token for this shop, or the App
+      // Proxy's signed Shopify customer). The body customerId is a consistency
+      // check, never proof. Anonymous identities can't be merge targets.
       const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(customerId));
-      const signedInCustomer = await resolveStorefrontCustomerIdentity({
+      const target = await resolveVerifiedStorefrontIdentity(
+        req,
         shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? String(customerId) : null),
-        shopifyCustomerId: isInternalCustomer ? null : String(customerId),
-      }).catch((err) => {
-        console.warn(`[Storefront Merge] could not resolve signed-in customer ${customerId}:`, err?.message);
-        return null;
-      });
+        {
+          shopifyCustomerId: isInternalCustomer ? null : String(customerId),
+          customerId: String(customerId),
+        },
+        { allowAnonymous: false },
+      );
+      if (!target.ok) {
+        return res.status(target.status).json({ error: target.error });
+      }
+      const signedInCustomerId = target.customer.id;
 
-      const signedInCustomerId = signedInCustomer?.id ?? String(customerId);
-
-      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
-
-      // If an anon customer wallet was already created for this session, fold it
-      // into the signed-in wallet so free gens / rewards survive login.
-      let walletsLinked = false;
+      // Source session: possession of the browser's session id, plus — when the
+      // caller sends its pre-login anonymous token — that token must be this
+      // session's customer. A session already owned by another account is refused.
       const anonCustomer = await storage
         .findCustomerByAlias("anon_session", String(sessionId), shop)
         .catch(() => undefined);
-      if (anonCustomer && anonCustomer.id !== signedInCustomerId) {
+      const decision = await decideSessionMerge({
+        anonCustomer: anonCustomer
+          ? {
+              id: anonCustomer.id,
+              authenticated: isAuthenticatedAccount({
+                userId: anonCustomer.userId,
+                aliasTypes: (await storage.getCustomerAliases(anonCustomer.id).catch(() => [])).map((a) => a.aliasType),
+              }),
+            }
+          : null,
+        targetCustomerId: signedInCustomerId,
+        anonTokenCustomerId:
+          typeof req.body?.anonIdentityToken === "string"
+            ? verifyStorefrontIdentityHeader(`Bearer ${req.body.anonIdentityToken}`)?.customerId ?? "invalid"
+            : null,
+      });
+      if (!decision.ok) {
+        return res.status(decision.status).json({ error: decision.error });
+      }
+
+      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
+
+      // Fold this session's anonymous wallet into the account so free gens /
+      // rewards survive login.
+      let walletsLinked = false;
+      if (decision.linkWallet && anonCustomer) {
         try {
           await storage.linkAnonCustomerToSignedIn(anonCustomer.id, signedInCustomerId);
           walletsLinked = true;
@@ -12738,16 +12784,22 @@ ${orientationExtra}
 
       // Token (this shop) → proxy-signed Shopify customer → anonymous session.
       // A body customerId alone never mints a token (it is only compared below).
-      const proven = await resolveProvenStorefrontCustomer(req, shop, {
+      const proven = await resolveVerifiedStorefrontIdentity(req, shop, {
         shopifyCustomerId: typeof shopifyCustomerId === "string" ? shopifyCustomerId : null,
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
-      if (!proven) {
-        return res.status(401).json({ error: "SIGN_IN_REQUIRED", message: "Sign in again to continue." });
+      if (!proven.ok) {
+        // A merged session can't stand in for its account: the client rotates to
+        // a fresh anonymous session and signs in again if it wants the account.
+        return res.status(401).json({
+          error: "SIGN_IN_REQUIRED",
+          message: "Sign in again to continue.",
+          ...(proven.error === "SESSION_BELONGS_TO_ACCOUNT" ? { rotateSession: true } : {}),
+        });
       }
       const customer = proven.customer;
       const signInRequired =
-        typeof customerId === "string" && !!customerId && customerId !== customer.id && proven.source !== "token";
+        typeof customerId === "string" && !!customerId && customerId !== customer.id && proven.kind !== "customer";
       const creatorCtx = creatorContextFromRequest(req);
       const wallet = await resolveStorefrontWalletView({
         shop,
@@ -12909,17 +12961,18 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
+      // Balances only for the proven caller; the query customerId must match it.
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const verified = await resolveVerifiedStorefrontIdentity(
+        req,
         shop,
-        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : customerId,
-      });
-      if (!customer) {
-        console.warn("[Credits Status] customer not found for", customerId);
-        return res.status(404).json({ error: "Customer not found" });
+        { shopifyCustomerId: isInternalCustomer ? null : customerId, customerId },
+        { allowAnonymous: false },
+      );
+      if (!verified.ok) {
+        return res.status(verified.status).json({ error: verified.error });
       }
+      const customer = verified.customer;
       const creatorCtx = creatorContextFromRequest(req);
       const wallet = await resolveStorefrontWalletView({
         shop,
@@ -14292,16 +14345,17 @@ ${orientationExtra}
 
       // Resolve the sharer's internal customer id (for the share_design Reward Ladder rung).
       // Accept either the internal UUID or a Shopify customer id; verify via bearer token when present.
+      // Attribution (share_design reward) goes to the verified identity only —
+      // signed-in or anonymous. A claimed customerId never decides it; sharing
+      // itself stays open to everyone.
       let ownerCustomerId: string | null = null;
-      if (rawOwnerCustomerId && shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
-        const tokenIdentity = verifyStorefrontIdentityToken(req);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId));
-        const resolved = await resolveStorefrontCustomerIdentity({
-          shop: String(shopDomain),
-          customerId: tokenIdentity && tokenIdentity.shop === shopDomain ? tokenIdentity.customerId : (isInternalCustomer ? String(rawOwnerCustomerId) : null),
-          shopifyCustomerId: isInternalCustomer ? null : String(rawOwnerCustomerId),
+      if (shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId || ""));
+        const verified = await resolveVerifiedStorefrontIdentity(req, String(shopDomain), {
+          shopifyCustomerId: rawOwnerCustomerId && !isInternalCustomer ? String(rawOwnerCustomerId) : null,
+          anonSessionId: typeof req.body?.sessionId === "string" ? req.body.sessionId : null,
         }).catch(() => null);
-        if (resolved) ownerCustomerId = resolved.id;
+        if (verified?.ok) ownerCustomerId = verified.customer.id;
       }
 
       let shareCreatorId: string | null = null;

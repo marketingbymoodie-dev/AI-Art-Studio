@@ -2456,7 +2456,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
   // Anonymous session ID for storefront free-generation tracking.
   // Persisted in localStorage so it survives page refreshes.
-  const [anonSessionId] = useState(() => {
+  const [anonSessionId, setAnonSessionId] = useState(() => {
     // merchant-studio has its own server-resolved identity (see identity bootstrap effect below)
     // and must never mix into a real customer's anonymous session on the same browser.
     if (!isStorefront || isMerchantStudio) return '';
@@ -3424,6 +3424,26 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     })
       .then((res) => res.json())
       .then((data) => {
+        if (data?.rotateSession) {
+          // This browser session was merged into a signed-in account whose token
+          // expired: start a fresh anonymous session (bootstrap re-runs); the
+          // customer signs in again to get their account back.
+          try {
+            for (const k of ['appai_customer_id', 'appai_identity_token', 'appai_customer']) {
+              localStorage.removeItem(k);
+              sessionStorage.removeItem(k);
+            }
+            const fresh = crypto.randomUUID();
+            localStorage.setItem('appai_session', fresh);
+            setStorefrontIdentityToken(null);
+            setStorefrontCustomerId(null);
+            setCustomer(null);
+            setAnonSessionId(fresh);
+          } catch {
+            /* storage unavailable — stay anonymous-less until reload */
+          }
+          return;
+        }
         if (!data?.ok || !data.customerId) return;
         setStorefrontCustomerId(data.customerId);
         setStorefrontIdentityToken(data.identityToken || null);
@@ -3566,6 +3586,13 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     galleryLimit?: number;
   }) => {
     const newCustomerId = data.customerId;
+    // Pre-login anonymous identity token: proves the merged session belonged to this browser.
+    let priorAnonToken: string | null = null;
+    try {
+      priorAnonToken = localStorage.getItem('appai_identity_token') || sessionStorage.getItem('appai_identity_token');
+    } catch {
+      /* storage unavailable */
+    }
     const loginEmail = data.email || otpEmail.trim() || undefined;
     const wallet = customerWalletFromApi(data);
     setStorefrontCustomerId(newCustomerId);
@@ -3602,8 +3629,16 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     if (anonSessionId && shopDomain) {
       safeFetch(`${API_BASE}/api/storefront/merge-session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(data.identityToken ? { Authorization: `Bearer ${data.identityToken}` } : {}),
+        },
+        body: JSON.stringify({
+          sessionId: anonSessionId,
+          customerId: newCustomerId,
+          shop: shopDomain,
+          ...(priorAnonToken && priorAnonToken !== data.identityToken ? { anonIdentityToken: priorAnonToken } : {}),
+        }),
       }).catch(() => {});
     }
     if (shopDomain) {
@@ -14332,8 +14367,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     try {
       const response = await safeFetch(`${API_BASE}/api/designs/share`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: storefrontJsonHeaders(),
         body: JSON.stringify({
+          sessionId: anonSessionId || undefined,
           imageUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
           prompt: generatedDesign.prompt,
           stylePreset: selectedPreset !== "" ? selectedPreset : null,
