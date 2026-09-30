@@ -28,7 +28,7 @@ describe("merge-session: target account", () => {
   it("anonymous → authenticated merge with a valid token", async () => {
     const t = await mergeTarget(tok("alice"), "alice");
     expect(t).toMatchObject({ ok: true, kind: "customer", via: "token", customer: { id: "alice" } });
-    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", anonTokenCustomerId: "anon-s1" })).toEqual({
+    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: "anon-s1" })).toEqual({
       ok: true,
       linkWallet: true,
       alreadyMerged: false,
@@ -62,8 +62,16 @@ describe("merge-session: target account", () => {
 });
 
 describe("merge-session: source session", () => {
+  it("an anonymous customer can't be a merge target, even with its own token", () => {
+    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "anon-s2", targetIsAccount: false, anonTokenCustomerId: null })).toEqual({
+      ok: false,
+      status: 403,
+      error: "TARGET_NOT_AN_ACCOUNT",
+    });
+  });
+
   it("wrong session: one already owned by another account → 403, no partial merge", () => {
-    expect(decideSessionMerge({ anonCustomer: { id: "bob", authenticated: true }, targetCustomerId: "alice", anonTokenCustomerId: null })).toEqual({
+    expect(decideSessionMerge({ anonCustomer: { id: "bob", authenticated: true }, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: null })).toEqual({
       ok: false,
       status: 403,
       error: "SESSION_OWNED_BY_ANOTHER_ACCOUNT",
@@ -71,15 +79,15 @@ describe("merge-session: source session", () => {
   });
 
   it("wrong session: pre-login anonymous token belongs to a different session → 403", () => {
-    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", anonTokenCustomerId: "anon-s2" })).toMatchObject({
+    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: "anon-s2" })).toMatchObject({
       ok: false,
       error: "SESSION_TOKEN_MISMATCH",
     });
-    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", anonTokenCustomerId: "invalid" })).toMatchObject({ ok: false });
+    expect(decideSessionMerge({ anonCustomer: { id: "anon-s1", authenticated: false }, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: "invalid" })).toMatchObject({ ok: false });
   });
 
   it("repeat merge is idempotent (session already folded into this account)", () => {
-    expect(decideSessionMerge({ anonCustomer: { id: "alice", authenticated: true }, targetCustomerId: "alice", anonTokenCustomerId: null })).toEqual({
+    expect(decideSessionMerge({ anonCustomer: { id: "alice", authenticated: true }, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: null })).toEqual({
       ok: true,
       linkWallet: false,
       alreadyMerged: true,
@@ -87,7 +95,7 @@ describe("merge-session: source session", () => {
   });
 
   it("session with no anonymous wallet yet: jobs only", () => {
-    expect(decideSessionMerge({ anonCustomer: null, targetCustomerId: "alice", anonTokenCustomerId: null })).toEqual({ ok: true, linkWallet: false, alreadyMerged: false });
+    expect(decideSessionMerge({ anonCustomer: null, targetCustomerId: "alice", targetIsAccount: true, anonTokenCustomerId: null })).toEqual({ ok: true, linkWallet: false, alreadyMerged: false });
   });
 });
 

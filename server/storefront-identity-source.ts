@@ -141,12 +141,15 @@ export function decideSessionMerge(args: {
   /** Customer currently holding this session's anon alias (null = none yet). */
   anonCustomer: { id: string; authenticated: boolean } | null;
   targetCustomerId: string;
+  /** Target is a signed-in account (email/Google) or a proxy-signed Shopify customer — never an anonymous customer. */
+  targetIsAccount: boolean;
   /** Pre-login anonymous token's customer when the caller sent one ("invalid" if it didn't verify). */
   anonTokenCustomerId: string | null;
 }):
   | { ok: true; linkWallet: boolean; alreadyMerged: boolean }
-  | { ok: false; status: 403; error: "SESSION_OWNED_BY_ANOTHER_ACCOUNT" | "SESSION_TOKEN_MISMATCH" } {
+  | { ok: false; status: 403; error: "SESSION_OWNED_BY_ANOTHER_ACCOUNT" | "SESSION_TOKEN_MISMATCH" | "TARGET_NOT_AN_ACCOUNT" } {
   const { anonCustomer, targetCustomerId, anonTokenCustomerId } = args;
+  if (!args.targetIsAccount) return { ok: false, status: 403, error: "TARGET_NOT_AN_ACCOUNT" };
   if (anonCustomer && anonCustomer.id === targetCustomerId) {
     return { ok: true, linkWallet: false, alreadyMerged: true }; // idempotent re-merge
   }

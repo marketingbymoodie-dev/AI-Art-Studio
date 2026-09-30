@@ -10102,6 +10102,12 @@ ${orientationExtra}
             }
           : null,
         targetCustomerId: signedInCustomerId,
+        targetIsAccount:
+          (target.kind === "customer" && target.via === "shopify") ||
+          isAuthenticatedAccount({
+            userId: target.customer.userId,
+            aliasTypes: (await storage.getCustomerAliases(signedInCustomerId).catch(() => [])).map((a) => a.aliasType),
+          }),
         anonTokenCustomerId:
           typeof req.body?.anonIdentityToken === "string"
             ? verifyStorefrontIdentityHeader(`Bearer ${req.body.anonIdentityToken}`)?.customerId ?? "invalid"
