@@ -102,11 +102,26 @@
     return ((el.innerText !== undefined ? el.innerText : el.textContent) || '').trim();
   }
 
+  // Identity token written by the designer iframe's identity bootstrap (same
+  // origin via App Proxy). Saved designs require it.
+  function getStoredIdentityToken() {
+    try {
+      return localStorage.getItem('appai_identity_token') || sessionStorage.getItem('appai_identity_token') || null;
+    } catch (_) { return null; }
+  }
+
+  function identityHeaders(json) {
+    var h = json ? { 'Content-Type': 'application/json' } : {};
+    var token = getStoredIdentityToken();
+    if (token) h.Authorization = 'Bearer ' + token;
+    return h;
+  }
+
   function fetchDesigns(customerId, shop) {
     return fetch(PROXY + '/api/storefront/customizer/my-designs', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityHeaders(true),
       body: JSON.stringify({ customerId: customerId, shop: shop })
     }).then(function (r) { return r.ok ? r.json() : null; });
   }
@@ -422,7 +437,7 @@
       {
         method: 'DELETE',
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
+        headers: identityHeaders(true),
       },
     ).then(function (r) {
       if (!r.ok) return false;
@@ -774,8 +789,11 @@
   // Iframe / other-tab login writes identity without a reload. Boot init
   // already bailed (or fetched the anonymous id). Re-run when the id appears.
   window.addEventListener('storage', function (e) {
-    if (e.key !== 'appai_customer' && e.key !== 'appai_customer_id') return;
+    if (e.key !== 'appai_customer' && e.key !== 'appai_customer_id' && e.key !== 'appai_identity_token') return;
     if (!getStoredCustomerId()) return;
+    // A refreshed identity token (designer bootstrap) must re-fetch even for the
+    // same customer — an expired token left the list empty.
+    if (e.key === 'appai_identity_token') _initPromise = null;
     init();
   });
   window.addEventListener('message', function (event) {

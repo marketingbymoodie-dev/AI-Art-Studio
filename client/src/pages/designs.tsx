@@ -28,6 +28,8 @@ interface DesignStudioIdentity {
   savedCount: number;
   savedLimit: number;
   canSaveDesigns?: boolean;
+  /** Saved-designs requests require it. */
+  identityToken?: string;
 }
 
 interface SavedMerchantDesign {
@@ -73,7 +75,10 @@ export default function DesignsPage() {
     queryFn: async () => {
       const res = await fetch(`/api/storefront/customizer/my-designs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(identity?.identityToken ? { Authorization: `Bearer ${identity.identityToken}` } : {}),
+        },
         credentials: "include",
         body: JSON.stringify({ shop: identity!.shop, customerId: identity!.customerId }),
       });
@@ -101,6 +106,7 @@ export default function DesignsPage() {
       const res = await fetch(`/api/storefront/customizer/my-designs/${jobId}?${params.toString()}`, {
         method: "DELETE",
         credentials: "include",
+        headers: identity?.identityToken ? { Authorization: `Bearer ${identity.identityToken}` } : undefined,
       });
       if (!res.ok) throw new Error("Failed to delete design");
       return res.json();

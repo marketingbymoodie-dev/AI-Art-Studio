@@ -58,3 +58,37 @@ describe("classic presentation without a profile", () => {
     ).toBe("Creator");
   });
 });
+
+describe("newsletter success copy", () => {
+  it("store success heading/body replace the classic line; credit detail kept", async () => {
+    const { fireEvent, waitFor } = await import("@testing-library/react");
+    const { vi } = await import("vitest");
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ creditGranted: true, creditAmount: 1 }), { status: 200 }));
+    render(
+      createElement(StudioNewsletterSignup, {
+        source: "store_user",
+        customerId: "c1",
+        successHeading: "You're on the list.",
+        successBody: "Further correspondence will follow.",
+      }),
+    );
+    fireEvent.change(screen.getByPlaceholderText("you@email.com"), { target: { value: "a@b.co" } });
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await waitFor(() => expect(screen.getByTestId("newsletter-success")).toBeTruthy());
+    expect(screen.getByText("You're on the list.")).toBeTruthy();
+    expect(screen.getByText("Further correspondence will follow.")).toBeTruthy();
+    expect(screen.getByText("1 Studio Credit added.")).toBeTruthy();
+    vi.unstubAllGlobals();
+  });
+
+  it("without store copy the classic message is unchanged", async () => {
+    const { fireEvent, waitFor } = await import("@testing-library/react");
+    const { vi } = await import("vitest");
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ creditGranted: true, creditAmount: 1 }), { status: 200 }));
+    render(createElement(StudioNewsletterSignup, { source: "store_user", customerId: "c1" }));
+    fireEvent.change(screen.getAllByPlaceholderText("you@email.com").at(-1)!, { target: { value: "a@b.co" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Join" }).at(-1)!);
+    await waitFor(() => expect(screen.getByText("You're on the list — 1 Studio Credit added.")).toBeTruthy());
+    vi.unstubAllGlobals();
+  });
+});

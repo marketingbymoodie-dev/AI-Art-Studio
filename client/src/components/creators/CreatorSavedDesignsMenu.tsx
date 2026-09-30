@@ -54,6 +54,23 @@ function readLoggedInCustomerId(): string | null {
   }
 }
 
+/** Identity token written by the designer's identity bootstrap (same origin). */
+function readIdentityToken(): string | null {
+  try {
+    return localStorage.getItem("appai_identity_token") || sessionStorage.getItem("appai_identity_token");
+  } catch {
+    return null;
+  }
+}
+
+function identityHeaders(json: boolean): Record<string, string> {
+  const token = readIdentityToken();
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 function clearStorefrontLogin() {
   try {
     localStorage.removeItem("appai_customer_id");
@@ -279,7 +296,7 @@ export function CreatorSavedDesignsMenu({
     const designsReq = customerId
       ? fetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: identityHeaders(true),
           body: JSON.stringify({ shop, customerId }),
         }).then((r) => r.json())
       : Promise.resolve({ designs: [] });
@@ -320,7 +337,7 @@ export function CreatorSavedDesignsMenu({
       params.set("customerId", customerId);
       const r = await fetch(
         `${API_BASE}/api/storefront/customizer/my-designs/${encodeURIComponent(d.id)}?${params}`,
-        { method: "DELETE" },
+        { method: "DELETE", headers: identityHeaders(false) },
       );
       if (r.ok) setDesigns((prev) => prev.filter((x) => x.id !== d.id));
     } finally {

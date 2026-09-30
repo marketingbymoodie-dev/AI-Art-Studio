@@ -3394,6 +3394,13 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
   });
 
+  /** Saved-designs requests carry the visitor's identity token (server requires it). */
+  const savedDesignsHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
+    return headers;
+  };
+
   useEffect(() => {
     if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
     const shopifyCustomerId = loggedInCustomerIdFromHost() || null;
@@ -3506,6 +3513,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       .then((data) => {
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
+        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
         setGalleryLimit(data.savedLimit || 30);
         canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
@@ -3533,6 +3541,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       .then((data) => {
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
+        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
         adminTesterShopRef.current = data.shop || adminTesterShopRef.current;
         if (data.shop) setAdminTesterShop(data.shop);
         setGalleryLimit(data.savedLimit || 30);
@@ -3596,7 +3605,14 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
     if (shopDomain) {
       setSavedDesignsLoading(true);
-      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(data.identityToken ? { Authorization: `Bearer ${data.identityToken}` } : {}),
+        },
+        body: JSON.stringify({ shop: shopDomain, customerId: newCustomerId }),
+      })
         .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
         .catch(() => {}).finally(() => setSavedDesignsLoading(false));
     }
@@ -8409,7 +8425,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               setSavedDesignsLoading(true);
               safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: savedDesignsHeaders(),
                 body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
               })
                 .then(r => r.json()).then(d => { 
@@ -10128,7 +10144,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             setSavedDesignsLoading(true);
             safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: savedDesignsHeaders(),
               body: JSON.stringify({ shop: saveShop, customerId: saveCustomerId }),
             })
               .then(r => r.json()).then(d => { 
@@ -13812,7 +13828,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 if (storefrontCustomerId && shopDomain) {
                   void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: savedDesignsHeaders(),
                     body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
                   })
                     .then((r) => r.json())
@@ -13934,7 +13950,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         if (storefrontCustomerId && shopDomain) {
           void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: savedDesignsHeaders(),
             body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
           })
             .then((r) => r.json())
@@ -16788,11 +16804,11 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   // fetch meant gallery taps had nothing to restore besides a 2s status
   // fallback, which often never applied and left a blank canvas.
   useEffect(() => {
-    if (!storefrontCustomerId || !shopDomain) return;
+    if (!storefrontCustomerId || !shopDomain || !storefrontIdentityToken) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: savedDesignsHeaders(),
       credentials: 'include',
       body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
     })
@@ -16804,7 +16820,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
-  }, [storefrontCustomerId, shopDomain]);
+  }, [storefrontCustomerId, shopDomain, storefrontIdentityToken]);
 
   const isLoggedIn = storefrontLoggedIn;
   const artworksRemainingLabel = (() => {
@@ -18967,6 +18983,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                             variant="compact"
                             hideIntro
                             buttonLabel={experienceProfile?.copy?.emailCaptureButton}
+                            successHeading={experienceProfile?.copy?.emailCaptureSuccessHeading}
+                            successBody={experienceProfile?.copy?.emailCaptureSuccessBody}
                             onCreditGranted={() => void refreshStorefrontWallet()}
                           />
                         </div>
@@ -19113,7 +19131,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                                       if (effectiveCustomerId) deleteParams.set('customerId', effectiveCustomerId);
                                       const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}?${deleteParams.toString()}`, {
                                         method: 'DELETE',
-                                        headers: { 'Content-Type': 'application/json' },
+                                        headers: savedDesignsHeaders(),
                                       });
                                       if (r.ok) {
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
@@ -19208,6 +19226,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                           variant="compact"
                           introText={experienceProfile?.copy?.emailCaptureBody}
                           buttonLabel={experienceProfile?.copy?.emailCaptureButton}
+                            successHeading={experienceProfile?.copy?.emailCaptureSuccessHeading}
+                            successBody={experienceProfile?.copy?.emailCaptureSuccessBody}
                           onCreditGranted={() => void refreshStorefrontWallet()}
                         />
                       </CardContent>

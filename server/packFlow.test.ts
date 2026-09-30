@@ -214,3 +214,25 @@ describe("pack controls", () => {
     expect(screen.getByTestId("chips-pack-species")).toBeTruthy();
   });
 });
+
+describe("stabilisation: exact words + pet iconography", () => {
+  const compose = (wordsMode: "suggest" | "exact", punchline: string) =>
+    composeLayeredPrompt({
+      category: "all",
+      isApparelGeneration: true,
+      generationModel: "gpt-image-2",
+      styleLayer: "STYLE — X",
+      userInput: "story",
+      packLayers: packLayersForCompose({ ...ctx, wordsMode, punchline }, { isApparel: true, styleImageCount: 0, customerImages: [] }),
+    }).prompt;
+
+  it("exact words add the verbatim-punctuation rule; suggestions don't", () => {
+    expect(compose("exact", "TERMS REJECTED.")).toContain("alter punctuation");
+    expect(compose("exact", "TERMS REJECTED.")).toContain('"TERMS REJECTED."');
+    expect(compose("suggest", "TERMS REJECTED.")).not.toContain("EXACT CUSTOMER TEXT");
+  });
+
+  it("creative base forbids unsolicited pet iconography", () => {
+    expect(compose("suggest", "")).toContain("no paw prints, bones, hearts, collars, whisker motifs");
+  });
+});

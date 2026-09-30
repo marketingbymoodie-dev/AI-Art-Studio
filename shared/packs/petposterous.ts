@@ -214,9 +214,11 @@ const RELATIONSHIP = [
 export const PETPOSTEROUS_PROMPT_PROFILE: StylePackPromptProfile = {
   key: PETPOSTEROUS_PROFILE_KEY,
   creativeBase:
-    "PETPOSTEROUS CREATIVE DIRECTION: artwork about the unusually human relationship between people and their pets. The pet is a character, not an accessory — give it recognisable intention, personality, attitude and agency. The humour comes from familiar pet behaviour, mutual understanding, rivalry, affection, manipulation, habits, negotiations, rule-breaking or the private language between a person and an animal. Find the funny truth and communicate it visually; favour a clever visual punchline over explaining the joke in words. Show relationships through body language, positioning and who holds what, never a label. Avoid generic pet-store sentiment, generic cute-animal humour, paw-print clichés, hearts, 'dog mom'/'cat dad', meme layouts and clip-art. The result should feel observant, intelligent, distinctive and emotionally recognisable to anyone who lives with an animal.",
+    "PETPOSTEROUS CREATIVE DIRECTION: artwork about the unusually human relationship between people and their pets. The pet is a character, not an accessory — give it recognisable intention, personality, attitude and agency. The humour comes from familiar pet behaviour, mutual understanding, rivalry, affection, manipulation, habits, negotiations, rule-breaking or the private language between a person and an animal. Find the funny truth and communicate it visually; favour a clever visual punchline over explaining the joke in words. Show relationships through body language, positioning and who holds what, never a label. Avoid generic pet-store sentiment, generic cute-animal humour, 'dog mom'/'cat dad', meme layouts and clip-art. Do not add generic pet iconography or decorative pet motifs unless the concept explicitly requires them: no paw prints, bones, hearts, collars, whisker motifs, generic pet silhouettes or decorative animal doodles. The pet and its behaviour provide the pet context. The result should feel observant, intelligent, distinctive and emotionally recognisable to anyone who lives with an animal.",
   textRule:
-    "TEXT RULE: visual storytelling comes first. Prefer no words when the visual joke works without them; ideally 1–4 words; never more than 6. No paragraphs, long captions, fake fine print, dense labels, complicated signs or secondary copy. When exact text is supplied, reproduce only that text, spelled exactly. Typography stays highly legible and subordinate to the artwork unless typography is the concept.",
+    "TEXT RULE: visual storytelling comes first. Prefer no words when the visual joke works without them; ideally 1–4 words; never more than 6. No paragraphs, long captions, fake fine print, dense labels, complicated signs or secondary copy. Typography stays highly legible and subordinate to the artwork unless typography is the concept.",
+  exactTextRule:
+    "EXACT CUSTOMER TEXT: the quoted words are the customer's own. Reproduce them verbatim — do not rewrite, abbreviate, correct, restyle, add or remove words, or alter punctuation (keep every full stop, comma, apostrophe, question and exclamation mark exactly as given). No other words anywhere on the design.",
   referenceIdentity:
     "REFERENCE IDENTITY: preserve the pet's recognisable identity — species, breed characteristics, coat colour and pattern, markings, facial structure, ear shape, eyes, body proportions and distinctive features. Keep a pictured person recognisable while adapting them naturally into the style. Do not beautify, change breed, invent markings, change coat colour or replace the subjects with generic lookalikes. Stylise the subjects; do not erase their identity.",
   rendererExtra: {
@@ -271,10 +273,13 @@ export const PETPOSTEROUS_EXPERIENCE_CONFIG = {
     promptLabel: "Tell us what they do…",
     conceptButtonLabel: "Give Me 3 Ideas",
     generateButtonLabel: "Create Artwork",
-    emailCaptureMenuLabel: "Join the Petposterous list",
-    emailCaptureHeading: "Join the Petposterous list",
-    emailCaptureBody: "New designs, new styles and mildly questionable pet behaviour, straight to your inbox.",
-    emailCaptureButton: "Join",
+    emailCaptureMenuLabel: "The Petposterous Post",
+    emailCaptureHeading: "The Petposterous Post",
+    emailCaptureBody:
+      "Important developments in animal misconduct. New designs, suspicious behaviour and other matters requiring your attention.",
+    emailCaptureButton: "Receive the Post",
+    emailCaptureSuccessHeading: "You're on the list.",
+    emailCaptureSuccessBody: "Further correspondence will follow.",
   },
   controls: {
     humor: { label: "Humour" },

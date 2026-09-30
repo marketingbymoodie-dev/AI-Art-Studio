@@ -140,6 +140,7 @@ export function packLayersForCompose(
     relationshipId: ctx.relationshipId,
     concept: packConceptText(ctx),
     punchline: ctx.punchline,
+    exactText: ctx.wordsMode === "exact",
     referenceInstruction: buildRoleReferenceInstruction({
       styleImageCount: opts.styleImageCount,
       customerImages: opts.customerImages,

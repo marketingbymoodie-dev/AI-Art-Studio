@@ -302,6 +302,7 @@ import {
 } from "./experience-profiles";
 import type { PublicExperienceProfile } from "@shared/experienceProfile";
 import { publicCreativeBrief } from "./customer-references";
+import { identityMatches } from "./storefront-identity-check";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -611,6 +612,11 @@ function verifyStorefrontIdentityToken(req: Request): { customerId: string; shop
   } catch {
     return null;
   }
+}
+
+/** The request's identity token must belong to `customerId` (and to this shop when the token names one). */
+function storefrontIdentityMatches(req: Request, customerId: string, shop: string) {
+  return identityMatches(verifyStorefrontIdentityToken(req), customerId, shop);
 }
 
 async function resolveStorefrontCustomerIdentity(args: { shop: string; customerId?: string | null; shopifyCustomerId?: string | null; anonSessionId?: string | null }) {
@@ -10864,6 +10870,13 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Design not found" });
       }
+      // Only the design's owner (identity token) may remove it from their gallery.
+      if (job.customerId) {
+        const identityCheck = storefrontIdentityMatches(req, job.customerId, shop);
+        if (!identityCheck.ok) {
+          return res.status(identityCheck.status).json({ error: identityCheck.error });
+        }
+      }
       // If client provided a customerId, verify it matches (extra security check)
       if (clientCustomerId && job.customerId && job.customerId !== clientCustomerId) {
         console.warn(`[DeleteDesign] customerId mismatch: job=${job.customerId} client=${clientCustomerId}`);
@@ -12085,16 +12098,15 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      // A request that carries an identity token must be for that customer. Pack
-      // creative briefs (pet names, private photo links) only go to token-verified
-      // requests; token-less callers (theme Saved Designs nav) keep today's list.
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      if (tokenIdentity && tokenIdentity.customerId !== String(customerId)) {
-        return res.status(403).json({ error: "Customer mismatch" });
+      // Saved designs belong to the identity token's customer (signed-in and
+      // anonymous visitors both hold one from identity bootstrap; admin studios
+      // get one from /api/appai/design-studio/identity).
+      const identityCheck = storefrontIdentityMatches(req, String(customerId), shop);
+      if (!identityCheck.ok) {
+        return res.status(identityCheck.status).json({ error: identityCheck.error });
       }
-      const briefsAllowed = !!tokenIdentity;
       const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
-      console.log(`[MyDesigns] shop=${shop} customerId=${customerId} token=${briefsAllowed ? "verified" : "none"}`);
+      console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
       const fetchedRows = await db
         .select()
         .from(generationJobs)
@@ -12332,7 +12344,7 @@ ${orientationExtra}
       }
 
       const briefById = new Map<string, unknown>();
-      if (briefsAllowed) {
+      {
         await Promise.all(
           rows
             .filter((r) => (r as any).creativeBrief)
@@ -21294,6 +21306,8 @@ ${orientationExtra}
     res.json({
       shop,
       customerId: customer.id,
+      // Admin studios (Preview Studio / merchant studio) read saved designs with this.
+      identityToken: signStorefrontIdentityToken(customer.id, shop),
       savedCount,
       savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
       canSaveDesigns: canSaveMerchantDesigns(plan.planName, plan.planStatus),

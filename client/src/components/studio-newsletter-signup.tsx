@@ -18,6 +18,9 @@ type Props = {
   /** Store experience profile copy. Absent = the Studio Art Class wording. */
   introText?: string;
   buttonLabel?: string;
+  /** Store success copy. Absent = the classic single-line success messages. */
+  successHeading?: string;
+  successBody?: string;
   /** Fired when a Studio Credit was actually granted (so the badge can refresh). */
   onCreditGranted?: (amount: number) => void;
 };
@@ -34,12 +37,16 @@ export function StudioNewsletterSignup({
   hideIntro = false,
   introText,
   buttonLabel,
+  successHeading,
+  successBody,
   onCreditGranted,
 }: Props) {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  /** Credit/sign-in detail shown under a store's own success copy. */
+  const [doneNote, setDoneNote] = useState<string | null>(null);
 
   const join = async () => {
     setLoading(true);
@@ -62,7 +69,21 @@ export function StudioNewsletterSignup({
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Could not join the list.");
-      if (data.alreadySubscribed) {
+      if (successHeading) {
+        setDone(successHeading);
+        setDoneNote(
+          data.alreadySubscribed
+            ? "This email was already on the list."
+            : data.creditGranted && data.creditAmount > 0
+              ? `${data.creditAmount} Studio Credit added.`
+              : data.creditAlreadyClaimed
+                ? "Your credit for this shop was already claimed."
+                : source === "store_user" && !customerId
+                  ? "Sign in so we can add your Studio Credit."
+                  : null,
+        );
+        if (data.creditGranted && data.creditAmount > 0) onCreditGranted?.(Number(data.creditAmount) || 1);
+      } else if (data.alreadySubscribed) {
         setDone("This email is already on the Studio Art Class list.");
       } else if (data.creditGranted && data.creditAmount > 0) {
         setDone(`You're on the list — ${data.creditAmount} Studio Credit added.`);
@@ -102,7 +123,15 @@ export function StudioNewsletterSignup({
         </p>
       )}
       {done ? (
-        <p className={isLuxe ? "text-sm text-white" : "text-sm font-medium"}>{done}</p>
+        successHeading ? (
+          <div data-testid="newsletter-success">
+            <p className={isLuxe ? "text-sm text-white" : "text-sm font-medium"}>{done}</p>
+            {successBody ? <p className="text-xs text-muted-foreground">{successBody}</p> : null}
+            {doneNote ? <p className="text-xs text-muted-foreground">{doneNote}</p> : null}
+          </div>
+        ) : (
+          <p className={isLuxe ? "text-sm text-white" : "text-sm font-medium"}>{done}</p>
+        )
       ) : (
         <div className="flex flex-col sm:flex-row gap-2">
           <Input

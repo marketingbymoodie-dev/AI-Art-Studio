@@ -26,6 +26,8 @@ export const EXPERIENCE_COPY_KEYS = [
   "emailCaptureHeading",
   "emailCaptureBody",
   "emailCaptureButton",
+  "emailCaptureSuccessHeading",
+  "emailCaptureSuccessBody",
 ] as const;
 export type ExperienceCopyKey = (typeof EXPERIENCE_COPY_KEYS)[number];
 export type ExperienceCopy = Partial<Record<ExperienceCopyKey, string>>;
@@ -55,6 +57,9 @@ export const CLASSIC_COPY: Record<ExperienceCopyKey, string> = {
   emailCaptureBody:
     "Join the Studio Art Class list. Discover prompt tips and tricks, inspiration from others and more.",
   emailCaptureButton: "Join",
+  /** "" = the classic single-line success messages. */
+  emailCaptureSuccessHeading: "",
+  emailCaptureSuccessBody: "",
 };
 
 export type ExperienceBrand = {
