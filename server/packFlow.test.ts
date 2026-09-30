@@ -236,3 +236,15 @@ describe("stabilisation: exact words + pet iconography", () => {
     expect(compose("suggest", "")).toContain("no paw prints, bones, hearts, collars, whisker motifs");
   });
 });
+
+describe("stabilisation: no words + medium-consistent likeness", () => {
+  it("'No words' adds an explicit no-text rule; other modes don't", () => {
+    const layers = (wordsMode: "none" | "suggest") =>
+      packLayersForCompose({ ...ctx, wordsMode, punchline: wordsMode === "none" ? "" : "HI" }, { isApparel: false, styleImageCount: 0, customerImages: [] });
+    expect(layers("none").textRule).toContain("NO TEXT");
+    expect(layers("suggest").textRule).not.toContain("NO TEXT");
+  });
+  it("identity rules require subjects painted in the artwork's medium", () => {
+    expect(profile.referenceIdentity).toContain("never a photographic cut-out");
+  });
+});

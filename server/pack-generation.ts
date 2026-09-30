@@ -141,6 +141,7 @@ export function packLayersForCompose(
     concept: packConceptText(ctx),
     punchline: ctx.punchline,
     exactText: ctx.wordsMode === "exact",
+    noText: ctx.wordsMode === "none",
     referenceInstruction: buildRoleReferenceInstruction({
       styleImageCount: opts.styleImageCount,
       customerImages: opts.customerImages,

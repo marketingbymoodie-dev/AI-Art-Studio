@@ -25,6 +25,8 @@ export type StylePackPromptProfile = {
   textRule: string;
   /** Added after textRule only when the customer supplied their own exact words. */
   exactTextRule?: string;
+  /** Added after textRule only when the customer chose no words at all. */
+  noTextRule?: string;
   /** Likeness rules, added after the numbered image list when a pet/owner photo is present. */
   referenceIdentity: string;
   rendererExtra: { apparel?: string; decor?: string };
@@ -69,6 +71,8 @@ export type BuildPackLayersInput = {
   punchline?: string | null;
   /** The punchline is the customer's own exact words (not a suggestion). */
   exactText?: boolean;
+  /** The customer chose no words on the design. */
+  noText?: boolean;
   /** Output of buildRoleReferenceInstruction (already includes identity rules). */
   referenceInstruction?: string | null;
 };
@@ -93,7 +97,10 @@ export function buildPackPromptLayers(input: BuildPackLayersInput): PackPromptLa
       input.exactText && input.punchline && profile.exactTextRule
         ? `${profile.textRule}
 ${profile.exactTextRule}`
-        : profile.textRule,
+        : input.noText && profile.noTextRule
+          ? `${profile.textRule}
+${profile.noTextRule}`
+          : profile.textRule,
     rendererExtra: input.isApparel ? profile.rendererExtra.apparel ?? null : profile.rendererExtra.decor ?? null,
     garmentColour: colour ?? null,
   };
