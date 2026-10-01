@@ -16,11 +16,8 @@
  */
 
 import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
-import {
-  generateGptImage2ViaOpenAI,
-  getOpenAIKeyForRoute,
-  type ImageProviderRoute,
-} from "../../image-provider-route";
+import { readCredential, selectRenderer, type GenerationPlan } from "../../generation-providers";
+import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../../openai-image-client";
 
 type ReplicatePrediction = {
   id: string;
@@ -177,9 +174,33 @@ export type GenerateImageParams = {
    * "enforce" retries once, then throws GptImage2OpaqueOutputError.
    */
   transparencyCheck?: "log" | "enforce";
-  /** Omitted / replicate = existing path. openai = direct OpenAI with that account's key (gpt-image-2 only). */
-  imageProvider?: ImageProviderRoute;
+  /**
+   * From resolveGenerationPlan(). Authoritative for the renderer: a
+   * "direct-openai" image path renders there (native transparent PNG); omitted
+   * or "legacy" keeps the existing model-driven Replicate path unchanged.
+   */
+  generationPlan?: GenerationPlan;
+  /** Opaque hashed end-user id for the provider's `user` field (direct OpenAI only). */
+  endUserId?: string;
 };
+
+export type GenerationMeta = {
+  provider: "openai" | "replicate";
+  credentialRefId: string | null;
+  credentialScope: "shared" | "dedicated" | null;
+  model: string;
+  quality: string | null;
+  size: string | null;
+  attempts: number;
+  durationMs: number;
+  transparent: boolean | null;
+  transparentFraction: number | null;
+  usage: OpenAIImageUsage | null;
+  estimatedCostUsd: number | null;
+  providerRequestId: string | null;
+};
+
+export type GenerateImageResult = { mimeType: string; data: string; meta?: GenerationMeta };
 
 // Map aspect ratio to Nano Banana Pro supported values
 // Supported: "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"
@@ -539,12 +560,10 @@ async function pollAndDownload(
  */
 export async function generateImageBase64(
   params: GenerateImageParams
-): Promise<{
-  mimeType: string;
-  data: string;
-}> {
-  const route = params.imageProvider ?? { provider: "replicate" as const };
-  const nativeTransparent = params.nativeTransparent === true || isGptImage2Model(params.generationModel);
+): Promise<GenerateImageResult> {
+  const direct = params.generationPlan?.imagePath !== "legacy" ? params.generationPlan?.imagePath ?? null : null;
+  const nativeTransparent =
+    direct != null || params.nativeTransparent === true || isGptImage2Model(params.generationModel);
 
   const compressedPrompt = compressPrompt(
     params.prompt,
@@ -561,14 +580,85 @@ export async function generateImageBase64(
 
   if (params.layered === true) {
     const hex = countChromaHexMentions(compressedPrompt);
-    const modelLabel = nativeTransparent ? "gpt-image-2" : "nano-banana";
+    const modelLabel = direct ? selectRenderer(direct).model : nativeTransparent ? "gpt-image-2" : "nano-banana";
     console.log(
       `[layered] model=${modelLabel} chromaHexMentions=${hex} plate=${hex > 0 ? "yes" : "none"} (${compressedPrompt.length} chars):\n${compressedPrompt}`,
     );
   }
 
-  const openAIKey = route.provider === "openai" && nativeTransparent ? getOpenAIKeyForRoute(route) : null;
-  const token = openAIKey ? "" : getReplicateToken();
+  if (direct) {
+    // Credential first: a missing dedicated key fails before any work, never falls back.
+    const apiKey = readCredential(direct.credential);
+    const renderer = selectRenderer(direct);
+    const references = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
+      (u): u is string => typeof u === "string" && u.length > 0,
+    );
+    const enforce = params.transparencyCheck === "enforce";
+    const started = Date.now();
+    let usageTotal: OpenAIImageUsage | null = null;
+    for (let attempt = 1; ; attempt++) {
+      const result = await renderOpenAIImage({
+        apiKey,
+        credential: direct.credential,
+        renderer,
+        prompt: compressedPrompt,
+        aspectRatio: params.aspectRatio,
+        background: "transparent",
+        references,
+        user: params.endUserId,
+      });
+      if (result.usage) {
+        usageTotal = usageTotal
+          ? {
+              inputTokens: usageTotal.inputTokens + result.usage.inputTokens,
+              outputTokens: usageTotal.outputTokens + result.usage.outputTokens,
+              totalTokens: usageTotal.totalTokens + result.usage.totalTokens,
+              textInputTokens: usageTotal.textInputTokens + result.usage.textInputTokens,
+              imageInputTokens: usageTotal.imageInputTokens + result.usage.imageInputTokens,
+            }
+          : result.usage;
+      }
+      let opaque = false;
+      let transparentFraction: number | null = null;
+      try {
+        const report = await measureTransparency(result.data);
+        opaque = isOpaqueNativeOutput(report);
+        transparentFraction = report.transparentFraction;
+        const summary =
+          `hasAlpha=${report.hasAlpha} transparent=${report.transparentFraction.toFixed(3)} ` +
+          `opaqueBorder=${report.opaqueBorderFraction.toFixed(3)}`;
+        if (opaque) console.warn(`[OpenAI] ${renderer.model} returned OPAQUE output (${summary}) attempt=${attempt}`);
+        else console.log(`[OpenAI] ${renderer.model} transparency ok (${summary})`);
+      } catch (err) {
+        console.warn(`[OpenAI] ${renderer.model} transparency check failed:`, (err as Error)?.message ?? err);
+      }
+      if (!opaque || !enforce) {
+        return {
+          mimeType: result.mimeType,
+          data: result.data,
+          meta: {
+            provider: "openai",
+            credentialRefId: direct.credential.id,
+            credentialScope: direct.credential.scope,
+            model: renderer.model,
+            quality: renderer.quality,
+            size: result.size,
+            attempts: attempt,
+            durationMs: Date.now() - started,
+            transparent: !opaque,
+            transparentFraction,
+            usage: usageTotal,
+            estimatedCostUsd: estimateOpenAIImageCostUsd(usageTotal, renderer),
+            providerRequestId: result.requestId,
+          },
+        };
+      }
+      if (attempt >= 2) throw new GptImage2OpaqueOutputError();
+      console.log(`[OpenAI] ${renderer.model} retrying once for native transparency`);
+    }
+  }
+
+  const token = getReplicateToken();
 
   if (nativeTransparent || isGptImage2Model(params.generationModel)) {
     const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);
@@ -581,28 +671,14 @@ export async function generateImageBase64(
     if (params.layered !== true) {
       logComposedPrompt(compressedPrompt, "gpt-image-2");
     }
-    if (!openAIKey) {
-      console.log(
-        `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
-      );
-    }
+    console.log(
+      `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
+    );
     const enforce = params.transparencyCheck === "enforce";
     for (let attempt = 1; ; attempt++) {
-      let result: { mimeType: string; data: string };
-      if (openAIKey && route.provider === "openai") {
-        result = await generateGptImage2ViaOpenAI({
-          apiKey: openAIKey,
-          account: route.account,
-          prompt: compressedPrompt,
-          aspect: mapGptImage2AspectRatio(params.aspectRatio),
-          quality,
-          inputImageUrls: input.input_images as string[] | undefined,
-        });
-      } else {
-        const created = await createGptImage2Prediction(token, input);
-        console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
-        result = await pollAndDownload(token, created);
-      }
+      const created = await createGptImage2Prediction(token, input);
+      console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
+      const result = await pollAndDownload(token, created);
       let opaque = false;
       try {
         const report = await measureTransparency(result.data);

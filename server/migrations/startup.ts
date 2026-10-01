@@ -851,6 +851,42 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "generation_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "generation_events" (
+        "id" serial PRIMARY KEY,
+        "kind" text NOT NULL,
+        "job_id" varchar,
+        "merchant_id" varchar,
+        "shop_domain" text,
+        "route" text,
+        "experience_profile" text,
+        "style_pack" text,
+        "style_slug" text,
+        "product_family" text,
+        "visual_system" text,
+        "concept_framework" text,
+        "provider" text,
+        "credential_scope" text,
+        "credential_ref" text,
+        "model" text,
+        "quality" text,
+        "size" text,
+        "transparent" boolean,
+        "transparent_fraction" numeric(6,4),
+        "attempts" integer,
+        "duration_ms" integer,
+        "usage" jsonb,
+        "estimated_cost_usd" numeric(10,6),
+        "provider_request_id" text,
+        "success" boolean NOT NULL,
+        "error_category" text,
+        "end_user_hash" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "published_products",
     sql: `
       CREATE TABLE IF NOT EXISTS "published_products" (
@@ -2077,6 +2113,15 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "generation_events_merchant_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "generation_events_merchant_created_idx"
+      ON "generation_events" ("merchant_id", "created_at")`,
+  },
+  {
+    name: "generation_events_job_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "generation_events_job_idx" ON "generation_events" ("job_id")`,
+  },
   {
     name: "shipping_store_settings_shop_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_settings_shop_uidx"

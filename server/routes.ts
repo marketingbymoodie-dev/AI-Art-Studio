@@ -1,5 +1,8 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { resolveImageProviderRoute } from "./image-provider-route";
+import { resolveGenerationPlan } from "./generation-providers";
+import { storagePathFor } from "./apparel-storage-path";
+import { openAIEndUserId } from "./openai-image-client";
+import { customerSafeGenerationError, recordGenerationEvent, withGenerationEvent } from "./generation-events";
 import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
@@ -293,6 +296,7 @@ import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration"
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
 import { loadStylePackForMerchant, resolveGeneratePack, resolvePageStyleConfig } from "./style-packs";
 import { generatePackConceptOptions } from "./pack-concept-engine";
+import { anthropicQuotesModel } from "./concept-engine";
 import { getStylePackProfile } from "@shared/stylePackProfiles";
 import { parsePersonalityTraits } from "@shared/creativeBrief";
 import { petposterousProductFamily, petposterousLook } from "@shared/petposterousCreative";
@@ -1133,7 +1137,8 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
 
   // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
-  if (isApparel && skipChroma) {
+  const storagePath = storagePathFor({ isApparel, skipChroma });
+  if (storagePath === "native") {
     console.log("[saveImageToStorage] Skipping chroma pipeline (native transparent model)");
     if (resolveApparelVectorize(vectorize)) {
       const vectorized = await maybeVectorizeFlatGraphic(buffer, { enabled: true });
@@ -1141,7 +1146,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       extension = vectorized.mimeType === "image/svg+xml" ? "svg" : "png";
       actualMimeType = vectorized.mimeType;
     }
-  } else if (isApparel) {
+  } else if (storagePath === "chroma") {
     console.log(`[saveImageToStorage] Chroma-first matting for apparel (AOP=${isAllOverPrint})...`);
     const sourceBuffer = buffer;
     const matting = await processApparelMotif(sourceBuffer, {
@@ -2896,7 +2901,7 @@ export async function registerRoutes(
         adminPackCtx.productRenderer = petposterousProductFamily(productType, isApparel);
         if (petposterousLook(adminPackCtx.visualSystem)?.compatibility[adminPackCtx.productRenderer] === "hidden") return res.status(400).json({ error: "LOOK_NOT_AVAILABLE" });
       }
-      const styleGen = resolveStyleGenerationForProduct(
+      const legacyStyleGen = resolveStyleGenerationForProduct(
         {
           generationModel: styleGenerationModel,
           generationQuality: styleGenerationQuality,
@@ -2906,6 +2911,15 @@ export async function registerRoutes(
         },
         productType?.designerType,
       );
+      const adminGenPlan = resolveGenerationPlan({
+        merchantId: productType?.merchantId ?? null,
+        packProfileKey: adminPackCtx?.profile.key,
+        productFamily: adminPackCtx ? adminPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
+        isApparel,
+      });
+      // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
+      const styleGen =
+        adminGenPlan.imagePath === "legacy" ? legacyStyleGen : { ...legacyStyleGen, nativeTransparent: true };
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -3169,26 +3183,59 @@ ${orientationExtra}
         fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
-      // Generate image using Replicate
-      const { mimeType, data } = await generateImageBase64({
-        prompt: fullPrompt,
-        aspectRatio: geminiAspectRatio,
-        inputImageUrl,
-        isApparel,
-        isAllOverPrint,
-        isPatternStyle: usePatternAopAdmin,
-        userPrompt: userDescAdmin || null,
-        cylindricalWrap: useCylindricalWrapPrompt({
-          designerType: productType?.designerType,
-          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
-        }),
-        generationModel: styleGen.model,
-        generationQuality: styleGen.quality,
-        nativeTransparent: styleGen.nativeTransparent,
-        layered: true,
-        ...(adminPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
-        imageProvider: resolveImageProviderRoute(adminPackCtx?.profile.key),
+      // Generate image (provider per adminGenPlan)
+      const adminEndUser = openAIEndUserId(genShopDomain ?? null, customer.id);
+      const adminEventCtx = {
+        kind: "image" as const,
+        route: "admin-generate",
+        merchantId: productType?.merchantId ?? null,
+        shopDomain: genShopDomain ?? null,
+        experienceProfile: adminPackCtx?.profile.key ?? null,
+        stylePack: adminPackCtx?.packSlug ?? null,
+        styleSlug: catalogSlugAdmin,
+        productFamily: adminPackCtx?.productRenderer ?? null,
+        visualSystem: adminPackCtx?.visualSystem ?? null,
+        conceptFramework: adminPackCtx?.conceptFramework ?? null,
+        plan: adminGenPlan,
+        legacyModel: styleGen.model ?? "nano-banana",
+        legacyQuality: styleGen.model ? styleGen.quality : null,
+        endUserHash: adminEndUser ?? null,
+      };
+      const adminGenStart = Date.now();
+      let adminGenResult: Awaited<ReturnType<typeof generateImageBase64>>;
+      try {
+        adminGenResult = await generateImageBase64({
+          prompt: fullPrompt,
+          aspectRatio: geminiAspectRatio,
+          inputImageUrl,
+          isApparel,
+          isAllOverPrint,
+          isPatternStyle: usePatternAopAdmin,
+          userPrompt: userDescAdmin || null,
+          cylindricalWrap: useCylindricalWrapPrompt({
+            designerType: productType?.designerType,
+            isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+          }),
+          generationModel: styleGen.model,
+          generationQuality: styleGen.quality,
+          nativeTransparent: styleGen.nativeTransparent,
+          layered: true,
+          ...(adminPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+          generationPlan: adminGenPlan,
+          endUserId: adminEndUser,
+        });
+      } catch (genErr) {
+        void recordGenerationEvent(adminEventCtx, { success: false, durationMs: Date.now() - adminGenStart, error: genErr });
+        if (adminGenPlan.imagePath === "legacy") throw genErr;
+        throw new Error(customerSafeGenerationError(genErr, adminGenPlan));
+      }
+      void recordGenerationEvent(adminEventCtx, {
+        success: !!adminGenResult.data,
+        durationMs: Date.now() - adminGenStart,
+        meta: adminGenResult.meta,
+        error: adminGenResult.data ? undefined : new Error("no image data"),
       });
+      const { mimeType, data } = adminGenResult;
 console.log("[api/generate] replicate returned", {
   mimeType,
   dataType: typeof data,
@@ -3523,15 +3570,25 @@ console.log("[api/shopify/generate] saved image", result);
 
       // Generate the new image (Replicate)
       const recolorIsAllOverPrint = !!(productType as any)?.isAllOverPrint;
-const { data: base64Data, mimeType } = await generateImageBase64({
-  prompt: fullPrompt,
-  isApparel: true,
-  isAllOverPrint: recolorIsAllOverPrint,
-  generationModel: regenGen.model,
-  generationQuality: regenGen.quality,
-  nativeTransparent: regenGen.nativeTransparent,
-  layered: true,
-});
+const { data: base64Data, mimeType } = await withGenerationEvent(
+  {
+    kind: "image",
+    route: "regenerate-tier",
+    merchantId: (productType as any)?.merchantId ?? null,
+    legacyModel: regenGen.model ?? "nano-banana",
+    legacyQuality: regenGen.model ? regenGen.quality : null,
+  },
+  () =>
+    generateImageBase64({
+      prompt: fullPrompt,
+      isApparel: true,
+      isAllOverPrint: recolorIsAllOverPrint,
+      generationModel: regenGen.model,
+      generationQuality: regenGen.quality,
+      nativeTransparent: regenGen.nativeTransparent,
+      layered: true,
+    }),
+);
 
 // Match the old Gemini shape so the rest of the code still works
 const imagePart = {
@@ -4228,20 +4285,32 @@ ${orientationExtra}
       }
 
       // Generate image via Replicate
-      const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-        prompt: fullPrompt,
-        aspectRatio: geminiAspectRatio ?? "1:1",
-        inputImageUrl,
-        isApparel,
-        isAllOverPrint,
-        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
-        userPrompt: userDescEmbed || null,
-        cylindricalWrap,
-        generationModel: embedStyleGen.model,
-        generationQuality: embedStyleGen.quality,
-        nativeTransparent: embedStyleGen.nativeTransparent,
-        layered: true,
-      });
+      const { data: base64Data, mimeType: generatedMimeType } = await withGenerationEvent(
+        {
+          kind: "image",
+          route: "shopify-embed-generate",
+          merchantId: installation?.merchantId ?? null,
+          shopDomain: installation?.shopDomain ?? null,
+          styleSlug: catalogSlugEmbed,
+          legacyModel: embedStyleGen.model ?? "nano-banana",
+          legacyQuality: embedStyleGen.model ? embedStyleGen.quality : null,
+        },
+        () =>
+          generateImageBase64({
+            prompt: fullPrompt,
+            aspectRatio: geminiAspectRatio ?? "1:1",
+            inputImageUrl,
+            isApparel,
+            isAllOverPrint,
+            isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
+            userPrompt: userDescEmbed || null,
+            cylindricalWrap,
+            generationModel: embedStyleGen.model,
+            generationQuality: embedStyleGen.quality,
+            nativeTransparent: embedStyleGen.nativeTransparent,
+            layered: true,
+          }),
+      );
 
       if (!base64Data) {
         console.error("[Shopify Generate] Replicate returned no image data");
@@ -8730,6 +8799,17 @@ ${orientationExtra}
         opts.find((o) => o.id === id)?.label ?? "";
       const subStyle = (findCatalogPreset(style as any) as any)?.options?.choices?.find((c: any) => c.id === f.subStyle);
       const traits = parsePersonalityTraits(f.personalityTraits);
+      const conceptEventCtx = {
+        kind: "concepts" as const,
+        route: "storefront-concept-options",
+        merchantId: installation.merchantId,
+        shopDomain: shop,
+        experienceProfile: profile.key,
+        stylePack: pack?.pack.slug ?? null,
+        styleSlug: resolveCatalogSlug(style as any),
+        legacyModel: anthropicQuotesModel(),
+      };
+      const conceptStart = Date.now();
       const options = await generatePackConceptOptions(profile, [
         ["style", profile.key === "petposterous" ? "" : `${style.name}${subStyle ? ` — ${subStyle.name}` : ""}`],
         ["pet", [text(f.petName, 40), text(f.species, 40)].filter(Boolean).join(", ")],
@@ -8740,7 +8820,11 @@ ${orientationExtra}
         ["owner in the picture", f.hasOwnerPhoto === true ? "yes" : ""],
         ["words mode", text(f.wordsMode, 20)],
         ["exact customer words", f.wordsMode === "exact" ? text(f.exactWords, 120) : ""],
-      ]);
+      ]).catch((err) => {
+        void recordGenerationEvent(conceptEventCtx, { success: false, durationMs: Date.now() - conceptStart, error: err });
+        throw err;
+      });
+      void recordGenerationEvent(conceptEventCtx, { success: true, durationMs: Date.now() - conceptStart });
       return res.json({ options });
     } catch (err: any) {
       console.warn("[concept-options] route", err?.stack || err?.message || err);
@@ -9334,7 +9418,7 @@ ${orientationExtra}
           return res.status(400).json({ error: "LOOK_NOT_AVAILABLE", message: "Choose a compatible look for this product." });
         }
       }
-      const sfStyleGen = resolveStyleGenerationForProduct(
+      const legacySfStyleGen = resolveStyleGenerationForProduct(
         {
           generationModel: sfGenerationModel,
           generationQuality: sfGenerationQuality,
@@ -9344,6 +9428,15 @@ ${orientationExtra}
         },
         productType?.designerType,
       );
+      const sfGenPlan = resolveGenerationPlan({
+        merchantId: installation.merchantId ?? null,
+        packProfileKey: sfPackCtx?.profile.key,
+        productFamily: sfPackCtx ? sfPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
+        isApparel,
+      });
+      // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
+      const sfStyleGen =
+        sfGenPlan.imagePath === "legacy" ? legacySfStyleGen : { ...legacySfStyleGen, nativeTransparent: true };
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -9668,25 +9761,57 @@ ${orientationExtra}
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
           const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf));
-          const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-            prompt: fullPrompt,
-            aspectRatio: geminiAspectRatio ?? "1:1",
-            inputImageUrl,
-            isApparel,
-            isAllOverPrint,
-            isPatternStyle: usePatternAopSf,
-            userPrompt: userDescSf || null,
-            cylindricalWrap: useCylindricalWrapPrompt({
-              designerType: productType?.designerType,
-              isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
-            }),
-            generationModel: sfStyleGen.model,
-            generationQuality: sfStyleGen.quality,
-            nativeTransparent: sfStyleGen.nativeTransparent,
-            layered: true,
-            ...(sfPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
-            imageProvider: resolveImageProviderRoute(sfPackCtx?.profile.key),
+          const sfEndUser = openAIEndUserId(shop, workerCustomerId ?? sessionId ?? null);
+          const sfEventCtx = {
+            kind: "image" as const,
+            route: "storefront-generate",
+            jobId,
+            merchantId: installation.merchantId ?? null,
+            shopDomain: shop,
+            experienceProfile: sfPackCtx?.profile.key ?? null,
+            stylePack: sfPackCtx?.packSlug ?? null,
+            styleSlug: catalogSlugSf,
+            productFamily: sfPackCtx?.productRenderer ?? null,
+            visualSystem: sfPackCtx?.visualSystem ?? null,
+            conceptFramework: sfPackCtx?.conceptFramework ?? null,
+            plan: sfGenPlan,
+            legacyModel: sfStyleGen.model ?? "nano-banana",
+            legacyQuality: sfStyleGen.model ? sfStyleGen.quality : null,
+            endUserHash: sfEndUser ?? null,
+          };
+          let sfGenResult: Awaited<ReturnType<typeof generateImageBase64>>;
+          try {
+            sfGenResult = await generateImageBase64({
+              prompt: fullPrompt,
+              aspectRatio: geminiAspectRatio ?? "1:1",
+              inputImageUrl,
+              isApparel,
+              isAllOverPrint,
+              isPatternStyle: usePatternAopSf,
+              userPrompt: userDescSf || null,
+              cylindricalWrap: useCylindricalWrapPrompt({
+                designerType: productType?.designerType,
+                isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+              }),
+              generationModel: sfStyleGen.model,
+              generationQuality: sfStyleGen.quality,
+              nativeTransparent: sfStyleGen.nativeTransparent,
+              layered: true,
+              ...(sfPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+              generationPlan: sfGenPlan,
+              endUserId: sfEndUser,
+            });
+          } catch (genErr) {
+            void recordGenerationEvent(sfEventCtx, { success: false, durationMs: Date.now() - aiStart, error: genErr });
+            throw genErr;
+          }
+          void recordGenerationEvent(sfEventCtx, {
+            success: !!sfGenResult.data,
+            durationMs: Date.now() - aiStart,
+            meta: sfGenResult.meta,
+            error: sfGenResult.data ? undefined : new Error("no image data"),
           });
+          const { data: base64Data, mimeType: generatedMimeType } = sfGenResult;
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
           if (!base64Data) {
@@ -9881,9 +10006,10 @@ ${orientationExtra}
           console.log(`${W} complete designId=${designId} total=${Date.now() - wStart}ms`);
         } catch (workerErr: any) {
           console.error(`${W} worker failed +${Date.now() - wStart}ms stage=unknown:`, workerErr.message ?? workerErr);
+          const safeWorkerError = customerSafeGenerationError(workerErr, sfGenPlan);
           await storage.updateGenerationJob(jobId, {
             status: "failed",
-            errorMessage: workerErr.message ?? "Unknown generation error",
+            errorMessage: safeWorkerError,
           }).catch(() => {});
           void logMerchantGeneration({
             installation,
@@ -9895,7 +10021,7 @@ ${orientationExtra}
             stylePreset: stylePreset ?? null,
             size: size ?? null,
             success: false,
-            errorMessage: workerErr.message ?? "Unknown generation error",
+            errorMessage: safeWorkerError,
           });
           void recordGenerationOutcomeForFounder(installation, false);
         }

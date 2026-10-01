@@ -484,6 +484,42 @@ export const insertGenerationLogSchema = createInsertSchema(generationLogs).omit
 export type GenerationLog = typeof generationLogs.$inferSelect;
 export type InsertGenerationLog = z.infer<typeof insertGenerationLogSchema>;
 
+// Per-generation provider telemetry (server-only; never serialized to clients).
+// No prompts, punchlines, pet names, reference URLs, emails or credentials.
+// job_id joins to generation_jobs / _appai_job_id cart property for save → cart → purchase.
+export const generationEvents = pgTable("generation_events", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),
+  jobId: varchar("job_id"),
+  merchantId: varchar("merchant_id"),
+  shopDomain: text("shop_domain"),
+  route: text("route"),
+  experienceProfile: text("experience_profile"),
+  stylePack: text("style_pack"),
+  styleSlug: text("style_slug"),
+  productFamily: text("product_family"),
+  visualSystem: text("visual_system"),
+  conceptFramework: text("concept_framework"),
+  provider: text("provider"),
+  credentialScope: text("credential_scope"),
+  credentialRef: text("credential_ref"),
+  model: text("model"),
+  quality: text("quality"),
+  size: text("size"),
+  transparent: boolean("transparent"),
+  transparentFraction: decimal("transparent_fraction", { precision: 6, scale: 4 }),
+  attempts: integer("attempts"),
+  durationMs: integer("duration_ms"),
+  usage: jsonb("usage"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 6 }),
+  providerRequestId: text("provider_request_id"),
+  success: boolean("success").notNull(),
+  errorCategory: text("error_category"),
+  endUserHash: text("end_user_hash"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type InsertGenerationEvent = typeof generationEvents.$inferInsert;
+
 // Coupon codes for credits
 export const coupons = pgTable("coupons", {
   id: serial("id").primaryKey(),
