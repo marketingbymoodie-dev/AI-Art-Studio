@@ -1,4 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
+import { resolveImageProviderRoute } from "./image-provider-route";
 import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
@@ -3186,6 +3187,7 @@ ${orientationExtra}
         nativeTransparent: styleGen.nativeTransparent,
         layered: true,
         ...(adminPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+        imageProvider: resolveImageProviderRoute(adminPackCtx?.profile.key),
       });
 console.log("[api/generate] replicate returned", {
   mimeType,
@@ -9683,6 +9685,7 @@ ${orientationExtra}
             nativeTransparent: sfStyleGen.nativeTransparent,
             layered: true,
             ...(sfPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+            imageProvider: resolveImageProviderRoute(sfPackCtx?.profile.key),
           });
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 

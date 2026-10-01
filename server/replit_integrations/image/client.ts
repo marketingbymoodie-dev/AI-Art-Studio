@@ -16,6 +16,11 @@
  */
 
 import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
+import {
+  generateGptImage2ViaOpenAI,
+  getOpenAIKeyForRoute,
+  type ImageProviderRoute,
+} from "../../image-provider-route";
 
 type ReplicatePrediction = {
   id: string;
@@ -172,6 +177,8 @@ export type GenerateImageParams = {
    * "enforce" retries once, then throws GptImage2OpaqueOutputError.
    */
   transparencyCheck?: "log" | "enforce";
+  /** Omitted / replicate = existing path. openai = direct OpenAI with that account's key (gpt-image-2 only). */
+  imageProvider?: ImageProviderRoute;
 };
 
 // Map aspect ratio to Nano Banana Pro supported values
@@ -536,7 +543,7 @@ export async function generateImageBase64(
   mimeType: string;
   data: string;
 }> {
-  const token = getReplicateToken();
+  const route = params.imageProvider ?? { provider: "replicate" as const };
   const nativeTransparent = params.nativeTransparent === true || isGptImage2Model(params.generationModel);
 
   const compressedPrompt = compressPrompt(
@@ -560,6 +567,9 @@ export async function generateImageBase64(
     );
   }
 
+  const openAIKey = route.provider === "openai" && nativeTransparent ? getOpenAIKeyForRoute(route) : null;
+  const token = openAIKey ? "" : getReplicateToken();
+
   if (nativeTransparent || isGptImage2Model(params.generationModel)) {
     const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);
     const input = buildGptImage2ReplicateInput({
@@ -571,14 +581,28 @@ export async function generateImageBase64(
     if (params.layered !== true) {
       logComposedPrompt(compressedPrompt, "gpt-image-2");
     }
-    console.log(
-      `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
-    );
+    if (!openAIKey) {
+      console.log(
+        `[Replicate] gpt-image-2 quality=${quality} estimatedCostUsd=${estimatedGptImage2CostUsd(quality)} background=transparent`,
+      );
+    }
     const enforce = params.transparencyCheck === "enforce";
     for (let attempt = 1; ; attempt++) {
-      const created = await createGptImage2Prediction(token, input);
-      console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
-      const result = await pollAndDownload(token, created);
+      let result: { mimeType: string; data: string };
+      if (openAIKey && route.provider === "openai") {
+        result = await generateGptImage2ViaOpenAI({
+          apiKey: openAIKey,
+          account: route.account,
+          prompt: compressedPrompt,
+          aspect: mapGptImage2AspectRatio(params.aspectRatio),
+          quality,
+          inputImageUrls: input.input_images as string[] | undefined,
+        });
+      } else {
+        const created = await createGptImage2Prediction(token, input);
+        console.log("[Replicate] gpt-image-2 prediction created:", created.id, "status:", created.status);
+        result = await pollAndDownload(token, created);
+      }
       let opaque = false;
       try {
         const report = await measureTransparency(result.data);
