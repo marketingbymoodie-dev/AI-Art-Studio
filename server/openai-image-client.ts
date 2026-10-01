@@ -1,9 +1,10 @@
 /**
  * Direct OpenAI Image API rendering (official `openai` SDK).
  *
- * Image API (not Responses): Flare/Sunburst are only served on
- * /v1/images/generations and /v1/images/edits, and each generation here is a
- * single prompt → single image. References go to images.edit as image[] in the
+ * Image API (/v1/images/generations, /v1/images/edits). Flare/Sunburst are also
+ * available through the Responses API, which suits conversational/multi-turn
+ * image work; each generation here is a single prompt → single image, which is
+ * what the Image API is for. References go to images.edit as image[] in the
  * same order as the prompt's "Image k: …" role lines.
  */
 import { createHash } from "node:crypto";
