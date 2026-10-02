@@ -46,7 +46,7 @@ function style(
     options: opts.options,
     inputCapabilities: opts.petOnly ? CAPS_PET_ONLY : CAPS_PET_AND_OWNER,
     generationModel: "openai-flare",
-    generationModelDecor: "nano-banana",
+    generationModelDecor: "google-nb2",
     generationQuality: "medium",
     launchActive: opts.launchActive,
   };

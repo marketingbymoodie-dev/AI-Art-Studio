@@ -66,7 +66,7 @@ export const GENERATION_ROUTES: GenerationRouteOption[] = [
   },
 ];
 
-export const LEGACY_DEFAULT_ROUTE_LABEL = "Legacy default — Nano Banana (Replicate) + chroma";
+export const LEGACY_DEFAULT_ROUTE_LABEL = "Default routing — store/pack default, else Nano Banana (Replicate) + chroma";
 
 const ROUTE_IDS = new Set<string>(GENERATION_ROUTES.map((r) => r.id));
 

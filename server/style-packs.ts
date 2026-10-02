@@ -119,8 +119,9 @@ export async function resolveGeneratePack(
  * Create/refresh one merchant's pack-only style rows from the code catalog
  * (shared/packStyleCatalog.ts), keyed by catalog slug. Only ever called on an
  * explicit pack assignment — never by boot seeding. Content fields are
- * refreshed; is_active is set on insert only, so later merchant/admin
- * visibility choices survive re-provisioning.
+ * refreshed; is_active and the generation model fields are set on insert
+ * only, so later merchant/admin visibility and model choices (Admin → Styles)
+ * survive re-provisioning.
  */
 export async function provisionPackStylesForMerchant(
   packSlug: string,
@@ -146,9 +147,6 @@ export async function provisionPackStylesForMerchant(
       descriptionOptional: !!d.descriptionOptional,
       visibility: STYLE_VISIBILITY_PACK_ONLY,
       inputCapabilities: d.inputCapabilities,
-      generationModel: d.generationModel,
-      generationModelDecor: d.generationModelDecor,
-      generationQuality: d.generationQuality ?? null,
       updatedAt: new Date(),
     };
     const id = bySlug.get(d.id);
@@ -160,6 +158,9 @@ export async function provisionPackStylesForMerchant(
       if (!opts.dryRun) {
         await db.insert(stylePresets).values({
           ...content,
+          generationModel: d.generationModel,
+          generationModelDecor: d.generationModelDecor,
+          generationQuality: d.generationQuality ?? null,
           merchantId,
           catalogSlug: d.id,
           isActive: d.launchActive,

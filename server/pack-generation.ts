@@ -132,6 +132,22 @@ export async function preparePackGeneration(opts: {
   };
 }
 
+/**
+ * The style row whose generation model governs this request. Petposterous V2
+ * pages send a carrier preset (pp-owner-vs-pet) plus the concept engine's
+ * framework slug; the framework's own pack style row defines the model so each
+ * pack style's Admin → Styles setting runs. Otherwise the selected style.
+ */
+export function modelDefiningStyle<T extends { catalogSlug?: string | null; visibility?: string | null }>(
+  selected: T,
+  ctx: PackGenerationContext | null,
+  merchantStyles: T[],
+): T {
+  const framework = ctx?.conceptFramework;
+  if (!framework || selected.catalogSlug === framework) return selected;
+  return merchantStyles.find((s) => s.catalogSlug === framework && s.visibility === "pack_only") ?? selected;
+}
+
 /** Pack layers for composeLayeredPrompt, with images numbered in model-input order. */
 export function packLayersForCompose(
   ctx: PackGenerationContext,

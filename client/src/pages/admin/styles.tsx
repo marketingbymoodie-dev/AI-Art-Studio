@@ -22,6 +22,7 @@ import { notifyStylePresetsChanged } from "@shared/stylePresetFreshness";
 import {
   GENERATION_ROUTES,
   LEGACY_DEFAULT_ROUTE_LABEL,
+  generationRouteOption,
   isTransparentCapableRoute,
   normalizeGenerationRoute,
 } from "@shared/generationRoutes";
@@ -330,7 +331,11 @@ export default function AdminStyles() {
     setGenerationModel(normalizeGenerationRoute((style as any).generationModel) ?? "default");
     const decorModel = String((style as any).generationModelDecor || "").trim().toLowerCase();
     setGenerationModelDecor(
-      !decorModel ? "inherit" : decorModel === "nano-banana" ? "default" : normalizeGenerationRoute(decorModel) ?? "inherit",
+      !decorModel
+        ? "inherit"
+        : decorModel === "legacy" || decorModel === "nano-banana"
+          ? "default"
+          : normalizeGenerationRoute(decorModel) ?? "inherit",
     );
     const quality = String((style as any).generationQuality || "low").toLowerCase();
     setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
@@ -482,7 +487,7 @@ export default function AdminStyles() {
       options,
       generationModel: generationModel === "default" ? null : generationModel,
       generationModelDecor:
-        generationModelDecor === "inherit" ? null : generationModelDecor === "default" ? "nano-banana" : generationModelDecor,
+        generationModelDecor === "inherit" ? null : generationModelDecor === "default" ? "legacy" : generationModelDecor,
       generationQuality:
         usesFlareQuality
           ? generationQuality === "medium" || generationQuality === "high"
@@ -547,6 +552,22 @@ export default function AdminStyles() {
     if (filterCategory === "all") return styles.filter((s) => s.category === "all" || !s.category);
     return styles.filter((s) => s.category === filterCategory || s.category === "all");
   }, [styles, filterCategory]);
+  const isPackStyle = (s: StylePresetDB) => (s as any).visibility === "pack_only";
+  const standardStyles = filteredStyles.filter((s) => !isPackStyle(s));
+  const packStyles = filteredStyles.filter(isPackStyle);
+  const packSectionTitle = packStyles.every((s) => String(s.catalogSlug || "").startsWith("pp-"))
+    ? "Petposterous pack"
+    : "Style pack styles";
+  const modelBadge = (style: StylePresetDB) => {
+    const main = generationRouteOption((style as any).generationModel)?.label ?? "Default routing";
+    const decorRaw = String((style as any).generationModelDecor || "").trim().toLowerCase();
+    if (!decorRaw) return main;
+    const decor =
+      decorRaw === "legacy" || decorRaw === "nano-banana"
+        ? "Default routing"
+        : generationRouteOption(decorRaw)?.label ?? "Default routing";
+    return decor === main ? main : `${main} · decor: ${decor}`;
+  };
 
   return (
     <AdminLayout>
@@ -602,8 +623,25 @@ export default function AdminStyles() {
             {[1, 2, 3].map((i) => <Skeleton key={i} className="h-32" />)}
           </div>
         ) : filteredStyles.length > 0 ? (
+          <div className="space-y-6">
+          {[
+            { key: "standard", title: null as string | null, list: standardStyles },
+            { key: "pack", title: packSectionTitle, list: packStyles },
+          ]
+            .filter((g) => g.list.length > 0)
+            .map((group) => (
+          <div key={group.key} className="space-y-3" data-testid={`styles-group-${group.key}`}>
+            {group.title && (
+              <div>
+                <h2 className="text-lg font-semibold">{group.title}</h2>
+                <p className="text-xs text-muted-foreground">
+                  Pack-only styles. The concept engine picks the style; its generation model below is the one that runs.
+                </p>
+              </div>
+            )}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {filteredStyles.map((style) => {
+            {group.list.map((style) => {
+              const packStyle = isPackStyle(style);
               const opts: StyleOptions | null = (style as any).options ?? null;
               const hasSubStyles = opts && opts.choices && opts.choices.length > 0;
               return (
@@ -646,6 +684,9 @@ export default function AdminStyles() {
                         {opts!.choices.map((c) => c.name).join(", ")}
                       </p>
                     )}
+                    <p className="text-xs text-muted-foreground mb-3" data-testid={`text-style-model-${style.id}`}>
+                      Model: {modelBadge(style)}
+                    </p>
                     <div className="flex gap-2">
                       <Button
                         variant="ghost"
@@ -656,6 +697,8 @@ export default function AdminStyles() {
                       >
                         <Edit2 className="h-4 w-4" />
                       </Button>
+                      {!packStyle && (
+                      <>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -677,11 +720,16 @@ export default function AdminStyles() {
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
+                      </>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
               );
             })}
+          </div>
+          </div>
+            ))}
           </div>
         ) : (
           <Card>

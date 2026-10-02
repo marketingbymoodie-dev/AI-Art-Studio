@@ -62,12 +62,15 @@ export function persistGenerationModel(raw: unknown): string | null | undefined 
   return normalizeGenerationRoute(String(raw));
 }
 
-/** Decor override: null = same as generationModel, "nano-banana" = legacy default on decor, else a route id. */
+/**
+ * Decor override: null = same as generationModel, "legacy" = default routing on
+ * decor (store/pack assignment, else Replicate Nano Banana), else a route id.
+ */
 export function persistGenerationModelDecor(raw: unknown): string | null | undefined {
   if (raw === undefined) return undefined;
   if (raw == null || raw === "") return null;
   const v = String(raw).trim().toLowerCase();
-  if (v === "nano-banana" || v === "legacy") return "nano-banana";
+  if (v === "nano-banana" || v === "legacy" || v === "default") return "legacy";
   return normalizeGenerationRoute(v);
 }
 

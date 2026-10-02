@@ -322,6 +322,7 @@ import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveStorefro
 import {
   creativeBriefFromContext,
   hostPackReferences,
+  modelDefiningStyle,
   packLayersForCompose,
   preparePackGeneration,
   type PackGenerationContext,
@@ -2812,9 +2813,10 @@ export async function registerRoutes(
             }
             stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
             styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
-            styleGenerationModel = (selectedStyle as any).generationModel ?? null;
-            styleGenerationModelDecor = (selectedStyle as any).generationModelDecor ?? null;
-            styleGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+            const adminModelStyle = modelDefiningStyle(selectedStyle as any, adminPackCtx, dbStyles as any[]);
+            styleGenerationModel = adminModelStyle.generationModel ?? null;
+            styleGenerationModelDecor = adminModelStyle.generationModelDecor ?? null;
+            styleGenerationQuality = adminModelStyle.generationQuality ?? null;
             styleUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
             styleOptionsAdmin = (selectedStyle as any).options ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
@@ -9314,9 +9316,10 @@ ${orientationExtra}
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
           sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
-          sfGenerationModel = (selectedStyle as any).generationModel ?? null;
-          sfGenerationModelDecor = (selectedStyle as any).generationModelDecor ?? null;
-          sfGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+          const sfModelStyle = modelDefiningStyle(selectedStyle as any, sfPackCtx, dbStyles as any[]);
+          sfGenerationModel = sfModelStyle.generationModel ?? null;
+          sfGenerationModelDecor = sfModelStyle.generationModelDecor ?? null;
+          sfGenerationQuality = sfModelStyle.generationQuality ?? null;
           sfUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
           sfStyleOptions = (selectedStyle as any).options ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||

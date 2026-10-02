@@ -186,6 +186,10 @@ const DATA_MIGRATIONS: string[] = [
   // GPT-Image-2 is retired; its style marker now means the Flare (OpenAI direct) route.
   `UPDATE style_presets SET generation_model = 'openai-flare' WHERE generation_model IN ('gpt-image-2', 'openai/gpt-image-2')`,
   `UPDATE style_presets SET generation_model_decor = 'openai-flare' WHERE generation_model_decor IN ('gpt-image-2', 'openai/gpt-image-2')`,
+  // Pack seeds stored "nano-banana", but the pack assignment actually rendered decor on NB2 (Google direct).
+  // Make that explicit so Admin → Styles shows the model that runs. Editor "Default" saves 'legacy', never matched here.
+  `UPDATE style_presets SET generation_model_decor = 'google-nb2' WHERE visibility = 'pack_only' AND catalog_slug LIKE 'pp-%' AND generation_model_decor = 'nano-banana'`,
+  `UPDATE style_presets SET generation_model_decor = 'legacy' WHERE generation_model_decor = 'nano-banana'`,
   // Default only — do NOT stamp existing rows. The column is merchant-configurable
   // (Admin → Settings, clamped 1–10) and an unconditional UPDATE here reset every
   // merchant's choice on each boot (GH #50). ADD COLUMN already backfills NOT NULL 2.
