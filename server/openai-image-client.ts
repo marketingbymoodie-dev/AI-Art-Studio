@@ -48,7 +48,7 @@ export class ProviderRequestError extends Error {
     public requestId: string | null,
     detail: string,
   ) {
-    super(`OpenAI image request failed (${category}${status ? ` status=${status}` : ""}${requestId ? ` requestId=${requestId}` : ""}): ${detail}`);
+    super(`Image provider request failed (${category}${status ? ` status=${status}` : ""}${requestId ? ` requestId=${requestId}` : ""}): ${detail}`);
     this.name = "ProviderRequestError";
   }
 }

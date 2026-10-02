@@ -807,7 +807,12 @@ interface TargetDimensions {
   height: number;
 }
 
-async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions, outputFormat: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
+async function resizeToAspectRatio(
+  buffer: Buffer,
+  targetDims: TargetDimensions,
+  outputFormat: 'png' | 'jpeg' = 'png',
+  cropOnly = false,
+): Promise<Buffer> {
   const metadata = await sharp(buffer).metadata();
   const srcWidth = metadata.width || 1024;
   const srcHeight = metadata.height || 1024;
@@ -828,9 +833,8 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
     cropTop = Math.round((srcHeight - cropHeight) / 2);
   }
   
-  const sharpInstance = sharp(buffer)
-    .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
-    .resize(targetDims.width, targetDims.height, { fit: 'fill' });
+  const cropped = sharp(buffer).extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight });
+  const sharpInstance = cropOnly ? cropped : cropped.resize(targetDims.width, targetDims.height, { fit: 'fill' });
   
   if (outputFormat === 'jpeg') {
     return sharpInstance.jpeg({ quality: 90 }).toBuffer();
@@ -1079,6 +1083,8 @@ interface SaveImageOptions {
   vectorize?: boolean;
   /** Native-transparent model — skip chroma / processApparelMotif. */
   skipChroma?: boolean;
+  /** Direct renderer with product-set resolution (2K/4K): crop to print AR, do not downscale to genWidth. */
+  keepSourceResolution?: boolean;
   /** 241 contain path: do not center-crop the generation to print AR. */
   printifyBlueprintId?: number | null;
   /** Reuse-regen only: crop painted letterbox bars. Never for 241/759 probe path. */
@@ -1125,6 +1131,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
     bgRemovalSensitivity,
     vectorize,
     skipChroma,
+    keepSourceResolution,
     printifyBlueprintId,
     stripReuseLetterbox,
   } = options || {};
@@ -1194,7 +1201,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
         actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
           ? "jpeg"
           : "png";
-      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
+      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat, keepSourceResolution)) as Buffer;
       extension = outputFormat === "jpeg" ? "jpg" : "png";
       actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
     }
@@ -2919,7 +2926,10 @@ export async function registerRoutes(
       });
       // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
       const styleGen =
-        adminGenPlan.imagePath === "legacy" ? legacyStyleGen : { ...legacyStyleGen, nativeTransparent: true };
+        adminGenPlan.imagePath !== "legacy" && adminGenPlan.imagePath.kind === "direct-openai"
+          ? { ...legacyStyleGen, nativeTransparent: true }
+          : legacyStyleGen;
+      const adminKeepResolution = adminGenPlan.imagePath !== "legacy" && adminGenPlan.imagePath.kind === "direct-google";
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -3286,6 +3296,7 @@ console.log("[api/generate] replicate returned", {
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
   vectorize: resolveApparelVectorize(styleVectorizeEnabled),
           skipChroma: styleGen.nativeTransparent,
+          keepSourceResolution: adminKeepResolution,
           printifyBlueprintId: productType?.printifyBlueprintId,
           stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptAdmin, prompt),
         });
@@ -9436,7 +9447,10 @@ ${orientationExtra}
       });
       // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
       const sfStyleGen =
-        sfGenPlan.imagePath === "legacy" ? legacySfStyleGen : { ...legacySfStyleGen, nativeTransparent: true };
+        sfGenPlan.imagePath !== "legacy" && sfGenPlan.imagePath.kind === "direct-openai"
+          ? { ...legacySfStyleGen, nativeTransparent: true }
+          : legacySfStyleGen;
+      const sfKeepResolution = sfGenPlan.imagePath !== "legacy" && sfGenPlan.imagePath.kind === "direct-google";
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -9846,6 +9860,7 @@ ${orientationExtra}
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
               vectorize: resolveApparelVectorize(sfVectorizeEnabled),
               skipChroma: sfStyleGen.nativeTransparent,
+              keepSourceResolution: sfKeepResolution,
               printifyBlueprintId: productType?.printifyBlueprintId,
               stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
             });
@@ -9862,6 +9877,7 @@ ${orientationExtra}
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                 vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 skipChroma: sfStyleGen.nativeTransparent,
+                keepSourceResolution: sfKeepResolution,
                 printifyBlueprintId: productType?.printifyBlueprintId,
                 stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
               });

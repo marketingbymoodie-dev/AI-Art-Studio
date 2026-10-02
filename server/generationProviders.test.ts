@@ -140,14 +140,12 @@ describe("provider resolution", () => {
     expect(resolveGenerationPlan({ merchantId: "m-classic", packProfileKey: "quotes" }).imagePath).toBe("legacy");
   });
 
-  it("Petposterous decor keeps its legacy (Nano Banana) path; apparel family needs the apparel storage path", () => {
-    expect(resolveGenerationPlan({ ...PP_APPAREL, productFamily: "poster", isApparel: false }).imagePath).toBe("legacy");
-    expect(resolveGenerationPlan({ ...PP_APPAREL, productFamily: "pillow", isApparel: false }).imagePath).toBe("legacy");
+  it("Petposterous decor goes to its direct Google path; apparel family needs the apparel storage path", () => {
+    const poster = resolveGenerationPlan({ ...PP_APPAREL, productFamily: "poster", isApparel: false });
+    expect(poster.imagePath !== "legacy" && poster.imagePath.kind).toBe("direct-google");
+    // "apparel" family without the apparel storage path matches neither direct path.
     expect(resolveGenerationPlan({ ...PP_APPAREL, isApparel: false }).imagePath).toBe("legacy");
-    // Petposterous decor credentials are still its own (not the shared project) when a direct path is added later.
-    expect(resolveGenerationPlan({ ...PP_APPAREL, productFamily: "poster", isApparel: false }).credentials.openai?.id).toBe(
-      "openai:petposterous",
-    );
+    expect(poster.credentials.openai?.id).toBe("openai:petposterous");
   });
 
   it("merchant assignment overrides pack assignment; a dedicated merchant credential never resolves to MAIN", () => {
@@ -232,13 +230,13 @@ describe("direct OpenAI rendering", () => {
       expect(calledUrls().some((u) => u.includes("openai.com"))).toBe(false);
       expect(authHeader(0)).toBe(`Bearer ${REPLICATE_TOKEN}`);
     }
-    // Nano Banana (non-native) also untouched.
+    // Classic Nano Banana (non-native) also untouched.
     fetchMock.mockClear();
     await generateImageBase64({
       ...apparelParams,
       generationModel: "nano-banana",
       nativeTransparent: false,
-      generationPlan: resolveGenerationPlan({ ...PP_APPAREL, productFamily: "poster", isApparel: false }),
+      generationPlan: resolveGenerationPlan({ merchantId: "m-classic" }),
     });
     expect(calledUrls()[0]).toBe("https://api.replicate.com/v1/predictions");
   });
@@ -368,7 +366,9 @@ describe("alpha, secrets, telemetry", () => {
       });
     for (const file of [...scan(path.join(root, "client", "src")), ...scan(path.join(root, "extensions")), ...scan(path.join(root, "shared"))]) {
       const src = fs.readFileSync(file, "utf8");
-      expect(src, file).not.toMatch(/OPENAI_API_KEY|generation-providers|openai-image-client|gpt-image-2\.5/);
+      expect(src, file).not.toMatch(
+        /OPENAI_API_KEY|GEMINI_API_KEY|generation-providers|openai-image-client|google-image-client|gpt-image-2\.5|gemini-3/,
+      );
     }
   });
 

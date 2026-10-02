@@ -17,8 +17,15 @@
 
 import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
 import { readCredential, selectRenderer, type GenerationPlan } from "../../generation-providers";
-import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../../openai-image-client";
+import {
+  estimateOpenAIImageCostUsd,
+  ProviderRequestError,
+  renderOpenAIImage,
+  type OpenAIImageUsage,
+} from "../../openai-image-client";
 import { cleanupNativeAlphaPng } from "../../native-alpha-cleanup";
+import { estimateGoogleImageCostUsd, renderGoogleImage } from "../../google-image-client";
+import sharp from "sharp";
 
 type ReplicatePrediction = {
   id: string;
@@ -186,7 +193,7 @@ export type GenerateImageParams = {
 };
 
 export type GenerationMeta = {
-  provider: "openai" | "replicate";
+  provider: "openai" | "google" | "replicate";
   credentialRefId: string | null;
   credentialScope: "shared" | "dedicated" | null;
   model: string;
@@ -562,9 +569,12 @@ async function pollAndDownload(
 export async function generateImageBase64(
   params: GenerateImageParams
 ): Promise<GenerateImageResult> {
-  const direct = params.generationPlan?.imagePath !== "legacy" ? params.generationPlan?.imagePath ?? null : null;
+  const planPath = params.generationPlan?.imagePath;
+  const direct = planPath && planPath !== "legacy" && planPath.kind === "direct-openai" ? planPath : null;
+  const directGoogle = planPath && planPath !== "legacy" && planPath.kind === "direct-google" ? planPath : null;
   const nativeTransparent =
-    direct != null || params.nativeTransparent === true || isGptImage2Model(params.generationModel);
+    direct != null ||
+    (directGoogle == null && (params.nativeTransparent === true || isGptImage2Model(params.generationModel)));
 
   const compressedPrompt = compressPrompt(
     params.prompt,
@@ -581,7 +591,13 @@ export async function generateImageBase64(
 
   if (params.layered === true) {
     const hex = countChromaHexMentions(compressedPrompt);
-    const modelLabel = direct ? selectRenderer(direct).model : nativeTransparent ? "gpt-image-2" : "nano-banana";
+    const modelLabel = direct
+      ? selectRenderer(direct).model
+      : directGoogle
+        ? selectRenderer(directGoogle).model
+        : nativeTransparent
+          ? "gpt-image-2"
+          : "nano-banana";
     console.log(
       `[layered] model=${modelLabel} chromaHexMentions=${hex} plate=${hex > 0 ? "yes" : "none"} (${compressedPrompt.length} chars):\n${compressedPrompt}`,
     );
@@ -668,6 +684,65 @@ export async function generateImageBase64(
       if (attempt >= 2) throw new GptImage2OpaqueOutputError();
       console.log(`[OpenAI] ${renderer.model} retrying once for native transparency`);
     }
+  }
+
+  if (directGoogle) {
+    // Credential first: a missing dedicated key fails before any work, never falls back.
+    const apiKey = readCredential(directGoogle.credential);
+    const renderer = selectRenderer(directGoogle);
+    const references = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
+      (u): u is string => typeof u === "string" && u.length > 0,
+    );
+    const started = Date.now();
+    // Same aspect fallback order as the legacy Nano Banana path; resolution comes from the plan.
+    const ratios = [mapToSupportedAspectRatio(params.aspectRatio), "1:1", "3:4"];
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < ratios.length; attempt++) {
+      try {
+        const result = await renderGoogleImage({
+          apiKey,
+          credential: directGoogle.credential,
+          renderer,
+          prompt: compressedPrompt,
+          aspectRatio: ratios[attempt],
+          imageSize: directGoogle.imageSize,
+          references,
+        });
+        let size: string | null = null;
+        try {
+          const meta = await sharp(Buffer.from(result.data, "base64")).metadata();
+          size = meta.width && meta.height ? `${meta.width}x${meta.height}` : null;
+        } catch {
+          /* size is telemetry only */
+        }
+        return {
+          mimeType: result.mimeType,
+          data: result.data,
+          meta: {
+            provider: "google",
+            credentialRefId: directGoogle.credential.id,
+            credentialScope: directGoogle.credential.scope,
+            model: renderer.model,
+            quality: directGoogle.imageSize,
+            size,
+            attempts: attempt + 1,
+            durationMs: Date.now() - started,
+            transparent: null,
+            transparentFraction: null,
+            usage: result.usage,
+            estimatedCostUsd: estimateGoogleImageCostUsd(result.usage, renderer),
+            providerRequestId: result.requestId,
+          },
+        };
+      } catch (err) {
+        lastError = err;
+        const category = err instanceof ProviderRequestError ? err.category : null;
+        console.error(`[Google] Attempt ${attempt + 1}/${ratios.length} failed:`, (err as Error)?.message ?? err);
+        // Only aspect/format-type failures are worth another ratio.
+        if (category && ["auth", "moderation", "rate_limit", "reference_unavailable"].includes(category)) break;
+      }
+    }
+    throw lastError ?? new Error("All Google generation attempts failed");
   }
 
   const token = getReplicateToken();

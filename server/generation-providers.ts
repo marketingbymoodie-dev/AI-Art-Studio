@@ -8,8 +8,12 @@
  * Precedence: merchant assignment → pack assignment → default.
  * Default (every ordinary merchant today) = imagePath "legacy": the existing
  * Replicate / Nano Banana / chroma behaviour, untouched. The shared umbrella
- * OpenAI credential (OPENAI_API_KEY_MAIN) resolves for ordinary merchants but no
- * merchant is routed through it yet, and it is not required at startup.
+ * credentials (OPENAI_API_KEY_MAIN, GEMINI_API_KEY_MAIN) resolve for ordinary
+ * merchants but no merchant is routed through them yet; neither is required.
+ *
+ * Model, quality and output resolution live in RENDERERS / ASSIGNMENTS, never in
+ * creative prompt text. Aspect ratio stays a product property, separate from
+ * resolution.
  *
  * Credentials are env var NAMES only. Values are read at call time by
  * readCredential() and never returned in a plan, stored, logged or put in an
@@ -39,6 +43,16 @@ export type ImageRenderer = {
   pricing: { textInPerM: number; imageInPerM: number; outputPerM: number };
 };
 
+export type GoogleImageSize = "1K" | "2K" | "4K";
+
+export type GoogleImageRenderer = {
+  id: string;
+  provider: "google";
+  model: string;
+  /** USD per 1M tokens (input text/image, output image). */
+  pricing: { inputPerM: number; outputPerM: number };
+};
+
 export type GenerationAssignment = {
   credentials: Partial<Record<ProviderId, string>>;
   openaiImage?: {
@@ -47,6 +61,16 @@ export type GenerationAssignment = {
     escalationRenderer?: string;
     /** Product families rendered by direct OpenAI; others keep their legacy path. Omit = all. */
     productFamilies?: string[];
+  };
+  googleImage?: {
+    mode: "direct";
+    defaultRenderer: string;
+    escalationRenderer?: string;
+    /** Product families rendered by direct Google; others keep their legacy path. Omit = all. */
+    productFamilies?: string[];
+    defaultImageSize: GoogleImageSize;
+    /** Product treatment: output resolution per family (aspect ratio comes from the product). */
+    imageSizeByFamily?: Partial<Record<string, GoogleImageSize>>;
   };
 };
 
@@ -64,6 +88,20 @@ export const CREDENTIALS: Record<string, CredentialRef> = {
     scope: "dedicated",
     credentialKey: "OPENAI_API_KEY_PETPOSTEROUS",
     label: "Petposterous OpenAI project",
+  },
+  "google:shared": {
+    id: "google:shared",
+    provider: "google",
+    scope: "shared",
+    credentialKey: "GEMINI_API_KEY_MAIN",
+    label: "AppAI umbrella Google AI Studio project",
+  },
+  "google:petposterous": {
+    id: "google:petposterous",
+    provider: "google",
+    scope: "dedicated",
+    credentialKey: "GEMINI_API_KEY_PETPOSTEROUS",
+    label: "Petposterous Google AI Studio project",
   },
   "replicate:shared": {
     id: "replicate:shared",
@@ -93,22 +131,47 @@ export const RENDERERS: Record<string, ImageRenderer> = {
   },
 };
 
+export const GOOGLE_RENDERERS: Record<string, GoogleImageRenderer> = {
+  // Nano Banana 2 — default. Supports 1K/2K/4K itself; size is chosen per product, not by model.
+  "google-nb2": {
+    id: "google-nb2",
+    provider: "google",
+    model: "gemini-3.1-flash-image",
+    pricing: { inputPerM: 0.5, outputPerM: 60 },
+  },
+  // Nano Banana Pro — premium/escalation for precision-heavy work; never automatic yet.
+  "google-nb-pro": {
+    id: "google-nb-pro",
+    provider: "google",
+    model: "gemini-3-pro-image",
+    pricing: { inputPerM: 2, outputPerM: 120 },
+  },
+};
+
 /** Keys: `merchant:<merchantId>` or `pack:<style pack prompt_profile_key>`. */
 export const ASSIGNMENTS: Record<string, GenerationAssignment> = {
   "pack:petposterous": {
-    credentials: { openai: "openai:petposterous" },
-    // Decor (poster/pillow/tapestry/bedding) stays on its current Nano Banana path for now.
+    credentials: { openai: "openai:petposterous", google: "google:petposterous" },
     openaiImage: {
       mode: "direct",
       defaultRenderer: "openai-flare",
       escalationRenderer: "openai-sunburst",
       productFamilies: ["apparel"],
     },
+    googleImage: {
+      mode: "direct",
+      defaultRenderer: "google-nb2",
+      escalationRenderer: "google-nb-pro",
+      productFamilies: ["poster", "pillow", "tapestry", "bedding"],
+      defaultImageSize: "2K",
+      imageSizeByFamily: { poster: "2K", pillow: "2K", tapestry: "4K", bedding: "4K" },
+    },
   },
 };
 
 const DEFAULT_CREDENTIALS: Partial<Record<ProviderId, string>> = {
   openai: "openai:shared",
+  google: "google:shared",
   replicate: "replicate:shared",
 };
 
@@ -119,11 +182,19 @@ export type DirectOpenAIImagePath = {
   escalation: ImageRenderer | null;
 };
 
+export type DirectGoogleImagePath = {
+  kind: "direct-google";
+  credential: CredentialRef;
+  renderer: GoogleImageRenderer;
+  escalation: GoogleImageRenderer | null;
+  imageSize: GoogleImageSize;
+};
+
 export type GenerationPlan = {
   /** Which assignment won (`merchant:…`, `pack:…`, or `default`). */
   assignmentKey: string;
   credentials: Partial<Record<ProviderId, CredentialRef>>;
-  imagePath: "legacy" | DirectOpenAIImagePath;
+  imagePath: "legacy" | DirectOpenAIImagePath | DirectGoogleImagePath;
 };
 
 export class ProviderConfigError extends Error {
@@ -153,6 +224,19 @@ function renderer(id: string): ImageRenderer {
   return r;
 }
 
+function googleRenderer(id: string): GoogleImageRenderer {
+  const r = GOOGLE_RENDERERS[id];
+  if (!r) throw new ProviderConfigError(`Unknown Google renderer "${id}"`);
+  return r;
+}
+
+function familyMatches(families: string[] | undefined, input: { productFamily?: string | null; isApparel?: boolean }) {
+  return (
+    (!families || (input.productFamily != null && families.includes(input.productFamily))) &&
+    (input.productFamily !== "apparel" || input.isApparel === true)
+  );
+}
+
 export function resolveGenerationPlan(
   input: {
     merchantId?: string | null;
@@ -179,11 +263,8 @@ export function resolveGenerationPlan(
   }
 
   let imagePath: GenerationPlan["imagePath"] = "legacy";
-  const families = assignment?.openaiImage?.productFamilies;
-  const familyMatches =
-    (!families || (input.productFamily != null && families.includes(input.productFamily))) &&
-    (input.productFamily !== "apparel" || input.isApparel === true);
-  if (assignment?.openaiImage?.mode === "direct" && familyMatches) {
+  const google = assignment?.googleImage;
+  if (assignment?.openaiImage?.mode === "direct" && familyMatches(assignment.openaiImage.productFamilies, input)) {
     const credential = credentials.openai;
     if (!credential) throw new ProviderConfigError(`${assignmentKey} has a direct OpenAI image path but no OpenAI credential`);
     imagePath = {
@@ -192,12 +273,25 @@ export function resolveGenerationPlan(
       renderer: renderer(assignment.openaiImage.defaultRenderer),
       escalation: assignment.openaiImage.escalationRenderer ? renderer(assignment.openaiImage.escalationRenderer) : null,
     };
+  } else if (google?.mode === "direct" && familyMatches(google.productFamilies, input)) {
+    const credential = credentials.google;
+    if (!credential) throw new ProviderConfigError(`${assignmentKey} has a direct Google image path but no Google credential`);
+    imagePath = {
+      kind: "direct-google",
+      credential,
+      renderer: googleRenderer(google.defaultRenderer),
+      escalation: google.escalationRenderer ? googleRenderer(google.escalationRenderer) : null,
+      imageSize: (input.productFamily && google.imageSizeByFamily?.[input.productFamily]) || google.defaultImageSize,
+    };
   }
   return { assignmentKey, credentials, imagePath };
 }
 
 /** Default renderer, or the escalation renderer when asked (nothing escalates automatically yet). */
-export function selectRenderer(path: DirectOpenAIImagePath, opts: { escalate?: boolean } = {}): ImageRenderer {
+export function selectRenderer<P extends DirectOpenAIImagePath | DirectGoogleImagePath>(
+  path: P,
+  opts: { escalate?: boolean } = {},
+): P["renderer"] {
   return opts.escalate && path.escalation ? path.escalation : path.renderer;
 }
 
@@ -214,6 +308,6 @@ export function readCredential(ref: CredentialRef, env: Record<string, string | 
 /** Strip a secret (and anything key-shaped) from provider text before it is logged or stored. */
 export function redactSecrets(text: string, secret?: string): string {
   let out = secret ? text.split(secret).join("[redacted]") : text;
-  out = out.replace(/sk-[A-Za-z0-9_-]{8,}/g, "[redacted]");
+  out = out.replace(/sk-[A-Za-z0-9_-]{8,}/g, "[redacted]").replace(/AIza[0-9A-Za-z_-]{20,}/g, "[redacted]");
   return out;
 }

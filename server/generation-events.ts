@@ -78,11 +78,15 @@ export function buildGenerationEventRow(ctx: GenerationEventContext, outcome: Ge
     productFamily: ctx.productFamily ?? null,
     visualSystem: ctx.visualSystem ?? null,
     conceptFramework: ctx.conceptFramework ?? null,
-    provider: meta?.provider ?? (direct ? "openai" : legacyProvider),
+    provider: meta?.provider ?? (direct ? direct.credential.provider : legacyProvider),
     credentialScope: meta?.credentialScope ?? direct?.credential.scope ?? (ctx.kind === "image" ? "shared" : null),
     credentialRef: meta?.credentialRefId ?? direct?.credential.id ?? (ctx.kind === "image" ? "replicate:shared" : null),
     model: meta?.model ?? direct?.renderer.model ?? ctx.legacyModel ?? null,
-    quality: meta?.quality ?? direct?.renderer.quality ?? ctx.legacyQuality ?? null,
+    quality:
+      meta?.quality ??
+      (direct ? (direct.kind === "direct-openai" ? direct.renderer.quality : direct.imageSize) : null) ??
+      ctx.legacyQuality ??
+      null,
     size: meta?.size ?? null,
     transparent: meta?.transparent ?? null,
     transparentFraction: meta?.transparentFraction != null ? meta.transparentFraction.toFixed(4) : null,
