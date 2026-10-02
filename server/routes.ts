@@ -26295,6 +26295,8 @@ ${orientationExtra}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
+  const { registerStagingRenderProbeRoutes } = await import("./routes/staging-render-probe");
+  registerStagingRenderProbeRoutes(app);
   const { registerFlatCalibrationMapperRoutes } = await import("./routes/flat-calibration-mapper");
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
