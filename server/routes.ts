@@ -1,6 +1,7 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import { applyRendererOverride, resolveGenerationPlan } from "./generation-providers";
 import { storagePathFor } from "./apparel-storage-path";
+import { toLosslessPrintMaster } from "./print-master";
 import { openAIEndUserId } from "./openai-image-client";
 import { customerSafeGenerationError, recordGenerationEvent, withGenerationEvent } from "./generation-events";
 import { generatePattern, type PatternType } from "./replicate-bg-remover";
@@ -807,12 +808,7 @@ interface TargetDimensions {
   height: number;
 }
 
-async function resizeToAspectRatio(
-  buffer: Buffer,
-  targetDims: TargetDimensions,
-  outputFormat: 'png' | 'jpeg' = 'png',
-  cropOnly = false,
-): Promise<Buffer> {
+async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions, outputFormat: 'png' | 'jpeg' = 'png'): Promise<Buffer> {
   const metadata = await sharp(buffer).metadata();
   const srcWidth = metadata.width || 1024;
   const srcHeight = metadata.height || 1024;
@@ -833,8 +829,9 @@ async function resizeToAspectRatio(
     cropTop = Math.round((srcHeight - cropHeight) / 2);
   }
   
-  const cropped = sharp(buffer).extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight });
-  const sharpInstance = cropOnly ? cropped : cropped.resize(targetDims.width, targetDims.height, { fit: 'fill' });
+  const sharpInstance = sharp(buffer)
+    .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+    .resize(targetDims.width, targetDims.height, { fit: 'fill' });
   
   if (outputFormat === 'jpeg') {
     return sharpInstance.jpeg({ quality: 90 }).toBuffer();
@@ -1192,16 +1189,24 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       }
     }
 
-    if (
-      targetDims &&
-      targetDims.width !== targetDims.height &&
-      !shouldProbeCatalogBlankGuide(printifyBlueprintId)
-    ) {
+    const cropToTarget =
+      !!targetDims && targetDims.width !== targetDims.height && !shouldProbeCatalogBlankGuide(printifyBlueprintId);
+    if (keepSourceResolution) {
+      // Direct-renderer decor: lossless PNG master at source resolution (crop only, never JPEG q90).
+      const sourceMime = actualMimeType;
+      const master = await toLosslessPrintMaster(buffer, cropToTarget ? targetDims!.width / targetDims!.height : null);
+      buffer = master.buffer;
+      extension = "png";
+      actualMimeType = "image/png";
+      console.log(
+        `[saveImageToStorage] print master png ${master.width}x${master.height} from ${sourceMime} (cropped=${master.cropped})`,
+      );
+    } else if (cropToTarget) {
       const outputFormat =
         actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
           ? "jpeg"
           : "png";
-      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat, keepSourceResolution)) as Buffer;
+      buffer = (await resizeToAspectRatio(buffer, targetDims!, outputFormat)) as Buffer;
       extension = outputFormat === "jpeg" ? "jpg" : "png";
       actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
     }

@@ -513,6 +513,7 @@ export const generationEvents = pgTable("generation_events", {
   usage: jsonb("usage"),
   estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 6 }),
   providerRequestId: text("provider_request_id"),
+  providerMime: text("provider_mime"),
   success: boolean("success").notNull(),
   errorCategory: text("error_category"),
   endUserHash: text("end_user_hash"),

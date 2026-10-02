@@ -109,6 +109,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "style_presets",         column: "generation_model_decor",      type: "TEXT" },
   { table: "customizer_pages",      column: "experience_profile_id",       type: "VARCHAR" },
   { table: "generation_jobs",       column: "creative_brief",              type: "JSONB" },
+  { table: "generation_events",     column: "provider_mime",               type: "TEXT" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },

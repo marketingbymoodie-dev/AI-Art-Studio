@@ -25,6 +25,7 @@ import {
 } from "../../openai-image-client";
 import { cleanupNativeAlphaPng } from "../../native-alpha-cleanup";
 import { estimateGoogleImageCostUsd, renderGoogleImage } from "../../google-image-client";
+import { withDirectGeminiDecorRules } from "../../direct-gemini-decor";
 import sharp from "sharp";
 
 type ReplicatePrediction = {
@@ -206,6 +207,8 @@ export type GenerationMeta = {
   usage: OpenAIImageUsage | null;
   estimatedCostUsd: number | null;
   providerRequestId: string | null;
+  /** MIME the provider returned (before any storage processing). */
+  providerMime?: string | null;
 };
 
 export type GenerateImageResult = { mimeType: string; data: string; meta?: GenerationMeta };
@@ -678,6 +681,7 @@ export async function generateImageBase64(
             usage: usageTotal,
             estimatedCostUsd: estimateOpenAIImageCostUsd(usageTotal, renderer),
             providerRequestId: result.requestId,
+            providerMime: "image/png",
           },
         };
       }
@@ -694,6 +698,9 @@ export async function generateImageBase64(
       (u): u is string => typeof u === "string" && u.length > 0,
     );
     const started = Date.now();
+    // Renderer-layer output rules go before every style/concept layer; creative text is unchanged.
+    const googlePrompt = withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: directGoogle.fullBleedWallArt });
+    console.log(`[Google] decor output rules applied (fullBleedWallArt=${directGoogle.fullBleedWallArt}, +${googlePrompt.length - compressedPrompt.length} chars)`);
     // Same aspect fallback order as the legacy Nano Banana path; resolution comes from the plan.
     const ratios = [mapToSupportedAspectRatio(params.aspectRatio), "1:1", "3:4"];
     let lastError: unknown = null;
@@ -703,7 +710,7 @@ export async function generateImageBase64(
           apiKey,
           credential: directGoogle.credential,
           renderer,
-          prompt: compressedPrompt,
+          prompt: googlePrompt,
           aspectRatio: ratios[attempt],
           imageSize: directGoogle.imageSize,
           references,
@@ -732,6 +739,7 @@ export async function generateImageBase64(
             usage: result.usage,
             estimatedCostUsd: estimateGoogleImageCostUsd(result.usage, renderer),
             providerRequestId: result.requestId,
+            providerMime: result.mimeType,
           },
         };
       } catch (err) {

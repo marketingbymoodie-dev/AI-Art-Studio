@@ -95,6 +95,7 @@ export function buildGenerationEventRow(ctx: GenerationEventContext, outcome: Ge
     usage: meta?.usage ?? null,
     estimatedCostUsd: meta?.estimatedCostUsd != null ? meta.estimatedCostUsd.toFixed(6) : null,
     providerRequestId: meta?.providerRequestId ?? null,
+    providerMime: meta?.providerMime ?? null,
     success: outcome.success,
     errorCategory: outcome.success ? null : generationErrorCategory(outcome.error),
     endUserHash: ctx.endUserHash ?? null,

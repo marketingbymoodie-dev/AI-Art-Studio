@@ -73,6 +73,8 @@ export type GenerationAssignment = {
     defaultImageSize: GoogleImageSize;
     /** Product treatment: output resolution per family (aspect ratio comes from the product). */
     imageSizeByFamily?: Partial<Record<string, GoogleImageSize>>;
+    /** Full-bleed wall-art families: add the no-border / reach-the-edges output rule. */
+    fullBleedWallArtFamilies?: string[];
   };
 };
 
@@ -176,6 +178,7 @@ export const ASSIGNMENTS: Record<string, GenerationAssignment> = {
       productFamilies: ["poster", "pillow", "tapestry", "bedding"],
       defaultImageSize: "2K",
       imageSizeByFamily: { poster: "2K", pillow: "2K", tapestry: "4K", bedding: "4K" },
+      fullBleedWallArtFamilies: ["poster", "tapestry"],
     },
   },
 };
@@ -199,6 +202,7 @@ export type DirectGoogleImagePath = {
   renderer: GoogleImageRenderer;
   escalation: GoogleImageRenderer | null;
   imageSize: GoogleImageSize;
+  fullBleedWallArt: boolean;
 };
 
 export type GenerationPlan = {
@@ -293,6 +297,7 @@ export function resolveGenerationPlan(
       renderer: googleRenderer(google.defaultRenderer),
       escalation: google.escalationRenderer ? googleRenderer(google.escalationRenderer) : null,
       imageSize: (input.productFamily && google.imageSizeByFamily?.[input.productFamily]) || google.defaultImageSize,
+      fullBleedWallArt: !!input.productFamily && (google.fullBleedWallArtFamilies ?? []).includes(input.productFamily),
     };
   }
   return { assignmentKey, credentials, imagePath };

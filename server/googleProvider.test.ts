@@ -140,7 +140,10 @@ describe("Petposterous dedicated Google (Nano Banana) credential", () => {
     // Same aspect mapping as the legacy Replicate Nano Banana path (3:4 → 4:5).
     expect(body.generationConfig.imageConfig).toEqual({ aspectRatio: "4:5", imageSize: "2K" });
     const parts = body.contents[0].parts;
-    expect(parts[0].text).toContain(decorParams.prompt);
+    expect(parts[0].text.startsWith("PRINT ARTWORK OUTPUT")).toBe(true);
+    expect(parts[0].text).toContain("SUBJECT INTEGRITY");
+    expect(parts[0].text).toContain("FULL BLEED"); // poster = full-bleed wall art
+    expect(parts[0].text.endsWith(decorParams.prompt)).toBe(true);
     expect(parts[1].inlineData.mimeType).toBe("image/png");
     expect(fetchMock.mock.calls.some((c) => urlOf(c).includes("replicate"))).toBe(false);
     expect(out.meta).toMatchObject({
@@ -151,6 +154,7 @@ describe("Petposterous dedicated Google (Nano Banana) credential", () => {
       quality: "2K",
       size: "96x128",
       providerRequestId: "resp_test_1",
+      providerMime: "image/png",
     });
     expect(out.meta?.usage).toMatchObject({ inputTokens: 1300, outputTokens: 1680, textInputTokens: 1042, imageInputTokens: 258 });
     expect(out.meta?.estimatedCostUsd).toBeCloseTo((1300 * 0.5 + 1680 * 60) / 1e6, 6);
