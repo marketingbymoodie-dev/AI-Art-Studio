@@ -521,6 +521,35 @@ export const generationEvents = pgTable("generation_events", {
 });
 export type InsertGenerationEvent = typeof generationEvents.$inferInsert;
 
+// Staging-only render probe results (QA tooling; never written in production).
+// No full prompt text is stored — only an id + length. Images live in a private bucket.
+export const renderProbeResults = pgTable("render_probe_results", {
+  id: serial("id").primaryKey(),
+  experiment: text("experiment").notNull(),
+  promptId: text("prompt_id").notNull(),
+  promptChars: integer("prompt_chars"),
+  run: integer("run"),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  rendererId: text("renderer_id"),
+  aspectRatio: text("aspect_ratio"),
+  imageSize: text("image_size"),
+  width: integer("width"),
+  height: integer("height"),
+  mimeType: text("mime_type"),
+  providerMs: integer("provider_ms"),
+  totalMs: integer("total_ms"),
+  usage: jsonb("usage"),
+  thoughtsTokens: integer("thoughts_tokens"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 6 }),
+  edges: jsonb("edges"),
+  providerRequestId: text("provider_request_id"),
+  storagePath: text("storage_path"),
+  success: boolean("success").notNull(),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Coupon codes for credits
 export const coupons = pgTable("coupons", {
   id: serial("id").primaryKey(),

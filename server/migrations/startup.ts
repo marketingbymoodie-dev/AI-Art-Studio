@@ -888,6 +888,37 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "render_probe_results",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "render_probe_results" (
+        "id" serial PRIMARY KEY,
+        "experiment" text NOT NULL,
+        "prompt_id" text NOT NULL,
+        "prompt_chars" integer,
+        "run" integer,
+        "provider" text NOT NULL,
+        "model" text NOT NULL,
+        "renderer_id" text,
+        "aspect_ratio" text,
+        "image_size" text,
+        "width" integer,
+        "height" integer,
+        "mime_type" text,
+        "provider_ms" integer,
+        "total_ms" integer,
+        "usage" jsonb,
+        "thoughts_tokens" integer,
+        "estimated_cost_usd" numeric(10,6),
+        "edges" jsonb,
+        "provider_request_id" text,
+        "storage_path" text,
+        "success" boolean NOT NULL,
+        "error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "published_products",
     sql: `
       CREATE TABLE IF NOT EXISTS "published_products" (
