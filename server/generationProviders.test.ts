@@ -93,6 +93,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+async function samePixels(a: string, b: string) {
+  const [x, y] = await Promise.all([a, b].map((s) => sharp(Buffer.from(s, "base64")).ensureAlpha().raw().toBuffer()));
+  return Buffer.compare(x, y) === 0;
+}
+
 const calledUrls = () => fetchMock.mock.calls.map((c) => String(c[0] instanceof Request ? c[0].url : c[0]));
 const authHeader = (callIndex: number) => {
   const init = fetchMock.mock.calls[callIndex][1] as RequestInit | undefined;
@@ -190,7 +195,7 @@ describe("direct OpenAI rendering", () => {
       endUserId: openAIEndUserId("pp.myshopify.com", "cust-uuid"),
     });
 
-    expect(out.data).toBe(pngB64);
+    expect(await samePixels(out.data, pngB64)).toBe(true);
     expect(calledUrls()).toEqual(["https://api.openai.com/v1/images/generations"]);
     expect(authHeader(0)).toBe(`Bearer ${PP_KEY}`);
     const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
@@ -326,7 +331,7 @@ describe("alpha, secrets, telemetry", () => {
   it("9. PNG alpha survives: provider bytes returned untouched and stored via the native (no-chroma) path", async () => {
     process.env.OPENAI_API_KEY_PETPOSTEROUS = PP_KEY;
     const out = await generateImageBase64({ ...apparelParams, generationPlan: resolveGenerationPlan(PP_APPAREL) });
-    expect(out.data).toBe(pngB64);
+    expect(await samePixels(out.data, pngB64)).toBe(true);
     const buf = Buffer.from(out.data, "base64");
     const meta = await sharp(buf).metadata();
     expect(meta.format).toBe("png");

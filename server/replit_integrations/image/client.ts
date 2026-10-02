@@ -18,6 +18,7 @@
 import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
 import { readCredential, selectRenderer, type GenerationPlan } from "../../generation-providers";
 import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../../openai-image-client";
+import { cleanupNativeAlphaPng } from "../../native-alpha-cleanup";
 
 type ReplicatePrediction = {
   id: string;
@@ -617,6 +618,17 @@ export async function generateImageBase64(
               imageInputTokens: usageTotal.imageInputTokens + result.usage.imageInputTokens,
             }
           : result.usage;
+      }
+      try {
+        const cleaned = await cleanupNativeAlphaPng(result.data);
+        result.data = cleaned.data;
+        const c = cleaned.report;
+        console.log(
+          `[OpenAI] alpha cleanup haze=${c.hazeCleared} solid=${c.solidPromoted} ` +
+            `strayBlobs=${c.strayBlobsRemoved} strayPx=${c.strayPixelsRemoved}`,
+        );
+      } catch (err) {
+        console.warn("[OpenAI] alpha cleanup skipped:", (err as Error)?.message ?? err);
       }
       let opaque = false;
       let transparentFraction: number | null = null;
