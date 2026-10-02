@@ -51,6 +51,8 @@ export type GoogleImageRenderer = {
   model: string;
   /** USD per 1M tokens (input text/image, output image). */
   pricing: { inputPerM: number; outputPerM: number };
+  /** False for models without the 1K/2K/4K setting (they render at their native size). */
+  supportsImageSize?: boolean;
 };
 
 export type GenerationAssignment = {
@@ -140,6 +142,15 @@ export const GOOGLE_RENDERERS: Record<string, GoogleImageRenderer> = {
     pricing: { inputPerM: 0.5, outputPerM: 60 },
   },
   // Nano Banana Pro — premium/escalation for precision-heavy work; never automatic yet.
+  // Nano Banana (Gemini 2.5 Flash Image, the model Replicate's google/nano-banana serves).
+  // Not a default anywhere; available for controlled comparisons.
+  "google-nb25": {
+    id: "google-nb25",
+    provider: "google",
+    model: "gemini-2.5-flash-image",
+    pricing: { inputPerM: 0.3, outputPerM: 30 },
+    supportsImageSize: false,
+  },
   "google-nb-pro": {
     id: "google-nb-pro",
     provider: "google",
@@ -285,6 +296,34 @@ export function resolveGenerationPlan(
     };
   }
   return { assignmentKey, credentials, imagePath };
+}
+
+/**
+ * Staging-only, per-request renderer swap for controlled model comparisons. Swaps the
+ * renderer of an already-resolved direct path to another configured renderer of the
+ * same provider; credential, prompt and processing are untouched. Ignored unless the
+ * Railway environment is staging (or GENERATION_RENDERER_OVERRIDE_ENABLED=true), and
+ * never in production.
+ */
+export function applyRendererOverride(
+  plan: GenerationPlan,
+  requested: string | null | undefined,
+  env: Record<string, string | undefined> = process.env,
+): GenerationPlan {
+  if (!requested || plan.imagePath === "legacy") return plan;
+  const envName = String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase();
+  const allowed = envName !== "production" && (envName === "staging" || env.GENERATION_RENDERER_OVERRIDE_ENABLED === "true");
+  if (!allowed) return plan;
+  const path = plan.imagePath;
+  if (path.kind === "direct-google" && GOOGLE_RENDERERS[requested]) {
+    console.log(`[Providers] staging renderer override ${path.renderer.id} -> ${requested} (${plan.assignmentKey})`);
+    return { ...plan, imagePath: { ...path, renderer: GOOGLE_RENDERERS[requested] } };
+  }
+  if (path.kind === "direct-openai" && RENDERERS[requested]) {
+    console.log(`[Providers] staging renderer override ${path.renderer.id} -> ${requested} (${plan.assignmentKey})`);
+    return { ...plan, imagePath: { ...path, renderer: RENDERERS[requested] } };
+  }
+  return plan;
 }
 
 /** Default renderer, or the escalation renderer when asked (nothing escalates automatically yet). */

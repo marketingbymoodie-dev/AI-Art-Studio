@@ -1,5 +1,5 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { resolveGenerationPlan } from "./generation-providers";
+import { applyRendererOverride, resolveGenerationPlan } from "./generation-providers";
 import { storagePathFor } from "./apparel-storage-path";
 import { openAIEndUserId } from "./openai-image-client";
 import { customerSafeGenerationError, recordGenerationEvent, withGenerationEvent } from "./generation-events";
@@ -9439,12 +9439,15 @@ ${orientationExtra}
         },
         productType?.designerType,
       );
-      const sfGenPlan = resolveGenerationPlan({
-        merchantId: installation.merchantId ?? null,
-        packProfileKey: sfPackCtx?.profile.key,
-        productFamily: sfPackCtx ? sfPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
-        isApparel,
-      });
+      const sfGenPlan = applyRendererOverride(
+        resolveGenerationPlan({
+          merchantId: installation.merchantId ?? null,
+          packProfileKey: sfPackCtx?.profile.key,
+          productFamily: sfPackCtx ? sfPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
+          isApparel,
+        }),
+        req.get("x-appai-renderer-override"),
+      );
       // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
       const sfStyleGen =
         sfGenPlan.imagePath !== "legacy" && sfGenPlan.imagePath.kind === "direct-openai"

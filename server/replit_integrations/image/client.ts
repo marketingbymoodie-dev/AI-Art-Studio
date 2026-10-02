@@ -723,7 +723,7 @@ export async function generateImageBase64(
             credentialRefId: directGoogle.credential.id,
             credentialScope: directGoogle.credential.scope,
             model: renderer.model,
-            quality: directGoogle.imageSize,
+            quality: renderer.supportsImageSize === false ? "native" : directGoogle.imageSize,
             size,
             attempts: attempt + 1,
             durationMs: Date.now() - started,

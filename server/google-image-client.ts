@@ -83,7 +83,7 @@ export async function renderGoogleImage(opts: {
   const started = Date.now();
   console.log(
     `[Google] image provider=google credential=${opts.credential.id} scope=${opts.credential.scope} ` +
-      `model=${opts.renderer.model} imageSize=${opts.imageSize} aspect=${opts.aspectRatio} refs=${refs.length}`,
+      `model=${opts.renderer.model} imageSize=${opts.renderer.supportsImageSize === false ? "native" : opts.imageSize} aspect=${opts.aspectRatio} refs=${refs.length}`,
   );
 
   let response: any;
@@ -94,7 +94,10 @@ export async function renderGoogleImage(opts: {
       contents: [{ role: "user", parts: [{ text: opts.prompt }, ...images] }],
       config: {
         responseModalities: ["TEXT", "IMAGE"],
-        imageConfig: { aspectRatio: opts.aspectRatio, imageSize: opts.imageSize },
+        imageConfig:
+          opts.renderer.supportsImageSize === false
+            ? { aspectRatio: opts.aspectRatio }
+            : { aspectRatio: opts.aspectRatio, imageSize: opts.imageSize },
       },
     });
   } catch (err) {
