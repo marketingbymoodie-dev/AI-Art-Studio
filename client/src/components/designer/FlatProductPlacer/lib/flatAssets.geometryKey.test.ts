@@ -61,9 +61,26 @@ describe("findGeometryBlankKey / decorPerSize size-only lookup", () => {
     expect(findGeometryBlankKey(m, "20x30:black")).toBe("20x30:black");
   });
 
+  it("resolves hyphenated import size ids to the harvested size:color geometry", () => {
+    const m = posterManifest();
+    expect(findGeometryBlankKey(m, "20-x-30")).toBe("20x30:black");
+    const calib = resolveFlatViewCalibration(m, "20-x-30", "front");
+    expect(calib?.maskUrl).toBe("https://example.com/20x30-mask.png");
+    expect(calib?.printFileDims).toEqual({ width: 4800, height: 7200 });
+  });
+
   it("uses per-size mask for size-only key instead of shared 11x14 mask", () => {
     const m = posterManifest();
     const calib = resolveFlatViewCalibration(m, "20x30", "front");
+    expect(calib?.maskUrl).toBe("https://example.com/20x30-mask.png");
+    expect(calib?.printFileDims).toEqual({ width: 4800, height: 7200 });
+  });
+
+  it("resolves hyphen import size ids to the harvested size:color key", () => {
+    const m = posterManifest();
+    expect(findGeometryBlankKey(m, "20-x-30")).toBe("20x30:black");
+    expect(findGeometryBlankKey(m, "20-x-30:black")).toBe("20x30:black");
+    const calib = resolveFlatViewCalibration(m, "20-x-30", "front");
     expect(calib?.maskUrl).toBe("https://example.com/20x30-mask.png");
     expect(calib?.printFileDims).toEqual({ width: 4800, height: 7200 });
   });

@@ -9,6 +9,7 @@ import {
 } from "@shared/catalogSizeBlanks";
 import { featherMaskAlphaFromRgba, maskAlphaLooksBinary } from "@shared/maskFeather";
 import {
+  canonicalDecorSizeId,
   extractDimensionalKey,
   swapDecorSizeDimensionId,
 } from "@shared/productVariantOptions";
@@ -82,6 +83,13 @@ export function findGeometryBlankKey(
   const blankHit = findBlankKey(manifest, id);
   if (blankHit && geo[blankHit]) return blankHit;
   if (blankHit) return blankHit;
+
+  // `36-x-24` (import slug) and `36x24` (harvest key) are the same size.
+  const canon = canonicalDecorSizeId(id);
+  if (canon && canon !== id) {
+    const viaCanon = findGeometryBlankKey(manifest, canon, { allowDimensionSwap: false });
+    if (viaCanon) return viaCanon;
+  }
 
   const norm = normalizeFlatColorKey(id);
   // Prefer an exact size:color geometry key whose size prefix matches.

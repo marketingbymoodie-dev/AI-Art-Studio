@@ -65,6 +65,49 @@ describe("flatBlankResolve", () => {
     ).toBe("16x20:black");
   });
 
+  it("maps hyphen size ids onto 36x24 harvest keys instead of the first black frame", () => {
+    const manifest = decorManifest({
+      "14x11:black": { front: "https://example.com/14.png" },
+      "36x24:black": { front: "https://example.com/36.png" },
+      "36x24:white": { front: "https://example.com/36w.png" },
+    });
+    expect(
+      resolveFlatBlankColorId(manifest, {
+        sizeId: "36-x-24",
+        frameColorId: "black",
+      }),
+    ).toBe("36x24:black");
+    expect(
+      harvestBlankMatchesSelection(manifest, {
+        sizeId: "36-x-24",
+        frameColorId: "black",
+      }),
+    ).toBe("36x24:black");
+    expect(resolveFlatPlacementGeometryKey(manifest, { sizeId: "36-x-24", frameColorId: "black" })).toBe(
+      "36-x-24",
+    );
+  });
+
+  it("maps hyphenated import size ids onto 36x24 harvest keys, not the first black blank", () => {
+    const manifest = decorManifest({
+      "14x11:black": { front: "https://example.com/14.png" },
+      "36x24:black": { front: "https://example.com/36.png" },
+      "36x24:white": { front: "https://example.com/36w.png" },
+    });
+    expect(
+      resolveFlatBlankColorId(manifest, {
+        sizeId: "36-x-24",
+        frameColorId: "black",
+      }),
+    ).toBe("36x24:black");
+    expect(
+      resolveFlatBlankColorId(manifest, {
+        sizeId: "36-x-24",
+        frameColorId: "white",
+      }),
+    ).toBe("36x24:white");
+  });
+
   it("matches Dark Heather to a dark_heather harvest blank", () => {
     const manifest = decorManifest({
       maroon: { front: "https://example.com/maroon.png" },

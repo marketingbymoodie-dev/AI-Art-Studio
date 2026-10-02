@@ -49,6 +49,29 @@ describe("resolveFlatPrintFileDims landscape", () => {
     expect(dims).toEqual({ width: 4000, height: 3000 });
   });
 
+  it("uses the 36x24 harvest canvas for hyphen size ids, not the first black frame", () => {
+    const manifest = {
+      ...decorManifest,
+      blanks: {
+        "14x11:black": { front: "https://example.com/14.png" },
+        "36x24:black": { front: "https://example.com/36.png" },
+      },
+      geometryByBlank: {
+        "14x11:black": {
+          front: { printFileDims: { width: 4200, height: 3300 } },
+        },
+        "36x24:black": {
+          front: { printFileDims: { width: 10800, height: 7200 } },
+        },
+      },
+    };
+    const dims = resolveFlatPrintFileDims(manifest as any, "front", {
+      sizeId: "36-x-24",
+      frameColorId: "black",
+    });
+    expect(dims).toEqual({ width: 10800, height: 7200 });
+  });
+
   it("keeps portrait dims for portrait size ids", () => {
     const dims = resolveFlatPrintFileDims(decorManifest as any, "front", {
       sizeId: "16x20",

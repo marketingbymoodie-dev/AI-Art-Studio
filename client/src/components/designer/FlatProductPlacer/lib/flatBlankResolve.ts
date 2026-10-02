@@ -1,5 +1,5 @@
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
-import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
+import { decorSizeIdCandidates } from "@shared/productVariantOptions";
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 
 function normalizeFlatColorKey(id: string): string {
@@ -136,20 +136,15 @@ export function resolveFlatBlankColorId(
   const candidates: string[] = [];
 
   if (!apparelColorOnly && opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
-    // HFP landscape sizes often need the swapped portrait harvest key (18x24 for 24x18).
-    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
-    if (swappedSize) {
-      candidates.push(
-        `${swappedSize}:${opts.frameColorId}`,
-        `${opts.frameColorId}:${swappedSize}`,
-      );
+    // Harvest keys are `36x24:black`. Imported size ids are often `36-x-24`.
+    // Try the canonical token before bare colour, or every size shows the first
+    // black frame and bake uses that size's print canvas.
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) {
+      candidates.push(`${sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${sizeId}`);
     }
   }
   if (!apparelColorOnly && opts.sizeId) {
-    candidates.push(opts.sizeId);
-    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
-    if (swappedSize) candidates.push(swappedSize);
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) candidates.push(sizeId);
   }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
   if (opts.frameColorName) candidates.push(opts.frameColorName);

@@ -195,6 +195,39 @@ export function swapDecorSizeDimensionId(sizeId: string | null | undefined): str
 }
 
 /**
+ * Harvest keys use `36x24`. Imported size ids often use `36-x-24` (slug of
+ * `36″ x 24″`). Collapse the size token so both hit the same blank/geometry.
+ * Colour suffix is preserved: `36-x-24:black` → `36x24:black`.
+ */
+export function canonicalDecorSizeId(sizeId: string | null | undefined): string | null {
+  if (!sizeId) return null;
+  const raw = String(sizeId).trim();
+  const colon = raw.indexOf(":");
+  const sizePart = colon >= 0 ? raw.slice(0, colon) : raw;
+  const dim = extractDimensionalKey(sizePart);
+  if (!dim) return null;
+  const suffix = colon >= 0 ? raw.slice(colon) : "";
+  return `${dim}${suffix}`;
+}
+
+/** Size ids to try against harvest keys: raw, `36x24`, and the axis swap. */
+export function decorSizeIdCandidates(sizeId: string | null | undefined): string[] {
+  if (!sizeId) return [];
+  const out: string[] = [];
+  const push = (value: string | null | undefined) => {
+    if (!value || out.includes(value)) return;
+    out.push(value);
+  };
+  const raw = String(sizeId).trim();
+  push(raw);
+  const canon = canonicalDecorSizeId(raw);
+  push(canon);
+  push(swapDecorSizeDimensionId(raw));
+  if (canon) push(swapDecorSizeDimensionId(canon));
+  return out;
+}
+
+/**
  * Framed posters / pillows / decorPerSize — shared HFP+VFP gate for flat placer
  * and lifestyle (name match covers mis-typed designerType on Horizontal imports).
  */

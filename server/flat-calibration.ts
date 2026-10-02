@@ -31,6 +31,8 @@ import {
 } from "@shared/maskFeather";
 import { expandTapestryMagentaMask } from "@shared/tapestryHarvestMagenta";
 import {
+  canonicalDecorSizeId,
+  decorSizeIdCandidates,
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
   looksLikePhoneModelName,
@@ -847,9 +849,13 @@ export function resolveFlatBlankColorId(
   const candidates: string[] = [];
 
   if (opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) {
+      candidates.push(`${sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${sizeId}`);
+    }
   }
-  if (opts.sizeId) candidates.push(opts.sizeId);
+  if (opts.sizeId) {
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) candidates.push(sizeId);
+  }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
 
   for (const id of candidates) {
@@ -862,11 +868,18 @@ export function resolveFlatBlankColorId(
 
   if (manifest.decorPerSize && opts.frameColorId) {
     const colorNorm = normalizeBlankKey(opts.frameColorId);
+    const wantedDim = opts.sizeId ? canonicalDecorSizeId(opts.sizeId) : null;
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatchesManifest(manifest, k)) continue;
       const kn = normalizeBlankKey(k);
       // normalizeBlankKey turns `16x20:white` into `16x20-white` — match `-color` suffix.
-      if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
+      if (kn !== colorNorm && !kn.endsWith(`-${colorNorm}`)) continue;
+      if (wantedDim) {
+        const keySize = k.includes(":") ? k.slice(0, k.indexOf(":")) : k;
+        const keyDim = extractDimensionalKey(keySize) || keySize;
+        if (keyDim !== wantedDim) continue;
+      }
+      return k;
     }
   }
 
@@ -887,8 +900,13 @@ export function resolveFlatBlankColorId(
       return k;
     }
   }
-  for (const k of Object.keys(manifest.blanks || {})) {
-    if (blankKeyMatchesManifest(manifest, k)) return k;
+  // decorPerSize must not fall through to another size's blank — that bakes
+  // the wrong print canvas (14×11 file on a 36×24 order).
+  const wantedDim = opts.sizeId ? canonicalDecorSizeId(opts.sizeId) : null;
+  if (!(manifest.decorPerSize && wantedDim)) {
+    for (const k of Object.keys(manifest.blanks || {})) {
+      if (blankKeyMatchesManifest(manifest, k)) return k;
+    }
   }
   return fallback;
 }
