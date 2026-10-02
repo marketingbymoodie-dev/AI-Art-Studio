@@ -178,6 +178,8 @@ export const merchants = pgTable("merchants", {
   monthlyGenerationLimit: integer("monthly_generation_limit").notNull().default(100),
   generationsThisMonth: integer("generations_this_month").notNull().default(0),
   brandingSettings: json("branding_settings"),
+  /** Merchant own-key entitlement — reserved, not read anywhere yet. */
+  canUseOwnApiKeys: boolean("can_use_own_api_keys").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -549,6 +551,28 @@ export const renderProbeResults = pgTable("render_probe_results", {
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
+
+// Encrypted provider API keys (operator-entered). Only scope "platform" is used today;
+// "shop" + shopId are reserved for merchant own-key mode. Unique live-ref index lives in
+// server/migrations/startup.ts (expression + partial index).
+export const providerCredentials = pgTable("provider_credentials", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  scope: text("scope").notNull().default("platform"),
+  shopId: varchar("shop_id"),
+  credentialRef: text("credential_ref").notNull(),
+  /** AES-256-GCM ciphertext only (server/credential-crypto.ts). */
+  encryptedKey: text("encrypted_key").notNull(),
+  lastFour: text("last_four").notNull(),
+  /** active | invalid | unchecked | disabled */
+  status: text("status").notNull().default("unchecked"),
+  lastValidatedAt: timestamp("last_validated_at"),
+  lastValidationError: text("last_validation_error"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type ProviderCredentialRow = typeof providerCredentials.$inferSelect;
 
 // Coupon codes for credits
 export const coupons = pgTable("coupons", {

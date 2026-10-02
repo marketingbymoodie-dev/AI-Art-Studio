@@ -15039,13 +15039,13 @@ ${orientationExtra}
         });
       }
 
-      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken } = req.body;
+      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana } = req.body;
       
+      // custom_nano_banana_token is retired (plaintext, never used); provider keys live encrypted in provider_credentials.
       const updated = await storage.updateMerchant(merchant.id, {
         printifyApiToken: printifyApiToken || merchant.printifyApiToken,
         printifyShopId: printifyShopId || merchant.printifyShopId,
         useBuiltInNanoBanana: useBuiltInNanoBanana !== undefined ? useBuiltInNanoBanana : merchant.useBuiltInNanoBanana,
-        customNanoBananaToken: customNanoBananaToken || merchant.customNanoBananaToken,
       });
 
       res.json(updated);

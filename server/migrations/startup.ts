@@ -174,11 +174,15 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creators",                  column: "previous_username",       type: "TEXT" },
   { table: "help_articles",             column: "demo_url",                type: "TEXT" },
   { table: "shipping_store_settings",   column: "pinned_fx_currency",      type: "TEXT" },
+  // Merchant own-key entitlement (unused until merchant own-key mode ships).
+  { table: "merchants",                 column: "can_use_own_api_keys",    type: "BOOLEAN NOT NULL DEFAULT FALSE" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
   `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
+  // Legacy plaintext merchant token was never used for generation; keys live encrypted in provider_credentials.
+  `UPDATE merchants SET custom_nano_banana_token = NULL WHERE custom_nano_banana_token IS NOT NULL`,
   // Default only — do NOT stamp existing rows. The column is merchant-configurable
   // (Admin → Settings, clamped 1–10) and an unconditional UPDATE here reset every
   // merchant's choice on each boot (GH #50). ADD COLUMN already backfills NOT NULL 2.
@@ -2142,9 +2146,39 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    // Encrypted provider API keys. Only scope='platform' is read/written today;
+    // scope='shop' + shop_id are reserved for merchant own-key mode.
+    name: "provider_credentials",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "provider_credentials" (
+        "id" serial PRIMARY KEY,
+        "provider" text NOT NULL CHECK ("provider" IN ('openai', 'google', 'replicate')),
+        "scope" text NOT NULL DEFAULT 'platform' CHECK ("scope" IN ('platform', 'shop')),
+        "shop_id" varchar REFERENCES "merchants"("id") ON DELETE CASCADE,
+        "credential_ref" text NOT NULL,
+        "encrypted_key" text NOT NULL,
+        "last_four" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'unchecked' CHECK ("status" IN ('active', 'invalid', 'unchecked', 'disabled')),
+        "last_validated_at" timestamp,
+        "last_validation_error" text,
+        "created_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        CHECK (("scope" = 'platform' AND "shop_id" IS NULL) OR ("scope" = 'shop' AND "shop_id" IS NOT NULL))
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    // One live (non-disabled) key per (scope, shop, provider, ref).
+    name: "provider_credentials_live_ref_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "provider_credentials_live_ref_uidx"
+      ON "provider_credentials" ("scope", COALESCE("shop_id", ''), "provider", "credential_ref")
+      WHERE "status" <> 'disabled'`,
+  },
   {
     name: "generation_events_merchant_created_idx",
     sql: `CREATE INDEX IF NOT EXISTS "generation_events_merchant_created_idx"
