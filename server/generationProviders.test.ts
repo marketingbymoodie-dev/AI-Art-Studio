@@ -8,10 +8,12 @@ import {
   ASSIGNMENTS,
   CREDENTIALS,
   ProviderCredentialUnavailableError,
+  planKeepsSourceResolution,
   readCredential,
   redactSecrets,
   resolveGenerationPlan,
   selectRenderer,
+  styleGenForPlan,
   type GenerationAssignment,
 } from "./generation-providers";
 import { _resetOpenAIClients, estimateOpenAIImageCostUsd, openAIEndUserId, openAIImageSize } from "./openai-image-client";
@@ -180,6 +182,46 @@ describe("provider resolution", () => {
     const plan = resolveGenerationPlan({ merchantId: "m-classic" });
     expect(plan.credentials.openai?.credentialKey).toBe("OPENAI_API_KEY_MAIN");
     return expect(readCredential(CREDENTIALS["openai:shared"])).rejects.toThrow(ProviderCredentialUnavailableError);
+  });
+});
+
+describe("style route (per-style generation model)", () => {
+  it("Petposterous poster on Flare: direct OpenAI, opaque full-bleed, pack credential", () => {
+    const plan = resolveGenerationPlan({
+      packProfileKey: "petposterous",
+      productFamily: "poster",
+      isApparel: false,
+      styleRoute: "openai-flare",
+      nativeTransparent: false,
+    });
+    if (plan.imagePath === "legacy" || plan.imagePath.kind !== "direct-openai") throw new Error("expected direct-openai");
+    expect(plan.imagePath.background).toBe("opaque");
+    expect(plan.imagePath.fullBleedWallArt).toBe(true);
+    expect(plan.imagePath.credential.id).toBe("openai:petposterous");
+    expect(planKeepsSourceResolution(plan)).toBe(true);
+  });
+
+  it("ordinary merchant floating style: Flare direct on the umbrella key, transparent", () => {
+    const plan = resolveGenerationPlan({ merchantId: "m-classic", styleRoute: "openai-flare", nativeTransparent: true });
+    if (plan.imagePath === "legacy" || plan.imagePath.kind !== "direct-openai") throw new Error("expected direct-openai");
+    expect(plan.imagePath.background).toBe("transparent");
+    expect(plan.imagePath.credential.id).toBe("openai:shared");
+    expect(styleGenForPlan({ model: null, nativeTransparent: true }, plan).nativeTransparent).toBe(true);
+    expect(planKeepsSourceResolution(plan)).toBe(false);
+  });
+
+  it("NB Pro / Replicate routes resolve to their provider; null route keeps the assignment", () => {
+    const pro = resolveGenerationPlan({ merchantId: "m", productFamily: "tapestry", styleRoute: "google-nb-pro" });
+    if (pro.imagePath === "legacy" || pro.imagePath.kind !== "direct-google") throw new Error("expected direct-google");
+    expect(pro.imagePath.renderer.model).toBe("gemini-3-pro-image");
+    expect(pro.imagePath.imageSize).toBe("4K");
+    const rep = resolveGenerationPlan({ merchantId: "m", styleRoute: "replicate-nb2" });
+    if (rep.imagePath === "legacy" || rep.imagePath.kind !== "replicate") throw new Error("expected replicate");
+    expect(rep.imagePath.model).toBe("google/nano-banana-2");
+    expect(rep.imagePath.credential.id).toBe("replicate:shared");
+    expect(resolveGenerationPlan({ merchantId: "m" }).imagePath).toBe("legacy");
+    const ppPoster = resolveGenerationPlan({ packProfileKey: "petposterous", productFamily: "poster", styleRoute: null });
+    expect(ppPoster.imagePath !== "legacy" && ppPoster.imagePath.kind).toBe("direct-google");
   });
 });
 

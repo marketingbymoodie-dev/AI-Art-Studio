@@ -61,10 +61,22 @@ describe("apparel on GPT Image 2, decor on nano-banana", () => {
     expect(resolveStyleGenerationForProduct(pp, "framed-print").model).toBeNull();
     expect(resolveStyleGenerationForProduct(pp, "pillow").nativeTransparent).toBe(false);
   });
-  it("null decor model = unchanged legacy choice", () => {
+  it("null decor model = same route as generationModel; Flare is opaque on decor unless floating", () => {
     const legacy = { generationModel: "gpt-image-2", outputMode: null, catalogSlug: null };
-    expect(resolveStyleGenerationForProduct(legacy, "pillow").model).toBe("gpt-image-2");
+    const pillow = resolveStyleGenerationForProduct(legacy, "pillow");
+    expect(pillow.route).toBe("openai-flare");
+    expect(pillow.nativeTransparent).toBe(false);
+    expect(pillow.model).toBeNull();
+    expect(resolveStyleGenerationForProduct(legacy, "apparel").model).toBe("gpt-image-2");
     expect(resolveStyleGenerationForProduct({ generationModel: null }, "apparel").model).toBeNull();
+  });
+  it("decor override routes framed prints to Flare (opaque) while apparel keeps its own route", () => {
+    const hfp = { ...pp, generationModel: "openai-flare", generationModelDecor: "openai-flare" };
+    const framed = resolveStyleGenerationForProduct(hfp, "framed-print");
+    expect(framed.route).toBe("openai-flare");
+    expect(framed.nativeTransparent).toBe(false);
+    expect(resolveStyleGenerationForProduct(hfp, "apparel").nativeTransparent).toBe(true);
+    expect(resolveStyleGenerationForProduct(pp, "framed-print").route).toBeNull();
   });
 });
 

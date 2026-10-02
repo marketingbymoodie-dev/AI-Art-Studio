@@ -127,7 +127,7 @@ export function catalogRowFieldsFromPreset(preset: {
     generationQuality: preset.generationQuality ?? null,
     userSlotSchema: verbatim ? null : (preset.userSlotSchema ?? null),
     outputMode,
-    generationModel: outputMode === "floating" ? "gpt-image-2" : null,
+    generationModel: outputMode === "floating" ? "openai-flare" : null,
     backgroundSelectorEnabled:
       preset.backgroundSelectorEnabled ?? bg.backgroundSelectorEnabled,
     defaultBackgroundColor:

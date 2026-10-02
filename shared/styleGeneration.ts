@@ -3,6 +3,8 @@
  * Null generationModel = current nano-banana + chroma. gpt-image-2 = native transparent PNG.
  */
 
+import { isTransparentCapableRoute, normalizeGenerationRoute } from "./generationRoutes";
+
 export const GENERATION_MODEL_GPT_IMAGE_2 = "gpt-image-2";
 
 export type GenerationQuality = "low" | "medium" | "high" | "auto";
@@ -20,10 +22,12 @@ export const TRANSPARENT_SCREENPRINT_INSTRUCTION =
   "No scenic plate, no white mat, no rectangular card. Clean edges. " +
   "Do not add text unless the user explicitly requested it.";
 
+/** Native-alpha capable model/route id (legacy gpt-image-2 marker or a Flare route). */
 export function isGptImage2Model(model?: string | null): boolean {
-  const m = (model || "").trim().toLowerCase();
-  return m === "gpt-image-2" || m === "openai/gpt-image-2";
+  return isTransparentCapableRoute(model);
 }
+
+export const isNativeTransparentModel = isGptImage2Model;
 
 export function resolveGenerationQuality(raw?: string | null): GenerationQuality {
   const q = (raw || "").trim().toLowerCase();
@@ -55,7 +59,16 @@ export function resolveStyleGeneration(style?: {
 export function persistGenerationModel(raw: unknown): string | null | undefined {
   if (raw === undefined) return undefined;
   if (raw == null || raw === "") return null;
-  return isGptImage2Model(String(raw)) ? GENERATION_MODEL_GPT_IMAGE_2 : null;
+  return normalizeGenerationRoute(String(raw));
+}
+
+/** Decor override: null = same as generationModel, "nano-banana" = legacy default on decor, else a route id. */
+export function persistGenerationModelDecor(raw: unknown): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw == null || raw === "") return null;
+  const v = String(raw).trim().toLowerCase();
+  if (v === "nano-banana" || v === "legacy") return "nano-banana";
+  return normalizeGenerationRoute(v);
 }
 
 /** `undefined` = field omitted (leave existing). */

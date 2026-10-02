@@ -1,5 +1,10 @@
 import { generateImageBase64 } from "./replit_integrations/image/client";
-import { applyRendererOverride, resolveGenerationPlan } from "./generation-providers";
+import {
+  applyRendererOverride,
+  planKeepsSourceResolution,
+  resolveGenerationPlan,
+  styleGenForPlan,
+} from "./generation-providers";
 import { storagePathFor } from "./apparel-storage-path";
 import { toLosslessPrintMaster } from "./print-master";
 import { openAIEndUserId } from "./openai-image-client";
@@ -14,6 +19,7 @@ import {
 } from "./apparel-matting";
 import {
   persistGenerationModel,
+  persistGenerationModelDecor,
   persistGenerationQuality,
   persistVectorizeEnabled,
   resolveStyleGeneration,
@@ -2922,19 +2928,18 @@ export async function registerRoutes(
           generationModelDecor: styleGenerationModelDecor,
         },
         productType?.designerType,
+        { isApparel },
       );
       const adminGenPlan = resolveGenerationPlan({
         merchantId: productType?.merchantId ?? null,
         packProfileKey: adminPackCtx?.profile.key,
-        productFamily: adminPackCtx ? adminPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
+        productFamily: adminPackCtx?.productRenderer ?? petposterousProductFamily(productType, isApparel),
         isApparel,
+        styleRoute: legacyStyleGen.route,
+        nativeTransparent: legacyStyleGen.nativeTransparent,
       });
-      // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
-      const styleGen =
-        adminGenPlan.imagePath !== "legacy" && adminGenPlan.imagePath.kind === "direct-openai"
-          ? { ...legacyStyleGen, nativeTransparent: true }
-          : legacyStyleGen;
-      const adminKeepResolution = adminGenPlan.imagePath !== "legacy" && adminGenPlan.imagePath.kind === "direct-google";
+      const styleGen = styleGenForPlan(legacyStyleGen, adminGenPlan);
+      const adminKeepResolution = planKeepsSourceResolution(adminGenPlan);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -9443,22 +9448,21 @@ ${orientationExtra}
           generationModelDecor: sfGenerationModelDecor,
         },
         productType?.designerType,
+        { isApparel },
       );
       const sfGenPlan = applyRendererOverride(
         resolveGenerationPlan({
           merchantId: installation.merchantId ?? null,
           packProfileKey: sfPackCtx?.profile.key,
-          productFamily: sfPackCtx ? sfPackCtx.productRenderer ?? petposterousProductFamily(productType, isApparel) : null,
+          productFamily: sfPackCtx?.productRenderer ?? petposterousProductFamily(productType, isApparel),
           isApparel,
+          styleRoute: legacySfStyleGen.route,
+          nativeTransparent: legacySfStyleGen.nativeTransparent,
         }),
         req.get("x-appai-renderer-override"),
       );
-      // A direct plan renders native transparent PNG, so storage must skip chroma regardless of the legacy model marker.
-      const sfStyleGen =
-        sfGenPlan.imagePath !== "legacy" && sfGenPlan.imagePath.kind === "direct-openai"
-          ? { ...legacySfStyleGen, nativeTransparent: true }
-          : legacySfStyleGen;
-      const sfKeepResolution = sfGenPlan.imagePath !== "legacy" && sfGenPlan.imagePath.kind === "direct-google";
+      const sfStyleGen = styleGenForPlan(legacySfStyleGen, sfGenPlan);
+      const sfKeepResolution = planKeepsSourceResolution(sfGenPlan);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       if (isAllOverPrint && stylePromptPrefix) {
@@ -15573,7 +15577,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationModelDecor, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -15593,6 +15597,9 @@ ${orientationExtra}
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
         ...(generationModel !== undefined ? { generationModel: persistGenerationModel(generationModel) ?? null } : {}),
+        ...(generationModelDecor !== undefined
+          ? { generationModelDecor: persistGenerationModelDecor(generationModelDecor) ?? null }
+          : {}),
         ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
         ...(vectorizeEnabled !== undefined ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null } : {}),
         ...(userSlotSchema !== undefined ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null } : {}),
@@ -15630,7 +15637,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationModelDecor, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -15647,6 +15654,9 @@ ${orientationExtra}
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
         ...(generationModel !== undefined
           ? { generationModel: persistGenerationModel(generationModel) ?? null }
+          : {}),
+        ...(generationModelDecor !== undefined
+          ? { generationModelDecor: persistGenerationModelDecor(generationModelDecor) ?? null }
           : {}),
         ...(generationQuality !== undefined
           ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }

@@ -183,6 +183,9 @@ const DATA_MIGRATIONS: string[] = [
   `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
   // Legacy plaintext merchant token was never used for generation; keys live encrypted in provider_credentials.
   `UPDATE merchants SET custom_nano_banana_token = NULL WHERE custom_nano_banana_token IS NOT NULL`,
+  // GPT-Image-2 is retired; its style marker now means the Flare (OpenAI direct) route.
+  `UPDATE style_presets SET generation_model = 'openai-flare' WHERE generation_model IN ('gpt-image-2', 'openai/gpt-image-2')`,
+  `UPDATE style_presets SET generation_model_decor = 'openai-flare' WHERE generation_model_decor IN ('gpt-image-2', 'openai/gpt-image-2')`,
   // Default only — do NOT stamp existing rows. The column is merchant-configurable
   // (Admin → Settings, clamped 1–10) and an unconditional UPDATE here reset every
   // merchant's choice on each boot (GH #50). ADD COLUMN already backfills NOT NULL 2.
@@ -2909,7 +2912,8 @@ export async function ensureCatalogStylesForAllMerchants(): Promise<{
                END,
                output_mode = COALESCE($7, output_mode),
                generation_model = CASE
-                 WHEN $7 = 'floating' THEN 'gpt-image-2'
+                 WHEN $7 = 'floating' AND generation_model IN ('openai-flare', 'replicate-flare') THEN generation_model
+                 WHEN $7 = 'floating' THEN 'openai-flare'
                  ELSE generation_model
                END,
                updated_at = NOW()
@@ -3060,7 +3064,7 @@ export async function retireGraphicsTwinStyles(): Promise<{
            name = $2,
            category = 'all',
            output_mode = 'floating',
-           generation_model = 'gpt-image-2',
+           generation_model = 'openai-flare',
            updated_at = NOW()
        WHERE id = $3`,
       [keeperSlug, catalog?.name || row.name, row.id],
@@ -3086,13 +3090,17 @@ export async function retireGraphicsTwinStyles(): Promise<{
     `UPDATE style_presets
      SET category = 'all',
          output_mode = 'floating',
-         generation_model = 'gpt-image-2',
+         generation_model = CASE
+           WHEN generation_model IN ('openai-flare', 'replicate-flare') THEN generation_model
+           ELSE 'openai-flare'
+         END,
          updated_at = NOW()
      WHERE catalog_slug = ANY($1::text[])
        AND (
          category IS DISTINCT FROM 'all'
          OR output_mode IS DISTINCT FROM 'floating'
-         OR generation_model IS DISTINCT FROM 'gpt-image-2'
+         OR generation_model IS NULL
+         OR generation_model NOT IN ('openai-flare', 'replicate-flare')
        )`,
     [[...WIDEN_TO_ALL_TYPES_FLOATING_SLUGS]],
   );

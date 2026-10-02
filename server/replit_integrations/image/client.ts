@@ -183,9 +183,10 @@ export type GenerateImageParams = {
    */
   transparencyCheck?: "log" | "enforce";
   /**
-   * From resolveGenerationPlan(). Authoritative for the renderer: a
-   * "direct-openai" image path renders there (native transparent PNG); omitted
-   * or "legacy" keeps the existing model-driven Replicate path unchanged.
+   * From resolveGenerationPlan(). Authoritative for the renderer: a direct /
+   * replicate route renders there (transparent or opaque per the plan's
+   * background); omitted or "legacy" keeps the existing model-driven Replicate
+   * path unchanged.
    */
   generationPlan?: GenerationPlan;
   /** Opaque hashed end-user id for the provider's `user` field (direct OpenAI only). */
@@ -457,8 +458,9 @@ export function buildGptImage2ReplicateInput(params: {
 async function createGptImage2Prediction(
   token: string,
   input: Record<string, unknown>,
+  modelSlug = "openai/gpt-image-2",
 ): Promise<ReplicatePrediction> {
-  const url = "https://api.replicate.com/v1/models/openai/gpt-image-2/predictions";
+  const url = `https://api.replicate.com/v1/models/${modelSlug}/predictions`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -574,9 +576,12 @@ export async function generateImageBase64(
   const planPath = params.generationPlan?.imagePath;
   const direct = planPath && planPath !== "legacy" && planPath.kind === "direct-openai" ? planPath : null;
   const directGoogle = planPath && planPath !== "legacy" && planPath.kind === "direct-google" ? planPath : null;
-  const nativeTransparent =
-    direct != null ||
-    (directGoogle == null && (params.nativeTransparent === true || isGptImage2Model(params.generationModel)));
+  const replicateRoute = planPath && planPath !== "legacy" && planPath.kind === "replicate" ? planPath : null;
+  const nativeTransparent = direct
+    ? direct.background === "transparent"
+    : replicateRoute
+      ? replicateRoute.background === "transparent"
+      : directGoogle == null && (params.nativeTransparent === true || isGptImage2Model(params.generationModel));
 
   const compressedPrompt = compressPrompt(
     params.prompt,
@@ -597,7 +602,9 @@ export async function generateImageBase64(
       ? selectRenderer(direct).model
       : directGoogle
         ? selectRenderer(directGoogle).model
-        : nativeTransparent
+        : replicateRoute
+          ? replicateRoute.model
+          : nativeTransparent
           ? "gpt-image-2"
           : "nano-banana";
     console.log(
@@ -612,7 +619,14 @@ export async function generateImageBase64(
     const references = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
       (u): u is string => typeof u === "string" && u.length > 0,
     );
-    const enforce = params.transparencyCheck === "enforce";
+    const transparent = direct.background === "transparent";
+    const enforce = transparent && params.transparencyCheck === "enforce";
+    const openaiPrompt = transparent
+      ? compressedPrompt
+      : withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: direct.fullBleedWallArt });
+    if (!transparent) {
+      console.log(`[OpenAI] opaque decor output rules applied (fullBleedWallArt=${direct.fullBleedWallArt})`);
+    }
     const started = Date.now();
     let usageTotal: OpenAIImageUsage | null = null;
     for (let attempt = 1; ; attempt++) {
@@ -620,9 +634,9 @@ export async function generateImageBase64(
         apiKey,
         credential: direct.credential,
         renderer,
-        prompt: compressedPrompt,
+        prompt: openaiPrompt,
         aspectRatio: params.aspectRatio,
-        background: "transparent",
+        background: direct.background,
         references,
         user: params.endUserId,
       });
@@ -636,6 +650,28 @@ export async function generateImageBase64(
               imageInputTokens: usageTotal.imageInputTokens + result.usage.imageInputTokens,
             }
           : result.usage;
+      }
+      if (!transparent) {
+        return {
+          mimeType: result.mimeType,
+          data: result.data,
+          meta: {
+            provider: "openai",
+            credentialRefId: direct.credential.id,
+            credentialScope: direct.credential.scope,
+            model: renderer.model,
+            quality: renderer.quality,
+            size: result.size,
+            attempts: attempt,
+            durationMs: Date.now() - started,
+            transparent: null,
+            transparentFraction: null,
+            usage: usageTotal,
+            estimatedCostUsd: estimateOpenAIImageCostUsd(usageTotal, renderer),
+            providerRequestId: result.requestId,
+            providerMime: result.mimeType,
+          },
+        };
       }
       try {
         const cleaned = await cleanupNativeAlphaPng(result.data);
@@ -753,6 +789,68 @@ export async function generateImageBase64(
   }
 
   const token = await resolveReplicateToken(params.generationPlan);
+
+  if (replicateRoute) {
+    const started = Date.now();
+    const transparent = replicateRoute.background === "transparent";
+    const prompt = transparent
+      ? compressedPrompt
+      : withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: replicateRoute.fullBleedWallArt });
+    const urls = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
+      (u): u is string => typeof u === "string" && u.length > 0,
+    );
+    let input: Record<string, unknown>;
+    if (replicateRoute.routeId === "replicate-flare") {
+      input = buildGptImage2ReplicateInput({
+        prompt,
+        aspectRatio: params.aspectRatio,
+        inputImageUrl: urls,
+        quality: params.generationQuality,
+      });
+      input.background = transparent ? "transparent" : "opaque";
+    } else {
+      input = { prompt, aspect_ratio: mapToSupportedAspectRatio(params.aspectRatio), output_format: "png" };
+      if (urls.length) input.image_input = urls;
+    }
+    console.log(`[Replicate] route=${replicateRoute.routeId} model=${replicateRoute.model} background=${replicateRoute.background}`);
+    const created = await createGptImage2Prediction(token, input, replicateRoute.model);
+    const result = await pollAndDownload(token, created);
+    let transparentFraction: number | null = null;
+    let hasTransparency: boolean | null = null;
+    if (transparent) {
+      try {
+        const report = await measureTransparency(result.data);
+        transparentFraction = report.transparentFraction;
+        hasTransparency = !isOpaqueNativeOutput(report);
+        console.log(
+          `[Replicate] ${replicateRoute.model} alpha check: transparent=${report.transparentFraction.toFixed(3)} ` +
+            `opaqueBorder=${report.opaqueBorderFraction.toFixed(3)} ok=${hasTransparency}`,
+        );
+      } catch (err) {
+        console.warn(`[Replicate] ${replicateRoute.model} transparency check failed:`, (err as Error)?.message ?? err);
+      }
+      if (hasTransparency === false && params.transparencyCheck === "enforce") throw new GptImage2OpaqueOutputError();
+    }
+    return {
+      ...result,
+      meta: {
+        provider: "replicate",
+        credentialRefId: replicateRoute.credential.id,
+        credentialScope: replicateRoute.credential.scope,
+        model: replicateRoute.model,
+        quality: replicateRoute.routeId === "replicate-flare" ? String(input.quality ?? "") || null : null,
+        size: null,
+        attempts: 1,
+        durationMs: Date.now() - started,
+        transparent: hasTransparency,
+        transparentFraction,
+        usage: null,
+        estimatedCostUsd: null,
+        providerRequestId: created.id ?? null,
+        providerMime: result.mimeType,
+      },
+    };
+  }
 
   if (nativeTransparent || isGptImage2Model(params.generationModel)) {
     const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);

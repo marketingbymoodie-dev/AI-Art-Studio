@@ -4,6 +4,11 @@ import {
   isGptImage2Model,
   resolveStyleGeneration,
 } from "./styleGeneration";
+import {
+  type GenerationRouteId,
+  isTransparentCapableRoute,
+  normalizeGenerationRoute,
+} from "./generationRoutes";
 
 /** Default fill behind GPT-Image-2 floating artwork on decor (native alpha). */
 export const DEFAULT_DECOR_BACKGROUND_FILL = "#FFFFFF";
@@ -198,7 +203,15 @@ export function shouldShowDecorFloatingFill(opts: {
   });
 }
 
-/** Floating styles on decor always use GPT-Image-2 (native alpha for composite fill). */
+/**
+ * Style + product → route and transparency.
+ *
+ * `route` picks the renderer (null = legacy Replicate Nano Banana + chroma).
+ * `model` / `nativeTransparent` keep their old meaning (native-alpha marker):
+ * set only when a transparent-capable route renders apparel or a floating
+ * style. The same Flare route on decor renders opaque full-bleed art.
+ * Floating styles always get a transparent-capable route (default Flare direct).
+ */
 export function resolveStyleGenerationForProduct(
   style: {
     generationModel?: string | null;
@@ -209,17 +222,27 @@ export function resolveStyleGenerationForProduct(
     generationModelDecor?: string | null;
   } | null,
   designerType?: string | null,
-) {
+  opts?: { isApparel?: boolean },
+): {
+  model: typeof GENERATION_MODEL_GPT_IMAGE_2 | null;
+  quality: ReturnType<typeof resolveStyleGeneration>["quality"];
+  nativeTransparent: boolean;
+  route: GenerationRouteId | null;
+} {
   const dt = (designerType || "").toLowerCase();
-  const decorOverride =
-    style?.generationModelDecor && dt !== "apparel" && dt !== "all-over-print"
-      ? style.generationModelDecor
-      : null;
-  const generationModel = isFloatingCatalogStyle(style)
-    ? GENERATION_MODEL_GPT_IMAGE_2
-    : decorOverride ?? style?.generationModel;
-  return resolveStyleGeneration({
-    generationModel,
+  const apparel = opts?.isApparel === true || dt === "apparel" || dt === "all-over-print";
+  const decorOverride = style?.generationModelDecor && !apparel ? style.generationModelDecor : null;
+  const floatingCatalog = isFloatingCatalogStyle(style ?? undefined);
+  const floating =
+    floatingCatalog ||
+    (!apparel && String(style?.catalogSlug || "").trim().toLowerCase() === "minimal-line" &&
+      isTransparentCapableRoute(decorOverride ?? style?.generationModel));
+  let route = normalizeGenerationRoute(decorOverride ?? style?.generationModel);
+  if (floatingCatalog && !isTransparentCapableRoute(route)) route = "openai-flare";
+  const nativeTransparent = isTransparentCapableRoute(route) && (apparel || floating);
+  const base = resolveStyleGeneration({
+    generationModel: nativeTransparent ? GENERATION_MODEL_GPT_IMAGE_2 : null,
     generationQuality: style?.generationQuality,
   });
+  return { ...base, route };
 }

@@ -8,8 +8,13 @@
  * Precedence: merchant assignment → pack assignment → default.
  * Default (every ordinary merchant today) = imagePath "legacy": the existing
  * Replicate / Nano Banana / chroma behaviour, untouched. The shared umbrella
- * credentials (OPENAI_API_KEY_MAIN, GEMINI_API_KEY_MAIN) resolve for ordinary
- * merchants but no merchant is routed through them yet; neither is required.
+ * credentials (OPENAI_API_KEY_MAIN, GEMINI_API_KEY_MAIN) serve styles whose
+ * generation route (style_presets.generation_model) names a direct provider;
+ * floating styles default to Flare (OpenAI direct), so OPENAI_API_KEY_MAIN is
+ * required wherever floating styles are live.
+ *
+ * A style route overrides the assignment's renderer choice but never its
+ * credentials: the winning assignment still decides whose key pays.
  *
  * Model, quality and output resolution live in RENDERERS / ASSIGNMENTS, never in
  * creative prompt text. Aspect ratio stays a product property, separate from
@@ -20,6 +25,8 @@
  * then the env var — and never returned in a plan, stored, logged or put in an
  * error. A missing credential never falls back to another credential/provider.
  */
+
+import type { GenerationRouteId } from "@shared/generationRoutes";
 
 export type ProviderId = "openai" | "google" | "replicate";
 export type CredentialScope = "shared" | "dedicated";
@@ -190,11 +197,33 @@ const DEFAULT_CREDENTIALS: Partial<Record<ProviderId, string>> = {
   replicate: "replicate:shared",
 };
 
+/** Replicate model slugs behind the Replicate style routes (model-slug predictions endpoint). */
+export const REPLICATE_ROUTE_MODELS: Record<"replicate-flare" | "replicate-nb2", string> = {
+  "replicate-flare": "openai/gpt-image-2.5-flare",
+  "replicate-nb2": "google/nano-banana-2",
+};
+
+/** Full-bleed wall-art families when no assignment lists its own. */
+const DEFAULT_FULL_BLEED_WALL_ART_FAMILIES = ["poster", "tapestry"];
+const DEFAULT_GOOGLE_IMAGE_SIZE_BY_FAMILY: Partial<Record<string, GoogleImageSize>> = { tapestry: "4K", bedding: "4K" };
+
 export type DirectOpenAIImagePath = {
   kind: "direct-openai";
   credential: CredentialRef;
   renderer: ImageRenderer;
   escalation: ImageRenderer | null;
+  /** "transparent" for apparel / floating styles; "opaque" for full-canvas decor art. */
+  background: "transparent" | "opaque";
+  fullBleedWallArt: boolean;
+};
+
+export type ReplicateImagePath = {
+  kind: "replicate";
+  credential: CredentialRef;
+  routeId: "replicate-flare" | "replicate-nb2";
+  model: string;
+  background: "transparent" | "opaque";
+  fullBleedWallArt: boolean;
 };
 
 export type DirectGoogleImagePath = {
@@ -210,7 +239,7 @@ export type GenerationPlan = {
   /** Which assignment won (`merchant:…`, `pack:…`, or `default`). */
   assignmentKey: string;
   credentials: Partial<Record<ProviderId, CredentialRef>>;
-  imagePath: "legacy" | DirectOpenAIImagePath | DirectGoogleImagePath;
+  imagePath: "legacy" | DirectOpenAIImagePath | DirectGoogleImagePath | ReplicateImagePath;
 };
 
 export class ProviderConfigError extends Error {
@@ -260,6 +289,14 @@ export function resolveGenerationPlan(
     productFamily?: string | null;
     /** Apparel storage path (keeps native alpha). An "apparel" family must also be isApparel to render direct. */
     isApparel?: boolean;
+    /**
+     * Route chosen on the style (shared/generationRoutes.ts). Overrides the
+     * assignment's renderer choice; credentials still come from the assignment.
+     * Null = assignment / legacy behaviour.
+     */
+    styleRoute?: GenerationRouteId | null;
+    /** Style + product want native alpha (apparel / floating). Only read with styleRoute. */
+    nativeTransparent?: boolean;
   },
   assignments: Record<string, GenerationAssignment> = ASSIGNMENTS,
 ): GenerationPlan {
@@ -280,6 +317,51 @@ export function resolveGenerationPlan(
 
   let imagePath: GenerationPlan["imagePath"] = "legacy";
   const google = assignment?.googleImage;
+  const family = input.productFamily ?? null;
+  const fullBleedWallArt =
+    !input.isApparel && !!family && (google?.fullBleedWallArtFamilies ?? DEFAULT_FULL_BLEED_WALL_ART_FAMILIES).includes(family);
+  const route = input.styleRoute ?? null;
+  if (route) {
+    const background = input.nativeTransparent ? "transparent" : "opaque";
+    const need = (provider: ProviderId) => {
+      const credential = credentials[provider];
+      if (!credential) throw new ProviderConfigError(`${assignmentKey} has no ${provider} credential for style route ${route}`);
+      return credential;
+    };
+    if (route === "openai-flare") {
+      const escalation = assignment?.openaiImage?.escalationRenderer;
+      imagePath = {
+        kind: "direct-openai",
+        credential: need("openai"),
+        renderer: renderer("openai-flare"),
+        escalation: escalation ? renderer(escalation) : null,
+        background,
+        fullBleedWallArt: background === "opaque" && fullBleedWallArt,
+      };
+    } else if (route === "google-nb2" || route === "google-nb-pro") {
+      imagePath = {
+        kind: "direct-google",
+        credential: need("google"),
+        renderer: googleRenderer(route),
+        escalation: route === "google-nb2" ? googleRenderer("google-nb-pro") : null,
+        imageSize:
+          (family && (google?.imageSizeByFamily ?? DEFAULT_GOOGLE_IMAGE_SIZE_BY_FAMILY)[family]) ||
+          google?.defaultImageSize ||
+          "2K",
+        fullBleedWallArt,
+      };
+    } else {
+      imagePath = {
+        kind: "replicate",
+        credential: need("replicate"),
+        routeId: route,
+        model: REPLICATE_ROUTE_MODELS[route],
+        background: route === "replicate-flare" ? background : "opaque",
+        fullBleedWallArt,
+      };
+    }
+    return { assignmentKey, credentials, imagePath };
+  }
   if (assignment?.openaiImage?.mode === "direct" && familyMatches(assignment.openaiImage.productFamilies, input)) {
     const credential = credentials.openai;
     if (!credential) throw new ProviderConfigError(`${assignmentKey} has a direct OpenAI image path but no OpenAI credential`);
@@ -288,6 +370,8 @@ export function resolveGenerationPlan(
       credential,
       renderer: renderer(assignment.openaiImage.defaultRenderer),
       escalation: assignment.openaiImage.escalationRenderer ? renderer(assignment.openaiImage.escalationRenderer) : null,
+      background: "transparent",
+      fullBleedWallArt: false,
     };
   } else if (google?.mode === "direct" && familyMatches(google.productFamilies, input)) {
     const credential = credentials.google;
@@ -330,6 +414,27 @@ export function applyRendererOverride(
     return { ...plan, imagePath: { ...path, renderer: RENDERERS[requested] } };
   }
   return plan;
+}
+
+/**
+ * Align the style's native-alpha marker with the plan: storage skips chroma only
+ * when the planned render really is transparent. Legacy plans keep the marker.
+ */
+export function styleGenForPlan<T extends { model: string | null; nativeTransparent: boolean }>(
+  styleGen: T,
+  plan: GenerationPlan,
+): T {
+  const path = plan.imagePath;
+  if (path === "legacy" || path.kind === "direct-google") return styleGen;
+  const transparent = path.background === "transparent";
+  return { ...styleGen, nativeTransparent: transparent, model: transparent ? styleGen.model ?? "gpt-image-2" : null };
+}
+
+/** Direct renders that already match the print aspect keep their pixels (lossless print master). */
+export function planKeepsSourceResolution(plan: GenerationPlan): boolean {
+  const path = plan.imagePath;
+  if (path === "legacy") return false;
+  return path.kind === "direct-google" || (path.kind === "direct-openai" && path.background === "opaque");
 }
 
 /** Default renderer, or the escalation renderer when asked (nothing escalates automatically yet). */

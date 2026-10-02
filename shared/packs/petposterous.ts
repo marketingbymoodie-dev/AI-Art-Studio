@@ -45,7 +45,7 @@ function style(
     descriptionOptional: false,
     options: opts.options,
     inputCapabilities: opts.petOnly ? CAPS_PET_ONLY : CAPS_PET_AND_OWNER,
-    generationModel: "gpt-image-2",
+    generationModel: "openai-flare",
     generationModelDecor: "nano-banana",
     generationQuality: "medium",
     launchActive: opts.launchActive,

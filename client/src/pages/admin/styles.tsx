@@ -19,6 +19,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { StylePresetCategory } from "@shared/styleCategories";
 import { findLiteralSlot, literalUserSlotSchema, parseUserSlotSchema } from "@shared/promptLayers";
 import { notifyStylePresetsChanged } from "@shared/stylePresetFreshness";
+import {
+  GENERATION_ROUTES,
+  LEGACY_DEFAULT_ROUTE_LABEL,
+  isTransparentCapableRoute,
+  normalizeGenerationRoute,
+} from "@shared/generationRoutes";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -93,8 +99,14 @@ export default function AdminStyles() {
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [descriptionOptional, setDescriptionOptional] = useState(false);
-  const [generationModel, setGenerationModel] = useState<"default" | "gpt-image-2">("default");
+  /** Route id or "default" (legacy). */
+  const [generationModel, setGenerationModel] = useState<string>("default");
+  /** "inherit" = same as generationModel; "default" = legacy on decor; else route id. */
+  const [generationModelDecor, setGenerationModelDecor] = useState<string>("inherit");
   const [generationQuality, setGenerationQuality] = useState<"low" | "medium" | "high">("low");
+  const usesFlareQuality =
+    isTransparentCapableRoute(generationModel) ||
+    (generationModelDecor !== "inherit" && isTransparentCapableRoute(generationModelDecor));
   const [vectorizeEnabled, setVectorizeEnabled] = useState(false);
   const [literalTextStyle, setLiteralTextStyle] = useState(false);
   const [literalMaxWords, setLiteralMaxWords] = useState(6);
@@ -286,6 +298,7 @@ export default function AdminStyles() {
     setStylePromptPlaceholder("");
     setDescriptionOptional(false);
     setGenerationModel("default");
+    setGenerationModelDecor("inherit");
     setGenerationQuality("low");
     setVectorizeEnabled(false);
     setLiteralTextStyle(false);
@@ -314,8 +327,11 @@ export default function AdminStyles() {
     setStyleBaseImageUrls(existingBaseUrls);
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
     setDescriptionOptional(!!(style as any).descriptionOptional);
-    const model = String((style as any).generationModel || "").toLowerCase();
-    setGenerationModel(model === "gpt-image-2" || model === "openai/gpt-image-2" ? "gpt-image-2" : "default");
+    setGenerationModel(normalizeGenerationRoute((style as any).generationModel) ?? "default");
+    const decorModel = String((style as any).generationModelDecor || "").trim().toLowerCase();
+    setGenerationModelDecor(
+      !decorModel ? "inherit" : decorModel === "nano-banana" ? "default" : normalizeGenerationRoute(decorModel) ?? "inherit",
+    );
     const quality = String((style as any).generationQuality || "low").toLowerCase();
     setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
     setVectorizeEnabled((style as any).vectorizeEnabled === true);
@@ -464,9 +480,11 @@ export default function AdminStyles() {
       promptPlaceholder: stylePromptPlaceholder || null,
       descriptionOptional,
       options,
-      generationModel: generationModel === "gpt-image-2" ? "gpt-image-2" : null,
+      generationModel: generationModel === "default" ? null : generationModel,
+      generationModelDecor:
+        generationModelDecor === "inherit" ? null : generationModelDecor === "default" ? "nano-banana" : generationModelDecor,
       generationQuality:
-        generationModel === "gpt-image-2"
+        usesFlareQuality
           ? generationQuality === "medium" || generationQuality === "high"
             ? generationQuality
             : null
@@ -737,36 +755,59 @@ export default function AdminStyles() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <Label>Generation Model</Label>
-                <Select
-                  value={generationModel}
-                  onValueChange={(v) => setGenerationModel(v as "default" | "gpt-image-2")}
-                >
+                <Select value={generationModel} onValueChange={setGenerationModel}>
                   <SelectTrigger data-testid="select-generation-model">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="default">
-                      Full-bleed images with artwork extended to all edges — uses Nano Banana.
-                    </SelectItem>
-                    <SelectItem value="gpt-image-2">
-                      Floating imagery / background removed — uses GPT-Image-2.
-                    </SelectItem>
+                    <SelectItem value="default">{LEGACY_DEFAULT_ROUTE_LABEL}</SelectItem>
+                    {GENERATION_ROUTES.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.label}
+                        {r.verified ? "" : " — unverified"}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
+                  {GENERATION_ROUTES.find((r) => r.id === generationModel)?.hint ??
+                    "Full-bleed artwork via Replicate Nano Banana; apparel uses chroma background removal."}{" "}
+                  Floating styles always use a Flare route.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Decor products model</Label>
+                <Select value={generationModelDecor} onValueChange={setGenerationModelDecor}>
+                  <SelectTrigger data-testid="select-generation-model-decor">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">Same as Generation Model</SelectItem>
+                    <SelectItem value="default">{LEGACY_DEFAULT_ROUTE_LABEL}</SelectItem>
+                    {GENERATION_ROUTES.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.label}
+                        {r.verified ? "" : " — unverified"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Overrides the model on non-apparel products (posters, framed prints, pillows, mugs…). Flare
+                  renders full-bleed opaque artwork on decor unless the style is floating.
                 </p>
               </div>
 
               <div className="space-y-2">
                 <Label>Generation Quality</Label>
-                {generationModel === "gpt-image-2" ? (
+                {usesFlareQuality ? (
                   <Select
                     value={generationQuality === "high" ? "medium" : generationQuality}
                     onValueChange={(v) => setGenerationQuality(v as "low" | "medium")}
@@ -941,7 +982,7 @@ export default function AdminStyles() {
                 </div>
                 {bgSelectorMode === "on" &&
                   styleCategory === "decor" &&
-                  generationModel !== "gpt-image-2" && (
+                  !isTransparentCapableRoute(generationModel) && (
                     <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="note-bg-unusual">
                       This looks like a full-bleed style. The selector is allowed — fill usually only shows in the editor preview, not on the print.
                     </p>
@@ -983,7 +1024,7 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Write only the creative treatment. Full-bleed images with artwork extended to all edges — uses Nano Banana. Floating imagery / background removed — uses GPT-Image-2.
+                  Write only the creative treatment. Background and edge rules come from the model and product.
                 </p>
               </div>
 
