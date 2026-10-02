@@ -179,7 +179,35 @@ describe("provider resolution", () => {
   it("OPENAI_API_KEY_MAIN is optional: resolving plans never reads env", () => {
     const plan = resolveGenerationPlan({ merchantId: "m-classic" });
     expect(plan.credentials.openai?.credentialKey).toBe("OPENAI_API_KEY_MAIN");
-    expect(() => readCredential(CREDENTIALS["openai:shared"])).toThrow(ProviderCredentialUnavailableError);
+    return expect(readCredential(CREDENTIALS["openai:shared"])).rejects.toThrow(ProviderCredentialUnavailableError);
+  });
+});
+
+describe("credential source precedence (platform DB key → env → fail)", () => {
+  const ref = CREDENTIALS["openai:petposterous"];
+  const env = { OPENAI_API_KEY_PETPOSTEROUS: "sk-env-petposterous-1234", OPENAI_API_KEY_MAIN: "sk-env-main-5678" };
+
+  it("an active DB key overrides the env var for the same ref", async () => {
+    const lookup = async (id: string) => (id === ref.id ? "sk-db-override-9999" : null);
+    await expect(readCredential(ref, env, lookup)).resolves.toBe("sk-db-override-9999");
+  });
+
+  it("no DB key → env var unchanged", async () => {
+    await expect(readCredential(ref, env, async () => null)).resolves.toBe("sk-env-petposterous-1234");
+  });
+
+  it("DB lookup error → env var (generation keeps working)", async () => {
+    const lookup = async () => {
+      throw new Error("db down");
+    };
+    await expect(readCredential(ref, env, lookup)).resolves.toBe("sk-env-petposterous-1234");
+  });
+
+  it("a DB key for another ref is never used; missing in both → fail hard", async () => {
+    const lookup = async (id: string) => (id === "openai:shared" ? "sk-db-shared-0000" : null);
+    await expect(readCredential(ref, { OPENAI_API_KEY_MAIN: "sk-env-main-5678" }, lookup)).rejects.toThrow(
+      ProviderCredentialUnavailableError,
+    );
   });
 });
 

@@ -153,7 +153,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     let estimatedCostUsd: number | null = null;
     let thoughtsTokens = 0;
     try {
-      const apiKey = readCredential(credential);
+      const apiKey = await readCredential(credential);
       if (google) {
         const r = await renderGoogleImage({ apiKey, credential, renderer: google, prompt, aspectRatio, imageSize });
         ({ mimeType, data, usage, requestId, thoughtsTokens } = r);

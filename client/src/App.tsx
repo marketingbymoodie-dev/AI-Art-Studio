@@ -23,6 +23,7 @@ import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
 import PlatformShippingPage from "@/pages/platform-shipping";
 import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
+import PlatformApiKeysPage from "@/pages/admin/platform-api-keys";
 import NotFound from "@/pages/not-found";
 
 import AdminSetupPage from "@/pages/admin/setup";
@@ -100,6 +101,7 @@ function AppRouter() {
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
       <Route path="/admin/platform/shipping" component={PlatformShippingPage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
+      <Route path="/admin/platform/api-keys" component={PlatformApiKeysPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/landing" component={PlatformLandingPage} />
       <Route path="/admin/platform/terms" component={PlatformTermsPage} />

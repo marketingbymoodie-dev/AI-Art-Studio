@@ -16,7 +16,7 @@
  */
 
 import { isOpaqueNativeOutput, measureTransparency } from "../../native-transparency";
-import { readCredential, selectRenderer, type GenerationPlan } from "../../generation-providers";
+import { CREDENTIALS, readCredential, selectRenderer, type GenerationPlan } from "../../generation-providers";
 import {
   estimateOpenAIImageCostUsd,
   ProviderRequestError,
@@ -35,14 +35,13 @@ type ReplicatePrediction = {
   error?: any;
 };
 
-function getReplicateToken() {
-  const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
-  if (!token) {
-    throw new Error(
-      "Missing REPLICATE_API_TOKEN (or REPLICATE_API_KEY). Add it to Railway + your local .env"
-    );
-  }
-  return token;
+/** Operator DB key for the plan's Replicate ref first, then REPLICATE_API_TOKEN / REPLICATE_API_KEY. */
+async function resolveReplicateToken(plan?: GenerationPlan | null): Promise<string> {
+  const ref = plan?.credentials.replicate ?? CREDENTIALS["replicate:shared"];
+  return readCredential(ref, {
+    ...process.env,
+    REPLICATE_API_TOKEN: process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY,
+  });
 }
 
 function getReplicateModelVersion() {
@@ -608,7 +607,7 @@ export async function generateImageBase64(
 
   if (direct) {
     // Credential first: a missing dedicated key fails before any work, never falls back.
-    const apiKey = readCredential(direct.credential);
+    const apiKey = await readCredential(direct.credential);
     const renderer = selectRenderer(direct);
     const references = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
       (u): u is string => typeof u === "string" && u.length > 0,
@@ -692,7 +691,7 @@ export async function generateImageBase64(
 
   if (directGoogle) {
     // Credential first: a missing dedicated key fails before any work, never falls back.
-    const apiKey = readCredential(directGoogle.credential);
+    const apiKey = await readCredential(directGoogle.credential);
     const renderer = selectRenderer(directGoogle);
     const references = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
       (u): u is string => typeof u === "string" && u.length > 0,
@@ -753,7 +752,7 @@ export async function generateImageBase64(
     throw lastError ?? new Error("All Google generation attempts failed");
   }
 
-  const token = getReplicateToken();
+  const token = await resolveReplicateToken(params.generationPlan);
 
   if (nativeTransparent || isGptImage2Model(params.generationModel)) {
     const quality: GenerationQuality = resolveGenerationQuality(params.generationQuality);

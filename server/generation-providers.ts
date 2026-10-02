@@ -15,8 +15,9 @@
  * creative prompt text. Aspect ratio stays a product property, separate from
  * resolution.
  *
- * Credentials are env var NAMES only. Values are read at call time by
- * readCredential() and never returned in a plan, stored, logged or put in an
+ * Credentials are ref ids + env var NAMES only. Values are read at call time by
+ * readCredential() — operator-entered DB key (server/credential-store.ts) first,
+ * then the env var — and never returned in a plan, stored, logged or put in an
  * error. A missing credential never falls back to another credential/provider.
  */
 
@@ -339,13 +340,42 @@ export function selectRenderer<P extends DirectOpenAIImagePath | DirectGoogleIma
   return opts.escalate && path.escalation ? path.escalation : path.renderer;
 }
 
-/** Reads the secret for exactly this ref. Missing → throws; never substitutes another credential. */
-export function readCredential(ref: CredentialRef, env: Record<string, string | undefined> = process.env): string {
-  const value = env[ref.credentialKey]?.trim();
+export type CredentialSource = "db" | "env";
+export type DbCredentialLookup = (refId: string) => Promise<string | null>;
+
+async function defaultDbLookup(refId: string): Promise<string | null> {
+  if (!process.env.CREDENTIAL_ENCRYPTION_KEY) return null;
+  return (await import("./credential-store")).getPlatformCredential(refId);
+}
+
+/** Last source each ref resolved from since boot (admin verification only; never the secret). */
+export const credentialResolutionLog = new Map<string, { source: CredentialSource; at: Date }>();
+
+/**
+ * Reads the secret for exactly this ref: operator-entered platform DB key (active),
+ * then the env var. Missing in both → throws; never substitutes another credential.
+ */
+export async function readCredential(
+  ref: CredentialRef,
+  env: Record<string, string | undefined> = process.env,
+  dbLookup: DbCredentialLookup = defaultDbLookup,
+): Promise<string> {
+  let value: string | null = null;
+  let source: CredentialSource = "db";
+  try {
+    value = (await dbLookup(ref.id))?.trim() || null;
+  } catch (err) {
+    console.error(`[Providers] DB credential lookup failed for ${ref.id}; using env:`, (err as Error)?.message);
+  }
+  if (!value) {
+    value = env[ref.credentialKey]?.trim() || null;
+    source = "env";
+  }
   if (!value) {
     console.error(`[Providers] ${ref.credentialKey} is not set; refusing ${ref.id} generation (no fallback)`);
     throw new ProviderCredentialUnavailableError();
   }
+  credentialResolutionLog.set(ref.id, { source, at: new Date() });
   return value;
 }
 

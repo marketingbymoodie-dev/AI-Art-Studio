@@ -26301,6 +26301,8 @@ ${orientationExtra}
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformCredentialRoutes } = await import("./routes/platform-credentials");
+  registerPlatformCredentialRoutes(app, { isAuthenticated });
 
   const { registerPricingModellerRoutes } = await import("./routes/pricing-modeller");
   registerPricingModellerRoutes(app, { isAuthenticated });

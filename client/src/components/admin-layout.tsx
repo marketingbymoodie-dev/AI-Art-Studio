@@ -47,6 +47,7 @@ import {
   Scale,
   Mail,
   Truck,
+  KeyRound,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -84,6 +85,7 @@ const platformMenuItems = [
   { title: "How To library", url: "/admin/platform/how-to", icon: BookOpen },
   { title: "Newsletter", url: "/admin/platform/newsletter", icon: Mail },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
+  { title: "Provider API Keys", url: "/admin/platform/api-keys", icon: KeyRound },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
 
