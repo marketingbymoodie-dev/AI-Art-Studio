@@ -1,4 +1,5 @@
 import { normalizeApparelSizeId } from "./variantMapResolve";
+import { catalogHasPrintSides, variantServesPrintSides, type PrintSides } from "./printSides";
 
 /**
  * Match a Shopify variant catalog entry by human-readable size + color.
@@ -15,7 +16,20 @@ export type ShopifyVariantMatchEntry = {
   title?: string | null;
   option1?: string | null;
   option2?: string | null;
+  option3?: string | null;
 };
+
+/**
+ * Keep only rows for one Print sides value. Catalogs without the option
+ * (legacy, Front-only) pass through unchanged.
+ */
+export function filterCatalogByPrintSides<T extends ShopifyVariantMatchEntry>(
+  catalog: T[],
+  sides: PrintSides = "front",
+): T[] {
+  if (!catalogHasPrintSides(catalog)) return catalog;
+  return catalog.filter((v) => variantServesPrintSides(v, sides));
+}
 
 /** Collapse spaces/underscores/hyphens and normalize slash spacing for comparison. */
 export function normalizeShopifyVariantToken(value: string): string {
@@ -94,12 +108,14 @@ export function colorMatchesFrame(
  * When `hasColors` is true, size-only fallback is never used.
  */
 export function matchShopifyVariantBySizeColor(
-  catalog: ShopifyVariantMatchEntry[],
+  fullCatalog: ShopifyVariantMatchEntry[],
   sizeName: string,
   frameName: string,
   hasColors: boolean,
   frameColorId?: string,
+  sides: PrintSides = "front",
 ): string | null {
+  const catalog = filterCatalogByPrintSides(fullCatalog, sides);
   if (catalog.length === 0) return null;
 
   const sizeNorm = normalizeShopifyVariantToken(sizeName);
@@ -175,11 +191,13 @@ export function matchShopifyVariantBySizeColor(
  * first "XL / …" row, which is how Heather Grey $18.95 became Navy/Small $27.
  */
 export function matchShopifyVariantBySizeTitle(
-  catalog: ShopifyVariantMatchEntry[],
+  fullCatalog: ShopifyVariantMatchEntry[],
   sizeName: string,
   frameName?: string,
   frameColorId?: string,
+  sides: PrintSides = "front",
 ): string | null {
+  const catalog = filterCatalogByPrintSides(fullCatalog, sides);
   const sizeNorm = normalizeShopifyVariantToken(sizeName);
   if (!sizeNorm || catalog.length === 0) return null;
 
@@ -283,7 +301,7 @@ export function filterFrameColorsToMintedShopify<T extends { id: string; name: s
   return filterFrameColorsToShopifyCatalog(frameColors, synthetic);
 }
 
-/** Full size×colour catalog from persist `shopifyVariantIds` keys (`Size:Color`). */
+/** Front-only catalog from persist `shopifyVariantIds` keys (`Size:Color`); never carries Front + Back ids. */
 export function catalogFromShopifyVariantIds(raw: unknown): ShopifyVariantMatchEntry[] {
   let map: Record<string, unknown> = {};
   if (typeof raw === "string") {

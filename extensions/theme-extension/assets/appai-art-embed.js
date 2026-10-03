@@ -3340,6 +3340,7 @@
             price: v.price ? (parseFloat(v.price) / 100).toFixed(2) : '0.00',
             option1: v.option1 || undefined,
             option2: v.option2 || undefined,
+            option3: v.option3 || undefined,
           }));
           console.log('[AI Art Embed] Extracted', productVariants.length, 'variants with prices');
         }

@@ -49,6 +49,7 @@ type CatalogProduct = {
   harvestOutcome?: "none" | "ready" | "unsupported" | "failed";
   harvestError?: string;
   fabricWeaveTexture?: boolean | null;
+  printSidesEnabled?: boolean;
   publish: PublishState;
 };
 
@@ -248,6 +249,22 @@ export default function PlatformCatalogPage() {
     },
     onError: (e: Error) =>
       toast({ title: "Couldn't update weave texture", description: e.message, variant: "destructive" }),
+  });
+
+  const printSidesMutation = useMutation({
+    mutationFn: async ({ blueprintId, enabled }: { blueprintId: number; enabled: boolean }) => {
+      const res = await apiRequest("PATCH", `/api/platform/canonical/${blueprintId}/print-sides`, { enabled });
+      return res.json();
+    },
+    onSuccess: (_body, vars) => {
+      toast({
+        title: vars.enabled ? "Print sides option on" : "Print sides option off",
+        description: `Applies to imported product types for blueprint ${vars.blueprintId} on their next product recreate.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/canonical/products"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Couldn't update Print sides", description: e.message, variant: "destructive" }),
   });
 
   const products = data?.products ?? [];
@@ -474,6 +491,19 @@ export default function PlatformCatalogPage() {
                         />
                         <Label htmlFor={`weave-${p.blueprintId}`} className="text-xs cursor-pointer">
                           Woven fabric texture (mockup)
+                        </Label>
+                      </div>
+                      <div className="flex w-full items-center gap-2">
+                        <Switch
+                          id={`print-sides-${p.blueprintId}`}
+                          checked={p.printSidesEnabled !== false}
+                          disabled={printSidesMutation.isPending}
+                          onCheckedChange={(checked) =>
+                            printSidesMutation.mutate({ blueprintId: p.blueprintId, enabled: checked })
+                          }
+                        />
+                        <Label htmlFor={`print-sides-${p.blueprintId}`} className="text-xs cursor-pointer">
+                          Print sides option (Front / Front + Back, where back costs exist)
                         </Label>
                       </div>
                     </>

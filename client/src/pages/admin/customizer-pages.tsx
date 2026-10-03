@@ -112,10 +112,11 @@ function trimSelectionToShopifyMax(
   sizeIds: string[],
   colorIds: string[],
   comboSet?: Set<string> | null,
+  printSidesFactor = 1,
 ): { sizeIds: string[]; colorIds: string[]; count: number; capped: boolean } {
   let sizes = sizeIds.filter(Boolean);
   let colors = colorIds.filter(Boolean);
-  const countOf = () => countExistingVariantCombos(sizes, colors, comboSet);
+  const countOf = () => countExistingVariantCombos(sizes, colors, comboSet) * printSidesFactor;
   if (sizes.length === 0) {
     return { sizeIds: sizes, colorIds: colors, count: 0, capped: false };
   }
@@ -409,6 +410,8 @@ export default function AdminCustomizerPages() {
   const [wizardSizes, setWizardSizes] = useState<VariantOption[]>([]);
   const [wizardColors, setWizardColors] = useState<VariantOption[]>([]);
   const [wizardCombinations, setWizardCombinations] = useState<VariantComboPair[]>([]);
+  /** 2 when each blank becomes Front + Front + Back Shopify variants. */
+  const [wizardSidesFactor, setWizardSidesFactor] = useState(1);
   const [wizardSizeIds, setWizardSizeIds] = useState<Set<string>>(new Set());
   const [wizardColorIds, setWizardColorIds] = useState<Set<string>>(new Set());
   const [wizardVariantsLoading, setWizardVariantsLoading] = useState(false);
@@ -428,6 +431,7 @@ export default function AdminCustomizerPages() {
   // Edit-modal variant picker
   const [editSizes, setEditSizes] = useState<VariantOption[]>([]);
   const [editColors, setEditColors] = useState<VariantOption[]>([]);
+  const [editSidesFactor, setEditSidesFactor] = useState(1);
   const [editSizeIds, setEditSizeIds] = useState<Set<string>>(new Set());
   const [editColorIds, setEditColorIds] = useState<Set<string>>(new Set());
   const [editVariantsLoading, setEditVariantsLoading] = useState(false);
@@ -1339,7 +1343,8 @@ export default function AdminCustomizerPages() {
       setEditVariantsLoading(true);
       try {
         const res = await apiFetch(
-          `/api/admin/printify/blueprints/${editBlank.printifyBlueprintId}/variants?providerId=${editBlank.printifyProviderId}`,
+          `/api/admin/printify/blueprints/${editBlank.printifyBlueprintId}/variants?providerId=${editBlank.printifyProviderId}` +
+            (editBlank.productTypeId ? `&productTypeId=${editBlank.productTypeId}` : ""),
         );
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -1349,8 +1354,10 @@ export default function AdminCustomizerPages() {
         if (cancelled) return;
         const sizes: VariantOption[] = data.sizes || [];
         const colors: VariantOption[] = data.colors || [];
+        const sidesFactor = Number(data.printSidesFactor) === 2 ? 2 : 1;
         setEditSizes(sizes);
         setEditColors(colors);
+        setEditSidesFactor(sidesFactor);
         const savedSizes = editBlank.selectedSizeIds ?? [];
         const savedColors = editBlank.selectedColorIds ?? [];
         let nextSizes = (savedSizes.length ? savedSizes : sizes.map((s) => s.id)).filter((id) =>
@@ -1360,7 +1367,7 @@ export default function AdminCustomizerPages() {
           colors.some((c) => c.id === id),
         );
         // Never open the editor with an illegal over-limit selection (legacy or "select all").
-        const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors);
+        const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors, null, sidesFactor);
         if (trimmed.capped) {
           nextSizes = trimmed.sizeIds;
           nextColors = trimmed.colorIds;
@@ -1458,8 +1465,8 @@ export default function AdminCustomizerPages() {
   const wizardVariantCount = useMemo(() => {
     if (wizardSizeIds.size === 0) return 0;
     if (wizardColors.length > 0 && wizardColorIds.size === 0) return 0;
-    return countExistingVariantCombos(wizardSizeIds, wizardColorIds, wizardComboSet);
-  }, [wizardSizeIds, wizardColorIds, wizardColors.length, wizardComboSet]);
+    return countExistingVariantCombos(wizardSizeIds, wizardColorIds, wizardComboSet) * wizardSidesFactor;
+  }, [wizardSizeIds, wizardColorIds, wizardColors.length, wizardComboSet, wizardSidesFactor]);
 
   const wizardVariantOverLimit = wizardVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
   const wizardVariantCountValid =
@@ -1488,11 +1495,16 @@ export default function AdminCustomizerPages() {
     setWizardSizes([]);
     setWizardColors([]);
     setWizardCombinations([]);
+    setWizardSidesFactor(1);
     setWizardSizeIds(new Set());
     setWizardColorIds(new Set());
     try {
+      const ptQuery =
+        providerId === selectedBlank?.printifyProviderId && selectedBlank?.productTypeId
+          ? `&productTypeId=${selectedBlank.productTypeId}`
+          : "";
       const res = await apiFetch(
-        `/api/admin/printify/blueprints/${blueprintId}/variants?providerId=${providerId}`,
+        `/api/admin/printify/blueprints/${blueprintId}/variants?providerId=${providerId}${ptQuery}`,
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -1506,6 +1518,8 @@ export default function AdminCustomizerPages() {
       setWizardSizes(sizes);
       setWizardColors(colors);
       setWizardCombinations(combinations);
+      const sidesFactor = Number(data.printSidesFactor) === 2 ? 2 : 1;
+      setWizardSidesFactor(sidesFactor);
       // Prefer current product picks when staying on the same supplier
       const sameProvider = providerId === selectedBlank?.printifyProviderId;
       const savedSizes = selectedBlank?.selectedSizeIds ?? [];
@@ -1518,7 +1532,12 @@ export default function AdminCustomizerPages() {
         sameProvider && savedColors.length > 0 && colors.length > 0
           ? colors.filter((c) => savedColors.some((id) => selectionIdEq(c.id, id))).map((c) => c.id)
           : colors.map((c) => c.id);
-      const trimmed = trimSelectionToShopifyMax(nextSizes, nextColors, comboSetFromPairs(combinations));
+      const trimmed = trimSelectionToShopifyMax(
+        nextSizes,
+        nextColors,
+        comboSetFromPairs(combinations),
+        sidesFactor,
+      );
       setWizardSizeIds(new Set(trimmed.sizeIds));
       setWizardColorIds(new Set(trimmed.colorIds));
       setWizardVariantsReady(true);
@@ -1724,6 +1743,7 @@ export default function AdminCustomizerPages() {
         wizardSizes.map((s) => s.id),
         wizardColors.map((c) => c.id),
         wizardComboSet,
+        wizardSidesFactor,
       );
       return runEnsureWizardProvider({
         sizeIds: trimmed.sizeIds,
@@ -1806,7 +1826,7 @@ export default function AdminCustomizerPages() {
   });
 
   const editVariantCount =
-    editSizeIds.size * (editColors.length === 0 ? 1 : editColorIds.size);
+    editSizeIds.size * (editColors.length === 0 ? 1 : editColorIds.size) * editSidesFactor;
   const editVariantOverLimit = editVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT;
 
   const editVariantsMutation = useMutation({
@@ -4113,6 +4133,8 @@ export default function AdminCustomizerPages() {
                           const trimmed = trimSelectionToShopifyMax(
                             Array.from(editSizeIds),
                             Array.from(editColorIds),
+                            null,
+                            editSidesFactor,
                           );
                           setEditSizeIds(new Set(trimmed.sizeIds));
                           setEditColorIds(new Set(trimmed.colorIds));

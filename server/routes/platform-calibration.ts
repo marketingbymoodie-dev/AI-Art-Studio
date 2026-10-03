@@ -920,6 +920,11 @@ export function registerPlatformCalibrationRoutes(
   app.get("/api/platform/canonical/products", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     const entries = await listFlatCanonicalEntries();
+    const printSidesOffBlueprints = new Set(
+      (await storage.getProductTypes())
+        .filter((pt) => pt.printSidesEnabled === false && pt.printifyBlueprintId != null)
+        .map((pt) => Number(pt.printifyBlueprintId)),
+    );
     const products = await Promise.all(
       entries.map(async (e) => {
         const manifest =
@@ -927,6 +932,7 @@ export function registerPlatformCalibrationRoutes(
         const harvest = manifest ? resolveHarvestOutcome(manifest) : { outcome: "none" as const };
         return {
           ...e,
+          printSidesEnabled: !printSidesOffBlueprints.has(e.blueprintId),
           harvestComplete: e.kind === "flat" ? isHarvestComplete(manifest) : false,
           harvestOutcome: e.kind === "flat" ? harvest.outcome : undefined,
           harvestError: e.kind === "flat" ? harvest.error : undefined,
@@ -1653,6 +1659,33 @@ export function registerPlatformCalibrationRoutes(
     } catch (e: any) {
       console.error("[platform-canonical] fabric-weave update failed:", e);
       res.status(500).json({ error: e?.message || "Failed to update fabric weave" });
+    }
+  });
+
+  /**
+   * Operator override for the Print sides option. On = derived default (null:
+   * offered wherever front+back costs exist); off = false on every imported
+   * product type for the blueprint. Takes effect on the next product (re)create.
+   */
+  app.patch("/api/platform/canonical/:blueprintId/print-sides", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      const enabled = req.body?.enabled;
+      if (!Number.isFinite(blueprintId) || typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled must be a boolean" });
+      }
+      const allTypes = await storage.getProductTypes();
+      let propagated = 0;
+      for (const pt of allTypes) {
+        if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+        await storage.updateProductType(pt.id, { printSidesEnabled: enabled ? null : false });
+        propagated += 1;
+      }
+      res.json({ ok: true, enabled, propagated });
+    } catch (e: any) {
+      console.error("[platform-canonical] print-sides update failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to update Print sides" });
     }
   });
 
