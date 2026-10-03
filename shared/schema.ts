@@ -882,6 +882,13 @@ export const productTypes = pgTable("product_types", {
   shopifyProductUrl: text("shopify_product_url"),
   shopifyShopDomain: text("shopify_shop_domain"), // Which shop this product was published to
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
+  /** Print sides = "Front + Back" variant ids, keyed size:color like shopifyVariantIds (which holds Front). */
+  shopifyVariantIdsBoth: json("shopify_variant_ids_both"),
+  /**
+   * Operator override for the Print sides option. null = derived (on where
+   * front+back costs exist); false = off even with back costs.
+   */
+  printSidesEnabled: boolean("print_sides_enabled"),
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   printifyCosts: text("printify_costs").default("{}"),
   /**

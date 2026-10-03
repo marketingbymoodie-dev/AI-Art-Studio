@@ -30,6 +30,7 @@ import {
   maskAlphaLooksBinary,
 } from "@shared/maskFeather";
 import { expandTapestryMagentaMask } from "@shared/tapestryHarvestMagenta";
+import { isPrintSidesValue, variantServesPrintSides } from "@shared/printSides";
 import {
   canonicalDecorSizeId,
   decorSizeIdCandidates,
@@ -2296,7 +2297,11 @@ export async function harvestBlanksFromShopifyProduct(args: {
       }
     }
     for (const v of variants) {
-      const opts = [v.option1, v.option2, v.option3, v.title].filter(Boolean).map(String);
+      if (!variantServesPrintSides(v, "front")) continue;
+      const opts = [v.option1, v.option2, v.option3, v.title]
+        .filter(Boolean)
+        .map(String)
+        .filter((o) => !isPrintSidesValue(o));
       if (opts.some((o) => optionMatchesColor(o, color)) || skuMatchesColor(String(v.sku || ""), color)) {
         push(v);
       }

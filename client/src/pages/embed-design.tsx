@@ -1273,13 +1273,22 @@ function sortSizesByRetailPrice<T extends { id: string }>(
 
 function mapServerVariantsToCatalog(
   raw: any[],
-): Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }> {
+): Array<{
+  id: string;
+  title: string;
+  price: string;
+  option1?: string;
+  option2?: string;
+  option3?: string;
+  imageSrc?: string;
+}> {
   return raw.map((v: any) => ({
     id: String(v.id),
     title: v.title || "",
     price: v.price != null ? String(v.price) : "0.00",
     option1: v.option1,
     option2: v.option2,
+    option3: v.option3,
     imageSrc: typeof v.imageSrc === "string" ? v.imageSrc : undefined,
   }));
 }
@@ -11370,6 +11379,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             title: v.title,
             option1: v.option1,
             option2: v.option2,
+            option3: v.option3,
           })),
           sizeName,
           frameName,

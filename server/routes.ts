@@ -123,7 +123,22 @@ import {
   SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
-import { filterFrameColorsToMintedShopify } from "@shared/shopifyVariantMatch";
+import { filterCatalogByPrintSides, filterFrameColorsToMintedShopify } from "@shared/shopifyVariantMatch";
+import {
+  PRINT_SIDES_BOTH,
+  PRINT_SIDES_FRONT,
+  isPrintSidesValue,
+  printSidesOfVariant,
+  printSidesTierCounts,
+  splitShopifyVariantIdsBySides,
+} from "@shared/printSides";
+import {
+  applyPrintSidesToRestProduct,
+  bothTierPriceUpdates,
+  printSidesActiveForProductType,
+  printSidesFactorForProductType,
+  printSidesOptionLive,
+} from "./print-sides";
 import {
   aspectRatioFromFlatCalibration,
   computeAspectRatioFromPixelDims,
@@ -147,7 +162,7 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
-import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
+import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth, synthesizeBothRetailMapFromCosts } from "@shared/variantPricesBoth";
 import { buildShadowProductTitle, stripProviderSuffix } from "@shared/planEstimator";
 import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, lookupWizardRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
@@ -4611,6 +4626,20 @@ ${orientationExtra}
     }
   }
 
+  /** variantMap Printify id for a REST variant built from size/colour display names. */
+  function printifyIdForOptionNames(
+    variantMap: Record<string, any>,
+    sizes: Array<{ id: string; name: string }>,
+    colors: Array<{ id: string; name: string }>,
+    v: { option1?: string | null; option2?: string | null },
+  ): { printifyVariantId?: string | number | null } {
+    const size = sizes.find((s) => s.name === v.option1);
+    if (!size) return {};
+    const color = colors.find((c) => c.name === v.option2);
+    const entry = variantMap[`${size.id}:${color ? color.id : 'default'}`];
+    return { printifyVariantId: entry?.printifyVariantId ?? null };
+  }
+
   async function createShopifyProductForType(
     shop: string,
     accessToken: string,
@@ -4702,11 +4731,14 @@ ${orientationExtra}
       }
     }
     if (shopifyVariants.length === 0) throw new Error('No variants to create — check size/color selections.');
-    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`);
 
     const productOptions: any[] = [];
     if (allSizes.length > 0) productOptions.push({ name: 'Size', values: Array.from(new Set(shopifyVariants.map((v: any) => v.option1))) });
     if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors, productType.colorOptionName), values: Array.from(new Set(shopifyVariants.filter((v: any) => v.option2).map((v: any) => v.option2!))) });
+    applyPrintSidesToRestProduct(productType, shopifyVariants, productOptions, (v) =>
+      printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+    );
+    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`);
 
     const images: any[] = [];
     if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -4757,12 +4789,7 @@ ${orientationExtra}
     const shopifyHandle = createdProduct.product.handle;
     const createdVariants = createdProduct.product.variants || [];
 
-    const shopifyVariantIds: Record<string, number> = {};
-    for (const v of createdVariants) {
-      const sizeOption = v.option1 || 'default';
-      const colorOption = v.option2 || 'default';
-      shopifyVariantIds[`${sizeOption}:${colorOption}`] = v.id;
-    }
+    const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
     try { await ensureProductPublishedToOnlineStore(shop, accessToken, createdProduct.product.id); } catch (_) { /* non-fatal */ }
 
@@ -4772,10 +4799,11 @@ ${orientationExtra}
       shopifyProductUrl: `https://${shop}/admin/products/${newShopifyProductId}`,
       shopifyShopDomain: shop,
       shopifyVariantIds: shopifyVariantIds,
+      shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
       lastPushedToShopify: new Date(),
     });
 
-    const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+    const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
     const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
     if (cheapestVariantId) {
       await syncCustomizerPagesForShopifyProduct({
@@ -4899,7 +4927,7 @@ ${orientationExtra}
             shopifyProductHandle: null,
             shopifyProductUrl: null,
             shopifyShopDomain: null,
-            shopifyVariantIds: null,
+            shopifyVariantIds: null, shopifyVariantIdsBoth: null,
           });
         } else if (existingShopDomain !== shopDomain) {
           console.log(`[Shopify Publish] Product was published to ${existingShopDomain}, but publishing to ${shopDomain} - creating new product`);
@@ -4909,7 +4937,7 @@ ${orientationExtra}
             shopifyProductHandle: null,
             shopifyProductUrl: null,
             shopifyShopDomain: null,
-            shopifyVariantIds: null,
+            shopifyVariantIds: null, shopifyVariantIdsBoth: null,
           });
         } else {
           console.log(`[Shopify Publish] Product already exists (${productType.shopifyProductId}), deleting for republish...`);
@@ -4929,7 +4957,7 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
             } else if (deleteResponse.status === 401 || deleteResponse.status === 403) {
               // Token is invalid - abort publish and require reinstall
@@ -5050,13 +5078,6 @@ ${orientationExtra}
         }
       }
 
-      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-        return res.status(400).json({ 
-          error: `Too many variants (${shopifyVariants.length})`,
-          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Please select fewer colors.`
-        });
-      }
-
       if (shopifyVariants.length === 0) {
         return res.status(400).json({ 
           error: "No variants to create",
@@ -5078,6 +5099,16 @@ ${orientationExtra}
         productOptions.push({
           name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+      applyPrintSidesToRestProduct(productType, shopifyVariants as any[], productOptions, (v) =>
+        printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+      );
+
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Please select fewer colors.`
         });
       }
 
@@ -5210,13 +5241,7 @@ ${orientationExtra}
       console.log(`Created Shopify product ${shopifyProductId} (handle: ${shopifyHandle}) for product type ${productType.id}`);
 
       // Build a map of size:color to Shopify variant ID for future lookups
-      const shopifyVariantIds: Record<string, number> = {};
-      for (const v of createdVariants) {
-        const sizeOption = v.option1 || 'default';
-        const colorOption = v.option2 || 'default';
-        const key = `${sizeOption}:${colorOption}`;
-        shopifyVariantIds[key] = v.id;
-      }
+      const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
       // Publish to Online Store so /cart/add.js accepts the variant IDs
       try {
@@ -5235,6 +5260,7 @@ ${orientationExtra}
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
         shopifyShopDomain: shopDomain, // Track which shop this was published to
         shopifyVariantIds: shopifyVariantIds,
+        shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
         lastPushedToShopify: new Date(),
       });
 
@@ -5343,6 +5369,12 @@ ${orientationExtra}
           const productOptions: Array<{ name: string; values: string[] }> = [];
           if (allSizes.length > 0) productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map(v => v.option1))) });
           if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors), values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))) });
+          applyPrintSidesToRestProduct(productType, shopifyVariants as any[], productOptions, (v) =>
+            printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+          );
+          if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+            return res.status(400).json({ error: `Too many variants (${shopifyVariants.length})`, details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.` });
+          }
 
           const images: Array<{ src: string; alt: string }> = [];
           if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -5389,11 +5421,7 @@ ${orientationExtra}
           const shopifyHandle = createdProduct.product.handle;
           const createdVariants = createdProduct.product.variants || [];
 
-          const shopifyVariantIds: Record<string, number> = {};
-          for (const v of createdVariants) {
-            const key = `${v.option1 || 'default'}:${v.option2 || 'default'}`;
-            shopifyVariantIds[key] = v.id;
-          }
+          const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
           // Publish to Online Store so /cart/add.js accepts the variant IDs
           try {
@@ -5412,10 +5440,11 @@ ${orientationExtra}
             shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
             shopifyShopDomain: shopDomain,
             shopifyVariantIds: shopifyVariantIds,
+            shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
             lastPushedToShopify: new Date(),
           });
 
-          const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+          const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
           const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
           if (cheapestVariantId) {
             await syncCustomizerPagesForShopifyProduct({
@@ -5482,7 +5511,7 @@ ${orientationExtra}
         shopifyProductHandle: null,
         shopifyProductUrl: null,
         shopifyShopDomain: null,
-        shopifyVariantIds: null,
+        shopifyVariantIds: null, shopifyVariantIdsBoth: null,
       });
 
       // Reload the product type with the cleared ID so the create path below works correctly
@@ -5552,13 +5581,6 @@ ${orientationExtra}
         }
       }
 
-      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-        return res.status(400).json({ 
-          error: `Too many variants (${shopifyVariants.length})`,
-          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.`
-        });
-      }
-
       // Build product options — only include color option if colors are actually used
       const productOptions: Array<{ name: string; values: string[] }> = [];
       
@@ -5573,6 +5595,16 @@ ${orientationExtra}
         productOptions.push({
           name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+      applyPrintSidesToRestProduct(freshProductType, shopifyVariants as any[], productOptions, (v) =>
+        printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+      );
+
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.`
         });
       }
 
@@ -5634,10 +5666,7 @@ ${orientationExtra}
       const shopifyProductId = createdProduct.product.id;
       const shopifyHandle = createdProduct.product.handle;
       const createdVariants = createdProduct.product.variants || [];
-      const shopifyVariantIds: Record<string, number> = {};
-      for (const v of createdVariants) {
-        shopifyVariantIds[`${v.option1 || 'default'}:${v.option2 || 'default'}`] = v.id;
-      }
+      const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
       try {
         const pubTokenReady = await ensureValidOfflineAccessToken(installation);
@@ -5654,10 +5683,11 @@ ${orientationExtra}
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
         shopifyShopDomain: shopDomain,
         shopifyVariantIds: shopifyVariantIds,
+        shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
         lastPushedToShopify: new Date(),
       });
 
-      const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+      const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
       const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
       if (cheapestVariantId) {
         await syncCustomizerPagesForShopifyProduct({
@@ -5940,7 +5970,7 @@ ${orientationExtra}
     title: string;
     option1: string;
     option2: string | null;
-    option3: null;
+    option3: string | null;
     price: string;
     available: boolean;
   }> {
@@ -6013,7 +6043,38 @@ ${orientationExtra}
       }
     }
 
-    return fallbackVariants;
+    const bothIds = (typeof productType.shopifyVariantIdsBoth === 'string'
+      ? JSON.parse(productType.shopifyVariantIdsBoth || '{}')
+      : productType.shopifyVariantIdsBoth) as Record<string, number> | null;
+    if (!bothIds || Object.keys(bothIds).length === 0) return fallbackVariants;
+
+    // Print sides rows: value sits after the existing options, as on Shopify.
+    const withSides: any[] = [];
+    const sideSlot = frameColors.length > 0 ? 'option3' : 'option2';
+    for (const fv of fallbackVariants) {
+      withSides.push({ ...fv, title: `${fv.title} / ${PRINT_SIDES_FRONT}`, [sideSlot]: PRINT_SIDES_FRONT });
+    }
+    for (const size of sizes) {
+      const colorList: Array<{ id: string; name: string } | undefined> = frameColors.length > 0 ? frameColors : [undefined];
+      for (const color of colorList) {
+        const keys = color
+          ? [`${size.name}:${color.name}`, `${size.id}:${color.id}`]
+          : [`${size.name}:default`, `${size.id}:default`];
+        const id = keys.map((k) => bothIds[k]).find(Boolean);
+        if (!id) continue;
+        const base = color ? `${size.name} / ${color.name}` : size.name;
+        withSides.push({
+          id,
+          title: `${base} / ${PRINT_SIDES_BOTH}`,
+          option1: size.name,
+          option2: color ? color.name : PRINT_SIDES_BOTH,
+          option3: color ? PRINT_SIDES_BOTH : null,
+          price: '0.00',
+          available: true,
+        });
+      }
+    }
+    return withSides;
   }
 
   /** Merge real Shopify prices onto DB fallback rows (fallback hardcodes price: 0.00). */
@@ -6032,7 +6093,7 @@ ${orientationExtra}
       if (rv?.id != null && rv.price != null && parseFloat(String(rv.price)) > 0) {
         priceById.set(String(rv.id), String(rv.price));
       }
-      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}`.toLowerCase();
+      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}|${printSidesOfVariant(rv) ?? ""}`.toLowerCase();
       if (rv.price != null && parseFloat(String(rv.price)) > 0) {
         priceByOptions.set(optKey, String(rv.price));
       }
@@ -6042,7 +6103,7 @@ ${orientationExtra}
       if (parseFloat(v.price) > 0) return v;
       const byId = priceById.get(String(v.id));
       if (byId) return { ...v, price: byId };
-      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}`.toLowerCase();
+      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}|${printSidesOfVariant(v) ?? ""}`.toLowerCase();
       const byOpt = priceByOptions.get(optKey);
       if (byOpt) return { ...v, price: byOpt };
       return v;
@@ -6053,8 +6114,9 @@ ${orientationExtra}
   function selectBaseCatalogVariants(rawVariants: any[]): any[] {
     if (!rawVariants.length) return [];
 
+    // Print sides (Front / Front + Back) is a real catalog axis, not a shadow row.
     const withoutDesignThird = rawVariants.filter(
-      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base",
+      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base" || isPrintSidesValue(v.option3),
     );
     if (withoutDesignThird.length > 0) return withoutDesignThird;
 
@@ -6062,7 +6124,7 @@ ${orientationExtra}
     const seen = new Set<string>();
     const deduped: any[] = [];
     for (const v of rawVariants) {
-      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}`;
+      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}:${printSidesOfVariant(v) ?? ""}`;
       if (!seen.has(key)) {
         seen.add(key);
         deduped.push(v);
@@ -14255,6 +14317,8 @@ ${orientationExtra}
     "panelMappingTemplate",
     "onTheFlyTier",
     "flatCalibrationStatus",
+    "printSidesEnabled",
+    "shopifyVariantIdsBoth",
   ] as const;
 
   app.patch("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
@@ -14277,6 +14341,10 @@ ${orientationExtra}
       }
       if (updates.frameColors && Array.isArray(updates.frameColors)) {
         updates.frameColors = JSON.stringify(updates.frameColors);
+      }
+      // null = derived default (on where front+back costs exist); false = operator switched off.
+      if ("printSidesEnabled" in updates && updates.printSidesEnabled !== null && typeof updates.printSidesEnabled !== "boolean") {
+        return res.status(400).json({ error: "printSidesEnabled must be true, false, or null" });
       }
 
       const updated = await storage.updateProductType(id, updates);
@@ -16744,10 +16812,26 @@ ${orientationExtra}
         }
       }
 
+      // Each blank becomes Front + Front + Back when Print sides applies, so the
+      // wizard's Shopify-limit counters must multiply by this.
+      let printSidesFactor: 1 | 2 = 1;
+      const ptIdNum = Number(req.query.productTypeId);
+      const ownPt =
+        Number.isFinite(ptIdNum) && ptIdNum > 0 ? await storage.getProductType(ptIdNum) : undefined;
+      if (ownPt && merchant && ownPt.merchantId === merchant.id) {
+        printSidesFactor = printSidesFactorForProductType(ownPt);
+      } else if (printSidesOptionLive()) {
+        const hasBack = variants.some((v: any) =>
+          Array.isArray(v?.placeholders) && v.placeholders.some((p: any) => p?.position === "back"),
+        );
+        printSidesFactor = hasBack ? 2 : 1;
+      }
+
       res.json({
         sizes: Array.from(sizesMap.values()),
         colors: Array.from(colorsMap.values()),
         combinations,
+        printSidesFactor,
       });
     } catch (error) {
       console.error("Error fetching variant options:", error);
@@ -16798,11 +16882,13 @@ ${orientationExtra}
           : Number.isFinite(reported) && reported > 0
             ? reported
             : cartesian;
+      const sidesFactor = printSidesFactorForProductType(productType);
+      const shopifyTotal = totalVariants * sidesFactor;
 
-      if (totalVariants > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      if (shopifyTotal > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({
           error: "Too many variants",
-          details: `Selected options would create ${totalVariants} variants. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
+          details: `Selected options would create ${shopifyTotal} variants${sidesFactor > 1 ? ` (${totalVariants} blanks × Front / Front + Back)` : ""}. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
         });
       }
 
@@ -17971,24 +18057,29 @@ ${orientationExtra}
       const explicitVariantPick =
         (Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0) ||
         (Array.isArray(selectedColorIds) && selectedColorIds.length > 0);
-      // Setup → Activate has no size/color picker. Auto-trim to Shopify's 100
+      // Costs aren't fetched yet at import; a back placeholder is the proxy for
+      // "front+back costs will exist", so Print sides will double every blank.
+      const importSidesFactor = printSidesOptionLive() && hasBackPlaceholder && !isAllOverPrint ? 2 : 1;
+      const importBlankCap = Math.floor(SHOPIFY_MAX_VARIANTS_PER_PRODUCT / importSidesFactor);
+      // Setup → Activate has no size/color picker. Auto-trim to Shopify's
       // variant cap (prefer all sizes, fewer colors). Products Import still
       // errors when the merchant explicitly picks too many.
-      if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      if (importVariantCount > importBlankCap) {
         if (opts?.autoCapVariants || !explicitVariantPick) {
           const capped = capVariantSelectionForShopifyLimit(
             importSizeIds,
             importColorIds,
             variantMap,
+            importBlankCap,
           );
           importSizeIds = capped.sizeIds;
           importColorIds = capped.colorIds;
           importVariantCount = capped.variantCount;
           console.log(
-            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} variants ` +
-              `(${importSizeIds.length} sizes × ${importColorIds.length} colors)`,
+            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} blanks ` +
+              `(${importSizeIds.length} sizes × ${importColorIds.length} colors, ×${importSidesFactor} Print sides)`,
           );
-          if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+          if (importVariantCount > importBlankCap) {
             return res.status(400).json({
               error: `Too many variants (${importVariantCount}) even after auto-select. Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product.`,
               code: "SHOPIFY_VARIANT_LIMIT",
@@ -17997,9 +18088,9 @@ ${orientationExtra}
           }
         } else {
           return res.status(400).json({
-            error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+            error: `Too many variants (${importVariantCount * importSidesFactor}${importSidesFactor > 1 ? `: ${importVariantCount} blanks × Front / Front + Back` : ""}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
             code: "SHOPIFY_VARIANT_LIMIT",
-            variantCount: importVariantCount,
+            variantCount: importVariantCount * importSidesFactor,
           });
         }
       }
@@ -21642,10 +21733,11 @@ ${orientationExtra}
       const prodRes = await getProductRestCompat(shop, installation.accessToken, page.baseProductId);
       const variants = prodRes.data?.product?.variants || [];
       const priceMap: Record<string, string> = {};
-      for (const v of variants) {
+      // Design products are Front-only; never copy a Front + Back price.
+      for (const v of filterCatalogByPrintSides(variants as any[], "front")) {
         const size = allSizes.find((s: any) => s.name === v.option1);
         if (!size) continue;
-        if (v.option2) {
+        if (v.option2 && !isPrintSidesValue(v.option2)) {
           const color = allColors.find((c: any) => c.name === v.option2);
           if (color) priceMap[`${size.id}:${color.id}`] = v.price;
         } else {
@@ -22443,6 +22535,7 @@ ${orientationExtra}
 
   /** POST /api/appai/customizer-pages */
   app.post("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    let printSidesNotice: string | null = null;
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
@@ -22536,11 +22629,12 @@ ${orientationExtra}
       const ptSizeIds: string[] = JSON.parse(ptForSync.selectedSizeIds || "[]");
       const ptColorIds: string[] = JSON.parse(ptForSync.selectedColorIds || "[]");
       const activeVariantCount = countActiveVariantMapKeys(ptVariantMap, ptSizeIds, ptColorIds);
-      if (activeVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      const shopifyVariantTotal = activeVariantCount * printSidesFactorForProductType(ptForSync);
+      if (shopifyVariantTotal > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({
-          error: `This product has ${activeVariantCount} variants but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
+          error: `This product has ${shopifyVariantTotal} variants${shopifyVariantTotal !== activeVariantCount ? ` (${activeVariantCount} blanks × Front / Front + Back)` : ""} but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
           code: "SHOPIFY_VARIANT_LIMIT",
-          variantCount: activeVariantCount,
+          variantCount: shopifyVariantTotal,
         });
       }
 
@@ -22559,19 +22653,30 @@ ${orientationExtra}
               shopifyProductHandle: null,
               shopifyProductUrl: null,
               shopifyShopDomain: null,
-              shopifyVariantIds: null,
+              shopifyVariantIds: null, shopifyVariantIdsBoth: null,
             });
             ptForSync.shopifyProductId = null;
           } else {
-            // Product exists — check if variant count matches
+            // Product exists — check the Front tier covers every blank the builder would create.
+            // Front + Back (Print sides) variants are counted separately and never trigger a
+            // delete: adding or removing that tier is an explicit migration, not a heal.
             const allSizes = typeof ptForSync.sizes === 'string' ? JSON.parse(ptForSync.sizes || '[]') : (ptForSync.sizes || []);
             const allColors = typeof ptForSync.frameColors === 'string' ? JSON.parse(ptForSync.frameColors || '[]') : (ptForSync.frameColors || []);
-            const savedSizeIds: string[] = typeof ptForSync.selectedSizeIds === 'string' ? JSON.parse(ptForSync.selectedSizeIds || '[]') : (ptForSync.selectedSizeIds || []);
-            const savedColorIds: string[] = typeof ptForSync.selectedColorIds === 'string' ? JSON.parse(ptForSync.selectedColorIds || '[]') : (ptForSync.selectedColorIds || []);
-            const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-            const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
-            const expectedVariantCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
-            const shopifyVariantCount = shopifyProdCheck.data.product.variants?.length ?? 0;
+            const activeSizes = ptSizeIds.length ? allSizes.filter((s: any) => ptSizeIds.includes(s.id)) : allSizes;
+            const activeColors = ptColorIds.length ? allColors.filter((c: any) => ptColorIds.includes(c.id)) : allColors;
+            const cartesianCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
+            const liveVariants = (shopifyProdCheck.data.product.variants ?? []) as any[];
+            const tiers = printSidesTierCounts(liveVariants);
+            // Builders create only variantMap combos; the full grid only when the map is empty.
+            const expectedVariantCount = activeVariantCount > 0 ? activeVariantCount : cartesianCount;
+            const shopifyVariantCount = tiers.front;
+            const wantsPrintSides = printSidesActiveForProductType(ptForSync);
+            if (wantsPrintSides && tiers.both < tiers.front) {
+              printSidesNotice = `Shopify product has ${tiers.both}/${tiers.front} Front + Back variants. Print sides needs a product recreate (not done automatically).`;
+            } else if (!wantsPrintSides && tiers.both > 0) {
+              printSidesNotice = `Shopify product still has ${tiers.both} Front + Back variants but Print sides is off for this product type.`;
+            }
+            if (printSidesNotice) console.warn(`[customizer-pages] pt ${ptForSync.id}: ${printSidesNotice}`);
 
             if (shopifyVariantCount < expectedVariantCount) {
               // Fewer variants than expected (e.g. after Refresh Variants) — delete and re-create
@@ -22582,14 +22687,15 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
               ptForSync.shopifyProductId = null;
             } else if (
               variantPrices &&
               typeof variantPrices === "object" &&
               Object.keys(variantPrices).length > 0 &&
-              !allShopifyVariantsHavePositiveRetail(shopifyProdCheck.data.product.variants)
+              // Only a $0 Front tier means a failed create; $0 Front + Back is fixed by price sync.
+              !allShopifyVariantsHavePositiveRetail(filterCatalogByPrintSides(liveVariants, "front"))
             ) {
               // Leftover $0 product from a failed Create Page — recreate with wizard retail.
               console.log(
@@ -22601,7 +22707,7 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
               ptForSync.shopifyProductId = null;
             }
@@ -22744,7 +22850,7 @@ ${orientationExtra}
             shopifyProductHandle: null as any,
             shopifyProductUrl: null as any,
             shopifyShopDomain: null as any,
-            shopifyVariantIds: null as any,
+            shopifyVariantIds: null as any, shopifyVariantIdsBoth: null as any,
           });
           try {
             const { shopifyProductId } = await createShopifyProductForTypeHealed(
@@ -22856,7 +22962,8 @@ ${orientationExtra}
       }
     }
 
-    // Persist front+back retail map on the product type (Shopify base variants stay front-only).
+    // Persist front+back retail map on the product type (also priced onto Print sides
+    // "Front + Back" variants by applyShopifyVariantPrices when the product has them).
     if (
       resolvedProductTypeId &&
       variantPricesBoth &&
@@ -22917,6 +23024,7 @@ ${orientationExtra}
               baseProductId: variant.product_id,
               productType: matchedType || ptForSync,
               variantPrices,
+              variantPricesBoth: variantPricesBoth ?? null,
               onBaseVariantUpdated: async (formatted, variantNum) => {
                 if (String(variantNum) === String(variant.id)) {
                   variant = { ...variant, price: formatted };
@@ -22926,7 +23034,7 @@ ${orientationExtra}
         if (productIdNum) {
           const priced = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           liveShopifyVariants = priced.data?.product?.variants ?? [];
-          const cheapestAfter = pickLowestPricedShopifyVariant(liveShopifyVariants);
+          const cheapestAfter = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(liveShopifyVariants as any[], "front"));
           if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
         }
         if (initialStatus === "active") {
@@ -23076,6 +23184,7 @@ ${orientationExtra}
       page,
       storefrontUrl: `/pages/${page.handle}`,
       navWarning: null,
+      printSidesNotice,
     });
   }));
 
@@ -23397,6 +23506,8 @@ ${orientationExtra}
     baseProductId: string | number;
     productType: any;
     variantPrices: Record<string, string>;
+    /** Both-tier retail from the request; defaults to the saved product type map. */
+    variantPricesBoth?: Record<string, string> | null;
     onBaseVariantUpdated?: (price: string, variantNum: number) => Promise<void>;
   }): Promise<{
     updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
@@ -23479,8 +23590,19 @@ ${orientationExtra}
       uniquePuts.set(variantNum, formatted);
     }
 
+    // Print sides: Front + Back variants follow their Front twin on every sync.
+    const bothPuts = bothTierPriceUpdates({
+      productType,
+      liveVariants: shopifyVariants,
+      pendingFrontPrices: uniquePuts,
+      variantPricesBoth: args.variantPricesBoth ?? null,
+    });
+    for (const [id, price] of bothPuts) {
+      if (!uniquePuts.has(id)) uniquePuts.set(id, price);
+    }
+
     console.log(
-      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size}`,
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size} (front+back ${bothPuts.size})`,
     );
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -23558,7 +23680,7 @@ ${orientationExtra}
 
     let variants = await loadVariants();
     if (allShopifyVariantsHavePositiveRetail(variants)) {
-      const cheapest = pickLowestPricedShopifyVariant(variants);
+      const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(variants as any[], "front"));
       return { ok: true, resynced: false, cheapestPrice: cheapest?.price != null ? String(cheapest.price) : undefined };
     }
 
@@ -23584,7 +23706,15 @@ ${orientationExtra}
       const suggested = shopifyToSuggested.get(id);
       if (suggested) variantPrices[String(id)] = suggested;
     }
-    if (Object.keys(variantPrices).length === 0) {
+    const pendingFront = new Map<number, string>(
+      Object.entries(variantPrices).map(([id, p]) => [Number(id), p] as [number, string]),
+    );
+    const bothFixes = bothTierPriceUpdates({
+      productType: args.productType,
+      liveVariants: variants as any[],
+      pendingFrontPrices: pendingFront,
+    });
+    if (Object.keys(variantPrices).length === 0 && bothFixes.size === 0) {
       return { ok: false, resynced: false };
     }
 
@@ -23596,7 +23726,7 @@ ${orientationExtra}
       variantPrices,
     });
     variants = await loadVariants();
-    const cheapest = pickLowestPricedShopifyVariant(variants);
+    const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(variants as any[], "front"));
     const ok = allShopifyVariantsHavePositiveRetail(variants);
     if (ok && args.pageId && cheapest && hasPositiveRetailPrice(cheapest.price)) {
       const pricedPatch: Record<string, unknown> = {
@@ -23668,13 +23798,14 @@ ${orientationExtra}
       baseProductId: dbPage.baseProductId,
       productType: matchedType,
       variantPrices,
+      variantPricesBoth: variantPricesBoth ?? null,
     });
 
     try {
       const productIdNum = parseInt(String(dbPage.baseProductId).replace(/\D/g, ""), 10);
       if (productIdNum) {
         const priced = await getProductRestCompat(shop, installation.accessToken!, productIdNum);
-        const cheapest = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+        const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides((priced.data?.product?.variants ?? []) as any[], "front"));
         if (cheapest && parseShopifyVariantPrice(cheapest.price) > 0) {
           await storage.updateCustomizerPage(dbPage.id, {
             baseVariantId: String(cheapest.id),
@@ -23785,6 +23916,7 @@ ${orientationExtra}
       baseProductId: productType.shopifyProductId,
       productType,
       variantPrices,
+      variantPricesBoth: variantPricesBoth ?? null,
     });
 
     let bothKeyCount = 0;
@@ -23934,6 +24066,12 @@ ${orientationExtra}
               baseProductId: after.shopifyProductId,
               productType: after,
               variantPrices,
+              variantPricesBoth: synthesizeBothRetailMapFromCosts(after.printifyCosts, after.defaultMarkupPercent, {
+                variantMap: after.variantMap,
+                shopifyVariantIds: after.shopifyVariantIds,
+                sizes: after.sizes,
+                frameColors: after.frameColors,
+              }),
             });
             retailAutoUpdate.successCount = applied.successCount;
             retailAutoUpdate.totalCount = applied.totalCount;

@@ -1,4 +1,15 @@
 import { normalizeVariantLabelForCostMatch } from "./printifyCostLabels";
+import { catalogHasPrintSides, isPrintSidesValue, variantServesPrintSides, type PrintSides } from "./printSides";
+
+/** Live variants for one Print sides tier (legacy products: all variants are Front). */
+function variantsForSides(
+  variants: ShopifyVariantForPriceSync[] | undefined,
+  sides: PrintSides,
+): ShopifyVariantForPriceSync[] {
+  const list = variants ?? [];
+  if (!catalogHasPrintSides(list)) return sides === "front" ? list : [];
+  return list.filter((v) => variantServesPrintSides(v, sides));
+}
 
 type SizeOrColor = { id?: string; name?: string };
 
@@ -38,12 +49,15 @@ export type ShopifyVariantForPriceSync = {
   title?: string | null;
   option1?: string | null;
   option2?: string | null;
+  option3?: string | null;
 };
 
 /**
  * Build printifyVariantId → Shopify variant id for Resync Prices.
  * Always merges shopifyVariantIds + live Shopify title/option matches so partial
  * id maps (common when option names differ slightly) still cover every blank row.
+ * `sides: "both"` maps to the Front + Back variants — pass
+ * `shopifyVariantIdsBoth` as `shopifyVariantIds` for that run.
  */
 export function buildPrintifyToShopifyVariantIdMap(args: {
   variantMap?: unknown;
@@ -51,13 +65,14 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
   sizes?: unknown;
   frameColors?: unknown;
   shopifyVariants?: ShopifyVariantForPriceSync[];
+  sides?: PrintSides;
 }): Record<string, number> {
   const out: Record<string, number> = {};
   const vm = parseJsonObject(args.variantMap);
   const svIds = parseJsonObject(args.shopifyVariantIds);
   const sizes = parseJsonArray(args.sizes);
   const colors = parseJsonArray(args.frameColors);
-  const shopifyVariants = args.shopifyVariants ?? [];
+  const shopifyVariants = variantsForSides(args.shopifyVariants, args.sides ?? "front");
 
   const put = (printifyId: string | number | null | undefined, shopifyId: number) => {
     if (printifyId == null || !shopifyId) return;
@@ -87,12 +102,13 @@ export function buildPrintifyToShopifyVariantIdMap(args: {
   for (const sv of shopifyVariants) {
     const id = Number(sv.id);
     if (!Number.isFinite(id) || id <= 0) continue;
-    if (sv.title) addLabel(sv.title, id);
+    if (sv.title) addLabel(stripPrintSidesFromTitle(sv.title), id);
     // Never index bare option1 when option2 exists — "S" would collide across colors.
-    if (sv.option1 && !sv.option2) addLabel(sv.option1, id);
-    if (sv.option1 && sv.option2) {
-      addLabel(`${sv.option1} / ${sv.option2}`, id);
-      addLabel(`${sv.option1}:${sv.option2}`, id);
+    const o2 = sv.option2 && !isPrintSidesValue(sv.option2) ? sv.option2 : null;
+    if (sv.option1 && !o2) addLabel(sv.option1, id);
+    if (sv.option1 && o2) {
+      addLabel(`${sv.option1} / ${o2}`, id);
+      addLabel(`${sv.option1}:${o2}`, id);
     }
   }
 
@@ -198,11 +214,20 @@ export function lookupWizardRetailPrice(
   return null;
 }
 
+/** "S / Black / Front + Back" → "S / Black" so labels line up with size:color keys. */
+function stripPrintSidesFromTitle(title: string): string {
+  return String(title)
+    .split(/\s*\/\s*/)
+    .filter((part) => !isPrintSidesValue(part))
+    .join(" / ");
+}
+
 function matchShopifyVariantIdBySizeColorKey(args: {
   sizeColorKey: string;
   sizes?: unknown;
   frameColors?: unknown;
   shopifyVariants?: ShopifyVariantForPriceSync[];
+  sides?: PrintSides;
 }): number {
   const rest = String(args.sizeColorKey ?? "").trim();
   if (!rest) return 0;
@@ -222,14 +247,15 @@ function matchShopifyVariantIdBySizeColorKey(args: {
       .map((label) => normalizeVariantLabelForCostMatch(label))
       .filter(Boolean),
   );
-  for (const sv of args.shopifyVariants ?? []) {
+  for (const sv of variantsForSides(args.shopifyVariants, args.sides ?? "front")) {
     const id = Number(sv.id);
     if (!Number.isFinite(id) || id <= 0) continue;
+    const o2 = sv.option2 && !isPrintSidesValue(sv.option2) ? sv.option2 : null;
     const labels = [
-      sv.title,
-      sv.option1 && sv.option2 ? `${sv.option1} / ${sv.option2}` : "",
-      sv.option1 && sv.option2 ? `${sv.option1}:${sv.option2}` : "",
-      sv.option1 && !sv.option2 ? sv.option1 : "",
+      sv.title ? stripPrintSidesFromTitle(sv.title) : "",
+      sv.option1 && o2 ? `${sv.option1} / ${o2}` : "",
+      sv.option1 && o2 ? `${sv.option1}:${o2}` : "",
+      sv.option1 && !o2 ? sv.option1 : "",
     ];
     for (const label of labels) {
       if (label && targets.has(normalizeVariantLabelForCostMatch(label))) return id;
@@ -251,6 +277,8 @@ export function resolveShopifyVariantIdFromPriceKey(args: {
   sizes?: unknown;
   frameColors?: unknown;
   shopifyVariants?: ShopifyVariantForPriceSync[];
+  /** Must match the `sides` used to build `printifyToShopify`. */
+  sides?: PrintSides;
 }): number {
   const vid = String(args.priceKey ?? "").trim();
   if (!vid) return 0;
@@ -287,6 +315,7 @@ export function resolveShopifyVariantIdFromPriceKey(args: {
       sizes: args.sizes,
       frameColors: args.frameColors,
       shopifyVariants: args.shopifyVariants,
+      sides: args.sides,
     });
     if (fromLive) return fromLive;
     return fromPrintify(rest);
@@ -380,7 +409,9 @@ export function resolveStorefrontHeadlinePrice(args: {
   hasBothRetailPrices?: boolean;
   printPlacementUsesBoth?: boolean;
 }): { amount: number; showFrom: boolean } | null {
-  const cheapest = pickLowestPricedShopifyVariant(args.variants);
+  // Front + Back variants would otherwise read as a "higher size" and force "from".
+  const frontVariants = args.variants.filter((v) => variantServesPrintSides(v as any, "front"));
+  const cheapest = pickLowestPricedShopifyVariant(frontVariants);
   if (!cheapest) return null;
 
   const matched =
@@ -405,7 +436,7 @@ export function resolveStorefrontHeadlinePrice(args: {
   }
 
   const cheapestN = parseShopifyVariantPrice(cheapest.price);
-  const hasHigherSize = args.variants.some((v) => {
+  const hasHigherSize = frontVariants.some((v) => {
     const n = parseShopifyVariantPrice(v.price);
     return n > cheapestN + 0.005;
   });

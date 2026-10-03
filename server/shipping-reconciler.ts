@@ -269,6 +269,7 @@ async function loadShopMemberships(
       variantGroup: variantShipping.variantGroup,
       productTypeName: productTypes.name,
       shopifyVariantIdsJson: productTypes.shopifyVariantIds,
+      shopifyVariantIdsBothJson: productTypes.shopifyVariantIdsBoth,
       blueprintId: shippingClasses.blueprintId,
       providerId: shippingClasses.providerId,
     })
@@ -277,9 +278,10 @@ async function loadShopMemberships(
     .innerJoin(shippingClasses, eq(variantShipping.shippingClassId, shippingClasses.id))
     .where(inArray(productTypes.shopifyShopDomain, [shop, bare]));
 
-  const looseIdCache = new Map<number, Map<string, string>>();
-  function shopifyIdsOf(productTypeId: number, json: unknown): Map<string, string> {
-    let map = looseIdCache.get(productTypeId);
+  const looseIdCache = new Map<string, Map<string, string>>();
+  function shopifyIdsOf(productTypeId: number, json: unknown, tier = "front"): Map<string, string> {
+    const cacheKey = `${productTypeId}:${tier}`;
+    let map = looseIdCache.get(cacheKey);
     if (!map) {
       map = new Map<string, string>();
       const obj =
@@ -297,7 +299,7 @@ async function loadShopMemberships(
       for (const [label, vid] of Object.entries(obj as Record<string, unknown>)) {
         if (vid != null) map.set(normalizeVariantKeyLoose(label), String(vid));
       }
-      looseIdCache.set(productTypeId, map);
+      looseIdCache.set(cacheKey, map);
     }
     return map;
   }
@@ -330,6 +332,17 @@ async function loadShopMemberships(
     if (!byVariantId.has(vid)) {
       byVariantId.set(vid, m);
       memberships.push(m);
+    }
+    // Front + Back twin ships exactly like its Front blank.
+    const bothVid = String(
+      shopifyIdsOf(r.productTypeId, r.shopifyVariantIdsBothJson, "both").get(
+        normalizeVariantKeyLoose(r.sizeColorKey),
+      ) ?? "",
+    ).replace(/\D/g, "");
+    if (bothVid && !byVariantId.has(bothVid)) {
+      const twin: MembershipVariant = { ...m, shopifyVariantId: bothVid };
+      byVariantId.set(bothVid, twin);
+      memberships.push(twin);
     }
   }
 
