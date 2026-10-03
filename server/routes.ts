@@ -17139,7 +17139,11 @@ ${orientationExtra}
 
       // Unique on blueprint + provider (matches Products Import UI: re-import the same
       // blueprint with a different supplier for a separate EU/US listing).
-      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      // Platform catalogue reference rows (owner shop only) are rewritten by the
+      // daily catalogue job — a merchant page must never bind to one.
+      const existingTypes = (await storage.getProductTypesByMerchant(merchant.id)).filter(
+        (pt) => !(pt as any).isPlatformCatalogRef,
+      );
       const alreadyImported = existingTypes.find(
         (pt) =>
           pt.printifyBlueprintId === blueprintIdNum &&
@@ -24064,8 +24068,15 @@ ${orientationExtra}
       // Always scope to THIS shop's merchant catalog. Platform admins used to
       // see every merchant's product types here, which made already-published
       // products look like "(new — will be sent to store)" duplicates.
+      // Platform catalogue reference rows stay out of the merchant list, except
+      // legacy rows a page is already bound to (so that page stays manageable).
+      const pageBoundTypeIds = new Set(
+        (await storage.listCustomizerPages(shop)).map((p) => p.productTypeId).filter((id) => id != null),
+      );
       const productTypes = installation.merchantId
-        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter(
+            (pt) => pt.isActive && (!(pt as any).isPlatformCatalogRef || pageBoundTypeIds.has(pt.id)),
+          )
         : [];
 
       // Enrich products that are already on Shopify with live variant data.
@@ -25406,7 +25417,9 @@ ${orientationExtra}
     }
 
     const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
-    let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+    let productType: any = existingTypes.find(
+      (pt) => pt.printifyBlueprintId === blueprintId && !(pt as any).isPlatformCatalogRef,
+    );
     const reused = !!productType;
 
     const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
