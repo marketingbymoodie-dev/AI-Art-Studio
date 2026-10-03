@@ -19,6 +19,13 @@ describe("normalizeSelectionId", () => {
   it("does not rewrite apparel sizes that contain an x", () => {
     expect(normalizeSelectionId("xl")).toBe("xl");
     expect(normalizeSelectionId("2xl")).toBe("2xl");
+    expect(normalizeSelectionId("2_xl")).toBe("2xl");
+  });
+
+  it("matches multi-word colour slugs across underscore / hyphen / space", () => {
+    expect(normalizeSelectionId("caribbean_blue")).toBe(normalizeSelectionId("caribbean-blue"));
+    expect(normalizeSelectionId("Heather Dark Grey")).toBe(normalizeSelectionId("heather-dark-grey"));
+    expect(normalizeSelectionId("black")).toBe("black");
   });
 });
 

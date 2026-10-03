@@ -4645,6 +4645,12 @@ ${orientationExtra}
     // intentional empty selection — fall back to all rather than creating 0 variants.
     if (sizesToUse.length === 0 && allSizes.length > 0) sizesToUse = allSizes;
     if (colorsToUse.length === 0 && colorIdsToUse.length > 0 && allColors.length > 0) colorsToUse = allColors;
+    if (sizesToUse.length < sizeIdSet.size || colorsToUse.length < colorIdSet.size) {
+      console.warn(
+        `[createShopifyProductForType] pt ${productType.id}: selection matched ${sizesToUse.length}/${sizeIdSet.size} sizes, ` +
+          `${colorsToUse.length}/${colorIdSet.size} colours — unmatched ids are dropped from the Shopify product`,
+      );
+    }
     const priceMap: Record<string, string> = variantPrices && typeof variantPrices === 'object' ? variantPrices : {};
 
     const shopifyVariants: any[] = [];
