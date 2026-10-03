@@ -39,6 +39,7 @@ import {
   resolveStyleGenerationForProduct,
 } from "@shared/decorBackgroundFill";
 import { classifyGenerationFailure } from "@shared/generationFailure";
+import { normalizeAtcMode } from "@shared/atcMode";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -7282,6 +7283,16 @@ ${orientationExtra}
    * Extracted so we can call it from the fast path (direct ID lookup) and the
    * full fallback path (merchant lookup chain) without duplicating 100 lines of code.
    */
+  async function atcModeForShop(shop: string | null | undefined) {
+    if (!shop) return normalizeAtcMode(null);
+    try {
+      const inst = await withTimeout(storage.getShopifyInstallationByShop(shop), 1500, "atcModeForShop");
+      return normalizeAtcMode((inst as { atcMode?: string } | null)?.atcMode);
+    } catch {
+      return normalizeAtcMode(null);
+    }
+  }
+
   function buildDesignerConfig(
     productTypeToUse: any,
     requestedId: number,
@@ -7723,10 +7734,14 @@ ${orientationExtra}
           res.set("Cache-Control", "no-cache, no-store, must-revalidate");
           res.set("Pragma", "no-cache");
           res.set("Expires", "0");
-          const sizeChart = productTypeForConfig!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
-            : null;
+          const [sizeChart, fastAtcMode] = await Promise.all([
+            productTypeForConfig!.printifyBlueprintId
+              ? getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
+              : null,
+            atcModeForShop(shop),
+          ]);
           const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
+          (fastConfig as any).atcMode = fastAtcMode;
           const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
           (fastConfig as any).styleConfig = fastStyles.styleConfig;
           (fastConfig as any).stylePresets = fastStyles.stylePresets;
@@ -7878,10 +7893,14 @@ ${orientationExtra}
       // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-      const sizeChart = productTypeForConfig.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
-        : null;
+      const [sizeChart, sfAtcMode] = await Promise.all([
+        productTypeForConfig.printifyBlueprintId
+          ? getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
+          : null,
+        atcModeForShop(shop),
+      ]);
       const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
+      (designerConfig as any).atcMode = sfAtcMode;
       const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
       (designerConfig as any).styleConfig = sfStyles.styleConfig;
       (designerConfig as any).stylePresets = sfStyles.stylePresets;
@@ -8643,6 +8662,8 @@ ${orientationExtra}
     const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
     const presentment = presentmentFromRequest(req, shopCurrency);
     const storeName = await merchantStoreDisplayName(shop, installation);
+    const atcMode = normalizeAtcMode((installation as { atcMode?: string } | null)?.atcMode);
+    if (designerConfig) (designerConfig as any).atcMode = atcMode;
 
     return res.json({
       id: page.id,
@@ -8656,6 +8677,7 @@ ${orientationExtra}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
+      atcMode,
       designerConfig,
       variants,
       stylePresets,
@@ -24910,6 +24932,8 @@ ${orientationExtra}
     const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
     const presentment = presentmentFromRequest(req, shopCurrency);
     const storeName = await merchantStoreDisplayName(shop, installation);
+    const atcMode = normalizeAtcMode((installation as { atcMode?: string } | null)?.atcMode);
+    if (designerConfig) (designerConfig as any).atcMode = atcMode;
 
     return res.json({
       id: page.id,
@@ -24923,6 +24947,7 @@ ${orientationExtra}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
+      atcMode,
       appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,
       variants,
@@ -26389,6 +26414,8 @@ ${orientationExtra}
   registerCreatorPortalRoutes(app);
   const { registerSupportRoutes } = await import("./routes/support");
   registerSupportRoutes(app, { isAuthenticated });
+  const { registerAtcModeRoutes } = await import("./routes/atc-mode");
+  registerAtcModeRoutes(app, { isAuthenticated });
   const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
   registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");

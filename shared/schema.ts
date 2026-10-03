@@ -261,6 +261,11 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * Captured by the theme embed and applied on the top-level mobile designer.
    */
   themeSnapshot: jsonb("theme_snapshot").$type<Record<string, string> | null>(),
+  /**
+   * Add-to-cart architecture kill switch (`shared/atcMode.ts`).
+   * shadow-direct = today's synchronous resolve; base-first = Branch C; no-shadow = Branch B.
+   */
+  atcMode: text("atc_mode").notNull().default("shadow-direct"),
 });
 
 /** Versioned SaaS plan catalogue (commit ≠ activate). */

@@ -153,6 +153,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "access_token_expires_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "refresh_token_expires_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "theme_snapshot", type: "JSONB" },
+  { table: "shopify_installations", column: "atc_mode", type: "TEXT NOT NULL DEFAULT 'shadow-direct'" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },

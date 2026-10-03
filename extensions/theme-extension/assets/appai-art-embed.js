@@ -3483,6 +3483,9 @@
     studioConfig.styleConfig = pageCfg.styleConfig || null;
     studioConfig.experienceProfile = pageCfg.experienceProfile || null;
     studioConfig.customizerPageHandle = handle;
+    // Cart/drawer pages never load this payload, so later phases read the mode from session.
+    studioConfig.atcMode = pageCfg.atcMode || 'shadow-direct';
+    try { sessionStorage.setItem('appai:atcMode', studioConfig.atcMode); } catch (_) {}
     if (typeof studioConfig.__pushDesignerConfig === 'function') {
       studioConfig.__pushDesignerConfig();
     }

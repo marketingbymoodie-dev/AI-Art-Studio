@@ -10,6 +10,7 @@ import { creatorCheckoutRememberUrl, readLastCreatorVisit, writeLastCreatorVisit
 import { resolveMobileShellBrandName } from "@/components/designer/resolveMobileShellBrandName";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { normalizeAtcMode, type AtcMode } from "@shared/atcMode";
 import {
   artworkUrlForFingerprint,
   atcShadowDesignId,
@@ -2472,6 +2473,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   });
 
   // Ref for the pre-shadow product poll timer — declared early so the mount cleanup can reference it.
+  /** Per-shop ATC architecture from designerConfig; only shadow-direct is wired so far. */
+  const atcModeRef = useRef<AtcMode>(normalizeAtcMode(null));
   const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preShadowJobIdRef = useRef<string | null>(null);
   /**
@@ -5416,6 +5419,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const applyDesignerConfig = useCallback((dc: any, source: string) => {
     if (!dc) return;
     console.log(`[EmbedDesign] ${source}: applying designer config. id=${dc.id} name="${dc.name}"`);
+    atcModeRef.current = normalizeAtcMode(dc.atcMode);
     setProductTypeConfig({
       id: dc.id,
       name: dc.name,
@@ -12561,6 +12565,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
     if (atcUpdatesPending || saveStatePending || mockupsUpdating) return;
     skipGalleryPersistRef.current = false;
+    console.log(`[EmbedDesign] ATC atcMode=${atcModeRef.current}`);
 
     if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
       setVariantError(
