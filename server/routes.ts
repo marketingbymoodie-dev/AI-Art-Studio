@@ -24572,6 +24572,7 @@ ${orientationExtra}
         id: p.id,
         handle: p.handle,
         title: p.title,
+        baseProductId: p.baseProductId,
         baseVariantId: p.baseVariantId,
         baseProductTitle: p.baseProductTitle,
         baseVariantTitle: p.baseVariantTitle,
@@ -26332,6 +26333,8 @@ ${orientationExtra}
   registerSupportRoutes(app, { isAuthenticated });
   const { registerAtcModeRoutes } = await import("./routes/atc-mode");
   registerAtcModeRoutes(app, { isAuthenticated });
+  const { registerCheckoutGuardRoutes } = await import("./routes/checkout-guard");
+  registerCheckoutGuardRoutes(app, { isAuthenticated });
   const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
   registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
