@@ -12,6 +12,13 @@
  *   - the disabled-by-default `orders/paid` webhook (live, gated behind
  *     FLAT_ORDER_FULFILLMENT_ENABLED).
  *
+ * TENANT ISOLATION (do not set FLAT_ORDER_FULFILLMENT_ENABLED on a build without it):
+ *   line properties are customer-controlled, so a resolved job must belong to the
+ *   order's shop (`checkFulfillmentTenancy`), and a shadow / design-product variant
+ *   keyed to a different real job holds the line. Every AppAI line that is not
+ *   sent to Printify is tagged/noted on the Shopify order and listed under
+ *   `metadata.needsAttention` (server/fulfillment-attention.ts) — never a silent skip.
+ *
  * DATA RESOLUTION PATH (verified against the codebase):
  *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
  *   line.properties `_flat_pl` / `_tote_pl` / `_aop_pl` → placement at add-to-cart (wins over job)
@@ -76,6 +83,9 @@ import {
 import { loadAopLinePanelSnapshot, normalizeAopPanels, pickAopPanelsForOrderLine } from "./aop-line-snapshot";
 import { resolveDesignLiveFillHex } from "@shared/decorBackgroundFill";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
+import { getCreatorPlatformShopCandidates } from "./creator-config";
+import { flagOrderNeedsAttention, type AttentionLine } from "./fulfillment-attention";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
@@ -225,8 +235,57 @@ export type ResolveResult =
   | { ok: true; kind: "tote_folded"; design: ResolvedToteFoldedDesign }
   | { ok: true; kind: "product_reference"; design: ResolvedProductReferenceDesign }
   | { ok: true; kind: "aop"; design: ResolvedAopDesign }
-  | { ok: false; skip: true; reason: string }
-  | { ok: false; skip: false; reason: string };
+  | { ok: false; skip: true; reason: string; attention?: boolean; unidentified?: boolean }
+  | { ok: false; skip: false; reason: string; attention?: boolean; unidentified?: boolean };
+
+/** Line properties that only AppAI writes — a line carrying any of them is ours. */
+const APPAI_LINE_KEYS = ["_appai_job_id", "_shadow_design_id", "_design_id"] as const;
+
+export function lineCarriesAppaiDesign(line: Pick<NormalizedOrderLine, "properties">): boolean {
+  return APPAI_LINE_KEYS.some((k) => String(line.properties?.[k] ?? "").trim() !== "");
+}
+
+function shopKey(shop: string | null | undefined): string {
+  return normalizeMyshopifyShopDomain(shop);
+}
+
+/**
+ * Two shop domains name the same tenant. The creator platform shop was renamed
+ * (see creator-config), so its jobs can carry either the old or new domain.
+ */
+export function shopsMatchForFulfillment(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ka = shopKey(a);
+  const kb = shopKey(b);
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  const platform = getCreatorPlatformShopCandidates().map(shopKey);
+  return platform.includes(ka) && platform.includes(kb);
+}
+
+/**
+ * Tenant isolation for an order line: the generation job (and the shadow row,
+ * when the line bought one) must belong to the shop that took the order.
+ * `allowShoplessOrder` is only for admin draft tests whose product type has no
+ * shop domain; live webhook orders always carry the verified shop header.
+ */
+export function checkFulfillmentTenancy(args: {
+  orderShop: string | null | undefined;
+  jobShop: string | null | undefined;
+  shadowShop?: string | null;
+  allowShoplessOrder?: boolean;
+}): { ok: true } | { ok: false; reason: string } {
+  if (!shopKey(args.orderShop)) {
+    if (args.allowShoplessOrder) return { ok: true };
+    return { ok: false, reason: "order has no shop — refusing to resolve artwork" };
+  }
+  if (args.shadowShop != null && !shopsMatchForFulfillment(args.orderShop, args.shadowShop)) {
+    return { ok: false, reason: `shadow variant belongs to ${args.shadowShop}, not ${args.orderShop}` };
+  }
+  if (!shopsMatchForFulfillment(args.orderShop, args.jobShop)) {
+    return { ok: false, reason: `design belongs to ${args.jobShop || "no shop"}, not ${args.orderShop}` };
+  }
+  return { ok: true };
+}
 
 function parseJson<T = any>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -389,9 +448,29 @@ async function findDesignProductByVariant(
  *   { ok:false, skip:true }  — cleanly skip (mixed cart / normal product / AOP / no design)
  *   { ok:false, skip:false } — a hard error worth surfacing (e.g. missing creds)
  */
+export type ResolveOrderLineOptions = {
+  /** Admin draft tests only — see checkFulfillmentTenancy. */
+  allowShoplessOrder?: boolean;
+};
+
 export async function resolveDesignForOrderLine(
   line: NormalizedOrderLine,
   shop: string,
+  opts: ResolveOrderLineOptions = {},
+): Promise<ResolveResult> {
+  const result = await resolveDesignForOrderLineInner(line, shop, opts);
+  if (!result.ok && result.attention == null) {
+    // Any AppAI line we could not send must reach the merchant; only lines with
+    // no AppAI identity at all (normal products in a mixed cart) stay quiet.
+    return { ...result, attention: !result.unidentified || lineCarriesAppaiDesign(line) };
+  }
+  return result;
+}
+
+async function resolveDesignForOrderLineInner(
+  line: NormalizedOrderLine,
+  shop: string,
+  opts: ResolveOrderLineOptions,
 ): Promise<ResolveResult> {
   // 1) variant_id → published_products (shadow SKU) OR design_products (permanent listing)
   //    → designId (fallback to line properties for older/legacy carts)
@@ -399,15 +478,19 @@ export async function resolveDesignForOrderLine(
   let resolvedShop = shop;
   let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
   let publishedDesignId: string | null = null;
+  let shadowShop: string | null = null;
+  let designProductJobId: string | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
       publishedDesignId = pp.designId;
+      shadowShop = pp.shop || "";
       resolvedShop = pp.shop || shop;
     } else {
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
         publishedDesignId = dp.jobId;
+        designProductJobId = dp.jobId;
         designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
       }
     }
@@ -418,13 +501,51 @@ export async function resolveDesignForOrderLine(
     lineDesignId: line.properties["_design_id"],
   });
   if (!designId) {
-    return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)" };
+    return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)", unidentified: true };
+  }
+
+  // The variant bought vouches for a design; a line property must not swap it.
+  if (designProductJobId && designProductJobId !== designId) {
+    return {
+      ok: false,
+      skip: false,
+      attention: true,
+      reason: `line job ${designId} does not match the design product's job ${designProductJobId}`,
+    };
+  }
+  const shadowJobId = publishedDesignId && !designProductJobId ? publishedDesignId.split("::")[0] : null;
+  if (shadowJobId && shadowJobId !== designId) {
+    // Creator-cart repair keys some shadows by cart line id (not a job) — those
+    // cannot vouch either way, so only a shadow keyed to a different real job
+    // is a conflict.
+    const shadowJob = await storage.getGenerationJob(shadowJobId);
+    if (shadowJob) {
+      return {
+        ok: false,
+        skip: false,
+        attention: true,
+        reason: `line job ${designId} does not match the shadow's job ${shadowJobId}`,
+      };
+    }
   }
 
   // 2) designId → generation_jobs
   const job = await storage.getGenerationJob(designId);
   if (!job) {
     return { ok: false, skip: true, reason: `no generation job for design ${designId}` };
+  }
+
+  const tenancy = checkFulfillmentTenancy({
+    orderShop: shop,
+    jobShop: job.shop,
+    shadowShop,
+    allowShoplessOrder: opts.allowShoplessOrder,
+  });
+  if (!tenancy.ok) {
+    console.error(
+      `[fulfillment-tenancy] REFUSED line ${line.lineId} job=${designId} order shop=${shop || "(none)"}: ${tenancy.reason}`,
+    );
+    return { ok: false, skip: false, attention: true, reason: `tenant check failed: ${tenancy.reason}` };
   }
 
   const designState = parseJson<Record<string, any>>(job.designState, {});
@@ -1001,6 +1122,8 @@ export type SubmitFlatOrderArgs = {
   idempotencyKey: string;
   /** Marks the submission row as a test (admin draft). */
   isTest?: boolean;
+  /** Admin draft tests only — see checkFulfillmentTenancy. */
+  allowShoplessOrder?: boolean;
   shippingMethod?: number;
 };
 
@@ -1009,6 +1132,8 @@ export type SubmitFlatOrderResult = {
   printifyOrderId?: string | null;
   eligibleLines: number;
   skippedReasons: string[];
+  /** AppAI lines that were NOT sent to Printify — the merchant must handle these. */
+  needsAttention?: AttentionLine[];
   printFileUrls?: Record<string, string>;
   error?: string;
   sentToProduction: boolean;
@@ -1063,17 +1188,37 @@ export async function submitFlatOrderToPrintify(
   let firstDesignId: string | null = null;
   let firstProductTypeId: number | null = null;
   let resolvedShop = shopHeader;
+  const needsAttention: AttentionLine[] = [];
+  const queuedLines: AttentionLine[] = [];
+  const holdLine = (line: NormalizedOrderLine, reason: string) => {
+    skippedReasons.push(`line ${line.lineId}: ${reason}`);
+    needsAttention.push({ lineId: line.lineId, variantId: line.variantId, quantity: line.quantity, reason });
+  };
+  const flagAttention = async () => {
+    if (needsAttention.length === 0) return null;
+    return flagOrderNeedsAttention({
+      shop: shopHeader,
+      shopifyOrder: args.shopifyOrder,
+      lines: needsAttention,
+      isTest: args.isTest === true,
+    });
+  };
 
   for (const line of args.lines) {
     let resolved: ResolveResult;
     try {
-      resolved = await resolveDesignForOrderLine(line, shopHeader);
+      resolved = await resolveDesignForOrderLine(line, shopHeader, {
+        allowShoplessOrder: args.allowShoplessOrder === true,
+      });
     } catch (e: any) {
-      skippedReasons.push(`line ${line.lineId}: resolve error ${e?.message || e}`);
+      const reason = `resolve error ${e?.message || e}`;
+      if (lineCarriesAppaiDesign(line)) holdLine(line, reason);
+      else skippedReasons.push(`line ${line.lineId}: ${reason}`);
       continue;
     }
     if (!resolved.ok) {
-      skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
+      if (resolved.attention) holdLine(line, resolved.reason);
+      else skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
       continue;
     }
 
@@ -1087,9 +1232,10 @@ export async function submitFlatOrderToPrintify(
       line.properties,
     );
     if (!target) {
-      skippedReasons.push(`line ${line.lineId}: no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
+      holdLine(line, `no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
       continue;
     }
+    const lineQueued: AttentionLine = { lineId: line.lineId, variantId: line.variantId, quantity: line.quantity, reason: "" };
     printifyShopId = String(merchant.printifyShopId);
     printifyToken = String(merchant.printifyApiToken);
     firstDesignId = firstDesignId ?? designId;
@@ -1099,6 +1245,7 @@ export async function submitFlatOrderToPrintify(
     // Design product whose artwork already lives on a persistent Printify product
     // (AOP / static products with no on-the-fly bake path) — reference it directly.
     if (resolved.kind === "product_reference") {
+      queuedLines.push(lineQueued);
       lineItems.push({
         product_id: resolved.design.printifyProductId,
         variant_id: target.printifyVariantId,
@@ -1141,11 +1288,10 @@ export async function submitFlatOrderToPrintify(
         allUrls[`${designId}:${position}`] = src;
       }
       if (Object.keys(printAreas).length === 0) {
-        skippedReasons.push(
-          `line ${line.lineId}: no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`,
-        );
+        holdLine(line, `no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`);
         continue;
       }
+      queuedLines.push(lineQueued);
       lineItems.push({
         print_provider_id: target.providerId,
         blueprint_id: target.blueprintId,
@@ -1181,6 +1327,7 @@ export async function submitFlatOrderToPrintify(
         console.warn(
           `[flat-order-fulfillment] line ${line.lineId}: bake failed (${e?.message || e}) — falling back to product-reference order`,
         );
+        queuedLines.push(lineQueued);
         lineItems.push({
           product_id: resolved.design.printifyProductId,
           variant_id: target.printifyVariantId,
@@ -1189,10 +1336,11 @@ export async function submitFlatOrderToPrintify(
         });
         continue;
       }
-      skippedReasons.push(`line ${line.lineId}: bake failed ${e?.message || e}`);
+      holdLine(line, `bake failed ${e?.message || e}`);
       continue;
     }
     Object.assign(allUrls, built.urls);
+    queuedLines.push(lineQueued);
     lineItems.push({
       print_provider_id: target.providerId,
       blueprint_id: target.blueprintId,
@@ -1204,6 +1352,7 @@ export async function submitFlatOrderToPrintify(
   }
 
   if (lineItems.length === 0 || !printifyToken || !printifyShopId) {
+    const shopifyFlag = await flagAttention();
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1214,12 +1363,13 @@ export async function submitFlatOrderToPrintify(
       status: "skipped",
       sentToProduction: false,
       isTest: args.isTest === true,
-      metadata: { skippedReasons },
+      metadata: { skippedReasons, needsAttention, shopifyFlag },
     });
     return {
       status: "skipped",
       eligibleLines: 0,
       skippedReasons,
+      needsAttention,
       sentToProduction: false,
     };
   }
@@ -1247,6 +1397,7 @@ export async function submitFlatOrderToPrintify(
       });
     }
 
+    const shopifyFlag = await flagAttention();
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1259,7 +1410,7 @@ export async function submitFlatOrderToPrintify(
       sentToProduction: sendToProduction,
       isTest: args.isTest === true,
       printFileUrls: allUrls,
-      metadata: { skippedReasons, lineCount: lineItems.length },
+      metadata: { skippedReasons, lineCount: lineItems.length, needsAttention, shopifyFlag },
     });
 
     return {
@@ -1267,11 +1418,16 @@ export async function submitFlatOrderToPrintify(
       printifyOrderId,
       eligibleLines: lineItems.length,
       skippedReasons,
+      needsAttention,
       printFileUrls: allUrls,
       sentToProduction: sendToProduction,
     };
   } catch (e: any) {
     const error = e?.message || String(e);
+    for (const q of queuedLines) {
+      needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
+    }
+    const shopifyFlag = await flagAttention();
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1284,12 +1440,13 @@ export async function submitFlatOrderToPrintify(
       isTest: args.isTest === true,
       printFileUrls: allUrls,
       error,
-      metadata: { skippedReasons },
+      metadata: { skippedReasons, needsAttention, shopifyFlag },
     });
     return {
       status: "failed",
       eligibleLines: lineItems.length,
       skippedReasons,
+      needsAttention,
       error,
       sentToProduction: false,
     };
@@ -1416,6 +1573,7 @@ export async function submitFlatTestOrder(args: {
     addressTo: args.addressTo ?? resolveTestShipToAddress(),
     idempotencyKey,
     isTest: true,
+    allowShoplessOrder: true,
   });
 
   return { ...result, designId };

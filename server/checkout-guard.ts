@@ -33,7 +33,7 @@ export type GuardStatus = {
   error?: string;
 };
 
-async function adminGraphql<T = any>(shop: string, token: string, query: string, variables?: unknown): Promise<T> {
+export async function adminGraphql<T = any>(shop: string, token: string, query: string, variables?: unknown): Promise<T> {
   const res = await fetch(`https://${shop}/admin/api/${ADMIN_API}/graphql.json`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
@@ -61,7 +61,7 @@ export function findGuardValidation(nodes: GuardValidation[]): GuardValidation |
   );
 }
 
-async function shopToken(shop: string): Promise<string> {
+export async function shopToken(shop: string): Promise<string> {
   const inst = await storage.getShopifyInstallationByShop(shop);
   if (!inst?.accessToken || inst.accessToken === "NEEDS_RECONNECT") throw new Error(`No token for ${shop}`);
   const refreshed = await ensureValidOfflineAccessToken(inst);
@@ -73,7 +73,7 @@ async function shopToken(shop: string): Promise<string> {
  * Live granted scopes. The stored `scope` column only updates on token
  * refresh/exchange, so it lags a merchant approving new scopes.
  */
-async function grantedScopes(shop: string, token: string): Promise<string[]> {
+export async function grantedScopes(shop: string, token: string): Promise<string[]> {
   const data = await adminGraphql<any>(shop, token, `{ currentAppInstallation { accessScopes { handle } } }`);
   return (data?.currentAppInstallation?.accessScopes ?? []).map((s: any) => String(s.handle));
 }
