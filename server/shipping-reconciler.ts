@@ -179,20 +179,33 @@ async function getShopAccessToken(shop: string): Promise<string> {
 
 // ── Desired-state loading ─────────────────────────────────────────────────────
 
-async function loadClassInputs(): Promise<Map<string, DesiredClassInput>> {
-  const classes = await db
-    .select()
-    .from(shippingClasses)
-    .where(dsql`${shippingClasses.lastError} is null`);
+type StaleClassTable = { lastError: string; snapshotFetchedAt: Date | null };
+
+/**
+ * `lastError` records the latest fetch failure, not an unusable table: a
+ * Printify 429 must not drop a class (and every variant in it) from the plan.
+ * Snapshots are only written on a successful fetch, so the newest one is the
+ * last good table. Only classes with no snapshot at all are left out.
+ */
+async function loadClassInputs(
+  stale?: Map<string, StaleClassTable>,
+): Promise<Map<string, DesiredClassInput>> {
+  const classes = await db.select().from(shippingClasses);
   const out = new Map<string, DesiredClassInput>();
   for (const cls of classes) {
     const [snap] = await db
-      .select({ rawJson: shippingTableSnapshots.rawJson })
+      .select({ rawJson: shippingTableSnapshots.rawJson, fetchedAt: shippingTableSnapshots.fetchedAt })
       .from(shippingTableSnapshots)
       .where(eq(shippingTableSnapshots.shippingClassId, cls.id))
       .orderBy(dsql`${shippingTableSnapshots.fetchedAt} desc`)
       .limit(1);
     if (!snap) continue;
+    if (cls.lastError && stale) {
+      stale.set(`${cls.blueprintId}:${cls.providerId}`, {
+        lastError: cls.lastError,
+        snapshotFetchedAt: snap.fetchedAt ?? null,
+      });
+    }
     let groups: Array<{ group: string; label?: string; printifyVariantIds: string[] }>;
     let raw: any;
     try {
@@ -423,8 +436,19 @@ export async function loadDesiredShopState(
   shop: string,
   opts: { shopCurrency: string; fxRate: number; warnings?: string[] },
 ): Promise<DesiredShopState> {
-  const classInputs = await loadClassInputs();
+  const stale = new Map<string, StaleClassTable>();
+  const classInputs = await loadClassInputs(stale);
   const memberships = await loadShopMemberships(shop, opts.warnings);
+  if (opts.warnings && stale.size) {
+    const used = new Set(memberships.map((m) => m.classKey));
+    for (const [classKey, s] of Array.from(stale.entries())) {
+      if (!used.has(classKey)) continue;
+      const asOf = s.snapshotFetchedAt ? s.snapshotFetchedAt.toISOString().slice(0, 10) : "unknown date";
+      opts.warnings.push(
+        `class ${classKey}: using last good table from ${asOf} — latest fetch failed: ${s.lastError.slice(0, 120)}`,
+      );
+    }
+  }
   return buildShopDesiredState({
     classes: Array.from(classInputs.values()),
     memberships,
@@ -552,6 +576,10 @@ export type ReconcileSummary = {
   zonesWritten: number;
   ratesWritten: number;
   variantsAssociated: number;
+  /** Desired members not yet recorded in their target profile (new or moving). */
+  membersToAdd: number;
+  /** Recorded members absent from every desired profile (apply does not dissociate them; GC does). */
+  membersNotDesired: number;
   weightsWritten: number;
   unresolvedVariants: number;
   customProfilesUsed: number;
@@ -672,6 +700,8 @@ async function reconcileShopShippingCore(
     zonesWritten: 0,
     ratesWritten: 0,
     variantsAssociated: 0,
+    membersToAdd: 0,
+    membersNotDesired: 0,
     weightsWritten: 0,
     unresolvedVariants: 0,
     customProfilesUsed: 0,
@@ -734,6 +764,26 @@ async function reconcileShopShippingCore(
     .from(shippingStoreProfiles)
     .where(eq(shippingStoreProfiles.shopDomain, shop));
   const mappedByKey = new Map(mapped.map((m) => [m.profileKey, m]));
+  {
+    const recorded = await db
+      .select({
+        shopifyVariantId: shippingStoreVariants.shopifyVariantId,
+        storeProfileId: shippingStoreVariants.storeProfileId,
+      })
+      .from(shippingStoreVariants)
+      .where(eq(shippingStoreVariants.shopDomain, shop));
+    const recordedProfile = new Map(recorded.map((r) => [String(r.shopifyVariantId), r.storeProfileId]));
+    const desiredVids = new Set<string>();
+    for (const p of desired.profiles) {
+      const rowId = mappedByKey.get(p.profileKey)?.id;
+      for (const v of p.variants) {
+        const vid = String(v.shopifyVariantId);
+        desiredVids.add(vid);
+        if (rowId == null || recordedProfile.get(vid) !== rowId) summary.membersToAdd++;
+      }
+    }
+    summary.membersNotDesired = recorded.filter((r) => !desiredVids.has(String(r.shopifyVariantId))).length;
+  }
   const netNew = desired.profiles.filter((p) => !mappedByKey.get(p.profileKey)?.shopifyProfileId)
     .length;
   const projected = basics.customProfileCount + netNew;

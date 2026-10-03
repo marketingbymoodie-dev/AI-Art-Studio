@@ -130,6 +130,8 @@ type ReconcileSummary = {
   zonesWritten: number;
   ratesWritten: number;
   variantsAssociated: number;
+  membersToAdd?: number;
+  membersNotDesired?: number;
   weightsWritten: number;
   unresolvedVariants: number;
   customProfilesUsed: number;
@@ -784,6 +786,16 @@ export default function PlatformShippingPage() {
                   <span>{lastDryRun.summary.zonesWritten} zones</span>
                   <span>{lastDryRun.summary.ratesWritten} rates</span>
                   <span>{lastDryRun.summary.variantsAssociated} variants</span>
+                  {lastDryRun.summary.membersToAdd != null && (
+                    <span data-testid="text-dry-run-members-to-add">
+                      +{lastDryRun.summary.membersToAdd} members to add
+                    </span>
+                  )}
+                  {lastDryRun.summary.membersNotDesired != null && (
+                    <span data-testid="text-dry-run-members-not-desired">
+                      {lastDryRun.summary.membersNotDesired} members not desired
+                    </span>
+                  )}
                   <span>
                     budget {lastDryRun.summary.customProfilesUsed}/
                     {lastDryRun.summary.profileBudget}

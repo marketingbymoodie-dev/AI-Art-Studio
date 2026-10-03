@@ -155,13 +155,48 @@ function normalizeCountry(raw: unknown): string | null {
   return code;
 }
 
-async function fetchJson(url: string): Promise<any> {
-  const res = await fetch(url, { headers: printifyHeaders() });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Printify ${res.status} for ${url}: ${text.slice(0, 200)}`);
+/**
+ * Printify throttles bursts with 429 "Too Many Attempts" (2026-10-02 boot run:
+ * 36/43 classes failed ~1s apart). Every request in this module is spaced
+ * module-wide, and 429/5xx retry with backoff (Retry-After when sent).
+ */
+export const PRINTIFY_MIN_REQUEST_GAP_MS = 1000;
+export const PRINTIFY_RETRY_BACKOFF_MS = [5_000, 15_000, 45_000] as const;
+const PRINTIFY_MAX_RETRY_AFTER_MS = 120_000;
+let nextPrintifyRequestAt = 0;
+
+async function paceShippingRequest(): Promise<void> {
+  const now = Date.now();
+  const at = Math.max(now, nextPrintifyRequestAt);
+  nextPrintifyRequestAt = at + PRINTIFY_MIN_REQUEST_GAP_MS;
+  if (at > now) await new Promise((r) => setTimeout(r, at - now));
+}
+
+export function retryDelayMs(status: number, retryAfter: string | null, attempt: number): number | null {
+  if (status !== 429 && status < 500) return null;
+  if (attempt >= PRINTIFY_RETRY_BACKOFF_MS.length) return null;
+  const seconds = Number(retryAfter);
+  if (retryAfter != null && Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, PRINTIFY_MAX_RETRY_AFTER_MS);
   }
-  return res.json();
+  return PRINTIFY_RETRY_BACKOFF_MS[attempt];
+}
+
+async function fetchJson(url: string): Promise<any> {
+  for (let attempt = 0; ; attempt++) {
+    await paceShippingRequest();
+    const res = await fetch(url, { headers: printifyHeaders() });
+    if (res.ok) return res.json();
+    const text = await res.text().catch(() => "");
+    const delay = retryDelayMs(res.status, res.headers.get("retry-after"), attempt);
+    if (delay == null) {
+      throw new Error(`Printify ${res.status} for ${url}: ${text.slice(0, 200)}`);
+    }
+    console.warn(
+      `[shipping-tables] Printify ${res.status} for ${url} — retry ${attempt + 1}/${PRINTIFY_RETRY_BACKOFF_MS.length} in ${delay}ms`,
+    );
+    await new Promise((r) => setTimeout(r, delay));
+  }
 }
 
 /**
