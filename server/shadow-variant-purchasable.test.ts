@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  SHADOW_SHIPPING_ATTACH_MAX_MS,
   ShadowVariantNotPurchasableError,
   deliveryProfileIdsEqual,
   ensureShadowDeliveryProfileParity,
@@ -391,9 +392,41 @@ describe("ensureShadowVariantPurchasable", () => {
     expect(vars.profile.variantsToAssociate).toEqual(["gid://shopify/ProductVariant/111"]);
   });
 
-  it("does not wait on the shipping-map attach (full reconcile must not block ATC)", async () => {
-    attachVariantToShipping.mockImplementationOnce(() => new Promise(() => {}));
-    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+  it("awaits the shipping attach, and a hung attach is transient after the cap", async () => {
+    let attachDone = false;
+    attachVariantToShipping.mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      attachDone = true;
+    });
+    globalThis.fetch = okPurchasableFetch();
+    await ensureShadowVariantPurchasable({
+      shop: "demo.myshopify.com",
+      token: "tok",
+      variantId: "111",
+      baseVariantId: "222",
+    });
+    expect(attachDone).toBe(true);
+
+    vi.useFakeTimers();
+    try {
+      attachVariantToShipping.mockImplementationOnce(() => new Promise(() => {}));
+      const pending = ensureShadowVariantPurchasable({
+        shop: "demo.myshopify.com",
+        token: "tok",
+        variantId: "111",
+        baseVariantId: "222",
+      }).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(SHADOW_SHIPPING_ATTACH_MAX_MS + 1);
+      const err = await pending;
+      expect(err).not.toBeInstanceOf(ShadowVariantNotPurchasableError);
+      expect(err.name).toBe("TimeoutError");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  function okPurchasableFetch(): typeof fetch {
+    return (async (_url: string, init?: RequestInit) => {
       const body = parseBody(init);
       if (body.query.includes("productVariantsBulkUpdate")) {
         return jsonResponse({
@@ -434,16 +467,7 @@ describe("ensureShadowVariantPurchasable", () => {
       if (pub) return pub;
       return jsonResponse({ errors: [{ message: "unexpected query" }] }, 500);
     }) as unknown as typeof fetch;
-
-    await expect(
-      ensureShadowVariantPurchasable({
-        shop: "demo.myshopify.com",
-        token: "tok",
-        variantId: "111",
-        baseVariantId: "222",
-      }),
-    ).resolves.toBeUndefined();
-  });
+  }
 
   it("surfaces an Admin timeout as transient, not as not-purchasable", async () => {
     globalThis.fetch = (async () => {

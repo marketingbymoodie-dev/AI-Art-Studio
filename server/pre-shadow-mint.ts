@@ -303,6 +303,21 @@ export async function runPreShadowMint(args: {
   console.log(
     `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId} status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
   );
+  // Persist before the purchasable writes: if the shipping attach runs past
+  // its cap, ATC resolve reuses (and re-asserts) this product instead of minting another.
+  await storage.createPublishedProduct({
+    shop,
+    designId,
+    customerKey: null,
+    shopifyProductId: String(shadowProduct.id),
+    shopifyVariantId: String(shadowVariant.id),
+    shopifyProductHandle: shadowProduct.handle || null,
+    baseVariantId: String(baseVariantId),
+    status: "active",
+    expiresAt: oneHourFromNow,
+    cartAddedAt: null,
+  } as any);
+
   await ensureShadowVariantPurchasable({
     shop,
     token,
@@ -318,19 +333,6 @@ export async function runPreShadowMint(args: {
       body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
     }).catch(() => {});
   }
-
-  await storage.createPublishedProduct({
-    shop,
-    designId,
-    customerKey: null,
-    shopifyProductId: String(shadowProduct.id),
-    shopifyVariantId: String(shadowVariant.id),
-    shopifyProductHandle: shadowProduct.handle || null,
-    baseVariantId: String(baseVariantId),
-    status: "active",
-    expiresAt: oneHourFromNow,
-    cartAddedAt: null,
-  } as any);
 
   await writeJobShadow({
     shadowProductId: String(shadowProduct.id),

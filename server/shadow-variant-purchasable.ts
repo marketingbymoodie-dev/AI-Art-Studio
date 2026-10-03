@@ -212,24 +212,55 @@ export async function ensureShadowDeliveryProfileParity(opts: {
   );
 }
 
-async function attachShadowShippingBestEffort(opts: {
+/**
+ * Cap on the table-mode shipping attach. An unmapped base falls back to a
+ * full-shop reconcile that can run far past the storefront's 30s abort.
+ */
+export const SHADOW_SHIPPING_ATTACH_MAX_MS = 12_000;
+
+/**
+ * Table-mode deliverability: mapped profile membership + pseudo weight.
+ * Awaited — fire-and-forget left fresh shadows 422 "sold out" at /cart/add.js
+ * (docs/ATC_WORKING_SNAPSHOT.md §2). Running past the cap is transient
+ * (TimeoutError → still_preparing); the reconcile keeps going and the next
+ * tap finds the base mapped. Other attach errors stay best-effort.
+ */
+async function attachShadowShipping(opts: {
   shop: string;
   shopifyVariantId: string;
   sourceVariantId: string;
 }): Promise<void> {
+  const run = (async () => {
+    try {
+      const { attachVariantToShipping } = await import("./shipping-reconciler");
+      await attachVariantToShipping({
+        shop: opts.shop,
+        shopifyVariantId: opts.shopifyVariantId,
+        sourceVariantId: opts.sourceVariantId,
+        source: "shadow",
+      });
+    } catch (e: any) {
+      console.warn(
+        `[ShadowProduct] shipping attach failed for ${opts.shopifyVariantId}:`,
+        e?.message || e,
+      );
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { attachVariantToShipping } = await import("./shipping-reconciler");
-    await attachVariantToShipping({
-      shop: opts.shop,
-      shopifyVariantId: opts.shopifyVariantId,
-      sourceVariantId: opts.sourceVariantId,
-      source: "shadow",
-    });
-  } catch (e: any) {
-    console.warn(
-      `[ShadowProduct] shipping attach failed for ${opts.shopifyVariantId}:`,
-      e?.message || e,
-    );
+    await Promise.race([
+      run,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[ShadowProduct] shipping attach still running after ${SHADOW_SHIPPING_ATTACH_MAX_MS}ms for ${opts.shopifyVariantId} — not purchasable yet`,
+          );
+          reject(new DOMException("Shadow shipping attach timed out", "TimeoutError"));
+        }, SHADOW_SHIPPING_ATTACH_MAX_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -382,9 +413,7 @@ export async function ensureShadowVariantPurchasable(opts: {
   }
 
   if (baseVariantId) {
-    // Shipping-map bookkeeping only; parity above is the purchasability gate.
-    // Awaiting it put a full-shop reconcile (unmapped base) on every resolve.
-    void attachShadowShippingBestEffort({
+    await attachShadowShipping({
       shop,
       shopifyVariantId: variantId,
       sourceVariantId: baseVariantId,

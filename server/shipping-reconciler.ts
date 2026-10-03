@@ -93,6 +93,8 @@ async function gql<T = any>(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ query, variables }),
+      // Shadow ATC awaits this path; undici's default wait is 300s.
+      signal: AbortSignal.timeout(20_000),
     });
     if (res.status === 429) {
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
