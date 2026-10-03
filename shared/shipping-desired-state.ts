@@ -272,6 +272,34 @@ export function buildShopDesiredState(params: {
   return { profiles, unresolvedVariants };
 }
 
+export type ShippingCoverageGaps = {
+  /** Printify out of stock (or removed): storefront-locked, rejoins on restock. */
+  unavailable: string[];
+  /** Printify reports in stock (or no stock data) but the shipping table has no row. */
+  missingInStock: string[];
+};
+
+/**
+ * Printify's shipping table lists only currently-available variants, so a
+ * blank missing from it is expected when Product Intelligence marks it out of
+ * stock. Keys are blank keys (`size:color`), so every Shopify variant of one
+ * blank (e.g. both print-sides tiers) lands in the same bucket.
+ */
+export function classifyShippingCoverageGaps(
+  blankKeys: string[],
+  coveredKeys: Set<string>,
+  availability: Record<string, string>,
+): ShippingCoverageGaps {
+  const gaps: ShippingCoverageGaps = { unavailable: [], missingInStock: [] };
+  for (const key of blankKeys) {
+    if (coveredKeys.has(key)) continue;
+    const status = availability[key];
+    if (status === "out_of_stock" || status === "removed") gaps.unavailable.push(key);
+    else gaps.missingInStock.push(key);
+  }
+  return gaps;
+}
+
 /** Max rates in any single zone of the desired state (pre-flight vs probed cap). */
 export function maxRatesPerZone(state: DesiredShopState): number {
   let max = 0;
