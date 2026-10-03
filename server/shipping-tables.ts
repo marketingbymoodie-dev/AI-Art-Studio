@@ -568,6 +568,16 @@ async function rebuildVariantShipping(
     );
 
   await db.delete(variantShipping).where(eq(variantShipping.shippingClassId, classId));
+  // A type re-bound to another provider leaves rows under its old class; they
+  // collide on (product_type_id, printify_variant_id) and abort the whole sync.
+  if (products.length) {
+    await db.delete(variantShipping).where(
+      inArray(
+        variantShipping.productTypeId,
+        products.map((p) => p.id),
+      ),
+    );
+  }
 
   const productIds: number[] = [];
   const inserts: (typeof variantShipping.$inferInsert)[] = [];
@@ -816,6 +826,12 @@ export async function rebuildCoverageForClass(classId: number): Promise<number> 
   }
 
   await db.delete(shippingCoverage).where(eq(shippingCoverage.shippingClassId, classId));
+  // Same re-bound-type collision as variant_shipping (product_type_id, country_code).
+  if (groupsByProduct.size) {
+    await db
+      .delete(shippingCoverage)
+      .where(inArray(shippingCoverage.productTypeId, Array.from(groupsByProduct.keys())));
+  }
   if (inserts.length) {
     for (let i = 0; i < inserts.length; i += 500) {
       await db.insert(shippingCoverage).values(inserts.slice(i, i + 500));
@@ -1082,12 +1098,18 @@ export async function runShippingTablesSync(opts: {
   try {
     const pairs = await listSyncTargets();
     for (const pair of pairs) {
-      const result = await ingestShippingClass({
-        blueprintId: pair.blueprintId,
-        providerId: pair.providerId,
-        syncRunId: run.id,
-        force,
-      });
+      let result: IngestResult;
+      try {
+        result = await ingestShippingClass({
+          blueprintId: pair.blueprintId,
+          providerId: pair.providerId,
+          syncRunId: run.id,
+          force,
+        });
+      } catch (e: any) {
+        result = { ...pair, status: "failed", error: String(e?.message || e).slice(0, 500) };
+        console.error(`[shipping-tables] ingest ${pair.blueprintId}:${pair.providerId} threw:`, result.error);
+      }
       results.push(result);
       // Gentle on Printify rate limits.
       await new Promise((r) => setTimeout(r, 350));
