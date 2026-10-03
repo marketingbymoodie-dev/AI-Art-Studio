@@ -23,7 +23,7 @@ Read [reference.md](reference.md) before changing wizard pricing, variants, or a
 4. **Size match** — never substring-match `XL` inside `4XL` / `5XL` / `2XL`. Use `variantCostLabelsMatch` / `resolveVariantCostCents`.
 5. **No phantom rows** — do not price colours Printify does not sell in that size (those were the $0.00 XS/4XL/5XL extra lines).
 6. **Condense** — same-size colours within **$1** retail share a row (`SAME_SIZE_PRICE_TOLERANCE`). Front and front+back stay separate columns.
-7. **Over 100** — pin the `N / 100` counter; popup to deselect; do not silently grey Next with no explanation.
+7. **Over the cap** — pin the `N / max` counter (`SHOPIFY_MAX_VARIANTS_PER_PRODUCT`, 2048 since base products moved to GraphQL `productSet`; was 100 under REST); popup to deselect; do not silently grey Next with no explanation.
 
 ## Files
 

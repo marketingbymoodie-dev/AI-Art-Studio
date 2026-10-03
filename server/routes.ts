@@ -40,6 +40,12 @@ import {
 } from "@shared/decorBackgroundFill";
 import { classifyGenerationFailure } from "@shared/generationFailure";
 import { normalizeAtcMode } from "@shared/atcMode";
+import {
+  createProductRestCompat,
+  deleteProductRestCompat,
+  getProductRestCompat,
+  updateProductDescriptionRestCompat,
+} from "./shopify-product-graphql";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -114,6 +120,7 @@ import {
   countActiveVariantMapKeys,
   capVariantSelectionForShopifyLimit,
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
+  SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
 import { filterFrameColorsToMintedShopify } from "@shared/shopifyVariantMatch";
@@ -4524,10 +4531,7 @@ ${orientationExtra}
   ): Promise<void> {
     if (!productId) return;
     try {
-      const resp = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
-        method: "DELETE",
-        headers: { "X-Shopify-Access-Token": accessToken },
-      });
+      const resp = await deleteProductRestCompat(shop, accessToken, productId);
       if (resp.ok || resp.status === 404) {
         console.log(`[shopify-cleanup] Deleted product ${productId} from ${shop}`);
       } else {
@@ -4692,7 +4696,7 @@ ${orientationExtra}
       }
     }
     if (shopifyVariants.length === 0) throw new Error('No variants to create — check size/color selections.');
-    if (shopifyVariants.length > 100) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max 100.`);
+    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`);
 
     const productOptions: any[] = [];
     if (allSizes.length > 0) productOptions.push({ name: 'Size', values: Array.from(new Set(shopifyVariants.map((v: any) => v.option1))) });
@@ -4735,11 +4739,7 @@ ${orientationExtra}
       await deleteShopifyProductBestEffort(shop, accessToken, productType.shopifyProductId);
     }
 
-    const shopifyResponse = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
-      body: JSON.stringify(shopifyProduct),
-    });
+    const shopifyResponse = await createProductRestCompat(shop, accessToken, shopifyProduct.product);
 
     if (!shopifyResponse.ok) {
       const errorText = await shopifyResponse.text();
@@ -4758,7 +4758,7 @@ ${orientationExtra}
       shopifyVariantIds[`${sizeOption}:${colorOption}`] = v.id;
     }
 
-    try { await ensureProductPublishedToOnlineStore(shop, accessToken, newShopifyProductId); } catch (_) { /* non-fatal */ }
+    try { await ensureProductPublishedToOnlineStore(shop, accessToken, createdProduct.product.id); } catch (_) { /* non-fatal */ }
 
     await storage.updateProductType(productType.id, {
       shopifyProductId: newShopifyProductId,
@@ -4909,15 +4909,10 @@ ${orientationExtra}
           console.log(`[Shopify Publish] Product already exists (${productType.shopifyProductId}), deleting for republish...`);
           
           try {
-            const deleteResponse = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
-              {
-                method: "DELETE",
-                headers: {
-                  "X-Shopify-Access-Token": installation.accessToken,
-                  "Content-Type": "application/json",
-                },
-              }
+            const deleteResponse = await deleteProductRestCompat(
+              shopDomain,
+              installation.accessToken,
+              productType.shopifyProductId,
             );
             
             if (deleteResponse.ok || deleteResponse.status === 404) {
@@ -5049,12 +5044,10 @@ ${orientationExtra}
         }
       }
 
-      // Validate Shopify's 100 variant limit
-      const SHOPIFY_VARIANT_LIMIT = 100;
-      if (shopifyVariants.length > SHOPIFY_VARIANT_LIMIT) {
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({ 
           error: `Too many variants (${shopifyVariants.length})`,
-          details: `Shopify allows a maximum of ${SHOPIFY_VARIANT_LIMIT} variants per product. Please select fewer colors.`
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Please select fewer colors.`
         });
       }
 
@@ -5177,17 +5170,7 @@ ${orientationExtra}
       };
 
       // Call Shopify Admin API to create the product
-      const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": installation.accessToken,
-          },
-          body: JSON.stringify(shopifyProduct),
-        }
-      );
+      const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, shopifyProduct.product);
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
@@ -5387,11 +5370,7 @@ ${orientationExtra}
             },
           };
 
-          const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/2025-10/products.json`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
-            body: JSON.stringify(shopifyProduct),
-          });
+          const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, shopifyProduct.product);
 
           if (!shopifyResponse.ok) {
             const errorText = await shopifyResponse.text();
@@ -5479,16 +5458,14 @@ ${orientationExtra}
       // We always delete-and-recreate so the variant list stays in sync with the DB.
       console.log(`[Update Shopify] Deleting existing product ${productType.shopifyProductId} to re-create with correct variants...`);
 
-      const deleteResp = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
-        {
-          method: "DELETE",
-          headers: { "X-Shopify-Access-Token": installation.accessToken },
-        }
+      const deleteResp = await deleteProductRestCompat(
+        shopDomain,
+        installation.accessToken,
+        productType.shopifyProductId,
       );
 
       if (!deleteResp.ok && deleteResp.status !== 404) {
-        const delErr = await deleteResp.text();
+        const delErr = deleteResp.text;
         console.error("[Update Shopify] Delete failed:", deleteResp.status, delErr);
         return res.status(deleteResp.status).json({ error: "Failed to delete existing Shopify product", details: delErr });
       }
@@ -5569,11 +5546,10 @@ ${orientationExtra}
         }
       }
 
-      // Validate variant limit
-      if (shopifyVariants.length > 100) {
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({ 
           error: `Too many variants (${shopifyVariants.length})`,
-          details: "Shopify allows a maximum of 100 variants per product."
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.`
         });
       }
 
@@ -5640,17 +5616,7 @@ ${orientationExtra}
         },
       };
 
-      const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": installation.accessToken,
-          },
-          body: JSON.stringify(createPayload),
-        }
-      );
+      const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, createPayload.product);
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
@@ -5917,21 +5883,11 @@ ${orientationExtra}
               </div>
             `;
 
-            const updateProductResponse = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${product.id}.json`,
-              {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Shopify-Access-Token": installation.accessToken,
-                },
-                body: JSON.stringify({
-                  product: {
-                    id: product.id,
-                    body_html: cleanBodyHtml,
-                  },
-                }),
-              }
+            const updateProductResponse = await updateProductDescriptionRestCompat(
+              shopDomain,
+              installation.accessToken,
+              product.id,
+              cleanBodyHtml,
             );
 
             if (!updateProductResponse.ok) {
@@ -6245,30 +6201,18 @@ ${orientationExtra}
         const tokenReady = await ensureValidOfflineAccessToken(installation);
         const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
 
-        // Use Shopify Admin API to get product variants
-        const adminApiUrl = `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`;
-        console.log(`[Product Variants] Fetching from Admin API: ${adminApiUrl}`);
+        console.log(`[Product Variants] Fetching from Admin API: product ${productType.shopifyProductId} (${shopDomain})`);
+        const adminRead = await getProductRestCompat(shopDomain, accessToken, productType.shopifyProductId);
+        const adminStatus = adminRead.ok
+          ? 200
+          : Number(/API error (\d{3})/.exec(adminRead.error || "")?.[1] || (adminRead.needsReinstall ? 401 : 502));
 
-        const adminResponse = await fetch(adminApiUrl, {
-          headers: {
-            'X-Shopify-Access-Token': accessToken
-          }
-        });
-
-        // Guard non-JSON / non-OK Shopify responses BEFORE JSON.parse so an
-        // Admin 401 (or a Cloudflare interstitial HTML page) does not crash
-        // with "Unexpected token '<'". A guard trip logs the upstream status
-        // + a short body sample, then falls through to the existing fallback
-        // chain (public endpoint → DB-cached variants) so a transient Shopify
-        // hiccup still serves ATC. 502 is only returned when every fallback
-        // is exhausted.
-        const adminContentType = (adminResponse.headers.get('content-type') || '').toLowerCase();
-        const adminUpstreamFailed = !adminResponse.ok || !adminContentType.includes('application/json');
-        if (adminUpstreamFailed) {
-          const rawBody = await adminResponse.text().catch(() => '');
+        // A failed Admin read falls through to the existing fallback chain
+        // (public endpoint → DB-cached variants) so a transient Shopify hiccup
+        // still serves ATC. 502 is only returned when every fallback is exhausted.
+        if (!adminRead.ok || !adminRead.data) {
           console.warn(
-            `[Product Variants] Shopify Admin non-JSON/non-OK: status=${adminResponse.status} ` +
-              `content-type=${adminContentType || '(none)'} body=${rawBody.slice(0, 200)}`,
+            `[Product Variants] Shopify Admin read failed: status=${adminStatus} error=${String(adminRead.error || "").slice(0, 200)}`,
           );
 
           // Fallback 1: public /products/{handle}.json (no auth required).
@@ -6349,11 +6293,11 @@ ${orientationExtra}
           // error instead of pretending fine.
           return res.status(502).json({
             error: 'shopify_auth_or_upstream',
-            status: adminResponse.status,
+            status: adminStatus,
           });
         }
 
-        const data = await adminResponse.json();
+        const data = adminRead.data;
         const variants = data.product?.variants || [];
         const productImages = data.product?.images || [];
 
@@ -8502,11 +8446,7 @@ ${orientationExtra}
         const tokenReady = await ensureValidOfflineAccessToken(installation);
         const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
         if (!accessToken) throw new Error("No Shopify access token");
-        const prodResult = await shopifyApiCall(
-          shop,
-          accessToken,
-          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
-        );
+        const prodResult = await getProductRestCompat(shop, accessToken, page.baseProductId);
         const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
         const productImages: any[] = prodResult.data?.product?.images ?? [];
         let baseVariants = selectBaseCatalogVariants(rawVariants);
@@ -21684,7 +21624,7 @@ ${orientationExtra}
       const pages = await storage.listCustomizerPagesByProductTypeId(productType.id);
       const page = pages.find((p: any) => p.shop === shop && p.baseProductId);
       if (!page) return {};
-      const prodRes = await shopifyApiCall(shop, installation.accessToken, `products/${page.baseProductId}.json?fields=id,variants`);
+      const prodRes = await getProductRestCompat(shop, installation.accessToken, page.baseProductId);
       const variants = prodRes.data?.product?.variants || [];
       const priceMap: Record<string, string> = {};
       for (const v of variants) {
@@ -21924,8 +21864,8 @@ ${orientationExtra}
     if (shopifyVariants.length === 0) {
       return res.status(400).json({ error: "Couldn't find any purchasable sizes for this design. Check the product's variant setup in the platform catalog." });
     }
-    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
+    if (shopifyVariants.length > SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT) {
+      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT}.` });
     }
 
     // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
@@ -22415,11 +22355,7 @@ ${orientationExtra}
         try {
           const productIdNum = parseInt(String(productId).replace(/\D/g, ""), 10);
           if (!productIdNum) return;
-          const productRes = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json?fields=id,variants`,
-          );
+          const productRes = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           const cheapest = pickLowestPricedShopifyVariant(productRes.data?.product?.variants);
           if (!cheapest) return;
           cheapestByProduct.set(String(productId), {
@@ -22598,10 +22534,7 @@ ${orientationExtra}
         // If the product was deleted from Shopify or has fewer variants than expected (e.g. after
         // Refresh Variants), clear the stale ID so the create-new-product path below handles it.
         try {
-          const shopifyProdCheck = await shopifyApiCall(
-            shop, installation.accessToken,
-            `products/${ptForSync.shopifyProductId}.json`,
-          );
+          const shopifyProdCheck = await getProductRestCompat(shop, installation.accessToken, ptForSync.shopifyProductId);
 
           if (!shopifyProdCheck.ok || !shopifyProdCheck.data?.product) {
             // Product no longer exists in Shopify — clear stale ID so we re-create it below
@@ -22778,11 +22711,7 @@ ${orientationExtra}
       const productNum = parseInt(String(resolvedBaseProductId).replace(/\D/g, ""), 10);
       if (!productNum) return res.status(400).json({ error: "Invalid baseProductId" });
 
-      const prodResult = await shopifyApiCall(
-        shop,
-        installation.accessToken,
-        `products/${productNum}.json?fields=id,title,handle,variants`,
-      );
+      const prodResult = await getProductRestCompat(shop, installation.accessToken, productNum);
       if (!prodResult.ok || !prodResult.data?.product) {
         // Product not found for THIS shop. This happens when the stored shopifyProductId is
         // stale (deleted in Shopify) or was published to a *different* shop (product_types is a
@@ -22825,7 +22754,7 @@ ${orientationExtra}
             return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
           }
           // Re-fetch the newly created product
-          const newProdResult = await shopifyApiCall(shop, installation.accessToken, `products/${resolvedBaseProductId}.json?fields=id,title,handle,variants`);
+          const newProdResult = await getProductRestCompat(shop, installation.accessToken, resolvedBaseProductId);
           if (!newProdResult.ok || !newProdResult.data?.product) {
             return res.status(400).json({ error: `Newly created product ${resolvedBaseProductId} not found. Please try again.` });
           }
@@ -22956,11 +22885,7 @@ ${orientationExtra}
         const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
         let liveShopifyVariants: Array<{ id?: number; price?: string; title?: string }> = [];
         if (productIdNum) {
-          const alreadyPriced = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json`,
-          );
+          const alreadyPriced = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           liveShopifyVariants = alreadyPriced.data?.product?.variants ?? [];
         }
         const alreadyHasRetail = allShopifyVariantsHavePositiveRetail(liveShopifyVariants);
@@ -22984,11 +22909,7 @@ ${orientationExtra}
               },
             });
         if (productIdNum) {
-          const priced = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json`,
-          );
+          const priced = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           liveShopifyVariants = priced.data?.product?.variants ?? [];
           const cheapestAfter = pickLowestPricedShopifyVariant(liveShopifyVariants);
           if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
@@ -23313,19 +23234,11 @@ ${orientationExtra}
           .replace(/&amp;/g, "&")
           .replace(/\s+/g, " ")
           .trim();
-        await shopifyApiCall(
+        await updateProductDescriptionRestCompat(
           shop,
           installation.accessToken,
-          `products/${dbPage.baseProductId}.json`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              product: {
-                id: dbPage.baseProductId,
-                body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
-              },
-            }),
-          },
+          dbPage.baseProductId,
+          `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
         );
       }
     }
@@ -23484,14 +23397,10 @@ ${orientationExtra}
     let shopifyVariants: Array<{
       id: number;
       title?: string;
-      option1?: string;
-      option2?: string;
+      option1?: string | null;
+      option2?: string | null;
     }> = [];
-    const allVariantsResult = await shopifyApiCall(
-      shop,
-      accessToken,
-      `products/${baseProductId}.json`,
-    );
+    const allVariantsResult = await getProductRestCompat(shop, accessToken, baseProductId);
     shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
     const livePriceById = new Map<number, number>();
     for (const sv of shopifyVariants) {
@@ -23628,11 +23537,7 @@ ${orientationExtra}
     if (!productIdNum) return { ok: false, resynced: false };
 
     const loadVariants = async () => {
-      const priced = await shopifyApiCall(
-        args.shop,
-        args.accessToken,
-        `products/${productIdNum}.json`,
-      );
+      const priced = await getProductRestCompat(args.shop, args.accessToken, productIdNum);
       return (priced.data?.product?.variants ?? []) as Array<{ id?: number; price?: string; title?: string }>;
     };
 
@@ -23753,11 +23658,7 @@ ${orientationExtra}
     try {
       const productIdNum = parseInt(String(dbPage.baseProductId).replace(/\D/g, ""), 10);
       if (productIdNum) {
-        const priced = await shopifyApiCall(
-          shop,
-          installation.accessToken!,
-          `products/${productIdNum}.json?fields=id,variants`,
-        );
+        const priced = await getProductRestCompat(shop, installation.accessToken!, productIdNum);
         const cheapest = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
         if (cheapest && parseShopifyVariantPrice(cheapest.price) > 0) {
           await storage.updateCustomizerPage(dbPage.id, {
@@ -24770,11 +24671,7 @@ ${orientationExtra}
           }
         }
         if (!accessToken) return empty;
-        const prodResult = await shopifyApiCall(
-          shop,
-          accessToken,
-          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
-        );
+        const prodResult = await getProductRestCompat(shop, accessToken, page.baseProductId);
         const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
         const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
         let baseVariants = selectBaseCatalogVariants(rawVariants);

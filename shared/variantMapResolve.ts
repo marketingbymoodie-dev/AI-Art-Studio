@@ -203,7 +203,10 @@ export function normalizeVariantKeyLoose(key: string): string {
   return `${part(rawSize, true)}:${part(rawColor, false)}`;
 }
 
-export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 100;
+/** Shopify's per-product variant limit via the GraphQL product APIs (base products). */
+export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 2048;
+/** REST product create is still capped at 100 (design products are created via REST). */
+export const SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT = 100;
 
 /** Count variantMap entries that match the merchant's selected size/color filters. */
 export function countActiveVariantMapKeys(
@@ -230,7 +233,7 @@ export function countActiveVariantMapKeys(
 
 /**
  * Trim size/color picks so the active variantMap count stays within Shopify's
- * 100-variant product limit. Prefers keeping all sizes and dropping colors from
+ * per-product variant limit. Prefers keeping all sizes and dropping colors from
  * the end of the list; if still over, trims sizes from the end too.
  * Used by Setup → Activate (no variant picker UI).
  */

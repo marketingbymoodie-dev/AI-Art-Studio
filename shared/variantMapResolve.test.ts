@@ -102,9 +102,12 @@ describe("capVariantSelectionForShopifyLimit", () => {
     const map = denseMap(sizes, colors);
     expect(countActiveVariantMapKeys(map, sizes, colors)).toBe(120);
 
-    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map);
+    expect(capVariantSelectionForShopifyLimit(sizes, colors, map).capped).toBe(false);
+    expect(SHOPIFY_MAX_VARIANTS_PER_PRODUCT).toBe(2048);
+
+    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map, 100);
     expect(capped.capped).toBe(true);
-    expect(capped.variantCount).toBeLessThanOrEqual(SHOPIFY_MAX_VARIANTS_PER_PRODUCT);
+    expect(capped.variantCount).toBeLessThanOrEqual(100);
     expect(capped.sizeIds).toEqual(sizes);
     expect(capped.colorIds.length).toBe(16); // 6 * 16 = 96
   });

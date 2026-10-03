@@ -247,15 +247,19 @@ export async function runPreShadowMint(args: {
     };
   }
 
-  const productRes = await shadowFetch(`${apiBase}/products/${baseProductId}.json`, { headers });
+  // Variant read is not capped at 100 like the product read's embedded variants.
+  const [productRes, variantRes] = await Promise.all([
+    shadowFetch(`${apiBase}/products/${baseProductId}.json?fields=id,title`, { headers }),
+    shadowFetch(`${apiBase}/variants/${baseVariantId}.json`, { headers }),
+  ]);
   if (!productRes.ok) {
     console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
     return;
   }
   const { product: baseProduct } = await productRes.json();
-  const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(baseVariantId));
-  if (!baseVariant) {
-    console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId}`);
+  const baseVariant = variantRes.ok ? (await variantRes.json())?.variant : null;
+  if (!baseVariant || String(baseVariant.product_id) !== String(baseProductId)) {
+    console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId} (${variantRes.status})`);
     return;
   }
 

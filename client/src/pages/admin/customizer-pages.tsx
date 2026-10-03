@@ -1749,7 +1749,7 @@ export default function AdminCustomizerPages() {
   const applySupplierAndVariantsMutation = useMutation({
     mutationFn: async () => {
       if (!wizardVariantCountValid) {
-        throw new Error("Select sizes/colours within Shopify’s 100-variant limit.");
+        throw new Error(`Select sizes/colours within Shopify’s ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}-variant limit.`);
       }
       return runEnsureWizardProvider({
         sizeIds: Array.from(wizardSizeIds),
