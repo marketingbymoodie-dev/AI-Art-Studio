@@ -24,6 +24,22 @@
 </script>
 {% endif %}
 
+{% comment %}
+  Base product page → its customizer page. UX only: checkout protection is the
+  appai-base-variant-guard validation Function. Never loaded when the product
+  hosts the legacy studio (ai_art_studio.enable); the script also stands down
+  if a studio block is on the page.
+{% endcomment %}
+{% if product and product.tags contains 'ai-art-studio-enabled' %}
+  {% unless product.metafields.ai_art_studio.enable.value == true %}
+    <script
+      src="{{ 'appai-base-product-redirect.js' | asset_url }}"
+      data-appai-base-product-id="{{ product.id }}"
+      defer
+    ></script>
+  {% endunless %}
+{% endif %}
+
 <link rel="stylesheet" href="{{ 'appai-art-embed.css' | asset_url }}">
 <script src="{{ 'appai-cart-guard.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-cart-images.js' | asset_url }}" defer></script>

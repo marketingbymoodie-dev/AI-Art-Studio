@@ -1,0 +1,26 @@
+query CartValidationsGenerateRunInput {
+  buyerJourney {
+    step
+  }
+  cart {
+    lines {
+      jobId: attribute(key: "_appai_job_id") {
+        value
+      }
+      shadowDesignId: attribute(key: "_shadow_design_id") {
+        value
+      }
+      designId: attribute(key: "_design_id") {
+        value
+      }
+      merchandise {
+        __typename
+        ... on ProductVariant {
+          product {
+            isAppaiBase: hasAnyTag(tags: ["ai-art-studio-enabled"])
+          }
+        }
+      }
+    }
+  }
+}
