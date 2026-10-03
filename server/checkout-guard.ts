@@ -61,12 +61,21 @@ export function findGuardValidation(nodes: GuardValidation[]): GuardValidation |
   );
 }
 
-async function shopToken(shop: string): Promise<{ token: string; scopes: string }> {
+async function shopToken(shop: string): Promise<string> {
   const inst = await storage.getShopifyInstallationByShop(shop);
   if (!inst?.accessToken || inst.accessToken === "NEEDS_RECONNECT") throw new Error(`No token for ${shop}`);
   const refreshed = await ensureValidOfflineAccessToken(inst);
   if (!refreshed.ok) throw new Error(`Token unavailable for ${shop}: ${refreshed.error}`);
-  return { token: refreshed.accessToken, scopes: String(refreshed.installation.scope ?? inst.scope ?? "") };
+  return refreshed.accessToken;
+}
+
+/**
+ * Live granted scopes. The stored `scope` column only updates on token
+ * refresh/exchange, so it lags a merchant approving new scopes.
+ */
+async function grantedScopes(shop: string, token: string): Promise<string[]> {
+  const data = await adminGraphql<any>(shop, token, `{ currentAppInstallation { accessScopes { handle } } }`);
+  return (data?.currentAppInstallation?.accessScopes ?? []).map((s: any) => String(s.handle));
 }
 
 async function readGuard(shop: string, token: string): Promise<GuardValidation | null> {
@@ -87,7 +96,7 @@ async function readGuard(shop: string, token: string): Promise<GuardValidation |
 
 export async function getBaseVariantGuardStatus(shop: string): Promise<GuardStatus> {
   try {
-    const { token } = await shopToken(shop);
+    const token = await shopToken(shop);
     const v = await readGuard(shop, token);
     if (!v) return { shop, state: "error", validation: null, error: "not installed" };
     return { shop, state: v.enabled ? "ok" : "disabled-by-merchant", validation: v };
@@ -98,8 +107,8 @@ export async function getBaseVariantGuardStatus(shop: string): Promise<GuardStat
 
 export async function ensureBaseVariantGuard(shop: string): Promise<GuardStatus> {
   try {
-    const { token, scopes } = await shopToken(shop);
-    if (scopes && !scopes.split(",").map((s) => s.trim()).includes("write_validations")) {
+    const token = await shopToken(shop);
+    if (!(await grantedScopes(shop, token)).includes("write_validations")) {
       return { shop, state: "missing-scope", error: "write_validations not granted" };
     }
     const existing = await readGuard(shop, token);
@@ -151,16 +160,14 @@ export async function ensureBaseVariantGuard(shop: string): Promise<GuardStatus>
   }
 }
 
-/** Boot sweep: ensure the guard on every active shop whose token carries write_validations. */
+/** Boot sweep: ensure the guard on every active shop (shops without write_validations report missing-scope). */
 export async function ensureBaseVariantGuardAllShops(): Promise<GuardStatus[]> {
   const all = await storage.getAllShopifyInstallations();
   const out: GuardStatus[] = [];
   for (const inst of all) {
     if (inst.status !== "active") continue;
-    const scopes = String((inst as any).scope ?? "");
-    if (!scopes.includes("write_validations")) continue;
     const status = await ensureBaseVariantGuard(inst.shopDomain);
-    if (status.state !== "ok") console.log(`[checkout-guard] ${inst.shopDomain}: ${status.state}${status.error ? ` — ${status.error}` : ""}`);
+    console.log(`[checkout-guard] ${inst.shopDomain}: ${status.state}${status.error ? ` — ${status.error}` : ""}${status.validation ? ` enabled=${status.validation.enabled} blockOnFailure=${status.validation.blockOnFailure}` : ""}`);
     out.push(status);
   }
   return out;
