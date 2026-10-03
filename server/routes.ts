@@ -13270,6 +13270,11 @@ ${orientationExtra}
       // production until prerequisites (e.g. Protected Customer Data approval
       // for shipping address access) are met. Requires a valid webhook HMAC.
       // Runs async AFTER we return 200 so the webhook stays fast.
+      //
+      // DO NOT set FLAT_ORDER_FULFILLMENT_ENABLED in any environment that runs
+      // a build older than the fulfilment tenant-isolation fix (2026-10-04,
+      // `checkFulfillmentTenancy`). Before it, a line property naming another
+      // shop's real job id printed that shop's artwork. See docs/launch-notes.md.
       if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
         const shippingAddress = order.shipping_address || order.customer?.default_address || {};
@@ -26335,6 +26340,8 @@ ${orientationExtra}
   registerAtcModeRoutes(app, { isAuthenticated });
   const { registerCheckoutGuardRoutes } = await import("./routes/checkout-guard");
   registerCheckoutGuardRoutes(app, { isAuthenticated });
+  const { registerFulfillmentAttentionRoutes } = await import("./routes/fulfillment-attention");
+  registerFulfillmentAttentionRoutes(app, { isAuthenticated });
   const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
   registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");
