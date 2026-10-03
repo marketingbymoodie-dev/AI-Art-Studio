@@ -1378,6 +1378,8 @@ export async function clearShopShippingState(shopRaw: string): Promise<void> {
 
 // ── onProductImported (plan §reconciler triggers) ─────────────────────────────
 
+const onProductImportedReconciles = new Map<string, Promise<void>>();
+
 /**
  * Fast-path membership hook for newly created variants (shadow resolve, page
  * publish). Associates the variant into its mapped profile + writes weight.
@@ -1420,9 +1422,21 @@ export async function attachVariantToShipping(params: {
   if (profileRowId == null) {
     // Base variant (or shadow whose base is unmapped): fall back to a full
     // reconcile, which resolves class/group membership from scratch.
-    await reconcileShopShipping(shop, { dryRun: false, source: "onProductImported" }).catch((e) =>
-      console.error(`[shipping-reconciler] onProductImported reconcile failed for ${shop}:`, e?.message),
-    );
+    // One per shop at a time — every ATC on an unmapped base hits this, and
+    // stacked reconciles share one Admin GraphQL bucket.
+    const running = onProductImportedReconciles.get(shop);
+    if (running) {
+      await running;
+      return;
+    }
+    const run = reconcileShopShipping(shop, { dryRun: false, source: "onProductImported" })
+      .then(() => undefined)
+      .catch((e) =>
+        console.error(`[shipping-reconciler] onProductImported reconcile failed for ${shop}:`, e?.message),
+      )
+      .finally(() => onProductImportedReconciles.delete(shop));
+    onProductImportedReconciles.set(shop, run);
+    await run;
     return;
   }
 

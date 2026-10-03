@@ -8,6 +8,8 @@
  * "The merchandise with id gid://shopify/ProductVariant/… does not exist."
  */
 
+import { SHADOW_FETCH_TIMEOUT_MS as ADMIN_FETCH_TIMEOUT_MS } from "./shadow-admin-fetch";
+
 export type PublicationNode = { id: string; name: string };
 
 export function isPosPublication(name: string): boolean {
@@ -113,6 +115,7 @@ async function adminGraphql<T>(
     method: "POST",
     headers: adminHeaders(accessToken),
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(ADMIN_FETCH_TIMEOUT_MS),
   });
   const json = (await res.json().catch(() => ({}))) as {
     data?: T;
@@ -207,6 +210,7 @@ async function restPublishProduct(
     method: "PUT",
     headers: adminHeaders(accessToken),
     body: JSON.stringify({ product: { id: Number(productId), published: true } }),
+    signal: AbortSignal.timeout(ADMIN_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");
@@ -218,10 +222,15 @@ async function restPublishProduct(
   }
 }
 
+const onlineStorePublicationCache = new Map<string, { node: PublicationNode; expiresAt: number }>();
+const ONLINE_STORE_PUBLICATION_TTL_MS = 10 * 60 * 1000;
+
 async function readOnlineStorePublication(
   shop: string,
   accessToken: string,
 ): Promise<PublicationNode> {
+  const cached = onlineStorePublicationCache.get(shop);
+  if (cached && cached.expiresAt > Date.now()) return cached.node;
   const pubData = await adminGraphql<{
     publications: { edges: Array<{ node: PublicationNode }> };
   }>(shop, accessToken, `{ publications(first: 50) { edges { node { id name } } } }`);
@@ -230,6 +239,10 @@ async function readOnlineStorePublication(
   if (!onlineStore) {
     throw new ShadowNotOnStorefrontError("Shop has no Online Store publication", "unknown", nodes);
   }
+  onlineStorePublicationCache.set(shop, {
+    node: onlineStore,
+    expiresAt: Date.now() + ONLINE_STORE_PUBLICATION_TTL_MS,
+  });
   return onlineStore;
 }
 

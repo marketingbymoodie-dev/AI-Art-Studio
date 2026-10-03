@@ -6,9 +6,8 @@ import {
   ensureShadowVariantPurchasable,
 } from "./shadow-variant-purchasable";
 
-vi.mock("./shipping-reconciler", () => ({
-  attachVariantToShipping: vi.fn().mockResolvedValue(undefined),
-}));
+const attachVariantToShipping = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("./shipping-reconciler", () => ({ attachVariantToShipping }));
 
 const originalFetch = globalThis.fetch;
 
@@ -390,6 +389,73 @@ describe("ensureShadowVariantPurchasable", () => {
     const vars = parseBody(assoc![1]).variables;
     expect(vars.id).toBe("gid://shopify/DeliveryProfile/100229775594");
     expect(vars.profile.variantsToAssociate).toEqual(["gid://shopify/ProductVariant/111"]);
+  });
+
+  it("does not wait on the shipping-map attach (full reconcile must not block ATC)", async () => {
+    attachVariantToShipping.mockImplementationOnce(() => new Promise(() => {}));
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const body = parseBody(init);
+      if (body.query.includes("productVariantsBulkUpdate")) {
+        return jsonResponse({
+          data: {
+            productVariantsBulkUpdate: {
+              productVariants: [{ id: "gid://shopify/ProductVariant/111", inventoryPolicy: "CONTINUE" }],
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (body.query.includes("inventoryItemUpdate")) {
+        return jsonResponse({ data: { inventoryItemUpdate: { userErrors: [] } } });
+      }
+      if (body.query.includes("deliveryProfile {")) {
+        return jsonResponse({
+          data: {
+            productVariant: {
+              id: body.variables.id,
+              deliveryProfile: { id: "gid://shopify/DeliveryProfile/1", name: "Base", default: false },
+            },
+          },
+        });
+      }
+      if (body.query.includes("productVariant(id:")) {
+        return jsonResponse({
+          data: {
+            productVariant: {
+              id: "gid://shopify/ProductVariant/111",
+              inventoryPolicy: "CONTINUE",
+              product: { id: "gid://shopify/Product/99" },
+              inventoryItem: { id: "gid://shopify/InventoryItem/5", tracked: false },
+            },
+          },
+        });
+      }
+      const pub = publicationOkResponse(body.query);
+      if (pub) return pub;
+      return jsonResponse({ errors: [{ message: "unexpected query" }] }, 500);
+    }) as unknown as typeof fetch;
+
+    await expect(
+      ensureShadowVariantPurchasable({
+        shop: "demo.myshopify.com",
+        token: "tok",
+        variantId: "111",
+        baseVariantId: "222",
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("surfaces an Admin timeout as transient, not as not-purchasable", async () => {
+    globalThis.fetch = (async () => {
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    }) as unknown as typeof fetch;
+    const err = await ensureShadowVariantPurchasable({
+      shop: "demo.myshopify.com",
+      token: "tok",
+      variantId: "111",
+    }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(ShadowVariantNotPurchasableError);
+    expect(err.name).toBe("TimeoutError");
   });
 
   it("throws when the associated profile does not land on the shadow", async () => {

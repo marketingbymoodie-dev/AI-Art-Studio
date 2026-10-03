@@ -73,14 +73,22 @@ import {
 } from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import {
-  PRE_SHADOW_AWAIT_MS,
   awaitExistingFlight,
   awaitInFlightOrGenerate,
   preShadowFlightKey,
   registerPreShadowInFlight,
   runPreShadowMint,
 } from "./pre-shadow-mint";
-import { ATC_SHADOW_STILL_PREPARING } from "@shared/atcStorefrontRetry";
+import {
+  ATC_SHADOW_STILL_PREPARING,
+  RESOLVE_DESIGN_VARIANT_DEADLINE_MS,
+  RESOLVE_FLIGHT_JOIN_MS,
+} from "@shared/atcStorefrontRetry";
+import {
+  SHADOW_CREATE_FETCH_TIMEOUT_MS,
+  isFetchTimeoutError,
+  shadowFetch,
+} from "./shadow-admin-fetch";
 import {
   ShadowStorefrontNotReadyError,
   assertAjaxVariantVisible,
@@ -2160,6 +2168,13 @@ export async function registerRoutes(
     res.on("finish", () => {
       const duration = Date.now() - startTime;
       console.log(`[Storefront ${requestId}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+    });
+    // "finish" never fires when the caller aborts first — that read as a silent hang.
+    res.on("close", () => {
+      if (res.writableFinished) return;
+      console.warn(
+        `[Storefront ${requestId}] ${req.method} ${req.originalUrl} - client closed before response (${Date.now() - startTime}ms)`,
+      );
     });
 
     next();
@@ -11590,6 +11605,25 @@ ${orientationExtra}
     // defined" there after the response had already been sent.
     let settleResolveFlight: ((v?: { shopifyProductId: string; shopifyVariantId: string } | void) => void) | null =
       null;
+    const resolveStarted = Date.now();
+    const resolveTag = `[ResolveVariant ${crypto.randomBytes(3).toString("hex")}]`;
+    const step = (name: string) => console.log(`${resolveTag} ${name} +${Date.now() - resolveStarted}ms`);
+    // Answer still_preparing before the storefront's 30s abort. Work keeps
+    // running and persists, so the next tap reuses instead of re-minting.
+    const sendJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      if (res.headersSent) {
+        step(`late response dropped (deadline already answered) body=${JSON.stringify(body).slice(0, 160)}`);
+        return res;
+      }
+      return sendJson(body);
+    }) as typeof res.json;
+    const deadline = setTimeout(() => {
+      if (res.headersSent) return;
+      step(`deadline ${RESOLVE_DESIGN_VARIANT_DEADLINE_MS}ms hit — answering still_preparing`);
+      res.json({ success: false, error: ATC_SHADOW_STILL_PREPARING, code: "still_preparing" });
+    }, RESOLVE_DESIGN_VARIANT_DEADLINE_MS);
+    res.on("close", () => clearTimeout(deadline));
     try {
       const {
         shop: shopRaw,
@@ -11652,6 +11686,7 @@ ${orientationExtra}
       const token = installation.accessToken!;
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
+      step(`authorized shop=${shop} design=${String(designId).slice(0, 80)} variant=${variantId}`);
 
       // ── Shadow product path ────────────────────────────────────────────────
       // 1. Reuse by exact persist key. ATC stamps `job::variant::cfgHash` so
@@ -11672,10 +11707,23 @@ ${orientationExtra}
         existingKey = key;
         break;
       }
+      step(`lookup done existing=${existing ? existing.shopifyVariantId : "none"}`);
       if (existing && existing.status === "active") {
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
+        // Re-read live base FRONT price, then apply both-tier override if sent.
+        // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
+        // Independent of purchasable/visibility, so it overlaps them (never rejects).
+        const syncedPromise = existing.shopifyVariantId
+          ? syncShadowVariantPrice({
+              shop,
+              token,
+              shadowVariantId: existing.shopifyVariantId,
+              baseVariantId: String(variantId),
+              priceOverride: overridePriceFormatted,
+            })
+          : Promise.resolve(null);
         try {
           await ensureShadowVariantPurchasable({
             shop,
@@ -11683,11 +11731,13 @@ ${orientationExtra}
             variantId: existing.shopifyVariantId,
             baseVariantId: existing.baseVariantId || variantId,
           });
+          step("reuse purchasable ok");
           await assertAjaxVariantVisible({
             shop,
             variantId: existing.shopifyVariantId,
             adminLive: true,
           });
+          step("reuse storefront-visible ok");
         } catch (reuseErr: any) {
           if (reuseErr instanceof ShadowStorefrontNotReadyError) {
             console.warn(
@@ -11718,17 +11768,8 @@ ${orientationExtra}
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
           await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
         }
-        // Re-read live base FRONT price, then apply both-tier override if sent.
-        // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
-        const synced = existing.shopifyVariantId
-          ? await syncShadowVariantPrice({
-              shop,
-              token,
-              shadowVariantId: existing.shopifyVariantId,
-              baseVariantId: String(variantId),
-              priceOverride: overridePriceFormatted,
-            })
-          : null;
+        const synced = await syncedPromise;
+        step(`reuse price synced written=${synced?.written ?? "none"}`);
         // Exact cfg-keyed reuse only. A different print snapshot is a new
         // persistDesignId, so this refresh cannot overwrite another cart line.
         if (existing.shopifyProductId && existing.shopifyVariantId) {
@@ -11736,16 +11777,20 @@ ${orientationExtra}
           const reusedVariantId = existing.shopifyVariantId;
           (async () => {
             try {
-              const imgRes = await fetch(`${apiBase}/products/${reusedProductId}/images.json`, {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                  image: {
-                    src: mockupUrl,
-                    variant_ids: [Number(reusedVariantId)],
-                  },
-                }),
-              });
+              const imgRes = await shadowFetch(
+                `${apiBase}/products/${reusedProductId}/images.json`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: {
+                      src: mockupUrl,
+                      variant_ids: [Number(reusedVariantId)],
+                    },
+                  }),
+                },
+                SHADOW_CREATE_FETCH_TIMEOUT_MS,
+              );
               if (!imgRes.ok) {
                 const t = await imgRes.text();
                 console.warn(
@@ -11761,7 +11806,7 @@ ${orientationExtra}
               );
             }
             try {
-              const titleRes = await fetch(
+              const titleRes = await shadowFetch(
                 `${apiBase}/products/${reusedProductId}.json?fields=id,title`,
                 { headers },
               );
@@ -11770,7 +11815,7 @@ ${orientationExtra}
                 const currentTitle = String(titleBody?.product?.title || "");
                 const cleanedTitle = stripProviderSuffix(currentTitle);
                 if (cleanedTitle && cleanedTitle !== currentTitle) {
-                  await fetch(`${apiBase}/products/${reusedProductId}.json`, {
+                  await shadowFetch(`${apiBase}/products/${reusedProductId}.json`, {
                     method: "PUT",
                     headers,
                     body: JSON.stringify({
@@ -11802,7 +11847,8 @@ ${orientationExtra}
       // Join a PreShadow mint already running for THIS persist key (size-change
       // debounce). Timeout is "not ready" — do not start a second mint.
       const flightKey = preShadowFlightKey(shop, persistDesignId);
-      const flight = await awaitExistingFlight(flightKey, PRE_SHADOW_AWAIT_MS);
+      const flight = await awaitExistingFlight(flightKey, RESOLVE_FLIGHT_JOIN_MS);
+      step(`flight join=${flight}`);
       if (flight === "timeout") {
         console.warn(`[ShadowProduct] in-flight await timed out key=${persistDesignId}`);
         return res.json({
@@ -11876,7 +11922,8 @@ ${orientationExtra}
 
       // 2. Canonical source of truth: resolve productId from variantId.
       //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
-      const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      const variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      step(`base variant lookup ${variantLookupRes.status}`);
       if (!variantLookupRes.ok) {
         const t = await variantLookupRes.text();
         console.error(`[ShadowProduct] Failed to fetch variant ${variantId}:`, t.substring(0, 200));
@@ -11918,7 +11965,7 @@ ${orientationExtra}
       // Best-effort product title lookup for a nicer shadow title (non-fatal).
       let baseProductTitle = "Custom Design";
       try {
-        const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
+        const productRes = await shadowFetch(`${apiBase}/products/${productId}.json?fields=id,title`, { headers });
         if (productRes.ok) {
           const { product: baseProduct } = await productRes.json();
           if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
@@ -11941,7 +11988,8 @@ ${orientationExtra}
       // It stays hidden from customers because it is not added to any collection and
       // is not linked from navigation — Shopify only surfaces products in collections.
       const sixHoursFromNow = new Date(Date.now() + 6 * 60 * 60 * 1000);
-      const createProductRes = await fetch(`${apiBase}/products.json`, {
+      step("creating shadow product");
+      const createProductRes = await shadowFetch(`${apiBase}/products.json`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -11984,24 +12032,10 @@ ${orientationExtra}
       console.log(
         `[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId}) status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
       );
-      await ensureShadowVariantPurchasable({
-        shop,
-        token,
-        variantId: shadowVariant.id,
-        baseVariantId: variantId,
-      });
+      step(`created shadow variant=${shadowVariant.id}`);
 
-      // 6. Assign the mockup image to the variant
-      if (shadowProduct.images && shadowProduct.images.length > 0) {
-        const imgId = shadowProduct.images[0].id;
-        await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
-        }).catch(() => { /* non-fatal */ });
-      }
-
-      // 8. Persist the shadow product record in our DB
+      // Persist before the purchasable writes: if they time out, the next tap
+      // reuses (and re-asserts) this product instead of minting another.
       await storage.createPublishedProduct({
         shop,
         designId: persistDesignId,
@@ -12015,12 +12049,31 @@ ${orientationExtra}
         cartAddedAt: null,
       } as any);
 
+      await ensureShadowVariantPurchasable({
+        shop,
+        token,
+        variantId: shadowVariant.id,
+        baseVariantId: variantId,
+      });
+      step("created purchasable ok");
+
+      // 6. Assign the mockup image to the variant
+      if (shadowProduct.images && shadowProduct.images.length > 0) {
+        const imgId = shadowProduct.images[0].id;
+        await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
+        }).catch(() => { /* non-fatal */ });
+      }
+
       try {
         await assertAjaxVariantVisible({
           shop,
           variantId: shadowVariant.id,
           adminLive: true,
         });
+        step("created storefront-visible ok");
       } catch (visErr: any) {
         if (visErr instanceof ShadowStorefrontNotReadyError) {
           settleResolveFlight?.({
@@ -12055,7 +12108,8 @@ ${orientationExtra}
         liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
       });
     } catch (error: any) {
-      if (error instanceof ShadowStorefrontNotReadyError) {
+      step(`error ${error?.name || "Error"}: ${String(error?.message || error).slice(0, 200)}`);
+      if (error instanceof ShadowStorefrontNotReadyError || isFetchTimeoutError(error)) {
         return res.json({
           success: false,
           error: ATC_SHADOW_STILL_PREPARING,
@@ -12071,9 +12125,12 @@ ${orientationExtra}
         });
       }
       console.error("[ShadowProduct] Error:", error);
-      res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+      if (!res.headersSent) res.status(500);
+      res.json({ success: false, error: error?.message || "Internal server error" });
     } finally {
+      clearTimeout(deadline);
       settleResolveFlight?.();
+      step("done");
     }
   });
 

@@ -15,6 +15,7 @@ import { ShadowStorefrontNotReadyError, assertAjaxVariantVisible } from "./shado
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import type { PrintConfigFingerprintInput } from "@shared/printConfigFingerprint";
 import { PRE_SHADOW_AWAIT_MS } from "@shared/atcStorefrontRetry";
+import { SHADOW_CREATE_FETCH_TIMEOUT_MS, shadowFetch } from "./shadow-admin-fetch";
 
 export { PRE_SHADOW_AWAIT_MS };
 
@@ -29,16 +30,34 @@ export function getPreShadowInFlight(key: string): Promise<FlightValue> | undefi
   return preShadowInFlight.get(key);
 }
 
+/**
+ * A mint that never settles must not block every later resolve for its key.
+ * Above the slowest real mint (Admin create + purchasable + Ajax poll).
+ */
+export const PRE_SHADOW_FLIGHT_MAX_AGE_MS = 90_000;
+
+function trackFlight(key: string, run: Promise<FlightValue>): void {
+  preShadowInFlight.set(key, run);
+  const evict = setTimeout(() => {
+    if (preShadowInFlight.get(key) === run) {
+      console.warn(`[PreShadow] evicting in-flight ${key} unsettled after ${PRE_SHADOW_FLIGHT_MAX_AGE_MS}ms`);
+      preShadowInFlight.delete(key);
+    }
+  }, PRE_SHADOW_FLIGHT_MAX_AGE_MS);
+  evict.unref?.();
+  void run.finally(() => {
+    clearTimeout(evict);
+    if (preShadowInFlight.get(key) === run) preShadowInFlight.delete(key);
+  });
+}
+
 /** Register ATC resolve's create so a trailing debounce cannot mint a second product. */
 export function registerPreShadowInFlight(
   key: string,
   run: Promise<FlightValue>,
 ): boolean {
   if (preShadowInFlight.has(key)) return false;
-  preShadowInFlight.set(key, run);
-  void run.finally(() => {
-    if (preShadowInFlight.get(key) === run) preShadowInFlight.delete(key);
-  });
+  trackFlight(key, run);
   return true;
 }
 
@@ -70,10 +89,7 @@ export async function awaitInFlightOrGenerate(
   const existing = preShadowInFlight.get(key);
   const run = existing ?? generate();
   if (!existing) {
-    preShadowInFlight.set(key, run);
-    void run.finally(() => {
-      if (preShadowInFlight.get(key) === run) preShadowInFlight.delete(key);
-    });
+    trackFlight(key, run);
   } else {
     console.log(`[PreShadow] already in flight — joining ${key}`);
   }
@@ -156,13 +172,17 @@ export async function runPreShadowMint(args: {
 
   const refreshShadowImage = async (productId: string, variantId: string) => {
     try {
-      const imgRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          image: { src: primaryMockupUrl, variant_ids: [Number(variantId)] },
-        }),
-      });
+      const imgRes = await shadowFetch(
+        `${apiBase}/products/${productId}/images.json`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            image: { src: primaryMockupUrl, variant_ids: [Number(variantId)] },
+          }),
+        },
+        SHADOW_CREATE_FETCH_TIMEOUT_MS,
+      );
       if (!imgRes.ok) {
         const t = await imgRes.text();
         console.warn(`[PreShadow] Failed to refresh shadow image:`, imgRes.status, t.substring(0, 200));
@@ -227,7 +247,7 @@ export async function runPreShadowMint(args: {
     };
   }
 
-  const productRes = await fetch(`${apiBase}/products/${baseProductId}.json`, { headers });
+  const productRes = await shadowFetch(`${apiBase}/products/${baseProductId}.json`, { headers });
   if (!productRes.ok) {
     console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
     return;
@@ -244,31 +264,35 @@ export async function runPreShadowMint(args: {
     .join(" / ");
   const shadowTitle = buildShadowProductTitle(baseProduct.title, variantOptionParts);
   const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
-  const createRes = await fetch(`${apiBase}/products.json`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      product: {
-        title: shadowTitle,
-        status: "unlisted",
-        tags: "appai-shadow",
-        variants: [
-          {
-            price: priceOverride || baseVariant.price,
-            compare_at_price: baseVariant.compare_at_price || null,
-            taxable: baseVariant.taxable,
-            requires_shipping: baseVariant.requires_shipping,
-            weight: baseVariant.weight,
-            weight_unit: baseVariant.weight_unit,
-            inventory_management: null,
-            inventory_policy: "continue",
-            fulfillment_service: "manual",
-          },
-        ],
-        images: [{ src: primaryMockupUrl }],
-      },
-    }),
-  });
+  const createRes = await shadowFetch(
+    `${apiBase}/products.json`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        product: {
+          title: shadowTitle,
+          status: "unlisted",
+          tags: "appai-shadow",
+          variants: [
+            {
+              price: priceOverride || baseVariant.price,
+              compare_at_price: baseVariant.compare_at_price || null,
+              taxable: baseVariant.taxable,
+              requires_shipping: baseVariant.requires_shipping,
+              weight: baseVariant.weight,
+              weight_unit: baseVariant.weight_unit,
+              inventory_management: null,
+              inventory_policy: "continue",
+              fulfillment_service: "manual",
+            },
+          ],
+          images: [{ src: primaryMockupUrl }],
+        },
+      }),
+    },
+    SHADOW_CREATE_FETCH_TIMEOUT_MS,
+  );
   if (!createRes.ok) {
     const errText = await createRes.text();
     console.error(`[PreShadow] Failed to create shadow product: ${createRes.status}`, errText.substring(0, 200));
@@ -288,7 +312,7 @@ export async function runPreShadowMint(args: {
 
   if (shadowProduct.images?.length > 0) {
     const imgId = shadowProduct.images[0].id;
-    await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
+    await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),

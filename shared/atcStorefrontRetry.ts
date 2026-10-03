@@ -24,6 +24,16 @@ export const PRE_SHADOW_SIZE_DEBOUNCE_MS = 400;
 export const PRE_SHADOW_AWAIT_MS = 30_000;
 
 /**
+ * resolve-design-variant answers by this point (still_preparing if the work is
+ * unfinished) so it lands before the storefront's 30s safeFetch abort. Work
+ * continues server-side and persists; the next tap reuses it.
+ */
+export const RESOLVE_DESIGN_VARIANT_DEADLINE_MS = 22_000;
+
+/** resolve's wait on an in-flight PreShadow mint — must sit under the deadline. */
+export const RESOLVE_FLIGHT_JOIN_MS = 12_000;
+
+/**
  * Resolve never returned a shadow (no https mockup, or resolve-design-variant
  * came back empty). Distinct from replica-lag copy so field logs split the two.
  */

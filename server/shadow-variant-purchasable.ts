@@ -22,6 +22,7 @@ import {
   ShadowNotOnStorefrontError,
   ensureProductOnOnlineStore,
 } from "./shopify-publications";
+import { SHADOW_FETCH_TIMEOUT_MS, isFetchTimeoutError } from "./shadow-admin-fetch";
 
 export class ShadowVariantNotPurchasableError extends Error {
   readonly code = "shadow_not_purchasable" as const;
@@ -67,6 +68,7 @@ async function shopifyGraphql(opts: {
       "X-Shopify-Access-Token": opts.token,
     },
     body: JSON.stringify({ query: opts.query, variables: opts.variables }),
+    signal: AbortSignal.timeout(SHADOW_FETCH_TIMEOUT_MS),
   });
   const json = (await res.json().catch(() => ({}))) as GraphqlJson;
   if (!res.ok) {
@@ -315,24 +317,28 @@ export async function ensureShadowVariantPurchasable(opts: {
   console.log(`[ShadowProduct] inventoryPolicy CONTINUE confirmed for variant ${variantId}`);
 
   const numericProductId = productGid.replace(/\D/g, "");
-  try {
-    await ensureProductOnOnlineStore({
-      shop,
-      accessToken: token,
-      productId: numericProductId,
-    });
-  } catch (e: any) {
-    if (e instanceof ShadowNotOnStorefrontError) {
-      throw new ShadowVariantNotPurchasableError(e.message, variantId, e.details);
+  const publish = (async () => {
+    try {
+      await ensureProductOnOnlineStore({
+        shop,
+        accessToken: token,
+        productId: numericProductId,
+      });
+    } catch (e: any) {
+      if (e instanceof ShadowNotOnStorefrontError) {
+        throw new ShadowVariantNotPurchasableError(e.message, variantId, e.details);
+      }
+      if (isFetchTimeoutError(e)) throw e;
+      throw new ShadowVariantNotPurchasableError(
+        `Shadow Online Store publish failed: ${e?.message || e}`,
+        variantId,
+      );
     }
-    throw new ShadowVariantNotPurchasableError(
-      `Shadow Online Store publish failed: ${e?.message || e}`,
-      variantId,
-    );
-  }
+  })();
 
   const itemId = variant?.inventoryItem?.id;
-  if (itemId) {
+  const untrack = (async () => {
+    if (!itemId) return;
     try {
       const untracked = await shopifyGraphql({
         shop,
@@ -359,16 +365,26 @@ export async function ensureShadowVariantPurchasable(opts: {
         e?.message || e,
       );
     }
+  })();
+
+  const parity = baseVariantId
+    ? ensureShadowDeliveryProfileParity({
+        shop,
+        token,
+        variantId,
+        baseVariantId,
+      })
+    : Promise.resolve();
+
+  const settled = await Promise.allSettled([publish, untrack, parity]);
+  for (const s of settled) {
+    if (s.status === "rejected") throw s.reason;
   }
 
   if (baseVariantId) {
-    await ensureShadowDeliveryProfileParity({
-      shop,
-      token,
-      variantId,
-      baseVariantId,
-    });
-    await attachShadowShippingBestEffort({
+    // Shipping-map bookkeeping only; parity above is the purchasability gate.
+    // Awaiting it put a full-shop reconcile (unmapped base) on every resolve.
+    void attachShadowShippingBestEffort({
       shop,
       shopifyVariantId: variantId,
       sourceVariantId: baseVariantId,

@@ -3,6 +3,7 @@
  * optionally apply a both-tier override. Never write front over a both-tier
  * charge when Print Side is Both.
  */
+import { SHADOW_FETCH_TIMEOUT_MS as PRICE_FETCH_TIMEOUT_MS } from "./shadow-admin-fetch";
 
 export function resolveShadowSellPrice(
   frontPrice: string | number | null | undefined,
@@ -39,7 +40,10 @@ export async function syncShadowVariantPrice(opts: {
 
   let liveFront: string | null = null;
   try {
-    const res = await fetch(`${apiBase}/variants/${baseVariantId}.json`, { headers });
+    const res = await fetch(`${apiBase}/variants/${baseVariantId}.json`, {
+      headers,
+      signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS),
+    });
     if (res.ok) {
       const body = (await res.json()) as { variant?: { price?: string } };
       const n = parseFloat(String(body?.variant?.price ?? ""));
@@ -86,6 +90,7 @@ export async function syncShadowVariantPrice(opts: {
       body: JSON.stringify({
         variant: { id: Number(shadowVariantId), price: decided.written },
       }),
+      signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS),
     });
     if (!put.ok) {
       const t = await put.text();

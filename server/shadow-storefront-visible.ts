@@ -10,6 +10,9 @@ export const SHADOW_STOREFRONT_VISIBLE_WAITS_MS = [
   800, 1200, 1600, 2000, 2500, 3000,
 ] as const;
 
+/** Per storefront request. A stalled probe must not outlive the ATC resolve. */
+export const SHADOW_STOREFRONT_FETCH_TIMEOUT_MS = 5_000;
+
 export class ShadowStorefrontNotReadyError extends Error {
   readonly code = "still_preparing" as const;
   constructor(
@@ -75,6 +78,7 @@ export async function probeAjaxVariantVisible(
         Accept: "application/json",
         ...(cookie ? { Cookie: cookie } : {}),
       },
+      signal: AbortSignal.timeout(SHADOW_STOREFRONT_FETCH_TIMEOUT_MS),
     });
     const text = await res.text();
     return classifyAjaxVariantResponse({
@@ -92,14 +96,20 @@ export async function probeAjaxVariantVisible(
   }
 }
 
+const passwordCookieCache = new Map<string, { cookie: string; expiresAt: number }>();
+const PASSWORD_COOKIE_TTL_MS = 10 * 60 * 1000;
+
 async function storefrontPasswordCookie(shop: string): Promise<string | undefined> {
   const pw = process.env.SHOPIFY_STOREFRONT_PASSWORD || process.env.STOREFRONT_PASSWORD;
   if (!pw) return undefined;
+  const cached = passwordCookieCache.get(shop);
+  if (cached && cached.expiresAt > Date.now()) return cached.cookie;
   const pwRes = await fetch(`https://${shop}/password`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     redirect: "manual",
     body: `form_type=storefront_password&utf8=%E2%9C%93&password=${encodeURIComponent(pw)}`,
+    signal: AbortSignal.timeout(SHADOW_STOREFRONT_FETCH_TIMEOUT_MS),
   });
   const raw = typeof pwRes.headers.getSetCookie === "function"
     ? pwRes.headers.getSetCookie()
@@ -107,6 +117,7 @@ async function storefrontPasswordCookie(shop: string): Promise<string | undefine
       ? [pwRes.headers.get("set-cookie")!]
       : [];
   const cookie = raw.map((c) => String(c).split(";")[0]).filter(Boolean).join("; ");
+  if (cookie) passwordCookieCache.set(shop, { cookie, expiresAt: Date.now() + PASSWORD_COOKIE_TTL_MS });
   return cookie || undefined;
 }
 
@@ -142,6 +153,7 @@ export async function awaitAjaxVariantVisible(opts: {
       console.log(`[ShadowProduct] variant ${variantId} storefront-visible via /variants/{id}.js`);
       return { visible: true, probe: "visible" };
     }
+    if (last === "password" && cookie) passwordCookieCache.delete(shop);
     if (last === "password" && !cookie) {
       console.warn(
         `[ShadowProduct] variant ${variantId} Ajax probe password-gated — set SHOPIFY_STOREFRONT_PASSWORD for a real gate`,
