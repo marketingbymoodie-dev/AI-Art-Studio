@@ -86,6 +86,14 @@ describe("flatBlankResolve", () => {
     expect(resolveFlatPlacementGeometryKey(manifest, { sizeId: "36-x-24", frameColorId: "black" })).toBe(
       "36-x-24",
     );
+    // Storefront always passes the colour name. That alias must not win over size.
+    expect(
+      resolveFlatBlankColorId(manifest, {
+        sizeId: "36-x-24",
+        frameColorId: "black",
+        frameColorName: "Black",
+      }),
+    ).toBe("36x24:black");
   });
 
   it("maps hyphenated import size ids onto 36x24 harvest keys, not the first black blank", () => {

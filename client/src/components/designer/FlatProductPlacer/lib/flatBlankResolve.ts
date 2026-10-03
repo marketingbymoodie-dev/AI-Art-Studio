@@ -1,5 +1,5 @@
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
-import { decorSizeIdCandidates } from "@shared/productVariantOptions";
+import { canonicalDecorSizeId, decorSizeIdCandidates } from "@shared/productVariantOptions";
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 
 function normalizeFlatColorKey(id: string): string {
@@ -37,12 +37,22 @@ function blankKeyMatches(manifest: FlatCalibrationManifest, key: string): boolea
   return !!(entry?.front || entry?.back);
 }
 
+function blankSizeToken(id: string): string | null {
+  const sizePart = id.includes(":") ? id.slice(0, id.indexOf(":")) : id;
+  return canonicalDecorSizeId(sizePart);
+}
+
 function findBlankKey(manifest: FlatCalibrationManifest, id: string, name?: string): string | null {
   if (!id && !name) return null;
   if (id && blankKeyMatches(manifest, id)) return id;
+  // A sized lookup (`36-x-24` / `36-x-24:black`) must not match a different
+  // size just because the frame colour name aliases to `black`. That returned
+  // the first `*:black` blank (14×11) for every poster size.
+  const wantedSize = id ? blankSizeToken(id) : null;
   const aliases = new Set(colorKeyAliases(id, name).map((a) => normalizeFlatColorKey(a)));
   for (const k of Object.keys(manifest.blanks || {})) {
     if (!blankKeyMatches(manifest, k)) continue;
+    if (wantedSize && blankSizeToken(k) !== wantedSize) continue;
     const kn = normalizeFlatColorKey(k);
     const seg = normalizeFlatColorKey(blankColorSegment(k));
     if (aliases.has(kn) || aliases.has(seg)) return k;
