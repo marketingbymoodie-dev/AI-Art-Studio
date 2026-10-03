@@ -4,10 +4,28 @@ import {
   deriveVariantGroups,
   evaluateTier,
   pickStandardMethod,
+  retryDelayMs,
   stableStringify,
   DEFAULT_TIER_CONFIG,
+  PRINTIFY_RETRY_BACKOFF_MS,
   type NormalizedTable,
 } from "./shipping-tables";
+
+describe("retryDelayMs", () => {
+  it("retries 429 and 5xx with backoff, then gives up", () => {
+    expect(retryDelayMs(429, null, 0)).toBe(PRINTIFY_RETRY_BACKOFF_MS[0]);
+    expect(retryDelayMs(503, null, 1)).toBe(PRINTIFY_RETRY_BACKOFF_MS[1]);
+    expect(retryDelayMs(429, null, PRINTIFY_RETRY_BACKOFF_MS.length)).toBeNull();
+  });
+  it("honours Retry-After seconds, capped", () => {
+    expect(retryDelayMs(429, "7", 0)).toBe(7000);
+    expect(retryDelayMs(429, "9999", 0)).toBe(120_000);
+  });
+  it("does not retry other 4xx", () => {
+    expect(retryDelayMs(404, null, 0)).toBeNull();
+    expect(retryDelayMs(401, "5", 0)).toBeNull();
+  });
+});
 
 describe("pickStandardMethod", () => {
   it("prefers exact standard over economy/express", () => {
