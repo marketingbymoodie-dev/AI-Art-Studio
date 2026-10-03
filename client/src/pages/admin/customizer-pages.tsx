@@ -29,6 +29,11 @@ import {
   CheckCircle2, ChevronRight, DollarSign, Info, RefreshCw, Truck, Factory, Edit2, Upload,
 } from "lucide-react";
 import { normalizeSelectionId, SHOPIFY_MAX_VARIANTS_PER_PRODUCT } from "@shared/variantMapResolve";
+import {
+  describeDivergence,
+  describeProductTypeBinding,
+  findDivergentProductTypes,
+} from "@/lib/productTypeBinding";
 import { condenseVariantPriceRows, unifySameSizeSuggestedPrices } from "@shared/condenseVariantPrices";
 import { dedupeCreatePageBlanks } from "@shared/productTypePicker";
 import { resolveVariantCostCents, variantCostLabelsMatch } from "@shared/printifyCostLabels";
@@ -1429,6 +1434,26 @@ export default function AdminCustomizerPages() {
 
   const wizardProviderLabel =
     wizardProvidersData?.find((p) => p.id === wizardProviderId)?.title ?? selectedBlankProviderLabel;
+
+  // After supplier apply, formProductId points at the product type the page will bind to.
+  const wizardBinding = useMemo(() => {
+    if (!selectedBlank) return null;
+    const bound = {
+      productTypeId: selectedBlank.productTypeId,
+      title: selectedBlank.title,
+      providerId: wizardProviderId ?? selectedBlank.printifyProviderId ?? null,
+    };
+    const divergent = findDivergentProductTypes(
+      bound.productTypeId,
+      selectedBlank.printifyBlueprintId,
+      blanksData?.blanks ?? [],
+      pagesData?.pages ?? [],
+    );
+    return {
+      line: `Binding to ${describeProductTypeBinding(bound)}.`,
+      warnings: divergent.map((d) => describeDivergence(bound, d)),
+    };
+  }, [selectedBlank, wizardProviderId, blanksData?.blanks, pagesData?.pages]);
 
   const wizardVariantCount = useMemo(() => {
     if (wizardSizeIds.size === 0) return 0;
@@ -3411,6 +3436,11 @@ export default function AdminCustomizerPages() {
                         <span className="text-muted-foreground">Print provider</span>
                         <span className="font-medium">{wizardProviderLabel ?? "—"}</span>
                       </div>
+                      {wizardBinding && (
+                        <p className="text-xs text-muted-foreground" data-testid="text-wizard-binding">
+                          {wizardBinding.line}
+                        </p>
+                      )}
                       <div className="flex justify-between gap-4">
                         <span className="text-muted-foreground shrink-0">Art styles</span>
                         <span className="font-medium text-right">
@@ -3445,6 +3475,16 @@ export default function AdminCustomizerPages() {
                         </div>
                       )}
                     </div>
+                    {wizardBinding?.warnings.map((w) => (
+                      <div
+                        key={w}
+                        className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+                        data-testid="warning-wizard-binding-divergence"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        <p className="text-xs">{w}</p>
+                      </div>
+                    ))}
                     {createMutation.isPending ? (
                       <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2">
                         <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 mt-0.5" />
@@ -3769,6 +3809,21 @@ export default function AdminCustomizerPages() {
                   ]
                     .filter(Boolean)
                     .join(" — ");
+                  const bindingLine = blank
+                    ? describeProductTypeBinding({
+                        productTypeId: blank.productTypeId,
+                        title: blank.title,
+                        providerId: blank.printifyProviderId,
+                      }) + (blank.printifyProviderName ? ` (${blank.printifyProviderName})` : "")
+                    : null;
+                  const siblingPageTypes = blank
+                    ? findDivergentProductTypes(
+                        blank.productTypeId,
+                        blank.printifyBlueprintId,
+                        blanksData?.blanks ?? [],
+                        pagesData?.pages ?? [],
+                      ).filter((d) => d.pageHandles.length > 0)
+                    : [];
                   const retailPrice = displayRetailPrice(page.baseProductPrice);
                   const priceMissing = !hasPositiveRetailPrice(page.baseProductPrice);
                   return (
@@ -3822,9 +3877,22 @@ export default function AdminCustomizerPages() {
                                 : " · $0.00 on Shopify — resync before Live"}
                             </p>
                           )}
-                          {providerLabel && (
+                          {bindingLine ? (
+                            <p className="text-xs text-muted-foreground mt-1" title={oosTooltip} data-testid={`text-page-binding-${page.id}`}>
+                              {bindingLine}
+                            </p>
+                          ) : providerLabel && (
                             <p className="text-xs text-muted-foreground mt-1" title={oosTooltip}>
                               Printify: {providerLabel}
+                            </p>
+                          )}
+                          {siblingPageTypes.length > 0 && (
+                            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3 shrink-0" />
+                              Same product on a different type:{" "}
+                              {siblingPageTypes
+                                .map((d) => `pt ${d.productTypeId}, Printify provider ${d.providerId ?? "?"} (/pages/${d.pageHandles.join(", /pages/")})`)
+                                .join("; ")}
                             </p>
                           )}
                           <p className="text-xs text-muted-foreground mt-1">
