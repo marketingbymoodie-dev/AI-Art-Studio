@@ -31,7 +31,9 @@
   if a studio block is on the page.
 {% endcomment %}
 {% if product and product.tags contains 'ai-art-studio-enabled' %}
-  {% unless product.metafields.ai_art_studio.enable.value == true %}
+  {% comment %} enable is a single_line_text_field ("true"), not a boolean {% endcomment %}
+  {% assign appai_studio_enable = product.metafields.ai_art_studio.enable.value | append: '' | downcase | strip %}
+  {% unless appai_studio_enable == 'true' %}
     <script
       src="{{ 'appai-base-product-redirect.js' | asset_url }}"
       data-appai-base-product-id="{{ product.id }}"

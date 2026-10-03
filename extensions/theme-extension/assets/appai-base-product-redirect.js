@@ -31,7 +31,21 @@
     '[data-embed-handled="true"]'
   ];
 
+  function studioEnabledForProduct() {
+    var meta = document.querySelector('meta[name="ai_art_studio:enable"]');
+    if (meta && meta.content === 'true') return true;
+    var data = document.querySelector('[data-ai-art-studio]');
+    if (!data) return false;
+    try {
+      var parsed = JSON.parse(data.textContent);
+      return parsed.enabled === true || parsed.enabled === 'true';
+    } catch (e) {
+      return false;
+    }
+  }
+
   function studioOnPage() {
+    if (studioEnabledForProduct()) return true;
     for (var i = 0; i < STUDIO_SELECTORS.length; i++) {
       if (document.querySelector(STUDIO_SELECTORS[i])) return true;
     }
