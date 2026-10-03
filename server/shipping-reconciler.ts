@@ -45,6 +45,7 @@ import {
 } from "@shared/shipping-bands";
 import {
   buildShopDesiredState,
+  classifyShippingCoverageGaps,
   maxRatesPerZone,
   type DesiredClassInput,
   type DesiredProfile,
@@ -54,6 +55,7 @@ import {
 } from "@shared/shipping-desired-state";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
+import { parseVariantAvailabilityMap } from "@shared/productIntelligence";
 import { storage } from "./storage";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 
@@ -432,6 +434,76 @@ async function resolveFxRate(
   return rounded;
 }
 
+/**
+ * Blanks with a Shopify variant but no shipping-table row get no profile. When
+ * Product Intelligence has them out of stock that is expected (storefront
+ * lock, automatic rejoin on restock); an in-stock blank with no row is a real
+ * coverage hole.
+ */
+async function collectCoverageGapWarnings(shop: string, warnings: string[]): Promise<void> {
+  const bare = shop.replace(/\.myshopify\.com$/i, "");
+  const types = await db
+    .select({
+      id: productTypes.id,
+      name: productTypes.name,
+      variantMap: productTypes.variantMap,
+      shopifyVariantIds: productTypes.shopifyVariantIds,
+      variantAvailability: productTypes.variantAvailability,
+    })
+    .from(productTypes)
+    .where(inArray(productTypes.shopifyShopDomain, [shop, bare]));
+  if (!types.length) return;
+  const covered = await db
+    .select({ productTypeId: variantShipping.productTypeId, sizeColorKey: variantShipping.sizeColorKey })
+    .from(variantShipping)
+    .where(inArray(variantShipping.productTypeId, types.map((t) => t.id)));
+  const coveredByType = new Map<number, Set<string>>();
+  for (const c of covered) {
+    const set = coveredByType.get(c.productTypeId) || new Set<string>();
+    set.add(c.sizeColorKey);
+    coveredByType.set(c.productTypeId, set);
+  }
+  for (const t of types) {
+    const coveredKeys = coveredByType.get(t.id);
+    if (!coveredKeys) continue; // no ingested table at all — reported as unresolved
+    let variantMap: Record<string, unknown> = {};
+    try {
+      variantMap = JSON.parse(t.variantMap || "{}");
+    } catch {
+      continue;
+    }
+    let liveIds: Record<string, unknown> = {};
+    try {
+      const raw = t.shopifyVariantIds as unknown;
+      liveIds = (typeof raw === "string" ? JSON.parse(raw) : raw) || {};
+    } catch {
+      continue;
+    }
+    const liveKeys = new Set(
+      Object.entries(liveIds)
+        .filter(([, vid]) => vid != null)
+        .map(([label]) => normalizeVariantKeyLoose(label)),
+    );
+    const blankKeys = Object.keys(variantMap).filter((k) => liveKeys.has(normalizeVariantKeyLoose(k)));
+    const gaps = classifyShippingCoverageGaps(
+      blankKeys,
+      coveredKeys,
+      parseVariantAvailabilityMap(t.variantAvailability),
+    );
+    const label = `pt ${t.id} ${t.name}`;
+    if (gaps.missingInStock.length) {
+      warnings.push(
+        `COVERAGE: ${label}: ${gaps.missingInStock.length} in-stock variant(s) missing from Printify's shipping table — no profile, undeliverable outside General: ${gaps.missingInStock.slice(0, 8).join(", ")}${gaps.missingInStock.length > 8 ? ", …" : ""}`,
+      );
+    }
+    if (gaps.unavailable.length) {
+      warnings.push(
+        `${label}: ${gaps.unavailable.length} variant(s) out of stock at Printify — not for sale on the storefront until restocked`,
+      );
+    }
+  }
+}
+
 export async function loadDesiredShopState(
   shop: string,
   opts: { shopCurrency: string; fxRate: number; warnings?: string[] },
@@ -439,6 +511,7 @@ export async function loadDesiredShopState(
   const stale = new Map<string, StaleClassTable>();
   const classInputs = await loadClassInputs(stale);
   const memberships = await loadShopMemberships(shop, opts.warnings);
+  if (opts.warnings) await collectCoverageGapWarnings(shop, opts.warnings);
   if (opts.warnings && stale.size) {
     const used = new Set(memberships.map((m) => m.classKey));
     for (const [classKey, s] of Array.from(stale.entries())) {

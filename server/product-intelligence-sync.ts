@@ -576,6 +576,38 @@ export async function backfillProductTypeFromCosts(pt: ProductType): Promise<num
   return inserted;
 }
 
+async function refreshShippingForStockChanges(
+  pairs: Array<{ blueprintId: number; providerId: number }>,
+): Promise<void> {
+  try {
+    const { ingestShippingClass } = await import("./shipping-tables");
+    const { shippingClasses } = await import("@shared/schema");
+    let changed = 0;
+    for (const pair of pairs) {
+      const [cls] = await db
+        .select({ id: shippingClasses.id })
+        .from(shippingClasses)
+        .where(
+          and(
+            eq(shippingClasses.blueprintId, pair.blueprintId),
+            eq(shippingClasses.providerId, pair.providerId),
+          ),
+        )
+        .limit(1);
+      if (!cls) continue;
+      const result = await ingestShippingClass(pair);
+      if (result.status === "updated" || result.status === "created") changed++;
+    }
+    console.log(`${TAG} stock change → shipping tables refreshed: classes=${pairs.length} changed=${changed}`);
+    if (changed > 0) {
+      const { reconcileAllTableModeShops } = await import("./shipping-reconciler");
+      await reconcileAllTableModeShops("pi-stock-change");
+    }
+  } catch (e: any) {
+    console.error(`${TAG} stock-change shipping refresh failed:`, e?.message || e);
+  }
+}
+
 export async function runCatalogueProductSync(opts: {
   force?: boolean;
   source?: string;
@@ -720,6 +752,24 @@ export async function runCatalogueProductSync(opts: {
   console.log(
     `${TAG} run ${run.id} complete: products=${productsChecked} variants=${variantsChecked} priceΔ=${priceChanges} availΔ=${availabilityChanges} failures=${syncFailures}`,
   );
+
+  // Printify's shipping table lists only in-stock variants, so a restock (or a
+  // stock-out) also changes delivery-profile membership. Refresh those classes
+  // now so the storefront unlock and the shipping profile land together
+  // instead of up to a day apart on the separate tables-sync timer.
+  const changedPairs = new Map<string, { blueprintId: number; providerId: number }>();
+  for (const r of results) {
+    if (!r.ok || r.availabilityChanges <= 0) continue;
+    const pt = allPts.find((p) => p.id === r.productTypeId);
+    if (pt?.printifyBlueprintId == null || pt.printifyProviderId == null) continue;
+    changedPairs.set(`${pt.printifyBlueprintId}:${pt.printifyProviderId}`, {
+      blueprintId: pt.printifyBlueprintId,
+      providerId: pt.printifyProviderId,
+    });
+  }
+  if (changedPairs.size) {
+    void refreshShippingForStockChanges(Array.from(changedPairs.values()));
+  }
 
   return { ran: true, runId: run.id, results };
 }
