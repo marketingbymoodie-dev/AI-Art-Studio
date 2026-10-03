@@ -177,6 +177,17 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shipping_store_settings",   column: "pinned_fx_currency",      type: "TEXT" },
   // Merchant own-key entitlement (unused until merchant own-key mode ships).
   { table: "merchants",                 column: "can_use_own_api_keys",    type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  // Style-example batches on the staging render probe. Null on verbatim rows.
+  { table: "render_probe_results",      column: "batch_id",                type: "TEXT" },
+  { table: "render_probe_results",      column: "visual_system",           type: "TEXT" },
+  { table: "render_probe_results",      column: "concept_framework",       type: "TEXT" },
+  { table: "render_probe_results",      column: "composed_prompt",         type: "TEXT" },
+  { table: "render_probe_results",      column: "credential_ref",          type: "TEXT" },
+  { table: "render_probe_results",      column: "route",                   type: "TEXT" },
+  { table: "render_probe_results",      column: "reference_photo_id",      type: "TEXT" },
+  { table: "render_probe_results",      column: "behavior",                type: "TEXT" },
+  { table: "render_probe_results",      column: "product_family",          type: "TEXT" },
+  { table: "render_probe_results",      column: "concept_snapshot",        type: "JSONB" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -926,7 +937,17 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "storage_path" text,
         "success" boolean NOT NULL,
         "error" text,
-        "created_at" timestamp DEFAULT NOW() NOT NULL
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "batch_id" text,
+        "visual_system" text,
+        "concept_framework" text,
+        "composed_prompt" text,
+        "credential_ref" text,
+        "route" text,
+        "reference_photo_id" text,
+        "behavior" text,
+        "product_family" text,
+        "concept_snapshot" jsonb
       )
     `,
   },

@@ -4,21 +4,42 @@
  * POST /api/staging/render-probe sends a prompt VERBATIM to a configured direct
  * renderer (Google Nano Banana family or OpenAI GPT Image) on the Petposterous
  * dedicated credentials — no prompt layers, decor rules or customer storage — so
- * a model/API path can be isolated from our prompt stack. Results (metadata +
- * image in a PRIVATE bucket) are kept for comparison over time and shown on
+ * a model/API path can be isolated from our prompt stack.
+ *
+ * POST /api/staging/render-probe/style-batch/prepare plus
+ * POST /api/staging/render-probe/style-example run the storefront compose
+ * (look + pinned concept framework) for the six Petposterous LOOKs. Those rows
+ * store the composed prompt. Verbatim rows still store only a prompt id + length.
+ *
+ * Results (metadata + image in a PRIVATE bucket) are shown on
  * GET /staging/render-probe.
  *
  * Every route is 404 unless the Railway environment is staging AND the
  * x-appai-probe-token header matches STAGING_PROBE_TOKEN. Never in production.
- * The browser never receives provider keys, bucket URLs or full prompt text
- * (only a prompt id and length).
+ * The browser never receives provider keys or bucket URLs. Verbatim prompts
+ * stay server-side; style-example rows return the composed prompt behind the
+ * same token so a set can be regenerated.
  */
 import type { Express, Request, Response } from "express";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import sharp from "sharp";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { desc, eq } from "drizzle-orm";
 import { renderProbeResults } from "@shared/schema";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, PETPOSTEROUS_VISUAL_SYSTEMS } from "@shared/petposterousCreative";
+import { PETPOSTEROUS_STYLES } from "@shared/packs/petposterous";
+import { generateImageBase64 } from "../replit_integrations/image/client";
+import {
+  STYLE_EXAMPLE_DEFAULT_VARIANTS,
+  STYLE_EXAMPLE_MAX_VARIANTS,
+  StyleExampleInputError,
+  composeStyleExample,
+  generatePinnedStyleConcept,
+  parseStyleExampleConcept,
+  styleExampleFamilyError,
+  styleExampleRecipe,
+  type StyleExampleFamily,
+} from "../style-example-batch";
 import {
   CREDENTIALS,
   GOOGLE_RENDERERS,
@@ -271,12 +292,267 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     return res.send(buf);
   });
 
+  app.post("/api/staging/render-probe/style-batch/prepare", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const behavior = str(body.behavior, 600);
+      const conceptFramework = str(body.conceptFramework, 80);
+      const productFamily = str(body.productFamily, 20, "apparel");
+      const variantsRaw = body.variants == null ? STYLE_EXAMPLE_DEFAULT_VARIANTS : Number(body.variants);
+      if (!Number.isInteger(variantsRaw) || variantsRaw < 1 || variantsRaw > STYLE_EXAMPLE_MAX_VARIANTS) {
+        return res.status(400).json({ error: `variants must be 1–${STYLE_EXAMPLE_MAX_VARIANTS}` });
+      }
+      const familyError = styleExampleFamilyError(productFamily);
+      if (familyError) return res.status(400).json({ error: familyError });
+      if (!behavior) return res.status(400).json({ error: "Describe what they do." });
+      if (!Object.prototype.hasOwnProperty.call(PETPOSTEROUS_CONCEPT_FRAMEWORKS, conceptFramework)) {
+        return res.status(400).json({ error: "Choose a concept framework." });
+      }
+
+      let photoId = str(body.referencePhotoId, 16);
+      if (typeof body.photoDataUrl === "string" && body.photoDataUrl) {
+        const parsed = parseImageDataUrl(body.photoDataUrl);
+        if (!parsed) return res.status(400).json({ error: "Photo must be a JPEG, PNG, or WebP under 8MB." });
+        const meta = await sharp(parsed.buf).metadata();
+        if (!meta.width || !meta.height) return res.status(400).json({ error: "Photo could not be read." });
+        photoId = await storeProbePhoto(parsed.buf, parsed.mime);
+      } else if (!photoId || !(await loadProbePhoto(photoId))) {
+        return res.status(400).json({ error: "A reference pet photo is required." });
+      }
+
+      const supplied = body.concept != null ? parseStyleExampleConcept(body.concept) : null;
+      if (body.concept != null && !supplied) return res.status(400).json({ error: "Concept snapshot is incomplete." });
+      const concept = supplied ?? (await generatePinnedStyleConcept(behavior, conceptFramework));
+      const recipe = styleExampleRecipe(productFamily as StyleExampleFamily);
+      const batchId = `b${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+      return res.json({
+        batchId,
+        referencePhotoId: photoId,
+        behavior,
+        conceptFramework,
+        concept,
+        variants: variantsRaw,
+        productFamily: recipe.productFamily,
+        aspectRatio: recipe.aspectRatio,
+        route: recipe.route,
+        model: recipe.model,
+        rendererId: recipe.rendererId,
+        credentialRef: recipe.credentialRef,
+        imageSize: recipe.imageSize,
+        provider: recipe.provider,
+        looks: PETPOSTEROUS_VISUAL_SYSTEMS.map((look) => ({ id: look.id, label: look.label })),
+      });
+    } catch (err) {
+      if (err instanceof StyleExampleInputError) return res.status(400).json({ error: err.message });
+      const status = Number((err as { status?: number }).status) || 502;
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        error: String((err as Error)?.message ?? err).slice(0, 300),
+      });
+    }
+  });
+
+  app.post("/api/staging/render-probe/style-example", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const batchId = str(body.batchId, 40);
+    if (!/^b[a-z0-9]{6,32}$/.test(batchId)) return res.status(400).json({ error: "batchId required" });
+    const variant = Number(body.variant);
+    if (!Number.isInteger(variant) || variant < 1 || variant > STYLE_EXAMPLE_MAX_VARIANTS) {
+      return res.status(400).json({ error: "variant out of range" });
+    }
+    const behavior = str(body.behavior, 600);
+    const conceptFramework = str(body.conceptFramework, 80);
+    const productFamily = str(body.productFamily, 20, "apparel");
+    const visualSystem = str(body.visualSystem, 80);
+    const photoId = str(body.referencePhotoId, 16);
+    const concept = parseStyleExampleConcept(body.concept);
+    if (!concept) return res.status(400).json({ error: "Concept snapshot is incomplete." });
+    const familyError = styleExampleFamilyError(productFamily);
+    if (familyError) return res.status(400).json({ error: familyError });
+    const dataUrl = await loadProbePhoto(photoId);
+    if (!dataUrl) return res.status(400).json({ error: "Reference photo was not found. Upload it again." });
+
+    let composed: ReturnType<typeof composeStyleExample>;
+    try {
+      composed = composeStyleExample({
+        behavior,
+        conceptFramework,
+        productFamily: productFamily as StyleExampleFamily,
+        visualSystem,
+        concept,
+        referenceDataUrl: dataUrl,
+      });
+    } catch (err) {
+      const message = err instanceof StyleExampleInputError ? err.message : "Could not compose the prompt.";
+      return res.status(400).json({ error: message });
+    }
+
+    const recipe = composed.recipe;
+    const experiment = `style-batch:${batchId}`;
+    const rowBase = {
+      experiment,
+      promptId: visualSystem,
+      promptChars: composed.sentPrompt.length,
+      run: variant,
+      provider: recipe.provider,
+      model: recipe.model,
+      rendererId: recipe.rendererId,
+      aspectRatio: recipe.aspectRatio,
+      imageSize: recipe.imageSize,
+      batchId,
+      visualSystem,
+      conceptFramework,
+      composedPrompt: composed.sentPrompt,
+      credentialRef: recipe.credentialRef,
+      route: recipe.route,
+      referencePhotoId: photoId,
+      behavior,
+      productFamily,
+      conceptSnapshot: concept,
+    };
+    const started = Date.now();
+    try {
+      const result = await generateImageBase64(composed.params);
+      if (!result.data) throw new Error("AI model returned no image data");
+      const buf = Buffer.from(result.data, "base64");
+      const meta = await sharp(buf).metadata();
+      const edges = await measureEdges(buf);
+      const mimeType = result.mimeType || "image/png";
+      let storagePath: string | null = null;
+      let storageError: string | null = null;
+      const c = sb();
+      if (c) {
+        try {
+          await ensureBucket(c);
+          const ext = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+          const path = `${experiment.replace(/[^A-Za-z0-9_-]/g, "-")}/${Date.now()}-${recipe.rendererId}-${visualSystem}-${variant}.${ext}`;
+          const { error } = await c.storage.from(BUCKET).upload(path, buf, { contentType: mimeType, upsert: false });
+          if (error) throw new Error(error.message);
+          storagePath = path;
+        } catch (e) {
+          storageError = String((e as Error)?.message ?? e).slice(0, 200);
+        }
+      }
+      void recordGenerationEvent(
+        {
+          kind: "image",
+          route: "staging-style-example",
+          experienceProfile: "petposterous",
+          visualSystem,
+          conceptFramework,
+          productFamily,
+          legacyModel: recipe.model,
+        },
+        { success: true, durationMs: Date.now() - started, meta: result.meta },
+      );
+      const [row] = await (await db())
+        .insert(renderProbeResults)
+        .values({
+          ...rowBase,
+          width: meta.width ?? null,
+          height: meta.height ?? null,
+          mimeType,
+          providerMs: result.meta?.durationMs ?? null,
+          totalMs: Date.now() - started,
+          usage: result.meta?.usage ?? null,
+          estimatedCostUsd: result.meta?.estimatedCostUsd != null ? result.meta.estimatedCostUsd.toFixed(6) : null,
+          edges,
+          providerRequestId: result.meta?.providerRequestId ?? null,
+          storagePath,
+          success: true,
+          error: storageError,
+        })
+        .returning({ id: renderProbeResults.id });
+      return res.json({
+        id: row?.id,
+        batchId,
+        visualSystem,
+        variant,
+        route: recipe.route,
+        model: recipe.model,
+        credentialRef: recipe.credentialRef,
+        width: meta.width,
+        height: meta.height,
+        stored: !!storagePath,
+        storageError,
+      });
+    } catch (err) {
+      const message = String((err as Error)?.message ?? err).slice(0, 300);
+      void recordGenerationEvent(
+        {
+          kind: "image",
+          route: "staging-style-example",
+          experienceProfile: "petposterous",
+          visualSystem,
+          conceptFramework,
+          productFamily,
+          legacyModel: recipe.model,
+        },
+        { success: false, durationMs: Date.now() - started, error: err },
+      );
+      try {
+        await (await db()).insert(renderProbeResults).values({ ...rowBase, success: false, error: message });
+      } catch { /* best effort */ }
+      return res.status(502).json({ error: message, batchId, visualSystem, variant });
+    }
+  });
+
   app.get("/staging/render-probe", (_req: Request, res: Response) => {
     if (!stagingOnly()) return res.status(404).send("Not found");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Robots-Tag", "noindex");
-    res.type("html").send(RESULTS_PAGE);
+    const catalog = {
+      looks: PETPOSTEROUS_VISUAL_SYSTEMS.map((look) => ({ id: look.id, label: look.label })),
+      frameworks: PETPOSTEROUS_STYLES.filter((style) =>
+        Object.prototype.hasOwnProperty.call(PETPOSTEROUS_CONCEPT_FRAMEWORKS, style.id),
+      ).map((style) => ({ id: style.id, label: style.name })),
+      families: [
+        { id: "apparel", label: "Apparel (2:3 chest print)" },
+        { id: "poster", label: "Poster (3:4 wall art)" },
+        { id: "pillow", label: "Pillow (1:1)" },
+      ],
+      defaultVariants: STYLE_EXAMPLE_DEFAULT_VARIANTS,
+      maxVariants: STYLE_EXAMPLE_MAX_VARIANTS,
+    };
+    res.type("html").send(RESULTS_PAGE.replace("/*__CATALOG__*/null", JSON.stringify(catalog).replace(/</g, "\\u003c")));
   });
+}
+
+const PHOTO_MAX = 8 * 1024 * 1024;
+
+function parseImageDataUrl(raw: string): { mime: string; buf: Buffer } | null {
+  const m = /^data:(image\/(?:jpeg|jpg|png|webp));base64,([A-Za-z0-9+/=\s]+)$/i.exec(raw.trim());
+  if (!m) return null;
+  const buf = Buffer.from(m[2].replace(/\s/g, ""), "base64");
+  if (!buf.length || buf.length > PHOTO_MAX) return null;
+  const mime = m[1].toLowerCase() === "image/jpg" ? "image/jpeg" : m[1].toLowerCase();
+  return { mime, buf };
+}
+
+async function storeProbePhoto(buf: Buffer, mime: string): Promise<string> {
+  const c = sb();
+  if (!c) throw Object.assign(new Error("Probe storage is not configured."), { status: 503 });
+  await ensureBucket(c);
+  const id = createHash("sha256").update(buf).digest("hex").slice(0, 16);
+  const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+  const path = `refs/${id}.${ext}`;
+  const { error } = await c.storage.from(BUCKET).upload(path, buf, { contentType: mime, upsert: true });
+  if (error && !/already exists/i.test(error.message)) throw new Error(error.message);
+  return id;
+}
+
+async function loadProbePhoto(id: string): Promise<string | null> {
+  if (!/^[a-f0-9]{16}$/.test(id)) return null;
+  const c = sb();
+  if (!c) return null;
+  for (const ext of ["jpg", "png", "webp"]) {
+    const { data, error } = await c.storage.from(BUCKET).download(`refs/${id}.${ext}`);
+    if (error || !data) continue;
+    const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+    return `data:${mime};base64,${Buffer.from(await data.arrayBuffer()).toString("base64")}`;
+  }
+  return null;
 }
 
 const RESULTS_PAGE = `<!doctype html>
@@ -286,7 +562,7 @@ const RESULTS_PAGE = `<!doctype html>
 :root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--muted:#6b6a66;--line:#e2e0da;--bad:#b3261e;--ok:#1b6b3a}
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
 header{padding:16px;border-bottom:1px solid var(--line);background:var(--card);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-h1{font-size:18px;margin:0 auto 0 0}main{padding:16px;max-width:1500px;margin:0 auto}
+h1{font-size:18px;margin:0 auto 0 0}main{padding:16px;max-width:none;margin:0 auto}
 input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}button{cursor:pointer}
 h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
@@ -294,32 +570,107 @@ h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:rep
 .meta{padding:10px 12px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12.5px}.meta b{color:var(--muted);font-weight:500}
 .tag{display:inline-block;padding:1px 6px;border-radius:6px;background:#eceae4;font-size:12px;margin-right:4px}
 .bad{color:var(--bad)}.ok{color:var(--ok)}.err{padding:12px;color:var(--bad)}
+.batch{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 8px;display:grid;gap:8px}
+.batch[hidden]{display:none}.batch .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.batch label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.batch textarea, .batch input[type=file]{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:inherit}
+.batch textarea{min-height:68px}.batch .hint,.batchnote{margin:0;color:var(--muted);font-size:12.5px}
+.looks{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow-x:auto;align-items:start}
+.lookcol h3{margin:0 0 8px;font-size:14px}
+details.prompt summary{cursor:pointer;color:var(--muted);font-size:12px;padding:0 12px 10px}
+details.prompt pre{white-space:pre-wrap;max-height:220px;overflow:auto;font:11px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0 12px 12px}
 dialog{border:0;padding:0;max-width:96vw;max-height:96vh;background:#111}dialog img{display:block;max-width:96vw;max-height:92vh}
 dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10px;font-size:12px;display:flex;justify-content:space-between;gap:8px}
-@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecebe7;--muted:#a3a19b;--line:#33322f}input,button,select{background:#262624;color:var(--ink)}.tag{background:#2c2b28}}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--ink:#ecebe7;--muted:#a3a19b;--line:#33322f}input,button,select,textarea{background:#262624;color:var(--ink)}.tag{background:#2c2b28}}
 </style></head><body>
 <header><h1>Render Probe Results</h1>
 <form id="auth"><input id="token" type="password" placeholder="Probe token" autocomplete="off" aria-label="Probe token"> <button>Unlock</button></form>
 <select id="exp" aria-label="Experiment"><option value="">All experiments</option></select>
-</header><main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
+</header>
+<section id="batch" class="batch" hidden>
+<p class="hint">Style example batch — six looks, one pet, one pinned joke. Uses the storefront prompt composition. Apparel, poster, and pillow are the products where all six looks are available.</p>
+<div class="row">
+<label>Pet photo<input id="photo" type="file" accept="image/jpeg,image/png,image/webp"></label>
+<label>Joke framework<select id="framework"></select></label>
+<label>Product<select id="family"></select></label>
+<label>Variants per look<input id="variants" type="number" min="1" max="4" value="3"></label>
+</div>
+<label>What they do<textarea id="behavior" placeholder="He takes the middle of the couch and waits for someone to move him."></textarea></label>
+<label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
+<p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
+<div><button id="runBatch" type="button">Generate batch</button></div>
+<p id="batchStatus" class="hint" role="status"></p>
+</section>
+<main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
 <dialog id="full"><div class="bar"><span id="fulltitle"></span><button id="close">Close</button></div><img id="fullimg" alt=""></dialog>
 <script>
-const KEY="appai-probe-token";let token=sessionStorage.getItem(KEY)||"";let rows=[];const blobs={};
+const KEY="appai-probe-token";const CONCEPT_KEY="appai-style-batch-concept";
+const CATALOG=/*__CATALOG__*/null;
+let token=sessionStorage.getItem(KEY)||"";let rows=[];const blobs={};let running=false;
 const h=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function fillSelect(id, items, selected){const sel=document.getElementById(id);sel.innerHTML=items.map(it=>'<option value="'+h(it.id)+'"'+(it.id===selected?" selected":"")+">"+h(it.label)+"</option>").join("")}
+fillSelect("framework", CATALOG.frameworks, CATALOG.frameworks[0]&&CATALOG.frameworks[0].id);
+fillSelect("family", CATALOG.families, "apparel");
+document.getElementById("variants").max=String(CATALOG.maxVariants);
+function savedConcept(){try{return JSON.parse(sessionStorage.getItem(CONCEPT_KEY)||"null")}catch(e){return null}}
+function conceptMatches(saved){if(!saved||!saved.concept)return false;return saved.behavior===document.getElementById("behavior").value.trim()&&saved.conceptFramework===document.getElementById("framework").value&&saved.productFamily===document.getElementById("family").value}
+function refreshReuse(){const saved=savedConcept();const box=document.getElementById("reuse");const ok=conceptMatches(saved);box.disabled=!ok;if(!ok)box.checked=false;const joke=ok?saved.concept.visualJoke:"";document.getElementById("conceptNote").textContent=joke?("Pinned concept: "+joke):"The first run writes one concept and pins that framework across all six looks. Leave reuse on to paint the same joke again."}
+["behavior","framework","family"].forEach(id=>{document.getElementById(id).addEventListener("input",refreshReuse);document.getElementById(id).addEventListener("change",refreshReuse)});
+refreshReuse();
+function setStatus(t){document.getElementById("batchStatus").textContent=t}
 async function api(path){const r=await fetch(path,{headers:{"x-appai-probe-token":token}});if(!r.ok)throw new Error(r.status);return r}
+async function apiJson(path, body){const r=await fetch(path,{method:"POST",headers:{"x-appai-probe-token":token,"content-type":"application/json"},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
+function fileToDataUrl(file){return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result||""));fr.onerror=()=>reject(new Error("Could not read the photo"));fr.readAsDataURL(file)})}
 async function img(id,thumb){const k=id+(thumb?"t":"");if(blobs[k])return blobs[k];const r=await api("/api/staging/render-probe/image/"+id+(thumb?"?thumb=1":""));blobs[k]=URL.createObjectURL(await r.blob());return blobs[k]}
 function edge(e){if(!e)return"–";const s=["top","bottom","left","right"];return s.map(k=>k[0].toUpperCase()+" "+e[k].palePct+"% / "+e[k].uniformPct+"%").join(" · ")}
-function render(){const exp=document.getElementById("exp").value;const main=document.getElementById("main");main.innerHTML="";
-const groups={};for(const r of rows){if(exp&&r.experiment!==exp)continue;(groups[r.experiment]??=[]).push(r)}
-for(const [name,list] of Object.entries(groups)){const sec=document.createElement("section");sec.innerHTML="<h2>"+h(name)+"</h2>";const g=document.createElement("div");g.className="grid";
-list.sort((a,b)=>(a.model+a.run).localeCompare(b.model+b.run));
-for(const r of list){const c=document.createElement("div");c.className="card";
+function fwLabel(id){const f=CATALOG.frameworks.find(x=>x.id===id);return f?f.label:(id||"")}
+function lookLabel(id){const f=CATALOG.looks.find(x=>x.id===id);return f?f.label:(id||"")}
+function probeCard(r){const c=document.createElement("div");c.className="card";
 c.innerHTML=(r.hasImage?'<img alt="'+h(r.model)+' run '+h(r.run)+'" data-id="'+r.id+'">':'<div class="err">'+h(r.error||"no image")+"</div>")+
 '<div class="meta"><b>Model</b><span><span class="tag">'+h(r.provider)+"</span>"+h(r.model)+'</span><b>Run</b><span>'+h(r.run??"–")+" · "+h(r.promptId)+" ("+h(r.promptChars)+' chars)</span><b>Size</b><span>'+h(r.width)+"×"+h(r.height)+" · "+h(r.aspectRatio)+" · "+h(r.imageSize)+'</span><b>MIME</b><span>'+h(r.mimeType)+'</span><b>Latency</b><span>'+(r.providerMs!=null?(r.providerMs/1000).toFixed(1)+"s provider":"–")+'</span><b>Cost</b><span>'+(r.estimatedCostUsd!=null?"$"+Number(r.estimatedCostUsd).toFixed(4):"–")+(r.usage?" · "+h(r.usage.inputTokens)+" in / "+h(r.usage.outputTokens)+" out":"")+'</span><b>Edges</b><span title="outer 1% band: bare-paper % / single-colour %">'+edge(r.edges)+'</span><b>When</b><span>'+h(new Date(r.createdAt).toLocaleString())+"</span></div>";
-g.appendChild(c)}sec.appendChild(g);main.appendChild(sec)}
+return c}
+function styleCard(r){const c=document.createElement("div");c.className="card";
+const prompt=r.composedPrompt?'<details class="prompt"><summary>Composed prompt ('+h(r.promptChars)+' chars)</summary><pre>'+h(r.composedPrompt)+"</pre></details>":"";
+c.innerHTML=(r.hasImage?'<img alt="'+h(lookLabel(r.visualSystem))+" variant "+h(r.run)+'" data-id="'+r.id+'">':'<div class="err">'+h(r.error||"no image")+"</div>")+
+'<div class="meta"><b>Variant</b><span>'+h(r.run??"–")+'</span><b>Route</b><span>'+h(r.route)+" · "+h(r.model)+'</span><b>Credential</b><span>'+h(r.credentialRef)+'</span><b>Size</b><span>'+h(r.width)+"×"+h(r.height)+" · "+h(r.aspectRatio)+" · "+h(r.imageSize)+'</span><b>Photo</b><span>'+h(r.referencePhotoId)+'</span><b>When</b><span>'+h(r.createdAt?new Date(r.createdAt).toLocaleString():"")+"</span></div>"+prompt;
+return c}
+function render(){const exp=document.getElementById("exp").value;const main=document.getElementById("main");main.innerHTML="";
+const groups={};for(const r of rows){if(exp&&r.experiment!==exp)continue;(groups[r.experiment]??=[]).push(r)}
+for(const [name,list] of Object.entries(groups)){const sec=document.createElement("section");
+if(!list.some(r=>r.visualSystem)){sec.innerHTML="<h2>"+h(name)+"</h2>";const g=document.createElement("div");g.className="grid";
+list.sort((a,b)=>String(a.model+a.run).localeCompare(String(b.model+b.run)));
+for(const r of list)g.appendChild(probeCard(r));sec.appendChild(g);main.appendChild(sec);continue}
+const sample=list.find(r=>r.conceptSnapshot)||list[0];
+const joke=sample.conceptSnapshot&&sample.conceptSnapshot.visualJoke?sample.conceptSnapshot.visualJoke:"";
+sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
+const board=document.createElement("div");board.className="looks";
+const byLook={};for(const r of list){(byLook[r.visualSystem||"other"]??=[]).push(r)}
+const ids=CATALOG.looks.map(l=>l.id).filter(id=>byLook[id]);
+for(const extra of Object.keys(byLook))if(!ids.includes(extra))ids.push(extra);
+for(const id of ids){const col=document.createElement("div");col.className="lookcol";col.innerHTML="<h3>"+h(lookLabel(id))+"</h3>";
+byLook[id].slice().sort((a,b)=>(a.run??0)-(b.run??0)).forEach(r=>col.appendChild(styleCard(r)));board.appendChild(col)}
+sec.appendChild(board);main.appendChild(sec)}
 if(!main.children.length)main.innerHTML="<p>No results yet.</p>";
-for(const el of main.querySelectorAll("img[data-id]")){img(el.dataset.id,true).then(u=>el.src=u).catch(()=>{});el.onclick=async()=>{const r=rows.find(x=>String(x.id)===el.dataset.id);document.getElementById("fulltitle").textContent=r.model+" · run "+(r.run??"–")+" · "+r.width+"×"+r.height;document.getElementById("fullimg").src=await img(el.dataset.id,false);document.getElementById("full").showModal()}}}
-async function load(){try{const r=await api("/api/staging/render-probe/results");rows=(await r.json()).results;const sel=document.getElementById("exp");const cur=sel.value;sel.innerHTML='<option value="">All experiments</option>'+[...new Set(rows.map(r=>r.experiment))].map(e=>'<option'+(e===cur?" selected":"")+">"+h(e)+"</option>").join("");render()}catch(e){document.getElementById("main").innerHTML='<p class="err">Not authorised or unavailable ('+h(e.message)+").</p>"}}
+for(const el of main.querySelectorAll("img[data-id]")){img(el.dataset.id,true).then(u=>el.src=u).catch(()=>{});el.onclick=async()=>{const r=rows.find(x=>String(x.id)===el.dataset.id);document.getElementById("fulltitle").textContent=r.visualSystem?(lookLabel(r.visualSystem)+" · variant "+(r.run??"–")+" · "+r.width+"×"+r.height):(r.model+" · run "+(r.run??"–")+" · "+r.width+"×"+r.height);document.getElementById("fullimg").src=await img(el.dataset.id,false);document.getElementById("full").showModal()}}}
+async function load(prefer){try{const r=await api("/api/staging/render-probe/results");rows=(await r.json()).results;document.getElementById("batch").hidden=false;const sel=document.getElementById("exp");const cur=prefer||sel.value;sel.innerHTML='<option value="">All experiments</option>'+[...new Set(rows.map(r=>r.experiment))].map(e=>'<option value="'+h(e)+'"'+(e===cur?" selected":"")+">"+h(e)+"</option>").join("");render()}catch(e){if(String(e.message)==="404")document.getElementById("batch").hidden=true;document.getElementById("main").innerHTML='<p class="err">Not authorised or unavailable ('+h(e.message)+").</p>"}}
+document.getElementById("runBatch").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];const behavior=document.getElementById("behavior").value.trim();if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose a pet photo.");return}if(!behavior){setStatus("Describe what they do.");return}
+const variants=Math.max(1,Math.min(CATALOG.maxVariants,Number(document.getElementById("variants").value)||CATALOG.defaultVariants));
+running=true;document.getElementById("runBatch").disabled=true;
+try{setStatus("Storing the photo and pinning the concept…");const saved=savedConcept();const reuse=document.getElementById("reuse").checked&&conceptMatches(saved);const photoDataUrl=await fileToDataUrl(file);
+const prep=await apiJson("/api/staging/render-probe/style-batch/prepare",{behavior,conceptFramework:document.getElementById("framework").value,productFamily:document.getElementById("family").value,variants,photoDataUrl,concept:reuse?saved.concept:undefined});
+document.getElementById("behavior").value=prep.behavior;
+sessionStorage.setItem(CONCEPT_KEY,JSON.stringify({behavior:prep.behavior,conceptFramework:prep.conceptFramework,productFamily:prep.productFamily,concept:prep.concept,referencePhotoId:prep.referencePhotoId}));
+document.getElementById("reuse").checked=true;refreshReuse();
+const jobs=[];for(const look of prep.looks)for(let v=1;v<=prep.variants;v++)jobs.push({look,v});
+let done=0;const failures=[];let cursor=0;
+async function one(job){try{await apiJson("/api/staging/render-probe/style-example",{batchId:prep.batchId,variant:job.v,behavior:prep.behavior,conceptFramework:prep.conceptFramework,productFamily:prep.productFamily,visualSystem:job.look.id,referencePhotoId:prep.referencePhotoId,concept:prep.concept})}catch(e){failures.push(job.look.label+" "+job.v+": "+e.message)}
+done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%3===0||done===jobs.length)load("style-batch:"+prep.batchId).catch(()=>{})}
+async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
+await Promise.all([worker(),worker()]);
+await load("style-batch:"+prep.batchId);
+setStatus(failures.length?failures.join(" · "):("Batch "+prep.batchId+" finished. Reuse stays on, so the next run keeps this concept."))}
+catch(e){setStatus(e.message||"Batch failed")}
+finally{running=false;document.getElementById("runBatch").disabled=false}};
 document.getElementById("auth").onsubmit=(e)=>{e.preventDefault();token=document.getElementById("token").value.trim();sessionStorage.setItem(KEY,token);load()};
 document.getElementById("exp").onchange=render;document.getElementById("close").onclick=()=>document.getElementById("full").close();
 if(token)load();

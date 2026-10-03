@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { stagingProbeAllowed } from "./routes/staging-render-probe";
+import express from "express";
+import { registerStagingRenderProbeRoutes, stagingProbeAllowed } from "./routes/staging-render-probe";
 
 const TOKEN = "probe-token-0123456789abcdefghij";
 const req = (token?: string) => ({ get: (h: string) => (h === "x-appai-probe-token" ? token : undefined) }) as any;
@@ -14,6 +15,42 @@ describe("staging render probe gate", () => {
     expect(stagingProbeAllowed(req("short"), { RAILWAY_ENVIRONMENT_NAME: "Staging", STAGING_PROBE_TOKEN: "short" })).toBe(false);
     expect(stagingProbeAllowed(req(TOKEN.replace("0", "X")), { RAILWAY_ENVIRONMENT_NAME: "Staging", STAGING_PROBE_TOKEN: TOKEN })).toBe(false);
     expect(stagingProbeAllowed(req(undefined), { RAILWAY_ENVIRONMENT_NAME: "Staging", STAGING_PROBE_TOKEN: TOKEN })).toBe(false);
+  });
+
+  it("serves the style-example form only on staging", async () => {
+    const app = express();
+    app.use(express.json());
+    registerStagingRenderProbeRoutes(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    const prevName = process.env.RAILWAY_ENVIRONMENT_NAME;
+    const prevToken = process.env.STAGING_PROBE_TOKEN;
+    try {
+      process.env.RAILWAY_ENVIRONMENT_NAME = "production";
+      process.env.STAGING_PROBE_TOKEN = TOKEN;
+      expect((await fetch(`http://127.0.0.1:${port}/staging/render-probe`)).status).toBe(404);
+      process.env.RAILWAY_ENVIRONMENT_NAME = "staging";
+      const page = await fetch(`http://127.0.0.1:${port}/staging/render-probe`);
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      expect(html).toContain("Style example batch");
+      expect(html).toContain("editorial-deadpan");
+      expect(html).toContain("Domestic Cinema");
+      expect(html).toContain("pp-petty-crimes");
+      expect(html).not.toContain("/*__CATALOG__*/");
+      const denied = await fetch(`http://127.0.0.1:${port}/api/staging/render-probe/style-batch/prepare`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(denied.status).toBe(404);
+    } finally {
+      if (prevName === undefined) delete process.env.RAILWAY_ENVIRONMENT_NAME;
+      else process.env.RAILWAY_ENVIRONMENT_NAME = prevName;
+      if (prevToken === undefined) delete process.env.STAGING_PROBE_TOKEN;
+      else process.env.STAGING_PROBE_TOKEN = prevToken;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

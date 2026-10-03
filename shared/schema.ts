@@ -529,7 +529,9 @@ export const generationEvents = pgTable("generation_events", {
 export type InsertGenerationEvent = typeof generationEvents.$inferInsert;
 
 // Staging-only render probe results (QA tooling; never written in production).
-// No full prompt text is stored — only an id + length. Images live in a private bucket.
+// Verbatim probes store a prompt id + length only. Style-example batches also
+// store the composed prompt and the pinned concept so a set can be regenerated.
+// Images live in a private bucket.
 export const renderProbeResults = pgTable("render_probe_results", {
   id: serial("id").primaryKey(),
   experiment: text("experiment").notNull(),
@@ -555,6 +557,17 @@ export const renderProbeResults = pgTable("render_probe_results", {
   success: boolean("success").notNull(),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  /** style-batch:<id> rows. Null on verbatim probes. */
+  batchId: text("batch_id"),
+  visualSystem: text("visual_system"),
+  conceptFramework: text("concept_framework"),
+  composedPrompt: text("composed_prompt"),
+  credentialRef: text("credential_ref"),
+  route: text("route"),
+  referencePhotoId: text("reference_photo_id"),
+  behavior: text("behavior"),
+  productFamily: text("product_family"),
+  conceptSnapshot: jsonb("concept_snapshot"),
 });
 
 // Encrypted provider API keys (operator-entered). Only scope "platform" is used today;

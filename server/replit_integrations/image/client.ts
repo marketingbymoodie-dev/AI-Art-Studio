@@ -567,12 +567,18 @@ async function pollAndDownload(
 }
 
 /**
- * Main helper: generate an image via Replicate and return base64 + mimeType.
- * Retries up to 2 times on failure, cycling through fallback aspect ratios.
+ * The prompt string the renderer actually receives: layered compression, then
+ * the opaque-decor output rules when that path applies them. Shared so a
+ * staging probe can record the same text it asks the model to paint.
  */
-export async function generateImageBase64(
-  params: GenerateImageParams
-): Promise<GenerateImageResult> {
+export function resolveModelPrompt(params: GenerateImageParams): {
+  direct: Extract<NonNullable<GenerationPlan["imagePath"]>, { kind: "direct-openai" }> | null;
+  directGoogle: Extract<NonNullable<GenerationPlan["imagePath"]>, { kind: "direct-google" }> | null;
+  replicateRoute: Extract<NonNullable<GenerationPlan["imagePath"]>, { kind: "replicate" }> | null;
+  nativeTransparent: boolean;
+  compressedPrompt: string;
+  sentPrompt: string;
+} {
   const planPath = params.generationPlan?.imagePath;
   const direct = planPath && planPath !== "legacy" && planPath.kind === "direct-openai" ? planPath : null;
   const directGoogle = planPath && planPath !== "legacy" && planPath.kind === "direct-google" ? planPath : null;
@@ -582,7 +588,6 @@ export async function generateImageBase64(
     : replicateRoute
       ? replicateRoute.background === "transparent"
       : directGoogle == null && (params.nativeTransparent === true || isGptImage2Model(params.generationModel));
-
   const compressedPrompt = compressPrompt(
     params.prompt,
     params.isApparel ?? false,
@@ -595,6 +600,30 @@ export async function generateImageBase64(
     params.layered === true,
     params.layered === true && params.packLayered === true,
   );
+  const opaqueRules = (fullBleedWallArt: boolean) =>
+    withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt });
+  const sentPrompt = direct
+    ? direct.background === "transparent"
+      ? compressedPrompt
+      : opaqueRules(direct.fullBleedWallArt)
+    : directGoogle
+      ? opaqueRules(directGoogle.fullBleedWallArt)
+      : replicateRoute
+        ? replicateRoute.background === "transparent"
+          ? compressedPrompt
+          : opaqueRules(replicateRoute.fullBleedWallArt)
+        : compressedPrompt;
+  return { direct, directGoogle, replicateRoute, nativeTransparent, compressedPrompt, sentPrompt };
+}
+
+/**
+ * Main helper: generate an image via Replicate and return base64 + mimeType.
+ * Retries up to 2 times on failure, cycling through fallback aspect ratios.
+ */
+export async function generateImageBase64(
+  params: GenerateImageParams
+): Promise<GenerateImageResult> {
+  const { direct, directGoogle, replicateRoute, nativeTransparent, compressedPrompt, sentPrompt } = resolveModelPrompt(params);
 
   if (params.layered === true) {
     const hex = countChromaHexMentions(compressedPrompt);
@@ -621,9 +650,6 @@ export async function generateImageBase64(
     );
     const transparent = direct.background === "transparent";
     const enforce = transparent && params.transparencyCheck === "enforce";
-    const openaiPrompt = transparent
-      ? compressedPrompt
-      : withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: direct.fullBleedWallArt });
     if (!transparent) {
       console.log(`[OpenAI] opaque decor output rules applied (fullBleedWallArt=${direct.fullBleedWallArt})`);
     }
@@ -634,7 +660,7 @@ export async function generateImageBase64(
         apiKey,
         credential: direct.credential,
         renderer,
-        prompt: openaiPrompt,
+        prompt: sentPrompt,
         aspectRatio: params.aspectRatio,
         background: direct.background,
         references,
@@ -734,8 +760,7 @@ export async function generateImageBase64(
     );
     const started = Date.now();
     // Renderer-layer output rules go before every style/concept layer; creative text is unchanged.
-    const googlePrompt = withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: directGoogle.fullBleedWallArt });
-    console.log(`[Google] decor output rules applied (fullBleedWallArt=${directGoogle.fullBleedWallArt}, +${googlePrompt.length - compressedPrompt.length} chars)`);
+    console.log(`[Google] decor output rules applied (fullBleedWallArt=${directGoogle.fullBleedWallArt}, +${sentPrompt.length - compressedPrompt.length} chars)`);
     // Same aspect fallback order as the legacy Nano Banana path; resolution comes from the plan.
     const ratios = [mapToSupportedAspectRatio(params.aspectRatio), "1:1", "3:4"];
     let lastError: unknown = null;
@@ -745,7 +770,7 @@ export async function generateImageBase64(
           apiKey,
           credential: directGoogle.credential,
           renderer,
-          prompt: googlePrompt,
+          prompt: sentPrompt,
           aspectRatio: ratios[attempt],
           imageSize: directGoogle.imageSize,
           references,
@@ -793,9 +818,7 @@ export async function generateImageBase64(
   if (replicateRoute) {
     const started = Date.now();
     const transparent = replicateRoute.background === "transparent";
-    const prompt = transparent
-      ? compressedPrompt
-      : withDirectGeminiDecorRules(compressedPrompt, { fullBleedWallArt: replicateRoute.fullBleedWallArt });
+    const prompt = sentPrompt;
     const urls = (Array.isArray(params.inputImageUrl) ? params.inputImageUrl : [params.inputImageUrl]).filter(
       (u): u is string => typeof u === "string" && u.length > 0,
     );
