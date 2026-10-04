@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, PETPOSTEROUS_VISUAL_SYSTEMS } from "./petposterousCreative";
 import {
-  PETPOSTEROUS_APPAREL_OUTPUT_RULE,
+  PETPOSTEROUS_APPAREL_PRINT,
+  PETPOSTEROUS_ART_STYLE_BATCH,
   PETPOSTEROUS_ART_STYLES,
-  WOODCUT_SHORT_PROMPT,
+  PETPOSTEROUS_TYPE_RESTRAINT,
   artStyleMarker,
   composePetposterousArtStylePrompt,
   compositionLocksAboveStyle,
@@ -36,36 +37,46 @@ describe("Petposterous apparel art styles", () => {
     ]);
   });
 
-  it("gives each style its own block and shares the apparel rule once, above the style", () => {
+  it("composes the funny truth, the shared rules once, then the style block", () => {
     expect(PETPOSTEROUS_ART_STYLES).toHaveLength(10);
-    expect(new Set(PETPOSTEROUS_ART_STYLES.map((style) => style.id)).size).toBe(10);
+    expect(PETPOSTEROUS_ART_STYLE_BATCH.concept).toBe("the dog has claimed the passenger seat and will not move");
     for (const style of PETPOSTEROUS_ART_STYLES) {
       expect(style.rendererId).toBeNull();
-      expect(style.prompt).not.toContain("APPAREL OUTPUT RULE");
+      expect(style.prompt).not.toContain("APPAREL PRINT");
       const composed = composePetposterousArtStylePrompt({ styleId: style.id });
       const marker = artStyleMarker(style);
-      expect(composed.prompt.split("APPAREL OUTPUT RULE:")).toHaveLength(2);
-      expect(composed.prompt.indexOf("APPAREL OUTPUT RULE:")).toBeLessThan(composed.prompt.indexOf(marker));
-      expect(composed.prompt.indexOf(marker)).toBeGreaterThan(composed.prompt.indexOf("JOKE FRAMEWORK — Hostile Negotiations:"));
-      expect(composed.prompt).toContain(PETPOSTEROUS_CONCEPT_FRAMEWORKS["pp-hostile-negotiations"]);
-      expect(composed.prompt).toContain("PASSENGER SELECTED.");
+      expect(composed.length).toBe("short");
+      expect(composed.prompt.split(PETPOSTEROUS_APPAREL_PRINT)).toHaveLength(2);
+      expect(composed.prompt.split(PETPOSTEROUS_TYPE_RESTRAINT)).toHaveLength(2);
+      expect(composed.prompt.indexOf("CONCEPT:")).toBeLessThan(composed.prompt.indexOf("APPAREL PRINT:"));
+      expect(composed.prompt.indexOf("APPAREL PRINT:")).toBeLessThan(composed.prompt.indexOf("TYPE:"));
+      expect(composed.prompt.indexOf("TYPE:")).toBeLessThan(composed.prompt.indexOf(marker));
+      expect(composed.prompt).toContain(PETPOSTEROUS_APPAREL_PRINT);
+      expect(composed.prompt).toContain(PETPOSTEROUS_TYPE_RESTRAINT);
       expect(composed.prompt).toContain(style.prompt);
+      expect(composed.prompt).toContain("PASSENGER SELECTED.");
+      expect(composed.prompt).toContain(PETPOSTEROUS_ART_STYLE_BATCH.concept);
+      expect(composed.prompt).not.toContain("driver's door");
+      expect(composed.prompt).not.toContain("back seat");
+      expect(composed.prompt).not.toContain("mutual eye contact");
+      expect(composed.prompt).not.toContain(PETPOSTEROUS_CONCEPT_FRAMEWORKS["pp-hostile-negotiations"]);
       expect(compositionLocksAboveStyle(composed.prompt, marker)).toEqual([]);
       expect(composed.prompt).not.toContain("LOOK —");
-      expect(composed.prompt).not.toContain("STYLE — HOSTILE");
+      expect(composed.prompt).not.toContain("PRODUCT AUTHORITY");
       expect(composed.prompt).not.toContain("prefer no words");
-      expect(composed.prompt).not.toContain("COLOUR-LIGHT");
-      expect(composed.prompt).not.toContain("avoid white and very pale");
     }
   });
 
-  it("compresses the woodcut control to about 800 characters and refuses other styles", () => {
-    expect(WOODCUT_SHORT_PROMPT.length).toBeGreaterThan(700);
-    expect(WOODCUT_SHORT_PROMPT.length).toBeLessThan(900);
-    const short = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "short" });
-    expect(short.prompt).toBe(WOODCUT_SHORT_PROMPT);
-    expect(short.prompt).toContain("WOODCUT:");
-    expect(short.prompt).toContain("PASSENGER SELECTED.");
-    expect(() => composePetposterousArtStylePrompt({ styleId: "ornamental", length: "short" })).toThrow(/woodcut/);
+  it("uses the same short compose for every style, including a former long request", () => {
+    const woodcut = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "short" });
+    const requestedLong = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "full" });
+    expect(requestedLong.prompt).toBe(woodcut.prompt);
+    expect(woodcut.prompt).toContain("WOODCUT:");
+    expect(woodcut.prompt).not.toContain("WOODCUT STYLE:");
+    for (const style of PETPOSTEROUS_ART_STYLES) {
+      const composed = composePetposterousArtStylePrompt({ styleId: style.id });
+      expect(composed.prompt.length).toBeGreaterThan(700);
+      expect(composed.prompt.length).toBeLessThan(1600);
+    }
   });
 });

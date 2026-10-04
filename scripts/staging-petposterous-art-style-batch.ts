@@ -1,12 +1,12 @@
 /**
- * Staging-only Petposterous art-style QA batch.
+ * Staging-only Petposterous art-style QA batch. Short form, ten styles × 2.
+ * Does not delete earlier long-form rows.
  *
  *   STAGING_PROBE_URL=https://ai-art-studio-staging.up.railway.app ^
  *   STAGING_PROBE_TOKEN=… ^
- *   REFERENCE_IMAGE=./spaniel.jpg ^
+ *   REFERENCE_PHOTO_ID=5eb9654283a8ab16 ^
  *   npx tsx scripts/staging-petposterous-art-style-batch.ts
  *
- * Ten styles × 2, plus the woodcut short-prompt control × 2.
  * Flare, native transparent, pinned Hostile Negotiations. Never production.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -14,20 +14,16 @@ import { resolve } from "node:path";
 
 const base = (process.env.STAGING_PROBE_URL || "").replace(/\/$/, "");
 const token = process.env.STAGING_PROBE_TOKEN || "";
+const photoId = process.env.REFERENCE_PHOTO_ID || "";
 const imagePath = process.env.REFERENCE_IMAGE || "";
-if (!base || token.length < 24 || !imagePath) {
-  console.error("Need STAGING_PROBE_URL, STAGING_PROBE_TOKEN (24+ chars), and REFERENCE_IMAGE.");
+if (!base || token.length < 24 || (!/^[a-f0-9]{16}$/.test(photoId) && !imagePath)) {
+  console.error("Need STAGING_PROBE_URL, STAGING_PROBE_TOKEN (24+ chars), and REFERENCE_PHOTO_ID or REFERENCE_IMAGE.");
   process.exit(1);
 }
 if (/production/i.test(base)) {
   console.error("Refusing a production URL.");
   process.exit(1);
 }
-
-const buf = readFileSync(resolve(imagePath));
-const ext = imagePath.toLowerCase();
-const mime = ext.endsWith(".png") ? "image/png" : ext.endsWith(".webp") ? "image/webp" : "image/jpeg";
-const photoDataUrl = `data:${mime};base64,${buf.toString("base64")}`;
 
 async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
   const res = await fetch(`${base}${path}`, {
@@ -40,17 +36,25 @@ async function post(path: string, body: unknown): Promise<Record<string, unknown
   return json;
 }
 
-const prep = await post("/api/staging/render-probe/art-style/prepare", { photoDataUrl });
+const prepareBody: Record<string, unknown> = {};
+if (/^[a-f0-9]{16}$/.test(photoId)) {
+  prepareBody.referencePhotoId = photoId;
+} else {
+  const buf = readFileSync(resolve(imagePath));
+  const ext = imagePath.toLowerCase();
+  const mime = ext.endsWith(".png") ? "image/png" : ext.endsWith(".webp") ? "image/webp" : "image/jpeg";
+  prepareBody.photoDataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+}
+
+const prep = await post("/api/staging/render-probe/art-style/prepare", prepareBody);
 const styles = prep.styles as { id: string; label: string }[];
 const variants = Number(prep.variants) || 2;
-const jobs: { artStyle: string; label: string; variant: number; promptLength: "full" | "short" }[] = [];
+const jobs: { artStyle: string; label: string; variant: number; promptLength: "short" }[] = [];
 for (const style of styles) {
-  for (let variant = 1; variant <= variants; variant++) jobs.push({ artStyle: style.id, label: style.label, variant, promptLength: "full" });
+  for (let variant = 1; variant <= variants; variant++) {
+    jobs.push({ artStyle: style.id, label: style.label, variant, promptLength: "short" });
+  }
 }
-jobs.push(
-  { artStyle: "woodcut", label: "Woodcut short", variant: 1, promptLength: "short" },
-  { artStyle: "woodcut", label: "Woodcut short", variant: 2, promptLength: "short" },
-);
 
 const manifest: Record<string, unknown>[] = [];
 let cursor = 0;
@@ -63,7 +67,7 @@ async function one(job: (typeof jobs)[number]) {
   manifest.push({ ...job, ...row });
   const alpha = (row.edges as { alpha?: { transparentPct?: number; featherPct?: number; haloPct?: number } } | undefined)?.alpha;
   console.log(
-    `${job.label} ${job.promptLength} #${job.variant} id=${row.id} ${row.width}x${row.height} ` +
+    `${job.label} #${job.variant} chars=${row.promptChars} id=${row.id} ${row.width}x${row.height} ` +
       `${Number(row.durationMs || 0) / 1000}s $${row.estimatedCostUsd ?? "?"} ` +
       (alpha ? `clear=${alpha.transparentPct}% feather=${alpha.featherPct}% halo=${alpha.haloPct}%` : ""),
   );

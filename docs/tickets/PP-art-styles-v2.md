@@ -3,6 +3,8 @@
 **Product:** AI Art Studio / Petposterous · **staging only, never production**
 **Status:** art-style layer is on staging behind the render probe. Not in the customer picker. Do not reduce the ten styles to six from theory.
 
+Short form is the art-style prompt. The blocks, the object budget, the type restraint, and the funny-truth concept are in `docs/art-styles-v2-short-form.md`. Do not wrap that compose in `packLayersForCompose` or put the camera shot back into the concept. Conceptual Graphic still drawing the whole car interior was the concept overriding the style — the same failure as PRODUCT AUTHORITY, in the concept layer. Long-form probe rows stay stored for comparison.
+
 ## Graduation hazard — composition locks
 
 The composition locks were removed from the **art-style path only**. The existing six-look apparel path still has them, including PRODUCT AUTHORITY.
