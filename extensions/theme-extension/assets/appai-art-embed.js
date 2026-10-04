@@ -1569,6 +1569,10 @@
     // This ensures each cart line item has its own variant image at checkout
     // without requiring Shopify Plus. Never fall back to the base catalog
     // variant (POD qty 0 + DENY → Ajax "already sold out").
+    // Latest proof from the iframe. Used when this page has to call
+    // resolve-design-variant itself. Not written into the button dataset.
+    var storefrontProof = { sessionId: '', identityToken: '' };
+
     function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
@@ -1597,9 +1601,12 @@
       };
       if (productId) resolveBody.productId = String(productId);
       if (retailPrice) resolveBody.price = String(retailPrice);
+      if (storefrontProof.sessionId) resolveBody.sessionId = storefrontProof.sessionId;
+      var resolveHeaders = { 'Content-Type': 'application/json' };
+      if (storefrontProof.identityToken) resolveHeaders.Authorization = 'Bearer ' + storefrontProof.identityToken;
       return fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: resolveHeaders,
         body: JSON.stringify(resolveBody)
       })
       .then(function(r) { return r.json(); })
@@ -2300,6 +2307,13 @@
         return;
       }
 
+      if (isFromOurIframe(event)) {
+        if (data.sessionId) storefrontProof.sessionId = String(data.sessionId);
+        if (data.identityToken) storefrontProof.identityToken = String(data.identityToken);
+        if (data.payload && data.payload.sessionId) storefrontProof.sessionId = String(data.payload.sessionId);
+        if (data.payload && data.payload.identityToken) storefrontProof.identityToken = String(data.payload.identityToken);
+      }
+
       // ===== GOOGLE AUTH POPUP (iframe → parent opens popup; popup → parent → iframe) =====
       if (data.type === 'APPAI_OPEN_GOOGLE_AUTH' && isFromOurIframe(event)) {
         var authUrl = data.url;
@@ -2865,6 +2879,8 @@
           atcBtnEl.style.opacity = data.disabled ? '0.5' : '1';
           atcBtnEl.style.cursor = data.disabled ? 'not-allowed' : 'pointer';
           if (data.payload) {
+            delete data.payload.sessionId;
+            delete data.payload.identityToken;
             atcBtnEl.dataset.payload = JSON.stringify(data.payload);
           } else {
             delete atcBtnEl.dataset.payload;

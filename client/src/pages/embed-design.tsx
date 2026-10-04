@@ -2778,6 +2778,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
+  /** This browser's session no longer owns a design it was asked to reopen. */
+  const [designAccessDenied, setDesignAccessDenied] = useState(false);
   const [sharedDesignError, setSharedDesignError] = useState<string | null>(null);
   const [isSharedDesign, setIsSharedDesign] = useState(false);
   const [selectedSize, setSelectedSize] = useState("");
@@ -7655,8 +7657,22 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       if (loadDesignAppliedRef.current) return;
       console.log('[LoadDesign] Fallback: fetching status for', effectiveLoadDesignId);
       const shop = shopDomain;
-      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(effectiveLoadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
-        .then(res => res.ok ? res.json() : null)
+      const statusQs = new URLSearchParams({
+        jobId: effectiveLoadDesignId,
+        shop,
+        t: String(Date.now()),
+      });
+      if (anonSessionId) statusQs.set("sessionId", anonSessionId);
+      safeFetch(`${API_BASE}/api/storefront/generate/status?${statusQs.toString()}`, {
+        headers: identityJsonHeaders(),
+      })
+        .then(res => {
+          if (res.status === 403) {
+            setDesignAccessDenied(true);
+            return null;
+          }
+          return res.ok ? res.json() : null;
+        })
         .then(status => {
           if (!status || status.status !== 'complete') return;
           if (loadDesignAppliedRef.current) return;
@@ -7902,7 +7918,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         const vid = baseVariantForShadowRef.current;
         const qs = new URLSearchParams({ shop });
         if (vid) qs.set("variantId", vid);
-        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?${qs.toString()}`);
+        if (anonSessionId) qs.set("sessionId", anonSessionId);
+        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?${qs.toString()}`, {
+          headers: identityJsonHeaders(),
+        });
         if (r.ok) {
           const data = await r.json();
           if (data.ready && data.shadowVariantId) {
@@ -9749,6 +9768,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       quantity: 1,
       properties,
       ...(cartRetail ? { price: cartRetail } : {}),
+      ...(anonSessionId ? { sessionId: anonSessionId } : {}),
+      ...(storefrontIdentityToken ? { identityToken: storefrontIdentityToken } : {}),
     };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
@@ -9838,7 +9859,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         }
       }
     }
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcWorkingLabel, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement]);
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcWorkingLabel, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement, anonSessionId, storefrontIdentityToken]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -9935,7 +9956,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         // Phase 2: poll GET /generate/status every 2s, max 5 minutes
         const shop = payload.shop || new URLSearchParams(window.location.search).get('shop') || '';
         if (!shop) throw new Error('Shop domain is required for generation. Please reload the page.');
-        const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}`;
+        const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}${anonSessionId ? `&sessionId=${encodeURIComponent(anonSessionId)}` : ""}`;
         const deadline = Date.now() + 5 * 60 * 1000;
         let consecutiveErrors = 0;
 
@@ -9944,7 +9965,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           let status: { status?: string; error?: string; imageUrl?: string; thumbnailUrl?: string } | null = null;
           try {
             const statusRes = await raceTimeout(
-              safeFetch(statusUrl, { headers: { "X-Req-Id": reqId } }),
+              safeFetch(statusUrl, { headers: { ...identityJsonHeaders(), "X-Req-Id": reqId } }),
               15_000,
               'GET /generate/status',
             );
@@ -11723,6 +11744,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         properties: payload.properties,
         shadowCreated: !!payload.shadowCreated,
         ...(payload.price ? { price: payload.price } : {}),
+        ...(anonSessionId ? { sessionId: anonSessionId } : {}),
+        ...(storefrontIdentityTokenRef.current ? { identityToken: storefrontIdentityTokenRef.current } : {}),
         _bridgeVersion: '1.0.3',
       };
 
@@ -13079,7 +13102,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           const timeout = setTimeout(() => controller.abort(), PRE_SHADOW_AWAIT_MS + 5_000);
           const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               shop: shopDomain,
               ...(productId ? { productId } : {}),
@@ -13089,6 +13112,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               productTypeId: productTypeConfig?.id ?? productTypeId,
               sizeId: selectedSize,
               colorId: selectedFrameColor || "default",
+              ...(anonSessionId ? { sessionId: anonSessionId } : {}),
               ...(displayedRetailForAtc ? { price: displayedRetailForAtc } : {}),
             }),
             signal: controller.signal,
@@ -15337,9 +15361,15 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
 
         if (jobId && shopDomain) {
           try {
+            const reuseQs = new URLSearchParams({
+              jobId,
+              shop: shopDomain,
+              t: String(Date.now()),
+            });
+            if (anonSessionId) reuseQs.set("sessionId", anonSessionId);
             const statusRes = await safeFetch(
-              `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shopDomain)}&t=${Date.now()}`,
-              { credentials: "include" },
+              `${API_BASE}/api/storefront/generate/status?${reuseQs.toString()}`,
+              { credentials: "include", headers: identityJsonHeaders() },
               30000,
             );
             if (statusRes.ok) {
@@ -20793,9 +20823,10 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             {/* Edit / Reuse / Share — above the viewing window (closed preview) */}
             {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerActive && (
               <div
-                className="flex items-center justify-between gap-2 flex-wrap pb-2"
+                className="flex flex-col gap-1 pb-2"
                 data-testid="container-artwork-actions-top"
               >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2 flex-wrap min-w-0">
                   {useAopCustomizer && !flatPlacerEligible && (
                     <Button
@@ -20880,6 +20911,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     disabled={isSharing || !generatedDesign?.imageUrl}
                     className="shrink-0"
                     data-testid="button-share"
+                    title="Copy a link that opens this design on another device"
                   >
                     {isSharing ? (
                       <Loader2 className="w-4 h-4 animate-spin mr-1" />
@@ -20889,6 +20921,23 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                     <span className="text-xs">Share</span>
                   </Button>
                 </div>
+                </div>
+                {!storefrontLoggedIn && (
+                  <p className="text-[11px] text-muted-foreground" data-testid="text-guest-share-recovery">
+                    Not signed in. Share copies a link that opens this design on another device, or if this browser’s data is cleared.
+                  </p>
+                )}
+              </div>
+            )}
+            {designAccessDenied && !generatedDesign?.imageUrl && (
+              <div
+                className="mb-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+                data-testid="design-access-denied"
+              >
+                <p className="text-sm font-medium">This design isn’t available in this browser.</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  If you made it without signing in, it stays on the browser where you created it. On that browser, use Share — it copies a link that opens the design here. If you were signed in when you made it, sign in on this device and open it from My Designs.
+                </p>
               </div>
             )}
             {/* Main interactive canvas - full size, always visible for editing */}

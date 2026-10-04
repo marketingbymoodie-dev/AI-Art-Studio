@@ -103,6 +103,17 @@ export function isInternalCustomerId(v: unknown): boolean {
  * Job/design access for save-state and fork-placement: the shared identity rule
  * (token / proxy-signed Shopify customer / anonymous session) + decideJobAccess.
  */
+/**
+ * Ownership check on resolve-design-variant. Default on.
+ * Set RESOLVE_OWNERSHIP_CHECK=false to skip it without a deploy — that route
+ * is the cart path, and a bad rejection there has no other quick exit.
+ */
+export function resolveVariantOwnershipCheckEnabled(
+  envValue: string | undefined = process.env.RESOLVE_OWNERSHIP_CHECK,
+): boolean {
+  return envValue !== "false";
+}
+
 export async function resolveStorefrontJobAccess(
   req: Request,
   shop: string,

@@ -32,7 +32,7 @@ There are about 350 `app.<verb>("/api/…")` routes in `server/routes.ts` and 23
 ## Known items to fold in
 
 - `PATCH /api/admin/product-types/:id` (blocker ticket above).
-- Storefront job-id routes that check shop only: `GET /api/storefront/generate/status` (also returns the owner's wallet credits), `GET /api/storefront/shadow-variant/:jobId`, and `resolve-design-variant` / pre-shadow mint. These are tracked under the loadDesignId ownership-check decision. They're customer/session-scoped, not merchant-scoped, but they're the same review question.
+- Storefront job-id routes. `generate/status`, `shadow-variant/:jobId`, and `resolve-design-variant` now use `resolveStorefrontJobAccess` (resolve has `RESOLVE_OWNERSHIP_CHECK`, default on). Pre-shadow mint is still shop-only. These are customer/session-scoped, not merchant-scoped, but they're the same review question.
 - Mass-assignment pattern: grep `storage.update*(…, req.body)` and `{ ...req.body }` across all routes.
 - Dev, debug and staging routes: confirm a production env gate on each one.
 
