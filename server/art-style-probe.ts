@@ -24,7 +24,7 @@ export function composeArtStyleProbe(opts: {
     isApparel: true,
     isAllOverPrint: false,
     isPatternStyle: false,
-    userPrompt: PETPOSTEROUS_ART_STYLE_BATCH.behaviour,
+    userPrompt: PETPOSTEROUS_ART_STYLE_BATCH.concept,
     cylindricalWrap: false,
     generationModel: recipe.styleGen.model,
     generationQuality: recipe.styleGen.quality,

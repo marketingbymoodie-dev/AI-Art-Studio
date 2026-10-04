@@ -549,7 +549,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     const variant = Number(body.variant);
     if (!Number.isInteger(variant) || variant < 1 || variant > 2) return res.status(400).json({ error: "variant out of range" });
     const artStyle = str(body.artStyle, 40);
-    const promptLength = str(body.promptLength, 8, "full") === "short" ? "short" : "full";
+    const promptLength = "short" as const;
     const photoId = str(body.referencePhotoId, 16);
     const dataUrl = await loadProbePhoto(photoId);
     if (!dataUrl) return res.status(400).json({ error: "Reference photo was not found. Upload it again." });
@@ -560,7 +560,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       return res.status(400).json({ error: String((err as Error)?.message ?? err).slice(0, 200) });
     }
     const recipe = composed.recipe;
-    const visualSystem = promptLength === "short" ? `${composed.composed.style.id}-short` : composed.composed.style.id;
+    const visualSystem = composed.composed.style.id;
     const experiment = `art-styles:${batchId}`;
     const rowBase = {
       experiment,
@@ -769,7 +769,7 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
 <div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
-<p class="hint">Art style batch holds one concept (dog takes the front passenger seat, Hostile Negotiations, PASSENGER SELECTED.) across ten drawing languages, two each, Flare, native transparent. Plus a short woodcut control.</p>
+<p class="hint">Art style batch holds one funny truth (the dog has claimed the passenger seat and will not move), Hostile Negotiations pinned, PASSENGER SELECTED., ten short styles, two each, Flare, native transparent. Earlier long-form rows stay in their own experiments.</p>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
 <main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
@@ -850,8 +850,7 @@ finally{running=false;document.getElementById("runBatch").disabled=false}};
 document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
 running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
-const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v,promptLength:"full"});
-jobs.push({artStyle:"woodcut",label:"Woodcut short",variant:1,promptLength:"short"},{artStyle:"woodcut",label:"Woodcut short",variant:2,promptLength:"short"});
+const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v,promptLength:"short"});
 let done=0;const failures=[];let cursor=0;
 async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:job.promptLength,referencePhotoId:prep.referencePhotoId})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}

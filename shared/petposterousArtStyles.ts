@@ -6,32 +6,21 @@
  * treatment, composition and print treatment are separate roles and are not
  * customer controls.
  *
- * The style block owns composition. Nothing above it may freeze pose, camera,
- * framing, placement or layout. The shared apparel rule is print constraints
- * only, and it is not copied into each style.
+ * The style block owns composition. The concept states the funny truth only —
+ * not a camera, a prop state, or a second person. Nothing above the style
+ * block may specify pose, framing, placement or layout. The shared print and
+ * type rules are not copied into each style.
+ *
+ * This path does not call the pack composer. That stack, and PRODUCT AUTHORITY
+ * on the six-look path, are what collapsed every style into one shot.
  */
-import { PETPOSTEROUS_PROMPT_PROFILE } from "./packs/petposterous";
-import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "./petposterousCreative";
-import { composeLayeredPrompt, type PackPromptLayers } from "./promptLayers";
-import { buildRoleReferenceInstruction } from "./referenceImages";
+/** Shared print rule. The object budget lives here so the concept cannot ask for an interior. */
+export const PETPOSTEROUS_APPAREL_PRINT =
+  "APPAREL PRINT: Finished print artwork only — no garment, mockup, photograph or product shot. Transparent surround, no rectangular boundary. One subject, at most one supporting object; no vehicle interiors, rooms or architecture. Strong outer silhouette and large forms readable at arm's length. The pet's pose and expression carry the joke. Reproduce supplied wording exactly once and invent no other text.";
 
-export const PETPOSTEROUS_APPAREL_OUTPUT_RULE =
-  "APPAREL OUTPUT RULE: Create the finished print artwork only, not a T-shirt, garment, product mockup, poster or photograph of printed artwork. Design specifically for front-of-garment printing. Create one strong self-contained composition with transparent space surrounding the artwork and no rectangular scene boundary. Prioritise a clear outer silhouette, large readable forms and strong visual hierarchy at normal T-shirt viewing distance. Avoid tiny peripheral details, fragile isolated marks and unnecessary scenery. The pet's action, expression, pose or relationship with another subject must communicate the joke visually; do not simply draw the pet sitting or posing and place a caption underneath it. Allow the garment color to participate naturally as negative space. If exact wording is supplied, reproduce it exactly once and integrate it intentionally into the composition. Do not invent additional slogans, labels or text. No generic paw prints, bones, hearts, whisker motifs or generic pet-store decoration.";
-
-/**
- * Replaces APPAREL_BASE_TRANSPARENT on this path only. The global base still
- * says "isolated centered graphic" / "no background scene" for classic apparel.
- * Native transparency itself is the OpenAI background flag plus alpha cleanup,
- * not this sentence.
- */
-export const PETPOSTEROUS_ART_STYLE_PLATE =
-  "PETPOSTEROUS TRANSPARENT PLATE: Pixels that are not ink in the finished print are fully transparent. No white mat, no rectangular card, no ground shadow, no product mockup.";
-
-const CONCEPT_AUTHORITY =
-  "CONCEPT AUTHORITY: The concept states what is true about the behaviour and the joke. The art style decides how the picture is drawn and may reinterpret the shot.";
-
-const FRAMEWORK_SCOPE =
-  "FRAMEWORK SCOPE: The joke framework names the kind of joke. It does not decide pose, camera, framing, subject placement or layout. The art style does.";
+/** Bans decoration around the letters. Ornament remains allowed when the style itself asks for it. */
+export const PETPOSTEROUS_TYPE_RESTRAINT =
+  "TYPE: Set the words plainly within the composition. No dashes, rules, lines, ticks or bars flanking them; no starbursts, sparkles, radiating lines, speed lines or impact marks; no swashes, scrolls, banners, ribbons, laurels, asterisks, dots or diamond separators bracketing a phrase. The words stand on their own. Ornament appears only where the art style calls for it, as part of the illustration — never as default decoration around type.";
 
 /** Roles kept out of the customer UI so they are not folded back into art style. */
 export const PETPOSTEROUS_SECONDARY_ROLES = {
@@ -74,70 +63,70 @@ export const PETPOSTEROUS_ART_STYLES: PetposterousArtStyle[] = [
     label: "Retro Character",
     rendererId: null,
     prompt:
-      "RETRO CHARACTER STYLE: Create a purpose-built illustrated T-shirt graphic with the personality of a vintage character tee. Render the pet as an expressive character actor with clear body language, a knowing expression and a slightly exaggerated pose while preserving recognisable traits from supplied reference imagery. Use confident hand-drawn outlines, simplified forms, chunky shadows and a limited palette of approximately 3–5 harmonious spot-ink colors. Use subtle vintage screen-print texture, halftone or natural ink imperfection without sacrificing clarity. Build one compact graphic with a strong irregular outer silhouette and deliberate negative space. If wording is required, integrate it naturally using bold hand-lettered retro typography that belongs to the illustration rather than sitting beneath it as a generic caption. The pet's behaviour must deliver the visual joke. Avoid photorealism, glossy digital rendering, generic vector mascots and excessive distress.",
+      "RETRO CHARACTER: Vintage character-tee illustration. Confident hand-drawn outlines, simplified forms, chunky shadows, 3–5 spot inks, light halftone texture. The pet is an expressive character actor — knowing look, slightly exaggerated pose. Hand-lettered retro type that belongs to the drawing. No photorealism, no glossy vector mascot.",
   },
   {
     id: "woodcut",
     label: "Woodcut",
     rendererId: null,
     prompt:
-      "WOODCUT STYLE: Create a bold hand-carved woodcut or linocut-style apparel illustration. Construct the image from strong areas of solid ink and expressive carved negative-space marks. Use irregular gouged lines to describe fur, form, light, movement and expression. Prioritise a striking silhouette and large readable shapes rather than fine realistic detail. Use one dominant ink color, optionally with one secondary accent ink, allowing the garment color to form substantial portions of the illustration. Preserve the pet's recognisable characteristics while translating them convincingly into relief-print language. Include subtle manual printing imperfections while retaining crisp apparel readability. Any required typography should feel hand-cut or block-printed and integrated into the same visual language. No smooth digital shading, gradients, photorealism, tiny engraving detail or rectangular background.",
+      "WOODCUT: Hand-carved woodcut or linocut. Build the image from solid ink areas and gouged negative-space marks; irregular carved lines describe fur, form and movement. One dominant ink, optional second accent; garment colour forms large parts of the image. Block-printed lettering. No digital shading, gradients or fine engraving detail.",
   },
   {
     id: "folk-graphic",
     label: "Folk Graphic",
     rendererId: null,
     prompt:
-      "FOLK GRAPHIC STYLE: Create a whimsical hand-made folk-art apparel graphic using simplified anatomy, chunky shapes, charmingly awkward proportions and intentionally irregular drawing. Preserve distinctive pet markings and personality while translating the subject into bold naïve forms. Use uneven hand-drawn or block-print-like contours, repeated handmade marks and flattened graphic shapes rather than realistic modelling. Use approximately 2–5 warm, muted, print-friendly colors. Small household, botanical or behavioural objects may support the story only when they contribute directly to the joke. Keep the composition compact and immediately readable. Any lettering should feel genuinely hand-rendered and integrated into the artwork. Aim for intelligent, eccentric handmade charm rather than childish cuteness. Avoid polished mascot illustration, glossy digital rendering, elaborate scenery and generic cute-pet styling.",
+      "FOLK GRAPHIC: Naïve hand-made folk art. Simplified anatomy, chunky shapes, charmingly awkward proportions, uneven hand-drawn contours, flattened forms. 2–5 warm muted inks. Genuinely hand-rendered lettering. Eccentric and intelligent rather than cute. No polished mascot art, no glossy rendering.",
   },
   {
     id: "pen-ink",
     label: "Pen & Ink",
     rendererId: null,
     prompt:
-      "PEN & INK STYLE: Create a clean hand-drawn pen-and-ink apparel illustration using confident black contour lines, selective cross-hatching and stippling. Use the garment itself as the background and leave generous areas completely open. Preserve recognisable pet characteristics while simplifying photographic detail into expressive line drawing. Communicate the joke primarily through pose, scale, gaze, interaction or an absurd visual situation rather than elaborate scenery. Concentrate detail around important facial, behavioural and interaction cues while keeping secondary areas economical. Primarily use one ink color, with a second accent only when it materially improves the concept. The result should feel like sophisticated editorial illustration adapted for a T-shirt. No washes, gradients, photorealism, heavy distress, decorative frame or unnecessary typography.",
+      "PEN & INK: Sparse editorial pen drawing. Confident black contour, selective cross-hatching and stippling, large areas left completely open. One ink, a second only if essential. Detail concentrated at the face and the action; everything else economical. No washes, gradients, frames or extra text.",
   },
   {
     id: "vintage-engraving",
     label: "Vintage Engraving",
     rendererId: null,
     prompt:
-      "VINTAGE ENGRAVING STYLE: Render the ridiculous contemporary pet behaviour with the visual seriousness of an antique engraved illustration, nineteenth-century editorial etching or old natural-history plate. Use refined engraved linework, cross-hatching, stippling and controlled areas of solid black to model the subject. Preserve recognisable pet characteristics from reference imagery. Treat the animal with absurd dignity and scholarly seriousness while ensuring its pose, expression and interaction communicate intentional agency. Use monochrome or a restrained 2–3 ink palette. Keep the engraving as isolated apparel artwork with a strong irregular silhouette. Do not depict parchment, an old book page, paper rectangle, museum card or frame. If wording is required, use restrained period-inspired serif lettering integrated with the illustration. Avoid crowns, thrones and generic aristocratic-pet tropes.",
+      "VINTAGE ENGRAVING: Antique engraved plate — refined linework, cross-hatching, stippling, controlled solid blacks. Treat the ridiculous behaviour with scholarly dignity. Monochrome or 2–3 muted inks. Period serif lettering. No parchment, book page, paper rectangle, museum card or frame. No crowns or aristocratic-pet tropes.",
   },
   {
     id: "conceptual-graphic",
     label: "Conceptual Graphic",
     rendererId: null,
     prompt:
-      "CONCEPTUAL GRAPHIC STYLE: Create a clever, highly simplified visual-concept T-shirt graphic in which the joke is communicated through one unexpected visual relationship rather than conventional scene illustration. When appropriate, use silhouette, negative space, visual substitution, impossible scale, objects contained inside other forms, merged shapes, visual metaphor, deliberate contradiction or another simple graphic device derived specifically from the concept. Reduce the artwork to a small number of bold, immediately readable shapes using approximately 1–3 print colors. Prioritise an intelligent visual idea over decorative detail. The pet's behaviour or relationship with the human must create the visual punchline. Keep the composition sparse, iconic and self-contained with generous transparent garment space. Prefer zero text when the image carries the joke; otherwise use only the supplied wording. No generic pet portrait, decorative scenery, gradients, poster layout or unnecessary embellishment. Do not apply a graphic filter to the literal scene. Find a visual idea.",
+      "CONCEPTUAL GRAPHIC: One visual idea, not an illustrated scene. Use silhouette, negative space, substitution, impossible scale, containment, merged shapes or visual metaphor drawn from the concept itself. Reduce to a few bold shapes in 1–3 inks. Prefer no text when the image carries the joke. No scene illustration, no portrait, no decoration.",
   },
   {
     id: "bold-type",
     label: "Bold Type",
     rendererId: null,
     prompt:
-      "BOLD TYPE STYLE: Create a typography-led graphic T-shirt design in which the exact supplied punchline is the dominant visual element and a concise illustrated pet vignette provides the secondary visual joke. Use large expressive hand-lettered, vintage display or characterful graphic typography with strong hierarchy, excellent legibility and deliberate line breaks. Integrate the pet illustration into, around, through or between the letterforms so text and image form one unified composition. The pet must be performing the specific behaviour described by the concept rather than simply posing beneath the words. Use approximately 2–4 strong print-friendly colors with clear garment contrast. Maintain a compact irregular outer silhouette. Do not create a generic slogan template, rectangular text box, plain caption-under-image layout or excessive decorative lettering. Reproduce supplied wording exactly once.",
+      "BOLD TYPE: Typography leads. The supplied words dominate — large hand-lettered or vintage display type, strong hierarchy, deliberate line breaks. A small pet vignette integrates into, around or between the letterforms as one composition. 2–4 inks. No caption-under-image layout, no text box, no slogan template.",
   },
   {
     id: "ornamental",
     label: "Ornamental",
     rendererId: null,
     prompt:
-      "ORNAMENTAL STYLE: Create an elegant decorative apparel illustration inspired by vintage storybook art, Arts and Crafts printmaking and restrained Art Nouveau ornament. Keep the recognisable pet and its behavioural joke as the central focal point. Surround or interweave the subject selectively with flowing organic curves, botanical forms, household objects or decorative motifs that relate meaningfully to the story. Use graceful contour drawing, flattened decorative shapes, controlled symmetry or asymmetry and a sophisticated limited palette of approximately 3–5 inks. Ornament must frame and reinforce the pet rather than overwhelm it. Maintain a strong irregular apparel silhouette with transparent negative space around the complete composition rather than reproducing a rectangular historical poster. Integrate wording elegantly into curves, ribbons or negative space only when required. Sophisticated, strange and witty rather than saccharine or fantasy-cute.",
+      "ORNAMENTAL: Storybook and Arts-and-Crafts decoration with restrained Art Nouveau line. Pet central; flowing organic curves and botanical forms interwoven around it, relating to the story. Graceful contour, flattened decorative shapes, 3–5 inks. Ornament supports and never overwhelms. No rectangular poster reproduction.",
   },
   {
     id: "painterly",
     label: "Painterly",
     rendererId: null,
     prompt:
-      "PAINTERLY STYLE: Create an expressive hand-painted apparel illustration using watercolor and gouache character, visible brushwork, organic pigment variation, selectively defined edges and natural color transitions. Preserve recognisable pet markings and personality while simplifying unnecessary photographic detail. Concentrate richer pigment and visual definition around the focal pet and behavioural action, allowing outer painted marks to break up organically into transparent garment space. Use approximately 4–7 harmonious colors. Maintain a deliberate central graphic silhouette rather than creating a conventional rectangular painting. If wording is required, keep it minimal, highly legible and deliberately integrated. Do not depict watercolor paper, torn paper, canvas, easel, framed painting, poster, white page or product mockup. The painting itself is the print artwork.",
+      "PAINTERLY: Gouache and watercolour character — visible brushwork, pigment variation, edges defined where they matter and dissolving where they don't. Richest pigment at the face and the action. 4–7 harmonious colours. Keep a deliberate silhouette. No paper, canvas, easel, frame or white page — the painting is the print.",
   },
   {
     id: "psychedelic",
     label: "Psychedelic",
     rendererId: null,
     prompt:
-      "PSYCHEDELIC STYLE: Create a bold late-1960s to 1970s psychedelic graphic T-shirt illustration using playful warped forms, flowing contours, chunky hand-drawn shapes and expressive retro display lettering where wording is supplied. Use a saturated but controlled print palette of approximately 4–6 colors such as burnt orange, mustard, avocado, turquoise, coral, warm cream and deep brown. Allow the pet's expression, pose and behavioural situation to become slightly exaggerated or surreal while preserving recognisable reference characteristics. Typography may swell, curve, bend or interlock with the illustration to form one unified graphic. Use subtle vintage screen-print texture and natural ink imperfection. Maintain a strong self-contained silhouette with transparent negative garment space. Aim for strange, funny and stylish rather than visually chaotic. Avoid generic tie-dye backgrounds, random hippie symbols, modern gradients, glossy 3D effects or rectangular poster compositions.",
+      "PSYCHEDELIC: Late-60s/70s poster language. Warped flowing forms, chunky hand-drawn shapes, swelling retro display lettering interlocking with the illustration. 4–6 saturated retro inks — burnt orange, mustard, avocado, turquoise, coral, deep brown. Slight surreal exaggeration. No tie-dye background, no hippie symbols, no gradients.",
   },
 ];
 
@@ -146,7 +135,7 @@ export function petposterousArtStyle(id: unknown): PetposterousArtStyle | undefi
 }
 
 export function artStyleMarker(style: PetposterousArtStyle): string {
-  const match = /^[A-Z0-9 &]+ STYLE:/.exec(style.prompt);
+  const match = /^[A-Z0-9 &]+:/.exec(style.prompt);
   return match?.[0] ?? style.prompt.slice(0, 24);
 }
 
@@ -157,10 +146,15 @@ export function compositionLocksAboveStyle(prompt: string, styleMarker: string):
   return PETPOSTEROUS_COMPOSITION_LOCKS.filter((phrase) => lower.includes(phrase.toLowerCase()));
 }
 
-/** Fixed inputs for the apparel style QA batch. Humor and relationship are tone, pinned so they are not a hidden variable. */
+/**
+ * Fixed inputs for the apparel style QA batch.
+ * The concept is the funny truth only. Position, props and a second person
+ * belong to the style. The behaviour string is batch metadata and is not composed.
+ * Hostile Negotiations stays pinned on the row; its shot language is not composed.
+ */
 export const PETPOSTEROUS_ART_STYLE_BATCH = {
   behaviour: "dog refuses to get into the back seat of the car",
-  concept: "dog occupies the front passenger seat, driver's door open and waiting",
+  concept: "the dog has claimed the passenger seat and will not move",
   frameworkId: "pp-hostile-negotiations" as const,
   words: "PASSENGER SELECTED.",
   humorId: "dry" as const,
@@ -170,65 +164,28 @@ export const PETPOSTEROUS_ART_STYLE_BATCH = {
   quality: "medium" as const,
   background: "transparent" as const,
   referenceLabel: "springer spaniel",
+  referencePhotoId: "5eb9654283a8ab16",
 };
 
-function fragment(options: { id: string; fragment: string }[] | undefined, id: string): string {
-  return options?.find((option) => option.id === id)?.fragment ?? "";
-}
-
 /**
- * Same woodcut job, compressed. The long stack is the control's other arm.
- * Target ~800 characters: truth, exact words, and how to draw — not the full brand essay.
+ * Short form is the only art-style compose. `length` is accepted so older
+ * probe clients still resolve, and it no longer selects a longer prompt.
+ * Shared print and type rules sit once, immediately before the style block.
  */
-export const WOODCUT_SHORT_PROMPT = [
-  "APPAREL: Finished print only, not a shirt, mockup or photo of a print. Transparent surround, no rectangular boundary, clear silhouette, large readable forms. The action carries the joke, not a caption under a posed pet. Garment color is negative space. Text once, exactly: PASSENGER SELECTED.",
-  "TRUTH: the dog refused the back seat and took the front passenger seat; the driver's door is open and waiting. Joke type: a battle of wills. Keep this springer spaniel recognisable. Reinterpret pose, framing and layout.",
-  "WOODCUT: Bold hand-carved relief print. Solid ink and gouged negative-space marks for fur, form and expression. Striking silhouette, large shapes, one dominant ink plus an optional accent, garment showing through. Hand-cut type in the same language. No gradients, photorealism or tiny engraving.",
-].join(" ");
-
 export function composePetposterousArtStylePrompt(opts: {
   styleId: string;
   length?: "full" | "short";
-}): { prompt: string; style: PetposterousArtStyle; length: "full" | "short" } {
+}): { prompt: string; style: PetposterousArtStyle; length: "short" } {
   const style = petposterousArtStyle(opts.styleId);
   if (!style) throw new Error(`Unknown art style "${opts.styleId}"`);
-  const length = opts.length ?? "full";
-  if (length === "short") {
-    if (style.id !== "woodcut") throw new Error("The short-prompt control is woodcut only");
-    return { prompt: WOODCUT_SHORT_PROMPT, style, length };
-  }
+  void opts.length;
   const batch = PETPOSTEROUS_ART_STYLE_BATCH;
-  const framework = PETPOSTEROUS_CONCEPT_FRAMEWORKS[batch.frameworkId];
-  if (!framework) throw new Error("Pinned joke framework is missing");
-  const profile = PETPOSTEROUS_PROMPT_PROFILE;
-  const pack: PackPromptLayers = {
-    suppressStyleLayers: true,
-    styleOwnsComposition: true,
-    creativeBase: profile.creativeBase,
-    referenceIdentity: buildRoleReferenceInstruction({
-      styleImageCount: 0,
-      customerImages: [{ role: "pet", label: batch.referenceLabel }],
-      identityRules: profile.referenceIdentity,
-    }),
-    humor: fragment(profile.humorOptions, batch.humorId),
-    relationship: fragment(profile.relationshipOptions, batch.relationshipId),
-    concept: `BEHAVIOUR: ${batch.behaviour}.\nCONCEPT: ${batch.concept}.\n${CONCEPT_AUTHORITY}`,
-    conceptFramework: `JOKE FRAMEWORK — Hostile Negotiations: ${framework}`,
-    printConstraint: `${FRAMEWORK_SCOPE}\n\n${PETPOSTEROUS_APPAREL_OUTPUT_RULE}`,
-    visualSystem: style.prompt,
-    punchline: batch.words,
-    textRule: profile.exactTextRule,
-    rendererExtra: null,
-    garmentColour: null,
-  };
-  const prompt = composeLayeredPrompt({
-    category: "apparel",
-    isApparelGeneration: true,
-    generationModel: "openai-flare",
-    styleLayer: "",
-    userInput: "",
-    lockedBaseOverride: PETPOSTEROUS_ART_STYLE_PLATE,
-    packLayers: pack,
-  }).prompt;
-  return { prompt, style, length };
+  const prompt = [
+    `CONCEPT: ${batch.concept}.`,
+    `Exact wording, once: ${batch.words}`,
+    PETPOSTEROUS_APPAREL_PRINT,
+    PETPOSTEROUS_TYPE_RESTRAINT,
+    style.prompt,
+  ].join("\n\n");
+  return { prompt, style, length: "short" };
 }
