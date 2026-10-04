@@ -13,7 +13,7 @@ describe("shadow mint queue policy", () => {
     expect(shadowMintRetryDelayMs(2)).toBe(30_000);
     expect(shadowMintRetryDelayMs(3)).toBeNull();
     expect(shadowMintRetryDelayMs(4)).toBeNull();
-    expect(SHADOW_MINT_BACKOFF_MS[2]).toBe(120_000);
+    expect(SHADOW_MINT_BACKOFF_MS).toEqual([5_000, 30_000]);
   });
 
   it("supersedes only other keys for the same job and variant", () => {
