@@ -373,6 +373,11 @@ export type ComposeLayeredPromptInput = {
    * `packLayered`), so identity instructions are never lost.
    */
   packLayers?: PackPromptLayers | null;
+  /**
+   * Replaces the category locked base for this compose only.
+   * Classic apparel/decor bases stay in force when this is absent.
+   */
+  lockedBaseOverride?: string | null;
 };
 
 /** Reusable pack-level layers around a pack style's own scenario (the style layer). */
@@ -396,6 +401,14 @@ export type PackPromptLayers = {
   rendererExtra?: string | null;
   /** Light/dark garment colour constraints (apparel only). */
   garmentColour?: string | null;
+  /**
+   * Print constraint placed immediately before the style/look.
+   * Must not describe the picture. Petposterous art styles put the shared
+   * apparel output rule here so the style block owns composition.
+   */
+  printConstraint?: string | null;
+  /** When set, rendererExtra must not override the style's composition. */
+  styleOwnsComposition?: boolean;
 };
 
 /** Final order when pack layers are present (legacy compose is unchanged). */
@@ -470,7 +483,8 @@ export function resolveSubStyleFragment(opts: {
 export function composeLayeredPrompt(input: ComposeLayeredPromptInput): ComposeLayeredPromptResult {
   const category = resolvePromptLayerCategory(input.category, input.isApparelGeneration);
   const nativeTransparent = isGptImage2Model(input.generationModel);
-  const base = resolveLockedBase(category, input.generationModel, {
+  const override = (input.lockedBaseOverride || "").trim();
+  const base = override || resolveLockedBase(category, input.generationModel, {
     catalogSlug: input.catalogSlug,
     isApparelGeneration: input.isApparelGeneration,
     outputMode: input.outputMode,
@@ -565,9 +579,11 @@ function composePackLayerList(
     core.userLayer,
     clean(pack.concept),
     clean(pack.conceptFramework),
+    clean(pack.printConstraint),
     clean(pack.visualSystem),
-    // The physical product has final authority over a look's composition.
-    pack.visualSystem ? clean(pack.rendererExtra) : "",
+    // Looks still let the product renderer follow the look. Art styles own composition,
+    // so their print constraint is the printConstraint layer above and rendererExtra stays out.
+    pack.visualSystem && !pack.styleOwnsComposition ? clean(pack.rendererExtra) : "",
     punchline ? `${LITERAL_TEXT_INSTRUCTION}: "${punchline}"` : "",
     clean(pack.textRule),
     pack.visualSystem ? "" : clean(pack.rendererExtra),

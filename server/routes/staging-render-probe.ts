@@ -50,6 +50,9 @@ import {
 import { estimateGoogleImageCostUsd, renderGoogleImage } from "../google-image-client";
 import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../openai-image-client";
 import { recordGenerationEvent } from "../generation-events";
+import { measureSoftAlpha } from "../native-transparency";
+import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH } from "@shared/petposterousArtStyles";
+import { composeArtStyleProbe } from "../art-style-probe";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
   const envName = String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase();
@@ -284,8 +287,17 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     let buf = Buffer.from(await data.arrayBuffer());
     let type = row.mimeType || "application/octet-stream";
     if (req.query.thumb === "1") {
-      buf = await sharp(buf).resize(640, 640, { fit: "inside" }).jpeg({ quality: 82 }).toBuffer();
-      type = "image/jpeg";
+      const bg = req.query.bg === "dark" ? "#141210" : req.query.bg === "light" ? "#f4f1ea" : "";
+      const resized = sharp(buf).resize(640, 640, { fit: "inside" });
+      if (bg) {
+        buf = await resized.flatten({ background: bg }).png().toBuffer();
+        type = "image/png";
+      } else if (type.includes("png")) {
+        buf = await resized.png().toBuffer();
+      } else {
+        buf = await resized.jpeg({ quality: 82 }).toBuffer();
+        type = "image/jpeg";
+      }
     }
     res.setHeader("Content-Type", type);
     res.setHeader("Cache-Control", "private, no-store");
@@ -498,6 +510,162 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     }
   });
 
+  app.post("/api/staging/render-probe/art-style/prepare", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      let photoId = str(body.referencePhotoId, 16);
+      if (typeof body.photoDataUrl === "string" && body.photoDataUrl) {
+        const parsed = parseImageDataUrl(body.photoDataUrl);
+        if (!parsed) return res.status(400).json({ error: "Photo must be a JPEG, PNG, or WebP under 8MB." });
+        photoId = await storeProbePhoto(parsed.buf, parsed.mime);
+      } else if (!photoId || !(await loadProbePhoto(photoId))) {
+        return res.status(400).json({ error: "A reference pet photo is required." });
+      }
+      const batchId = `a${Date.now().toString(36)}${randomBytes(2).toString("hex")}`;
+      return res.json({
+        batchId,
+        referencePhotoId: photoId,
+        variants: 2,
+        behaviour: PETPOSTEROUS_ART_STYLE_BATCH.behaviour,
+        concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
+        words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+        conceptFramework: PETPOSTEROUS_ART_STYLE_BATCH.frameworkId,
+        styles: PETPOSTEROUS_ART_STYLES.map((style) => ({ id: style.id, label: style.label })),
+      });
+    } catch (err) {
+      const status = Number((err as { status?: number }).status) || 502;
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        error: String((err as Error)?.message ?? err).slice(0, 300),
+      });
+    }
+  });
+
+  app.post("/api/staging/render-probe/art-style", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const batchId = str(body.batchId, 40);
+    if (!/^a[a-z0-9]{6,32}$/.test(batchId)) return res.status(400).json({ error: "batchId required" });
+    const variant = Number(body.variant);
+    if (!Number.isInteger(variant) || variant < 1 || variant > 2) return res.status(400).json({ error: "variant out of range" });
+    const artStyle = str(body.artStyle, 40);
+    const promptLength = str(body.promptLength, 8, "full") === "short" ? "short" : "full";
+    const photoId = str(body.referencePhotoId, 16);
+    const dataUrl = await loadProbePhoto(photoId);
+    if (!dataUrl) return res.status(400).json({ error: "Reference photo was not found. Upload it again." });
+    let composed: ReturnType<typeof composeArtStyleProbe>;
+    try {
+      composed = composeArtStyleProbe({ styleId: artStyle, length: promptLength, referenceDataUrl: dataUrl });
+    } catch (err) {
+      return res.status(400).json({ error: String((err as Error)?.message ?? err).slice(0, 200) });
+    }
+    const recipe = composed.recipe;
+    const visualSystem = promptLength === "short" ? `${composed.composed.style.id}-short` : composed.composed.style.id;
+    const experiment = `art-styles:${batchId}`;
+    const rowBase = {
+      experiment,
+      promptId: `style:${visualSystem}`,
+      promptChars: composed.sentPrompt.length,
+      run: variant,
+      provider: recipe.provider,
+      model: recipe.model,
+      rendererId: recipe.rendererId,
+      aspectRatio: composed.params.aspectRatio ?? "1:1",
+      imageSize: recipe.imageSize,
+      batchId,
+      visualSystem,
+      conceptFramework: composed.batch.frameworkId,
+      composedPrompt: composed.sentPrompt,
+      credentialRef: recipe.credentialRef,
+      route: recipe.route,
+      referencePhotoId: photoId,
+      behavior: composed.batch.behaviour,
+      productFamily: "apparel",
+      conceptSnapshot: {
+        funnyTruth: composed.batch.behaviour,
+        visualJoke: composed.batch.concept,
+        punchline: composed.batch.words,
+        subjectPriority: composed.batch.referenceLabel,
+        promptLength,
+      },
+    };
+    const started = Date.now();
+    try {
+      const result = await generateImageBase64(composed.params);
+      if (!result.data) throw new Error("AI model returned no image data");
+      const buf = Buffer.from(result.data, "base64");
+      const meta = await sharp(buf).metadata();
+      const measured = await measureEdges(buf);
+      const alpha = await measureSoftAlpha(buf);
+      const edges = {
+        ...measured,
+        alpha: {
+          transparentPct: Math.round(alpha.transparentFraction * 1000) / 10,
+          featherPct: Math.round(alpha.featherFractionOfInk * 1000) / 10,
+          haloPct: Math.round(alpha.haloFractionOfInk * 1000) / 10,
+        },
+      };
+      const mimeType = result.mimeType || "image/png";
+      let storagePath: string | null = null;
+      let storageError: string | null = null;
+      const c = sb();
+      if (c) {
+        try {
+          await ensureBucket(c);
+          const ext = mimeType.includes("png") ? "png" : "png";
+          const path = `${experiment.replace(/[^A-Za-z0-9_-]/g, "-")}/${Date.now()}-${recipe.rendererId}-${visualSystem}-${variant}.${ext}`;
+          const { error } = await c.storage.from(BUCKET).upload(path, buf, { contentType: "image/png", upsert: false });
+          if (error) throw new Error(error.message);
+          storagePath = path;
+        } catch (e) {
+          storageError = String((e as Error)?.message ?? e).slice(0, 200);
+        }
+      }
+      const [row] = await (await db())
+        .insert(renderProbeResults)
+        .values({
+          ...rowBase,
+          width: meta.width ?? null,
+          height: meta.height ?? null,
+          mimeType,
+          providerMs: result.meta?.durationMs ?? null,
+          totalMs: Date.now() - started,
+          usage: result.meta?.usage ?? null,
+          estimatedCostUsd: result.meta?.estimatedCostUsd != null ? result.meta.estimatedCostUsd.toFixed(6) : null,
+          edges,
+          providerRequestId: result.meta?.providerRequestId ?? null,
+          storagePath,
+          success: true,
+          error: storageError,
+        })
+        .returning({ id: renderProbeResults.id });
+      return res.json({
+        id: row?.id,
+        batchId,
+        visualSystem,
+        variant,
+        promptLength,
+        route: recipe.route,
+        model: recipe.model,
+        credentialRef: recipe.credentialRef,
+        width: meta.width,
+        height: meta.height,
+        durationMs: result.meta?.durationMs ?? null,
+        estimatedCostUsd: result.meta?.estimatedCostUsd ?? null,
+        edges,
+        promptChars: composed.sentPrompt.length,
+        stored: !!storagePath,
+        storageError,
+      });
+    } catch (err) {
+      const message = String((err as Error)?.message ?? err).slice(0, 300);
+      try {
+        await (await db()).insert(renderProbeResults).values({ ...rowBase, success: false, error: message });
+      } catch { /* best effort */ }
+      return res.status(502).json({ error: message, batchId, visualSystem, variant });
+    }
+  });
+
   app.get("/staging/render-probe", (_req: Request, res: Response) => {
     if (!stagingOnly()) return res.status(404).send("Not found");
     res.setHeader("Cache-Control", "no-store");
@@ -514,6 +682,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       ],
       defaultVariants: STYLE_EXAMPLE_DEFAULT_VARIANTS,
       maxVariants: STYLE_EXAMPLE_MAX_VARIANTS,
+      artStyles: PETPOSTEROUS_ART_STYLES.map((style) => ({ id: style.id, label: style.label })),
     };
     res.type("html").send(RESULTS_PAGE.replace("/*__CATALOG__*/null", JSON.stringify(catalog).replace(/</g, "\\u003c")));
   });
@@ -576,6 +745,7 @@ h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:rep
 .batch textarea, .batch input[type=file]{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:inherit}
 .batch textarea{min-height:68px}.batch .hint,.batchnote{margin:0;color:var(--muted);font-size:12.5px}
 .looks{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow-x:auto;align-items:start}
+.looks.artstyles{grid-template-columns:repeat(10,minmax(150px,1fr))}.looks.artstyles .card img{aspect-ratio:1/1}
 .lookcol h3{margin:0 0 8px;font-size:14px}
 details.prompt summary{cursor:pointer;color:var(--muted);font-size:12px;padding:0 12px 10px}
 details.prompt pre{white-space:pre-wrap;max-height:220px;overflow:auto;font:11px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0 12px 12px}
@@ -598,7 +768,8 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label>What they do<textarea id="behavior" placeholder="He takes the middle of the couch and waits for someone to move him."></textarea></label>
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
-<div><button id="runBatch" type="button">Generate batch</button></div>
+<div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
+<p class="hint">Art style batch holds one concept (dog takes the front passenger seat, Hostile Negotiations, PASSENGER SELECTED.) across ten drawing languages, two each, Flare, native transparent. Plus a short woodcut control.</p>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
 <main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
@@ -606,7 +777,7 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <script>
 const KEY="appai-probe-token";const CONCEPT_KEY="appai-style-batch-concept";
 const CATALOG=/*__CATALOG__*/null;
-let token=sessionStorage.getItem(KEY)||"";let rows=[];const blobs={};let running=false;
+let token=sessionStorage.getItem(KEY)||"";let rows=[];const blobs={};let running=false;let blind=false;let matte="";const blindNames={};
 const h=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function fillSelect(id, items, selected){const sel=document.getElementById(id);sel.innerHTML=items.map(it=>'<option value="'+h(it.id)+'"'+(it.id===selected?" selected":"")+">"+h(it.label)+"</option>").join("")}
 fillSelect("framework", CATALOG.frameworks, CATALOG.frameworks[0]&&CATALOG.frameworks[0].id);
@@ -621,18 +792,20 @@ function setStatus(t){document.getElementById("batchStatus").textContent=t}
 async function api(path){const r=await fetch(path,{headers:{"x-appai-probe-token":token}});if(!r.ok)throw new Error(r.status);return r}
 async function apiJson(path, body){const r=await fetch(path,{method:"POST",headers:{"x-appai-probe-token":token,"content-type":"application/json"},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
 function fileToDataUrl(file){return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=()=>resolve(String(fr.result||""));fr.onerror=()=>reject(new Error("Could not read the photo"));fr.readAsDataURL(file)})}
-async function img(id,thumb){const k=id+(thumb?"t":"");if(blobs[k])return blobs[k];const r=await api("/api/staging/render-probe/image/"+id+(thumb?"?thumb=1":""));blobs[k]=URL.createObjectURL(await r.blob());return blobs[k]}
+async function img(id,thumb){const k=id+(thumb?"t":"")+(matte||"");if(blobs[k])return blobs[k];const q=thumb?("?thumb=1"+(matte?"&bg="+matte:"")):"";const r=await api("/api/staging/render-probe/image/"+id+q);blobs[k]=URL.createObjectURL(await r.blob());return blobs[k]}
+function blindLabel(id){if(!blindNames[id]){const n=Object.keys(blindNames).length;blindNames[id]=String.fromCharCode(65+(n%26))+(n>=26?String(Math.floor(n/26)+1):"")}return blindNames[id]}
 function edge(e){if(!e)return"–";const s=["top","bottom","left","right"];return s.map(k=>k[0].toUpperCase()+" "+e[k].palePct+"% / "+e[k].uniformPct+"%").join(" · ")}
 function fwLabel(id){const f=CATALOG.frameworks.find(x=>x.id===id);return f?f.label:(id||"")}
-function lookLabel(id){const f=CATALOG.looks.find(x=>x.id===id);return f?f.label:(id||"")}
+function lookLabel(id){if(id==="woodcut-short")return "Woodcut · short";const f=(CATALOG.artStyles||[]).concat(CATALOG.looks).find(x=>x.id===id);return f?f.label:(id||"")}
 function probeCard(r){const c=document.createElement("div");c.className="card";
 c.innerHTML=(r.hasImage?'<img alt="'+h(r.model)+' run '+h(r.run)+'" data-id="'+r.id+'">':'<div class="err">'+h(r.error||"no image")+"</div>")+
 '<div class="meta"><b>Model</b><span><span class="tag">'+h(r.provider)+"</span>"+h(r.model)+'</span><b>Run</b><span>'+h(r.run??"–")+" · "+h(r.promptId)+" ("+h(r.promptChars)+' chars)</span><b>Size</b><span>'+h(r.width)+"×"+h(r.height)+" · "+h(r.aspectRatio)+" · "+h(r.imageSize)+'</span><b>MIME</b><span>'+h(r.mimeType)+'</span><b>Latency</b><span>'+(r.providerMs!=null?(r.providerMs/1000).toFixed(1)+"s provider":"–")+'</span><b>Cost</b><span>'+(r.estimatedCostUsd!=null?"$"+Number(r.estimatedCostUsd).toFixed(4):"–")+(r.usage?" · "+h(r.usage.inputTokens)+" in / "+h(r.usage.outputTokens)+" out":"")+'</span><b>Edges</b><span title="outer 1% band: bare-paper % / single-colour %">'+edge(r.edges)+'</span><b>When</b><span>'+h(new Date(r.createdAt).toLocaleString())+"</span></div>";
 return c}
 function styleCard(r){const c=document.createElement("div");c.className="card";
-const prompt=r.composedPrompt?'<details class="prompt"><summary>Composed prompt ('+h(r.promptChars)+' chars)</summary><pre>'+h(r.composedPrompt)+"</pre></details>":"";
-c.innerHTML=(r.hasImage?'<img alt="'+h(lookLabel(r.visualSystem))+" variant "+h(r.run)+'" data-id="'+r.id+'">':'<div class="err">'+h(r.error||"no image")+"</div>")+
-'<div class="meta"><b>Variant</b><span>'+h(r.run??"–")+'</span><b>Route</b><span>'+h(r.route)+" · "+h(r.model)+'</span><b>Credential</b><span>'+h(r.credentialRef)+'</span><b>Size</b><span>'+h(r.width)+"×"+h(r.height)+" · "+h(r.aspectRatio)+" · "+h(r.imageSize)+'</span><b>Photo</b><span>'+h(r.referencePhotoId)+'</span><b>When</b><span>'+h(r.createdAt?new Date(r.createdAt).toLocaleString():"")+"</span></div>"+prompt;
+const alpha=r.edges&&r.edges.alpha?'<b>Alpha</b><span>clear '+h(r.edges.alpha.transparentPct)+'% · feather '+h(r.edges.alpha.featherPct)+'% · halo '+h(r.edges.alpha.haloPct)+'%</span>':"";
+const prompt=!blind&&r.composedPrompt?'<details class="prompt"><summary>Composed prompt ('+h(r.promptChars)+' chars)</summary><pre>'+h(r.composedPrompt)+"</pre></details>":"";
+c.innerHTML=(r.hasImage?'<img alt="'+h(blind?blindLabel(r.id):lookLabel(r.visualSystem))+" variant "+h(r.run)+'" data-id="'+r.id+'">':'<div class="err">'+h(r.error||"no image")+"</div>")+
+'<div class="meta"><b>Variant</b><span>'+h(r.run??"–")+'</span><b>Route</b><span>'+h(r.route)+" · "+h(r.model)+'</span><b>Credential</b><span>'+h(r.credentialRef)+'</span><b>Size</b><span>'+h(r.width)+"×"+h(r.height)+" · "+h(r.aspectRatio)+" · "+h(r.imageSize)+'</span><b>Photo</b><span>'+h(r.referencePhotoId)+'</span>'+alpha+'<b>Time</b><span>'+(r.providerMs!=null?(r.providerMs/1000).toFixed(1)+"s":"–")+'</span><b>Cost</b><span>'+(r.estimatedCostUsd!=null?"$"+Number(r.estimatedCostUsd).toFixed(4):"–")+'</span><b>When</b><span>'+h(r.createdAt?new Date(r.createdAt).toLocaleString():"")+"</span></div>"+prompt;
 return c}
 function render(){const exp=document.getElementById("exp").value;const main=document.getElementById("main");main.innerHTML="";
 const groups={};for(const r of rows){if(exp&&r.experiment!==exp)continue;(groups[r.experiment]??=[]).push(r)}
@@ -643,15 +816,18 @@ for(const r of list)g.appendChild(probeCard(r));sec.appendChild(g);main.appendCh
 const sample=list.find(r=>r.conceptSnapshot)||list[0];
 const joke=sample.conceptSnapshot&&sample.conceptSnapshot.visualJoke?sample.conceptSnapshot.visualJoke:"";
 sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
-const board=document.createElement("div");board.className="looks";
+const artBatch=String(name).indexOf("art-styles:")===0;
+if(blind&&artBatch){const g=document.createElement("div");g.className="grid";list.slice().sort(()=>Math.random()-0.5).forEach(r=>g.appendChild(styleCard(r)));sec.appendChild(g);main.appendChild(sec);continue}
+const board=document.createElement("div");board.className=artBatch?"looks artstyles":"looks";
 const byLook={};for(const r of list){(byLook[r.visualSystem||"other"]??=[]).push(r)}
-const ids=CATALOG.looks.map(l=>l.id).filter(id=>byLook[id]);
+const order=artBatch&&CATALOG.artStyles?CATALOG.artStyles:CATALOG.looks;
+const ids=order.map(l=>l.id).filter(id=>byLook[id]);
 for(const extra of Object.keys(byLook))if(!ids.includes(extra))ids.push(extra);
-for(const id of ids){const col=document.createElement("div");col.className="lookcol";col.innerHTML="<h3>"+h(lookLabel(id))+"</h3>";
+for(const id of ids){const col=document.createElement("div");col.className="lookcol";col.innerHTML="<h3>"+h(blind&&artBatch?"":lookLabel(id))+"</h3>";
 byLook[id].slice().sort((a,b)=>(a.run??0)-(b.run??0)).forEach(r=>col.appendChild(styleCard(r)));board.appendChild(col)}
 sec.appendChild(board);main.appendChild(sec)}
 if(!main.children.length)main.innerHTML="<p>No results yet.</p>";
-for(const el of main.querySelectorAll("img[data-id]")){img(el.dataset.id,true).then(u=>el.src=u).catch(()=>{});el.onclick=async()=>{const r=rows.find(x=>String(x.id)===el.dataset.id);document.getElementById("fulltitle").textContent=r.visualSystem?(lookLabel(r.visualSystem)+" · variant "+(r.run??"–")+" · "+r.width+"×"+r.height):(r.model+" · run "+(r.run??"–")+" · "+r.width+"×"+r.height);document.getElementById("fullimg").src=await img(el.dataset.id,false);document.getElementById("full").showModal()}}}
+for(const el of main.querySelectorAll("img[data-id]")){img(el.dataset.id,true).then(u=>el.src=u).catch(()=>{});el.onclick=async()=>{const r=rows.find(x=>String(x.id)===el.dataset.id);document.getElementById("fulltitle").textContent=(blind&&r.visualSystem?blindLabel(r.id):(r.visualSystem?lookLabel(r.visualSystem):r.model))+" · variant "+(r.run??"–")+" · "+r.width+"×"+r.height;document.getElementById("fullimg").src=await img(el.dataset.id,false);document.getElementById("full").showModal()}}}
 async function load(prefer){try{const r=await api("/api/staging/render-probe/results");rows=(await r.json()).results;document.getElementById("batch").hidden=false;const sel=document.getElementById("exp");const cur=prefer||sel.value;sel.innerHTML='<option value="">All experiments</option>'+[...new Set(rows.map(r=>r.experiment))].map(e=>'<option value="'+h(e)+'"'+(e===cur?" selected":"")+">"+h(e)+"</option>").join("");render()}catch(e){if(String(e.message)==="404")document.getElementById("batch").hidden=true;document.getElementById("main").innerHTML='<p class="err">Not authorised or unavailable ('+h(e.message)+").</p>"}}
 document.getElementById("runBatch").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];const behavior=document.getElementById("behavior").value.trim();if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose a pet photo.");return}if(!behavior){setStatus("Describe what they do.");return}
 const variants=Math.max(1,Math.min(CATALOG.maxVariants,Number(document.getElementById("variants").value)||CATALOG.defaultVariants));
@@ -671,6 +847,22 @@ await load("style-batch:"+prep.batchId);
 setStatus(failures.length?failures.join(" · "):("Batch "+prep.batchId+" finished. Reuse stays on, so the next run keeps this concept."))}
 catch(e){setStatus(e.message||"Batch failed")}
 finally{running=false;document.getElementById("runBatch").disabled=false}};
+document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
+running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
+try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
+const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v,promptLength:"full"});
+jobs.push({artStyle:"woodcut",label:"Woodcut short",variant:1,promptLength:"short"},{artStyle:"woodcut",label:"Woodcut short",variant:2,promptLength:"short"});
+let done=0;const failures=[];let cursor=0;
+async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:job.promptLength,referencePhotoId:prep.referencePhotoId})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
+async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
+await Promise.all([worker(),worker()]);
+await load("art-styles:"+prep.batchId);
+setStatus(failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."))}
+catch(e){setStatus(e.message||"Art style batch failed")}
+finally{running=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false}};
+document.getElementById("blind").onclick=()=>{blind=!blind;document.getElementById("blind").textContent=blind?"Reveal labels":"Blind";render()};
+document.getElementById("matte").onclick=()=>{matte=matte==="dark"?"":"dark";document.getElementById("matte").textContent=matte?"Checkerboard":"Dark garment";render()};
 document.getElementById("auth").onsubmit=(e)=>{e.preventDefault();token=document.getElementById("token").value.trim();sessionStorage.setItem(KEY,token);load()};
 document.getElementById("exp").onchange=render;document.getElementById("close").onclick=()=>document.getElementById("full").close();
 if(token)load();
