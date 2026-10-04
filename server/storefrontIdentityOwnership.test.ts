@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveVariantOwnershipCheckEnabled } from "./storefront-identity";
 import { signStorefrontIdentityToken } from "./storefront-identity-token";
 
 const SHOP = "ai-art-studio-staging.myshopify.com";
@@ -170,6 +171,15 @@ describe("fork-design creative brief", () => {
     // anonymous fork (no proven owner): never carries a brief
     expect(canCopyCreativeBrief({ shop: SHOP, customerId: null }, SHOP, null)).toBe(false);
     expect(canCopyCreativeBrief(undefined, SHOP, ALICE)).toBe(false);
+  });
+});
+
+describe("resolve-design-variant ownership flag", () => {
+  it("is on unless RESOLVE_OWNERSHIP_CHECK=false", () => {
+    expect(resolveVariantOwnershipCheckEnabled(undefined)).toBe(true);
+    expect(resolveVariantOwnershipCheckEnabled("true")).toBe(true);
+    expect(resolveVariantOwnershipCheckEnabled("")).toBe(true);
+    expect(resolveVariantOwnershipCheckEnabled("false")).toBe(false);
   });
 });
 

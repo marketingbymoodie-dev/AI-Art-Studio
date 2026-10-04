@@ -60,6 +60,7 @@ import { storage } from "./storage";
 import {
   hasPrintConfigSuffix,
   reusableShadowDesignId,
+  shadowJobPrefix,
   shadowLookupKeys,
   shadowMatchesBaseVariant,
 } from "@shared/shadowDesignId";
@@ -349,7 +350,7 @@ import { publicCreativeBrief } from "./customer-references";
 import { identityMatches } from "./storefront-identity-check";
 import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
 import { canClaimDesign, canCopyCreativeBrief, decideSessionMerge, isAuthenticatedAccount } from "./storefront-identity-source";
-import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveStorefrontJobAccess, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
+import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveStorefrontJobAccess, resolveVariantOwnershipCheckEnabled, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
 import {
   creativeBriefFromContext,
   hostPackReferences,
@@ -10154,6 +10155,17 @@ ${orientationExtra}
         return res.status(404).json({ error: "Job not found", reqId });
       }
 
+      // Artwork plus the owner's wallet balance. A job id is not proof.
+      const statusAccess = await resolveStorefrontJobAccess(
+        req,
+        shop,
+        job,
+        typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+      );
+      if (!statusAccess.ok) {
+        return res.status(statusAccess.status).json({ error: statusAccess.error, reqId });
+      }
+
       console.log(`[SF STATUS] ${reqId} jobId=${jobId} status=${job.status} ${Date.now() - t0}ms`);
 
       if (job.status === "complete") {
@@ -11099,6 +11111,15 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
+      const shadowAccess = await resolveStorefrontJobAccess(
+        req,
+        shop,
+        job,
+        typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+      );
+      if (!shadowAccess.ok) {
+        return res.status(shadowAccess.status).json({ error: shadowAccess.error });
+      }
       const ds =
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
           ? (job.designState as Record<string, unknown>)
@@ -11712,6 +11733,31 @@ ${orientationExtra}
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) {
         return res.status(403).json({ success: false, error: "Shop not authorized" });
+      }
+      // A real job prefix must be this caller’s design. Non-job keys (cart line
+      // ids, old readable labels) have nothing to steal and stay as they were.
+      // RESOLVE_OWNERSHIP_CHECK=false skips this without a deploy.
+      if (resolveVariantOwnershipCheckEnabled()) {
+        const jobKey = shadowJobPrefix(String(designId));
+        const ownedJob = jobKey ? await storage.getGenerationJob(jobKey) : undefined;
+        if (ownedJob) {
+          const resolveAccess = await resolveStorefrontJobAccess(
+            req,
+            shop,
+            ownedJob,
+            typeof req.body?.sessionId === "string" ? req.body.sessionId : null,
+          );
+          if (!resolveAccess.ok) {
+            console.warn(
+              `${resolveTag} ownership refused status=${resolveAccess.status} job=${jobKey.slice(0, 8)}`,
+            );
+            return res.status(resolveAccess.status).json({
+              success: false,
+              error: "Not authorized to use this design",
+              code: "not_design_owner",
+            });
+          }
+        }
       }
       const token = installation.accessToken!;
       const apiBase = `https://${shop}/admin/api/2025-10`;
