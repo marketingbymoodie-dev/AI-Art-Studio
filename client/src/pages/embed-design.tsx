@@ -285,6 +285,7 @@ import {
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
+import { printSidesTwinVariant } from "@shared/printSides";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import {
   formatStorefrontHeadlineDisplay,
@@ -12842,7 +12843,18 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
 
     // Normalize variant ID (strip GID prefix if present)
-    const normalizedVariant = normalizeVariantId(variantId);
+    const atcFrontVariantId = normalizeVariantId(variantId);
+    const atcFrontVariant =
+      shopifyVariants.find((v) => normalizeVariantId(String(v.id)) === atcFrontVariantId) ?? null;
+    // Print sides products: a back print sells as the size/colour's Front + Back
+    // variant at its own price. Legacy products (no option, or twin missing)
+    // keep the Front variant + bothPriceOverride surcharge below.
+    const atcBothTierVariant = printPlacementUsesBoth
+      ? printSidesTwinVariant(shopifyVariants, atcFrontVariant, "both")
+      : null;
+    const normalizedVariant = atcBothTierVariant
+      ? normalizeVariantId(String(atcBothTierVariant.id))
+      : atcFrontVariantId;
 
     // Build the full artwork URL — try to get hosted with a 10s cap, but don't block cart add
     let artworkFullUrl = '';
@@ -12983,15 +12995,16 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
       "";
-    const atcFrontPrice = parseFloat(
-      shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price || "0",
-    );
-    const bothRetailForAtc = printPlacementUsesBoth
+    const atcFrontPrice = parseFloat(atcFrontVariant?.price || "0");
+    const atcBothTierPrice = parseFloat(atcBothTierVariant?.price || "0");
+    const bothRetailForAtc = atcBothTierVariant && atcBothTierPrice > 0
+      ? atcBothTierPrice
+      : printPlacementUsesBoth
       ? bothRetailAboveFront(
           resolveBothRetailDollars({
             sizeName: atcSizeName,
             colorName: atcColorName,
-            shopifyVariantId: normalizedVariant,
+            shopifyVariantId: atcFrontVariantId,
           }),
           atcFrontPrice,
         ) ?? estimateBothRetailFromFront(atcFrontPrice)
@@ -13015,6 +13028,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       bothPriceOverride,
       atcFrontPrice,
       variantId: normalizedVariant,
+      frontVariantId: atcFrontVariantId,
+      bothTierVariant: !!atcBothTierVariant,
       size: atcSizeName,
       color: atcColorName,
     });
@@ -13193,6 +13208,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       : true;
     if (
       shopDomain &&
+      !atcBothTierVariant &&
       preShadowKeyMatches &&
       preShadowMatchesJob &&
       preShadowVariantId &&
