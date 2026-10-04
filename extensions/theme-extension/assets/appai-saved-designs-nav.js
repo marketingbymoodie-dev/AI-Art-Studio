@@ -645,13 +645,23 @@
       console.warn('[AppAI Nav] No pageHandle for design', design.id);
       return;
     }
-    var url = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    var url = '/pages/' + design.pageHandle;
     // Pass the design's mockup so the customizer can paint it instantly while
     // the full design data loads (avoids the grey loading scan on open).
     var mockup = (design.mockupUrls && design.mockupUrls[0]) || '';
-    if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
     var productName = design.baseTitle || 'saved design';
-    if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
+    // Reopen target goes in tab storage, never the URL (a job id in a shareable
+    // link let anyone open and buy that design). Same key/shape as
+    // appai-art-embed.js APPAI_REOPEN_KEY and client/src/lib/reopenDesign.ts.
+    try {
+      sessionStorage.setItem('appai_reopen_design', JSON.stringify({
+        id: String(design.id),
+        handle: String(design.pageHandle).toLowerCase(),
+        mockup: mockup || null,
+        productName: productName || null,
+        ts: Date.now()
+      }));
+    } catch (e) {}
     // Always full-page navigate. In-iframe SWITCH_SAVED_DESIGN left the
     // customizer on a blank/hung load when opening a tile from inside the
     // editor; the homepage pill already used this assign path and worked.

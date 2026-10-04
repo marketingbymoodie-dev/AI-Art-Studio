@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Images, X } from "lucide-react";
 import { API_BASE } from "@/lib/urlBase";
+import { pageHandleFromUrl, writeReopenDesign } from "@/lib/reopenDesign";
 import { normalizePreviewUrl } from "@shared/previewUrl";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 
@@ -484,7 +485,15 @@ export function CreatorSavedDesignsMenu({
                       <a
                         href={href}
                         className="block overflow-hidden rounded-md border border-border hover:border-primary"
-                        onClick={() => setOpen(false)}
+                        onClick={() => {
+                          try {
+                            const handle = pageHandleFromUrl(new URL(href, window.location.origin));
+                            writeReopenDesign(window, { id: d.id, handle });
+                          } catch {
+                            /* ignore */
+                          }
+                          setOpen(false);
+                        }}
                       >
                         {card}
                       </a>

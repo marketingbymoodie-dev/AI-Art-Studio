@@ -177,7 +177,7 @@ function designerHref(opts: {
   if (username) params.set("creatorUsername", username);
   if (creatorId) params.set("creatorId", creatorId);
   params.set("storefront", "true");
-  if (opts.loadDesignId) params.set("loadDesignId", opts.loadDesignId);
+  // The design to reopen is handed over in tab storage on click (lib/reopenDesign), never the URL.
   return `/s/designer?${params.toString()}`;
 }
 
