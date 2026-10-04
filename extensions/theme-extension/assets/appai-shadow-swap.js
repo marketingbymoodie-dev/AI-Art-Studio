@@ -4,6 +4,7 @@
    screen. Decode starts when the shadow variant id is known (mint complete),
    not when the swap runs. If decode rejects or misses the budget, an open
    drawer does not swap — the drawer-closed pass does.
+   Checkout click while a swap is still pending waits up to 5s, then continues.
    Fallback: /cart/add.js then /cart/change.js quantity 0, only when updateCart
    is not a function. That fallback logs every time it fires.
    No-op unless session atcMode is base-first and a pending swap was recorded.
@@ -11,7 +12,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.2";
+  var VER = "1.3";
   if (window.__APPAI_SHADOW_SWAP_VER__ === VER) return;
   window.__APPAI_SHADOW_SWAP_VER__ = VER;
 
@@ -23,11 +24,15 @@
   var running = false;
   var queued = false;
   var suppressNote = false;
-  // Fresh-mint first decode measured ~791ms. Waiting does not blank the
-  // drawer: cart-images already paints the line's _mockup_url. Past this,
-  // leave the swap until the drawer closes. There is no pre-checkout hold
-  // yet, so this window is what lets the swap land before a drawer checkout.
+  // Fresh-mint first decode measured ~791ms. The drawer is already painted
+  // from _mockup_url. Past this, leave the swap until the drawer closes.
+  // Checkout is a separate 5s hold: the shadow image is what checkout uses.
   var DECODE_BUDGET_MS = 2000;
+  var SWAP_HOLD_MAX_MS = 5000;
+  var SWAP_HOLD_POLL_MS = 500;
+  var CHECKOUT_SELECTOR =
+    'button[name="checkout"], [name="checkout"], #checkout, a[href="/checkout"], a[href^="/checkout"], button[formaction*="/checkout"]';
+  NS.CHECKOUT_SELECTOR = NS.CHECKOUT_SELECTOR || CHECKOUT_SELECTOR;
   var warmByVariant = {};
 
   function readMap(key) {
@@ -42,6 +47,7 @@
 
   function writeMap(key, value) {
     try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
+    if (key === PENDING_KEY) syncPendingChrome();
   }
 
   function mode() {
@@ -383,6 +389,123 @@
 
   NS.requestShadowSwap = run;
 
+  var holding = false;
+  var releasing = false;
+  var holdBanner = null;
+
+  function syncPendingChrome() {
+    var pending = mode() === "base-first" && Object.keys(readMap(PENDING_KEY)).length > 0;
+    document.documentElement.classList.toggle("appai-swap-pending", pending);
+  }
+
+  (function injectHoldStyle() {
+    var style = document.createElement("style");
+    style.setAttribute("data-appai-swap-hold", "1");
+    style.textContent =
+      "html.appai-swap-pending .shopify-payment-button," +
+      "html.appai-swap-pending .additional-checkout-buttons," +
+      "html.appai-swap-pending [data-shopify-buttoncontainer]," +
+      "html.appai-swap-pending shopify-accelerated-checkout," +
+      "html.appai-swap-pending shopify-accelerated-checkout-cart" +
+      "{display:none!important;}";
+    (document.head || document.documentElement).appendChild(style);
+  })();
+  syncPendingChrome();
+
+  function isCheckoutLike(el) {
+    if (!el || !el.closest) return false;
+    if (el.closest(CHECKOUT_SELECTOR)) return true;
+    var submit = el.closest(
+      'form[action="/cart"] button[type="submit"], form[action^="/cart"] button[type="submit"], ' +
+        'form[action="/cart"] input[type="submit"], form[action^="/cart"] input[type="submit"]'
+    );
+    if (!submit) return false;
+    var text = (submit.textContent || submit.value || "").toLowerCase();
+    return text.indexOf("check") !== -1;
+  }
+
+  function showHoldBanner(on) {
+    if (!on) {
+      if (holdBanner && holdBanner.parentNode) holdBanner.parentNode.removeChild(holdBanner);
+      holdBanner = null;
+      return;
+    }
+    if (holdBanner) return;
+    holdBanner = document.createElement("div");
+    holdBanner.id = "appai-swap-hold-banner";
+    holdBanner.setAttribute("role", "status");
+    holdBanner.style.cssText =
+      "position:sticky;top:0;z-index:9998;background:#111;color:#fff;padding:10px 16px;" +
+      "text-align:center;font-size:14px;font-family:inherit;";
+    holdBanner.textContent = "Finalising your design…";
+    document.body.insertBefore(holdBanner, document.body.firstChild);
+  }
+
+  function beaconHold(waited, result) {
+    var body = JSON.stringify({ waitedMs: waited, result: result });
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/apps/appai/atc-telemetry", new Blob([body], { type: "application/json" }));
+      }
+    } catch (_) {}
+  }
+
+  function continueCheckout(control) {
+    releasing = true;
+    if (control && control.tagName === "A") {
+      var href = control.getAttribute("href") || "/checkout";
+      if (!href || href === "#") href = "/checkout";
+      location.assign(href);
+      return;
+    }
+    if (control && typeof control.click === "function") control.click();
+    else location.assign("/checkout");
+    setTimeout(function () { releasing = false; }, 0);
+  }
+
+  function holdThenContinue(control) {
+    if (holding || releasing) return;
+    if (document.documentElement.classList.contains("appai-print-pending")) return;
+    if (mode() !== "base-first") return;
+    if (!Object.keys(readMap(PENDING_KEY)).length) return;
+    holding = true;
+    var started = Date.now();
+    showHoldBanner(true);
+    function finish(result) {
+      if (!holding) return;
+      holding = false;
+      var waited = Date.now() - started;
+      console.log("[AppAI swap-hold] fired waited=" + waited + "ms result=" + result);
+      beaconHold(waited, result);
+      showHoldBanner(false);
+      syncPendingChrome();
+      continueCheckout(control);
+    }
+    function tick() {
+      if (!holding) return;
+      if (!Object.keys(readMap(PENDING_KEY)).length) return finish("swapped");
+      if (Date.now() - started >= SWAP_HOLD_MAX_MS) return finish("fallthrough");
+      run();
+      setTimeout(tick, SWAP_HOLD_POLL_MS);
+    }
+    tick();
+  }
+
+  document.addEventListener("click", function (e) {
+    if (holding || releasing) return;
+    var control = e.target && e.target.closest ? e.target.closest(CHECKOUT_SELECTOR) : null;
+    if (!control && e.target) {
+      var submit = e.target.closest && e.target.closest("button, input");
+      if (submit && isCheckoutLike(submit)) control = submit;
+    }
+    if (!control || !isCheckoutLike(control)) return;
+    if (document.documentElement.classList.contains("appai-print-pending")) return;
+    if (mode() !== "base-first" || !Object.keys(readMap(PENDING_KEY)).length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    holdThenContinue(control);
+  }, true);
+
   if (typeof window.fetch === "function" && !window.__APPAI_SHADOW_SWAP_FETCH__) {
     window.__APPAI_SHADOW_SWAP_FETCH__ = true;
     var origFetch = window.fetch.bind(window);
@@ -397,7 +520,33 @@
           if (props && props._appai_swap_key) swapKey = String(props._appai_swap_key);
         }
       } catch (_) {}
+      var mockupUrl = "";
+      try {
+        var url2 = typeof input === "string" ? input : (input && input.url) || "";
+        if (url2.indexOf("/cart/add.js") !== -1 && init && typeof init.body === "string") {
+          var parsedBody = JSON.parse(init.body);
+          var firstItem = parsedBody && parsedBody.items && parsedBody.items[0];
+          var addProps = (firstItem && firstItem.properties) || (parsedBody && parsedBody.properties) || null;
+          if (addProps && addProps._mockup_url && String(addProps._mockup_url).indexOf("https://") === 0) {
+            mockupUrl = String(addProps._mockup_url);
+          }
+        }
+      } catch (_) {}
       var pending = origFetch(input, init);
+      if (mockupUrl) {
+        pending.then(function (res) {
+          if (!res || !res.ok || !res.clone) return;
+          res.clone().json().then(function (body) {
+            var items = body && body.items ? body.items : (body && body.key ? [body] : []);
+            var images = readMap(IMAGES_KEY);
+            for (var i = 0; i < items.length; i++) {
+              if (items[i] && items[i].key) images[items[i].key] = mockupUrl;
+            }
+            writeMap(IMAGES_KEY, images);
+            if (NS.paintCartFromCache) NS.paintCartFromCache();
+          }).catch(function () {});
+        }).catch(function () {});
+      }
       if (swapKey && !suppressNote) {
         pending.then(function (res) {
           if (res && res.ok) rememberLine(swapKey);

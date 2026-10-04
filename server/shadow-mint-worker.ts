@@ -144,6 +144,7 @@ async function reapExpiredLeases(): Promise<void> {
   `);
 }
 
+/** Flats claim before AOP, and a shop runs at most one AOP mint so a hoodie cannot take both slots. */
 async function claimOne(): Promise<JobRow | null> {
   const result = await db.execute(sql`
     WITH picked AS (
@@ -161,7 +162,29 @@ async function claimOne(): Promise<JobRow | null> {
           SELECT count(*) FROM shadow_mint_jobs r
           WHERE r.state = 'running' AND r.lease_until > now()
         ) < ${SHADOW_MINT_MAX_IN_FLIGHT_GLOBAL}
-      ORDER BY created_at
+        AND (
+          NOT (
+            (cfg_snapshot->'aopHoodie') IS NOT NULL
+            OR (cfg_snapshot->'aopPattern') IS NOT NULL
+          )
+          OR (
+            SELECT count(*) FROM shadow_mint_jobs r
+            WHERE r.shop = shadow_mint_jobs.shop
+              AND r.state = 'running'
+              AND r.lease_until > now()
+              AND (
+                (r.cfg_snapshot->'aopHoodie') IS NOT NULL
+                OR (r.cfg_snapshot->'aopPattern') IS NOT NULL
+              )
+          ) < 1
+        )
+      ORDER BY
+        CASE
+          WHEN (cfg_snapshot->'aopHoodie') IS NOT NULL
+            OR (cfg_snapshot->'aopPattern') IS NOT NULL
+          THEN 1 ELSE 0
+        END,
+        created_at
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     )
