@@ -7934,6 +7934,14 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             }
             setPreShadowVariantId(data.shadowVariantId);
             setPreShadowProductId(data.shadowProductId || null);
+            if (atcModeRef.current === "base-first") {
+              try {
+                window.parent.postMessage({
+                  type: "ai-art-studio:shadow-ready",
+                  variantId: String(data.shadowVariantId),
+                }, "*");
+              } catch (_) { /* parent decodes when it can */ }
+            }
             return;
           }
         }

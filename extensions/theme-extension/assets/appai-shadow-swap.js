@@ -1,5 +1,9 @@
 /* AppAI shadow swap.
    Primary: Shopify.actions.updateCart changes the line's variant in place.
+   The next cart image is decoded before that call when a thumbnail is on
+   screen. Decode starts when the shadow variant id is known (mint complete),
+   not when the swap runs. If decode rejects or misses a 500ms budget, an
+   open drawer does not swap — the drawer-closed pass does.
    Fallback: /cart/add.js then /cart/change.js quantity 0, only when updateCart
    is not a function. That fallback logs every time it fires.
    No-op unless session atcMode is base-first and a pending swap was recorded.
@@ -7,7 +11,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.0";
+  var VER = "1.1";
   if (window.__APPAI_SHADOW_SWAP_VER__ === VER) return;
   window.__APPAI_SHADOW_SWAP_VER__ = VER;
 
@@ -19,6 +23,8 @@
   var running = false;
   var queued = false;
   var suppressNote = false;
+  var DECODE_BUDGET_MS = 500;
+  var warmByVariant = {};
 
   function readMap(key) {
     try {
@@ -43,6 +49,111 @@
     var fromRoot = root && root.getAttribute("data-shop");
     if (fromRoot) return String(fromRoot).trim();
     return (window.Shopify && window.Shopify.shop) || "";
+  }
+
+  function onCartPage() {
+    var path = String(location.pathname || "").replace(/\/+$/, "");
+    return /\/cart$/.test(path);
+  }
+
+  function surfaceShowingLine() {
+    if (drawerOpen()) return "drawer";
+    if (onCartPage()) return "cart";
+    return "";
+  }
+
+  function absUrl(src) {
+    if (!src) return "";
+    if (src.indexOf("//") === 0) return "https:" + src;
+    if (src.indexOf("/") === 0) return location.origin + src;
+    return src;
+  }
+
+  function themeImageWidth() {
+    var nodes = document.querySelectorAll(
+      "#cart-drawer img, cart-drawer img, .cart-item img, form[action='/cart'] img, form[action^='/cart'] img"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var src = nodes[i].currentSrc || nodes[i].getAttribute("src") || "";
+      var match = String(src).match(/[?&]width=(\d+)/);
+      if (match) return match[1];
+    }
+    return "250";
+  }
+
+  // Drawer and cart markup request the shop CDN file at the theme's width.
+  // /variants/{id}.js returns the unsized cdn.shopify.com file. Those are
+  // different cache entries, so decode the URL the <img> will actually use.
+  function cartDisplayUrl(src) {
+    var abs = absUrl(src);
+    if (!abs) return "";
+    if (/[?&]width=/.test(abs) && abs.indexOf("/cdn/shop/") !== -1 && abs.indexOf("/s/files/") === -1) return abs;
+    var fileMatch = abs.match(/\/files\/([^/?#]+\.(?:jpe?g|png|webp|gif))/i);
+    if (!fileMatch) return abs;
+    var query = abs.split("?")[1] || "";
+    var versionMatch = query.match(/(?:^|&)v=([^&]+)/);
+    var params = [];
+    if (versionMatch) params.push("v=" + versionMatch[1]);
+    params.push("width=" + themeImageWidth());
+    return location.origin + "/cdn/shop/files/" + fileMatch[1] + "?" + params.join("&");
+  }
+
+  function decodeUrl(url) {
+    var img = new Image();
+    img.src = url;
+    if (typeof img.decode === "function") return img.decode();
+    return new Promise(function (resolve, reject) {
+      img.onload = function () { resolve(); };
+      img.onerror = function () { reject(new Error("image failed")); };
+    });
+  }
+
+  function warmVariant(variantId) {
+    var id = String(variantId || "").replace(/\D/g, "");
+    if (!id) return Promise.reject(new Error("no variant"));
+    if (warmByVariant[id]) return warmByVariant[id];
+    var pending = fetch("/variants/" + id + ".js", { credentials: "same-origin" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("variant image " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        var featured = data && data.featured_image;
+        var src = featured && typeof featured === "object" ? featured.src : featured;
+        var sized = cartDisplayUrl(src);
+        var raw = absUrl(typeof src === "string" ? src : "");
+        if (!sized && !raw) throw new Error("variant has no image");
+        // Checkout asks cdn.shopify.com for the unsized file. The drawer and
+        // /cart ask the shop CDN for width=250. Decode both. The swap gate
+        // waits on the sized one, which is the thumbnail those surfaces paint.
+        if (raw && raw !== sized) {
+          decodeUrl(raw).catch(function (err) {
+            console.error(LOG, "checkout image decode failed", err && err.message);
+          });
+        }
+        return decodeUrl(sized || raw);
+      })
+      .catch(function (err) {
+        delete warmByVariant[id];
+        console.error(LOG, "image decode failed for variant", id, err && err.message);
+        throw err;
+      });
+    warmByVariant[id] = pending;
+    return pending;
+  }
+
+  function decodedInBudget(variantId) {
+    var warm = warmVariant(variantId);
+    return new Promise(function (resolve) {
+      var settled = false;
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        resolve(ok);
+      }
+      warm.then(function () { finish(true); }, function () { finish(false); });
+      setTimeout(function () { finish(false); }, DECODE_BUDGET_MS);
+    });
   }
 
   function updateCartFn() {
@@ -136,19 +247,33 @@
       }
       return addAndZero(item, variantId).then(function () { return true; });
     }
-    return fetch("/cart.js", { credentials: "same-origin" })
-      .then(function (r) { return r.json(); })
-      .then(function (cart) {
-        return update({
-          cartId: "gid://shopify/Cart/" + cart.token,
-          lines: [{
-            id: item.key,
-            quantity: item.quantity || 1,
-            merchandiseId: "gid://shopify/ProductVariant/" + String(variantId).replace(/\D/g, ""),
-          }],
+    var surface = surfaceShowingLine();
+    var gate = surface ? decodedInBudget(variantId) : Promise.resolve(true);
+    return gate.then(function (decoded) {
+      if (!decoded && surface === "drawer") {
+        console.error(LOG, "decode missed the " + DECODE_BUDGET_MS + "ms budget — swap deferred until the drawer closes");
+        return false;
+      }
+      if (!decoded && surface === "cart") {
+        console.error(LOG, "decode missed the " + DECODE_BUDGET_MS + "ms budget — not swapping while the cart page is showing the line");
+        warmVariant(variantId).then(function () { NS.requestShadowSwap(); }, function () {});
+        return false;
+      }
+      return fetch("/cart.js", { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (cart) {
+          return update({
+            cartId: "gid://shopify/Cart/" + cart.token,
+            lines: [{
+              id: item.key,
+              quantity: item.quantity || 1,
+              merchandiseId: "gid://shopify/ProductVariant/" + String(variantId).replace(/\D/g, ""),
+            }],
+          });
         });
-      })
+    })
       .then(function (result) {
+        if (result === false) return false;
         var errors = (result && result.userErrors) || [];
         if (errors.length) {
           console.error(LOG, "updateCart rejected", errors.map(function (e) { return e.message; }).join("; "));
@@ -198,7 +323,10 @@
         if (mode() !== "base-first") return;
         var readyByKey = {};
         (body.results || []).forEach(function (row) {
-          if (row && row.ready && row.shopifyVariantId) readyByKey[row.key] = row.shopifyVariantId;
+          if (row && row.ready && row.shopifyVariantId) {
+            readyByKey[row.key] = row.shopifyVariantId;
+            warmVariant(row.shopifyVariantId);
+          }
         });
         return fetch("/cart.js", { credentials: "same-origin" })
           .then(function (r) { return r.json(); })
@@ -278,6 +406,7 @@
   window.addEventListener("message", function (e) {
     var data = e && e.data;
     if (!data || data.type !== "ai-art-studio:shadow-ready") return;
+    if (data.variantId) warmVariant(data.variantId);
     run();
   });
   document.addEventListener("visibilitychange", function () {
