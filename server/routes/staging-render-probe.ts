@@ -51,8 +51,9 @@ import { estimateGoogleImageCostUsd, renderGoogleImage } from "../google-image-c
 import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../openai-image-client";
 import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
-import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags } from "@shared/petposterousArtStyles";
-import { composeArtStyleProbe, generateArtStyleIdeas, parseArtStyleProbeIdea } from "../art-style-probe";
+import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, petposterousArtStyle } from "@shared/petposterousArtStyles";
+import { composeArtStyleProbe } from "../art-style-probe";
+import { generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
   const envName = String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase();
@@ -548,19 +549,52 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const behaviour = str(body.behaviour, 400);
     const productFamily = str(body.productFamily, 20, "apparel");
+    const artStyle = str(body.artStyle, 40);
     if (!behaviour) return res.status(400).json({ error: "Describe what they do." });
     const familyError = styleExampleFamilyError(productFamily);
     if (familyError) return res.status(400).json({ error: familyError });
+    if (artStyle && !petposterousArtStyle(artStyle)) return res.status(400).json({ error: "Choose an art style." });
+    const started = Date.now();
     try {
-      const options = await generateArtStyleIdeas(behaviour, productFamily);
+      const options = await generateArtStyleTruths(behaviour, productFamily, artStyle);
       return res.json({
         mode: "full",
         behaviour,
         productFamily,
+        artStyle,
+        truthMs: Date.now() - started,
         options: options.map((option) => ({
           ...option,
-          shotFlags: artStyleConceptShotFlags(option.funnyTruth),
           composedHeading: artStyleConceptHeading(option.funnyTruth, option.punchline),
+        })),
+      });
+    } catch (err) {
+      const status = Number((err as { status?: number }).status) || 502;
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        error: String((err as Error)?.message ?? err).slice(0, 300),
+      });
+    }
+  });
+
+  app.post("/api/staging/render-probe/art-style/device", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const funnyTruth = str(body.funnyTruth, 400);
+    const punchline = str(body.punchline, 120);
+    const requested = Array.isArray(body.artStyles) ? body.artStyles : [];
+    const styleIds = requested.map((id) => str(id, 40)).filter(Boolean);
+    if (!funnyTruth) return res.status(400).json({ error: "A truth is required." });
+    if (!styleIds.length || styleIds.some((id) => !petposterousArtStyle(id))) {
+      return res.status(400).json({ error: "Choose an art style." });
+    }
+    try {
+      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline });
+      return res.json({
+        ...result,
+        devices: result.devices.map((row) => ({
+          ...row,
+          label: petposterousArtStyle(row.styleId)?.label || row.styleId,
+          deviceLine: artStyleDeviceLine(row.device),
         })),
       });
     } catch (err) {
@@ -580,9 +614,13 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     if (!Number.isInteger(variant) || variant < 1 || variant > 2) return res.status(400).json({ error: "variant out of range" });
     const artStyle = str(body.artStyle, 40);
     const promptLength = "short" as const;
-    const mode = body.mode === "full" ? "full" : "pinned";
-    const idea = mode === "full" ? parseArtStyleProbeIdea(body.idea) : null;
-    if (mode === "full" && !idea) return res.status(400).json({ error: "Full flow needs the selected idea" });
+    const mode = body.mode === "pinned" ? "pinned" : "full";
+    const renderAnyway = body.renderAnyway === true;
+    const concept = str(body.funnyTruth, 400) || (mode === "pinned" ? PETPOSTEROUS_ART_STYLE_BATCH.concept : "");
+    const words = str(body.punchline, 120) || (mode === "pinned" ? PETPOSTEROUS_ART_STYLE_BATCH.words : "");
+    const device = str(body.device, 400);
+    if (!concept) return res.status(400).json({ error: "Full flow needs the selected truth" });
+    if (!device) return res.status(400).json({ error: "A device is required before rendering." });
     const photoId = str(body.referencePhotoId, 16);
     const dataUrl = await loadProbePhoto(photoId);
     if (!dataUrl) return res.status(400).json({ error: "Reference photo was not found. Upload it again." });
@@ -593,7 +631,10 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         length: promptLength,
         referenceDataUrl: dataUrl,
         mode,
-        idea,
+        concept,
+        words,
+        device,
+        renderAnyway,
         behaviour: str(body.behaviour, 400),
       });
     } catch (err) {
@@ -614,32 +655,29 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       imageSize: recipe.imageSize,
       batchId,
       visualSystem,
-      conceptFramework: composed.idea?.conceptFramework || composed.batch.frameworkId,
+      conceptFramework: composed.batch.frameworkId,
       composedPrompt: composed.sentPrompt,
       credentialRef: recipe.credentialRef,
       route: recipe.route,
       referencePhotoId: photoId,
       behavior: composed.behaviour,
       productFamily: str(body.productFamily, 20, "apparel"),
-      conceptSnapshot: composed.mode === "full" && composed.idea
-        ? {
-            mode: "full",
-            behaviour: composed.behaviour,
-            funnyTruth: composed.idea.funnyTruth,
-            visualJoke: composed.idea.visualJoke,
-            punchline: composed.idea.punchline,
-            subjectPriority: composed.idea.subjectPriority,
-            conceptFramework: composed.idea.conceptFramework || "",
-            promptLength,
-          }
-        : {
-            mode: "pinned",
-            funnyTruth: composed.batch.concept,
-            visualJoke: composed.batch.concept,
-            punchline: composed.batch.words,
-            subjectPriority: composed.batch.referenceLabel,
-            promptLength,
-          },
+      conceptSnapshot: {
+        mode: composed.mode,
+        behaviour: composed.behaviour,
+        funnyTruth: composed.concept,
+        punchline: composed.words,
+        device: composed.device,
+        shotFlags: composed.shotFlags,
+        renderAnyway: composed.renderAnyway,
+        deviceMs: Number(body.deviceMs) || 0,
+        speculativeHit: body.speculativeHit === true,
+        discardedDeviceMs: Number(body.discardedDeviceMs) || 0,
+        pickedIndex: Number(body.pickedIndex) || 0,
+        truths: Array.isArray(body.truths) ? body.truths.slice(0, 3) : [],
+        petSwap: body.petSwap === true,
+        promptLength,
+      },
     };
     const started = Date.now();
     try {
@@ -828,12 +866,16 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
 <div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
-<label>Art style mode<select id="artMode"><option value="full" selected>Full flow — behaviour, then three ideas</option><option value="pinned">Pinned concept</option></select></label>
-<p class="hint">This dropdown chooses what Art style batch does. Full flow reads What they do and Product, writes three ideas, and waits for you to confirm the funny truth and the exact words. Pinned asks you to confirm the passenger-seat truth and PASSENGER SELECTED. Ten short styles, two each, only after that confirm.</p>
+<label>Art style scope<select id="artMode"><option value="one" selected>One style — truths, then a device</option><option value="bench">Ten-style bench — one truth, a device each</option><option value="pinned">Pinned concept</option></select></label>
+<label>Style<select id="artStyle"></select></label>
+<p class="hint">Scope chooses what Art style batch does. One style and the bench read What they do and Product, write three truths, and start the device for the first truth while you read them. The device is on the card before any image. Pinned confirms the passenger-seat line, which the validator flags. Render anyway is the operator override. Customers do not get it.</p>
 <div id="artIdeas" hidden>
 <p id="artIdeasLead" class="hint"></p>
 <div id="artIdeaList"></div>
-<div><button id="artConfirm" type="button">Render ten styles</button> <button id="artCancel" type="button">Cancel</button></div>
+<div id="artDevices"></div>
+<p id="artDeviceNote" class="hint"></p>
+<label>Pet swap photo<input id="swapPhoto" type="file" accept="image/jpeg,image/png,image/webp"></label>
+<div><button id="artConfirm" type="button">Render</button> <button id="artOriginal" type="button" hidden>Render the rejected original anyway</button> <button id="artSwap" type="button">Render this device on the swap photo</button> <button id="artCancel" type="button">Cancel</button></div>
 </div>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
@@ -847,6 +889,7 @@ const h=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 function fillSelect(id, items, selected){const sel=document.getElementById(id);sel.innerHTML=items.map(it=>'<option value="'+h(it.id)+'"'+(it.id===selected?" selected":"")+">"+h(it.label)+"</option>").join("")}
 fillSelect("framework", CATALOG.frameworks, CATALOG.frameworks[0]&&CATALOG.frameworks[0].id);
 fillSelect("family", CATALOG.families, "apparel");
+fillSelect("artStyle", CATALOG.artStyles||[], "woodcut");
 document.getElementById("variants").max=String(CATALOG.maxVariants);
 function savedConcept(){try{return JSON.parse(sessionStorage.getItem(CONCEPT_KEY)||"null")}catch(e){return null}}
 function conceptMatches(saved){if(!saved||!saved.concept)return false;return saved.behavior===document.getElementById("behavior").value.trim()&&saved.conceptFramework===document.getElementById("framework").value&&saved.productFamily===document.getElementById("family").value}
@@ -881,9 +924,11 @@ for(const r of list)g.appendChild(probeCard(r));sec.appendChild(g);main.appendCh
 const sample=list.find(r=>r.conceptSnapshot)||list[0];
 const artBatch=String(name).indexOf("art-styles:")===0;
 const snap=sample.conceptSnapshot||{};
-const joke=artBatch?(snap.mode==="full"?(snap.funnyTruth||""):(snap.visualJoke||snap.funnyTruth||"")):(snap.visualJoke||"");
+const joke=artBatch?(snap.funnyTruth||snap.visualJoke||""):(snap.visualJoke||"");
 const words=artBatch&&snap.punchline?snap.punchline:"";
-sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(words?"<p class='batchnote'>"+h(words)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
+const deviceNote=artBatch&&snap.device?snap.device:"";
+const deviceTiming=artBatch&&snap.deviceMs?("device "+snap.deviceMs+"ms"+(snap.speculativeHit?" · speculative hit":"")+(snap.discardedDeviceMs?(" · discarded "+snap.discardedDeviceMs+"ms"):"")) :"";
+sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(words?"<p class='batchnote'>"+h(words)+"</p>":"")+(deviceNote?"<p class='batchnote'>"+h(deviceNote)+"</p>":"")+(deviceTiming?"<p class='batchnote'>"+h(deviceTiming)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
 if(blind&&artBatch){const g=document.createElement("div");g.className="grid";list.slice().sort(()=>Math.random()-0.5).forEach(r=>g.appendChild(styleCard(r)));sec.appendChild(g);main.appendChild(sec);continue}
 const board=document.createElement("div");board.className=artBatch?"looks artstyles":"looks";
 const byLook={};for(const r of list){(byLook[r.visualSystem||"other"]??=[]).push(r)}
@@ -915,45 +960,75 @@ setStatus(failures.length?failures.join(" · "):("Batch "+prep.batchId+" finishe
 catch(e){setStatus(e.message||"Batch failed")}
 finally{running=false;document.getElementById("runBatch").disabled=false}};
 let artPending=null;
-function hideArtIdeas(){artPending=null;const box=document.getElementById("artIdeas");if(box)box.hidden=true;const list=document.getElementById("artIdeaList");if(list)list.innerHTML=""}
-function showArtIdeas(pending){artPending=pending;const list=document.getElementById("artIdeaList");list.innerHTML="";
-document.getElementById("artIdeasLead").textContent=pending.mode==="full"?("Written for "+pending.productLabel+". The ten styles still render as apparel graphics. Pick one. The funny truth and the exact words are what will be composed. The writer's scene is not."):"Pinned concept. Confirm before rendering twenty images.";
-pending.options.forEach(function(idea,i){const label=document.createElement("label");label.className="idea";const flags=(idea.shotFlags||[]).join(", ");const words=idea.punchline?idea.punchline:"(no words)";
-label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.visualJoke?'<span class="hint">Writer scene, not composed: '+h(idea.visualJoke)+"</span>":"")+(flags?'<span class="shot">Shot warning: '+h(flags)+". Every style will draw this as the picture.</span>":"");
+function artStyleIds(pending){if(pending.mode==="one")return [document.getElementById("artStyle").value];return pending.prep.styles.map(function(s){return s.id})}
+function artDeviceKey(index, useOriginal){return String(index)+(useOriginal?":orig":"")}
+function selectedArtIndex(){const picked=document.querySelector('input[name="artIdea"]:checked');return picked?Number(picked.value):-1}
+function hideArtIdeas(){artPending=null;const box=document.getElementById("artIdeas");if(box)box.hidden=true;const list=document.getElementById("artIdeaList");if(list)list.innerHTML="";const devices=document.getElementById("artDevices");if(devices)devices.innerHTML=""}
+function paintArtDevices(pending){const box=document.getElementById("artDevices");const note=document.getElementById("artDeviceNote");const cached=pending.deviceCache[pending.deviceKey];const idea=pending.options[selectedArtIndex()];
+if(!cached){box.innerHTML="<p class='hint'>Writing the device…</p>";note.textContent="";document.getElementById("artConfirm").disabled=true;return}
+box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
+let latency="Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
+if(pending.discardedDeviceMs)latency="Speculative device discarded ("+pending.discardedDeviceMs+"ms). "+latency;
+else if(cached.speculative)latency="Speculative device was ready before confirm. "+latency;
+note.textContent=latency;
+const flagged=idea&&((pending.useOriginal&&idea.originalFlags&&idea.originalFlags.length)||(!pending.useOriginal&&idea.shotFlags&&idea.shotFlags.length));
+document.getElementById("artConfirm").disabled=false;
+document.getElementById("artConfirm").textContent=flagged?"This truth is a shot. Render anyway?":(artStyleIds(pending).length>1?"Render ten styles":"Render this style");
+document.getElementById("artOriginal").hidden=!(idea&&idea.rewritten&&!pending.useOriginal)}
+function showArtIdeas(pending){artPending=pending;pending.deviceGen=0;pending.deviceCache={};pending.deviceKey="";pending.useOriginal=false;pending.discardedDeviceMs=0;const list=document.getElementById("artIdeaList");list.innerHTML="";
+document.getElementById("artIdeasLead").textContent=pending.mode==="pinned"?"Pinned concept. The validator flags a placed seat. Render anyway is the operator override. Read the device before any image.":("Written for "+pending.productLabel+(pending.mode==="one"?" in "+pending.styleLabel:" across ten styles")+". The first truth is selected. Its device is already being written.");
+pending.options.forEach(function(idea,i){const label=document.createElement("label");label.className="idea";const flags=(idea.shotFlags||[]).join(", ");const originalFlags=(idea.originalFlags||[]).join(", ");const words=idea.punchline?idea.punchline:"(no words)";
+label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.rewritten?"<span class='hint'>Rewritten. Rejected original: "+h(idea.originalTruth)+" ("+h(originalFlags)+")</span>":"")+(flags?"<span class='shot'>Shot warning: "+h(flags)+". Render anyway is the only way this reaches an image.</span>":"");
 list.appendChild(label)});
-if(pending.options.length===1){const only=list.querySelector("input");if(only)only.checked=true}
-document.getElementById("artConfirm").textContent=(pending.options[0]&&pending.options[0].shotFlags&&pending.options[0].shotFlags.length&&pending.options.length===1)?"This truth is a shot. Render anyway?":"Render ten styles";
-document.getElementById("artIdeas").hidden=false}
-document.getElementById("artIdeaList").addEventListener("change",function(){if(!artPending)return;const picked=document.querySelector('input[name="artIdea"]:checked');const idea=picked?artPending.options[Number(picked.value)]:null;const flagged=idea&&idea.shotFlags&&idea.shotFlags.length;document.getElementById("artConfirm").textContent=flagged?"This truth is a shot. Render anyway?":"Render ten styles"});
-async function renderArtJobs(pending, idea){if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
-const prep=pending.prep;
-try{const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v});
+const first=list.querySelector("input");if(first)first.checked=true;
+document.getElementById("artIdeas").hidden=false;
+requestArtDevices(pending, 0, false, "speculative")}
+async function requestArtDevices(pending, index, useOriginal, reason){const idea=pending.options[index];if(!idea)return;const key=artDeviceKey(index, useOriginal);pending.deviceKey=key;pending.useOriginal=useOriginal;
+if(reason!=="speculative"){const first=pending.deviceCache[artDeviceKey(0,false)];if(first&&first.speculative)pending.discardedDeviceMs=first.deviceMs}
+if(pending.deviceCache[key]){paintArtDevices(pending);return}
+const gen=++pending.deviceGen;paintArtDevices(pending);const started=performance.now();
+try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",artStyles:artStyleIds(pending)});
+if(artPending!==pending)return;
+if(pending.deviceGen!==gen){pending.discardedDeviceMs=res.deviceMs||pending.discardedDeviceMs;if(pending.deviceCache[pending.deviceKey])paintArtDevices(pending);return}
+pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative"};
+if(pending.deviceKey===key)paintArtDevices(pending)}
+catch(e){if(artPending===pending&&pending.deviceGen===gen)setStatus(e.message||"Device failed")}}
+document.getElementById("artIdeaList").addEventListener("change",function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});
+document.getElementById("artStyle").addEventListener("change",function(){if(!artPending||artPending.mode!=="one")return;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, false, "switch")});
+document.getElementById("artOriginal").onclick=function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, true, "switch")};
+async function renderArtJobs(pending, idea, petSwap){const cached=pending.deviceCache[pending.deviceKey];if(!cached||!cached.devices.length){setStatus("The device is still being written.");return}if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
+const prep=pending.prep;const index=selectedArtIndex();const truth=pending.useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const flagged=pending.useOriginal?(idea.originalFlags||[]).length:(idea.shotFlags||[]).length;
+try{let photoId=prep.referencePhotoId;if(petSwap){const swap=document.getElementById("swapPhoto").files[0];if(!swap)throw new Error("Choose a pet swap photo.");setStatus("Storing the swap photo…");const stored=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl:await fileToDataUrl(swap)});photoId=stored.referencePhotoId}
+const deviceRows=petSwap?[cached.devices[0]]:cached.devices;const variants=petSwap?1:prep.variants;const jobs=[];
+deviceRows.forEach(function(row){for(let v=1;v<=variants;v++)jobs.push({artStyle:row.styleId,label:row.label,variant:v,device:row.device,deviceMs:row.deviceMs})});
 let done=0;const failures=[];let cursor=0;
-async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:"short",referencePhotoId:prep.referencePhotoId,mode:pending.mode,behaviour:pending.behaviour,productFamily:pending.productFamily,idea:pending.mode==="full"?idea:undefined})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,referencePhotoId:photoId,mode:pending.mode==="pinned"?"pinned":"full",behaviour:pending.behaviour,productFamily:pending.productFamily,funnyTruth:truth,punchline:idea.punchline||"",device:job.device,renderAnyway:flagged>0,deviceMs:job.deviceMs,speculativeHit:!pending.discardedDeviceMs&&!!cached.speculative,discardedDeviceMs:pending.discardedDeviceMs||0,pickedIndex:index,truths:pending.options.map(function(o){return {funnyTruth:o.funnyTruth,punchline:o.punchline||"",shotFlags:o.shotFlags||[],originalTruth:o.originalTruth||"",rewritten:!!o.rewritten}}),petSwap:!!petSwap})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
 async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
 await Promise.all([worker(),worker()]);
 await load("art-styles:"+prep.batchId);
 setStatus(failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."));
-hideArtIdeas()}
+if(!petSwap)hideArtIdeas()}
 catch(e){setStatus(e.message||"Art style batch failed")}
-finally{running=false;document.getElementById("artConfirm").disabled=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false}}
-document.getElementById("artConfirm").onclick=function(){if(!artPending)return;const picked=document.querySelector('input[name="artIdea"]:checked');if(!picked){setStatus("Pick an idea first.");return}const idea=artPending.options[Number(picked.value)];if(!idea){setStatus("Pick an idea first.");return}renderArtJobs(artPending, idea)};
+finally{running=false;document.getElementById("artConfirm").disabled=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false;if(artPending)paintArtDevices(artPending)}}
+document.getElementById("artConfirm").onclick=function(){if(!artPending)return;const idea=artPending.options[selectedArtIndex()];if(!idea){setStatus("Pick an idea first.");return}renderArtJobs(artPending, idea, false)};
+document.getElementById("artSwap").onclick=function(){if(!artPending)return;const idea=artPending.options[selectedArtIndex()];if(!idea){setStatus("Pick an idea first.");return}renderArtJobs(artPending, idea, true)};
 document.getElementById("artCancel").onclick=function(){hideArtIdeas();setStatus("Cancelled. Nothing was rendered.")};
 document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
-const mode=document.getElementById("artMode").value==="full"?"full":"pinned";
+const mode=document.getElementById("artMode").value==="bench"?"bench":(document.getElementById("artMode").value==="pinned"?"pinned":"one");
 const behaviour=(document.getElementById("behavior").value||"").trim();
 const family=document.getElementById("family");
+const styleSel=document.getElementById("artStyle");
 const productFamily=family.value;
 const productLabel=family.selectedOptions[0]?family.selectedOptions[0].textContent:productFamily;
-if(mode==="full"&&!behaviour){setStatus("Describe what they do.");return}
+const styleLabel=styleSel.selectedOptions[0]?styleSel.selectedOptions[0].textContent:styleSel.value;
+if(mode!=="pinned"&&!behaviour){setStatus("Describe what they do.");return}
 running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
-if(mode==="full"){setStatus("Writing three ideas for "+productLabel+"…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour,productFamily});
-showArtIdeas({prep,mode,behaviour:concepts.behaviour,productFamily,productLabel,options:concepts.options||[]});
-setStatus("Pick an idea, then confirm. Nothing has been rendered.")}
-else{showArtIdeas({prep,mode,behaviour,productFamily,productLabel,options:[{funnyTruth:prep.concept,punchline:prep.words,visualJoke:"",shotFlags:prep.shotFlags||[],composedHeading:prep.composedHeading||""}]});
-setStatus("Confirm the pinned truth before rendering.")}}
+if(mode==="pinned"){showArtIdeas({prep,mode,behaviour,productFamily,productLabel,styleLabel,options:[{funnyTruth:prep.concept,punchline:prep.words,shotFlags:prep.shotFlags||[],originalTruth:prep.concept,originalFlags:prep.shotFlags||[],rewritten:false,composedHeading:prep.composedHeading||""}]});setStatus("Confirm the pinned truth and its device. Nothing has been rendered.")}
+else{setStatus("Writing three truths for "+productLabel+"…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour,productFamily,artStyle:mode==="one"?styleSel.value:""});
+showArtIdeas({prep,mode,behaviour:concepts.behaviour,productFamily,productLabel,styleLabel,options:concepts.options||[]});
+setStatus("Three truths in "+(concepts.truthMs||"?")+"ms. The first device is already writing. Nothing has been rendered.")}}
 catch(e){setStatus(e.message||"Art style batch failed");hideArtIdeas()}
 finally{running=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false}};
 document.getElementById("blind").onclick=()=>{blind=!blind;document.getElementById("blind").textContent=blind?"Reveal labels":"Blind";render()};

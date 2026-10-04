@@ -5,12 +5,18 @@ import {
   PETPOSTEROUS_ART_STYLE_BATCH,
   PETPOSTEROUS_ART_STYLES,
   PETPOSTEROUS_TYPE_RESTRAINT,
+  ART_STYLE_TRUTH_FAIL,
+  ART_STYLE_TRUTH_PASS,
   artStyleConceptHeading,
   artStyleConceptShotFlags,
+  artStyleDeviceLine,
   artStyleMarker,
   composePetposterousArtStylePrompt,
   compositionLocksAboveStyle,
+  settleArtStyleTruth,
 } from "./petposterousArtStyles";
+
+const DEVICE = "one carved mass, the dog occupying the block";
 
 const FRAMEWORK_KEYS = [
   "pp-minimal-deadpan",
@@ -49,14 +55,17 @@ describe("Petposterous apparel art styles", () => {
         styleId: style.id,
         concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
         words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+        device: DEVICE,
       });
       const marker = artStyleMarker(style);
       expect(composed.length).toBe("short");
       expect(composed.prompt.split(PETPOSTEROUS_APPAREL_PRINT)).toHaveLength(2);
       expect(composed.prompt.split(PETPOSTEROUS_TYPE_RESTRAINT)).toHaveLength(2);
       expect(composed.prompt.startsWith(artStyleConceptHeading(PETPOSTEROUS_ART_STYLE_BATCH.concept, PETPOSTEROUS_ART_STYLE_BATCH.words))).toBe(true);
-      expect(composed.prompt.indexOf("CONCEPT:")).toBeLessThan(composed.prompt.indexOf("APPAREL PRINT:"));
+      expect(composed.prompt.indexOf("CONCEPT:")).toBeLessThan(composed.prompt.indexOf("DEVICE:"));
+      expect(composed.prompt.indexOf("DEVICE:")).toBeLessThan(composed.prompt.indexOf("APPAREL PRINT:"));
       expect(composed.prompt.indexOf("APPAREL PRINT:")).toBeLessThan(composed.prompt.indexOf("TYPE:"));
+      expect(composed.prompt).toContain(artStyleDeviceLine(DEVICE));
       expect(composed.prompt.indexOf("TYPE:")).toBeLessThan(composed.prompt.indexOf(marker));
       expect(composed.prompt).toContain(PETPOSTEROUS_APPAREL_PRINT);
       expect(composed.prompt).toContain(PETPOSTEROUS_TYPE_RESTRAINT);
@@ -75,7 +84,7 @@ describe("Petposterous apparel art styles", () => {
   });
 
   it("uses the same short compose for every style, including a former long request", () => {
-    const pinned = { concept: PETPOSTEROUS_ART_STYLE_BATCH.concept, words: PETPOSTEROUS_ART_STYLE_BATCH.words };
+    const pinned = { concept: PETPOSTEROUS_ART_STYLE_BATCH.concept, words: PETPOSTEROUS_ART_STYLE_BATCH.words, device: DEVICE };
     const woodcut = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "short", ...pinned });
     const requestedLong = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "full", ...pinned });
     expect(requestedLong.prompt).toBe(woodcut.prompt);
@@ -86,19 +95,41 @@ describe("Petposterous apparel art styles", () => {
         styleId: style.id,
         concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
         words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+        device: DEVICE,
       });
       expect(composed.prompt.length).toBeGreaterThan(700);
-      expect(composed.prompt.length).toBeLessThan(1600);
+      expect(composed.prompt.length).toBeLessThan(2200);
     }
   });
 
-  it("treats a truth as clean and a shot as flagged", () => {
-    expect(artStyleConceptShotFlags("the dog has decided the bed is not for sharing")).toEqual([]);
-    expect(artStyleConceptShotFlags(PETPOSTEROUS_ART_STYLE_BATCH.concept)).toEqual([]);
-    const shot = artStyleConceptShotFlags("dog in the front seat, door open, owner waiting");
-    expect(shot).toContain("position");
-    expect(shot).toContain("staging");
-    expect(shot).toContain("second person");
-    expect(() => composePetposterousArtStylePrompt({ styleId: "woodcut", concept: "  ", words: "HI" })).toThrow(/concept/);
+  it("passes the truth fixture and fails the shot fixture", () => {
+    for (const truth of ART_STYLE_TRUTH_PASS) {
+      expect(artStyleConceptShotFlags(truth), truth).toEqual([]);
+    }
+    for (const truth of ART_STYLE_TRUTH_FAIL) {
+      expect(artStyleConceptShotFlags(truth).length, truth).toBeGreaterThan(0);
+    }
+    expect(artStyleConceptShotFlags(PETPOSTEROUS_ART_STYLE_BATCH.concept)).toContain("position");
+    expect(PETPOSTEROUS_APPAREL_PRINT).not.toContain("at most one supporting object");
+    expect(PETPOSTEROUS_APPAREL_PRINT).toContain("abstracted prop");
+    expect(() => composePetposterousArtStylePrompt({ styleId: "woodcut", concept: "  ", words: "HI", device: DEVICE })).toThrow(/concept/);
+    expect(() => composePetposterousArtStylePrompt({ styleId: "woodcut", concept: ART_STYLE_TRUTH_PASS[0], words: "", device: "  " })).toThrow(/device/);
+  });
+
+  it("keeps a clean rewrite and leaves a failed rewrite available to render anyway", () => {
+    const clean = settleArtStyleTruth(ART_STYLE_TRUTH_PASS[2], "MINE.", null);
+    expect(clean.funnyTruth).toBe(ART_STYLE_TRUTH_PASS[2]);
+    expect(clean.shotFlags).toEqual([]);
+    expect(clean.rewritten).toBe(false);
+    const shot = ART_STYLE_TRUTH_FAIL[0];
+    const rewritten = settleArtStyleTruth(shot, "MINE.", ART_STYLE_TRUTH_PASS[0]);
+    expect(rewritten.funnyTruth).toBe(ART_STYLE_TRUTH_PASS[0]);
+    expect(rewritten.originalTruth).toBe(shot);
+    expect(rewritten.originalFlags.length).toBeGreaterThan(0);
+    expect(rewritten.shotFlags).toEqual([]);
+    const stillShot = settleArtStyleTruth(shot, "MINE.", ART_STYLE_TRUTH_FAIL[2]);
+    expect(stillShot.funnyTruth).toBe(shot);
+    expect(stillShot.shotFlags.length).toBeGreaterThan(0);
+    expect(stillShot.rewritten).toBe(false);
   });
 });

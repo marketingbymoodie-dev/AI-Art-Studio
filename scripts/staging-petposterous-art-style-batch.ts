@@ -7,9 +7,10 @@
  *   REFERENCE_PHOTO_ID=5eb9654283a8ab16 ^
  *   npx tsx scripts/staging-petposterous-art-style-batch.ts
  *
- * Flare, native transparent. Default is the pinned concept. ART_STYLE_MODE=full
- * sends ART_STYLE_BEHAVIOUR (or the batch sentence) through the concept writer,
- * logs the three ideas, and renders CONCEPT_INDEX (default 0). Never production.
+ * Flare, native transparent. Default is the pinned concept, which the validator
+ * flags, so those renders pass renderAnyway. ART_STYLE_MODE=full requires
+ * ART_STYLE_BEHAVIOUR, writes three truths, then a device per style, and renders
+ * CONCEPT_INDEX (default 0). Never production.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -55,21 +56,31 @@ let ideas: unknown[] = [];
 let behaviour = "";
 if (mode === "full") {
   behaviour = process.env.ART_STYLE_BEHAVIOUR || "";
-  const concepts = await post("/api/staging/render-probe/art-style/concepts", { behaviour });
+  if (!behaviour.trim()) throw new Error("ART_STYLE_MODE=full needs ART_STYLE_BEHAVIOUR.");
+  const concepts = await post("/api/staging/render-probe/art-style/concepts", { behaviour, productFamily: "apparel" });
   behaviour = String(concepts.behaviour || behaviour);
   ideas = Array.isArray(concepts.options) ? concepts.options : [];
   ideas.forEach((idea, index) => {
-    const row = idea as { visualJoke?: string; punchline?: string; funnyTruth?: string; conceptFramework?: string };
-    console.log(
-      `idea ${index + 1}: ${row.visualJoke || ""} | ${row.punchline || "(no text)"} | ${row.conceptFramework || ""}`,
-    );
-    console.log(`  funny truth: ${row.funnyTruth || ""}`);
+    const row = idea as { punchline?: string; funnyTruth?: string; shotFlags?: string[]; rewritten?: boolean };
+    console.log(`idea ${index + 1}: ${row.funnyTruth || ""} | ${row.punchline || "(no text)"}${row.rewritten ? " · rewritten" : ""}${row.shotFlags?.length ? " · shot" : ""}`);
   });
   const index = Math.max(0, Math.min(ideas.length - 1, Number(process.env.CONCEPT_INDEX || 0) || 0));
   selectedIdea = (ideas[index] as Record<string, unknown>) || null;
-  if (!selectedIdea) throw new Error("Concept writer returned no ideas");
-  console.log(`Rendering idea ${index + 1}.`);
+  if (!selectedIdea) throw new Error("Truth writer returned no ideas");
+  console.log(`Rendering idea ${index + 1}. Truths took ${concepts.truthMs}ms.`);
 }
+const truth = mode === "full"
+  ? String(selectedIdea?.funnyTruth || "")
+  : String(prep.concept || "");
+const punchline = mode === "full"
+  ? String(selectedIdea?.punchline || "")
+  : String(prep.words || "");
+const renderAnyway = mode === "pinned" || (Array.isArray(selectedIdea?.shotFlags) && (selectedIdea?.shotFlags as unknown[]).length > 0);
+const styleIds = (prep.styles as { id: string }[]).map((style) => style.id);
+const deviceStarted = Date.now();
+const deviceResult = await post("/api/staging/render-probe/art-style/device", { funnyTruth: truth, punchline, artStyles: styleIds });
+const devices = new Map((deviceResult.devices as { styleId: string; device: string; deviceMs: number }[]).map((row) => [row.styleId, row]));
+console.log(`Devices took ${deviceResult.deviceMs ?? Date.now() - deviceStarted}ms.`);
 const styles = prep.styles as { id: string; label: string }[];
 const variants = Number(prep.variants) || 2;
 const jobs: { artStyle: string; label: string; variant: number; promptLength: "short" }[] = [];
@@ -82,12 +93,20 @@ for (const style of styles) {
 const manifest: Record<string, unknown>[] = [];
 let cursor = 0;
 async function one(job: (typeof jobs)[number]) {
+  const deviceRow = devices.get(job.artStyle);
+  if (!deviceRow) throw new Error(`No device for ${job.artStyle}`);
   const row = await post("/api/staging/render-probe/art-style", {
     batchId: prep.batchId,
     referencePhotoId: prep.referencePhotoId,
     mode,
     behaviour,
-    idea: selectedIdea,
+    funnyTruth: truth,
+    punchline,
+    device: deviceRow.device,
+    deviceMs: deviceRow.deviceMs,
+    renderAnyway,
+    speculativeHit: false,
+    pickedIndex: mode === "full" ? Number(process.env.CONCEPT_INDEX || 0) || 0 : 0,
     ...job,
   });
   manifest.push({ ...job, ...row });

@@ -14,9 +14,12 @@
  * This path does not call the pack composer. That stack, and PRODUCT AUTHORITY
  * on the six-look path, are what collapsed every style into one shot.
  */
-/** Shared print rule. The object budget lives here so the concept cannot ask for an interior. */
+/**
+ * Shared print rule. Environments are banned. One abstracted prop is allowed
+ * when the device asks for it. The ten style blocks do not repeat this.
+ */
 export const PETPOSTEROUS_APPAREL_PRINT =
-  "APPAREL PRINT: Finished print artwork only — no garment, mockup, photograph or product shot. Transparent surround, no rectangular boundary. One subject, at most one supporting object; no vehicle interiors, rooms or architecture. Strong outer silhouette and large forms readable at arm's length. The pet's pose and expression carry the joke. Reproduce supplied wording exactly once and invent no other text.";
+  "APPAREL PRINT: Finished print artwork only — no garment, mockup, photograph or product shot. Transparent surround, no rectangular boundary. No full environments, interiors or scenery. Up to one abstracted prop — a door shape, a seat form, a pillow silhouette — when the device asks for it. A prop is a graphic form, never a rendered object in a space. A second person appears only as a partial, abstracted element (a hand, a foot, a sliver of silhouette), never as a full figure. Strong outer silhouette and large forms readable at arm's length. The pet's pose and expression carry the joke. Reproduce supplied wording exactly once and invent no other text.";
 
 /** Bans decoration around the letters. Ornament remains allowed when the style itself asks for it. */
 export const PETPOSTEROUS_TYPE_RESTRAINT =
@@ -168,14 +171,30 @@ export const PETPOSTEROUS_ART_STYLE_BATCH = {
 };
 
 /**
- * A truth can name the joke. A shot names where bodies are, a prop's state,
- * or a second person — and then every style draws that shot.
+ * A truth can name the dispute ("the bed", "the sofa", "the lead").
+ * Those nouns are not flags. A shot names where a body is, a prop's state,
+ * a camera, or a second person.
  */
 const ART_STYLE_SHOT_FLAGS: { kind: string; pattern: RegExp }[] = [
   { kind: "second person", pattern: /\b(owner|driver|human|person|someone|man|woman)\b/i },
-  { kind: "staging", pattern: /\b(door|waiting|camera|interior)\b/i },
-  { kind: "position", pattern: /\b(front seat|back seat|in the front|in the back|beside|behind)\b/i },
+  { kind: "staging", pattern: /\b(door|waiting|camera|interior|looking back|standing at|sitting on)\b/i },
+  { kind: "position", pattern: /\b(front seat|back seat|passenger seat|in the front|in the back|beside|behind)\b/i },
 ];
+
+/** Truths the validator must leave alone, including ones that name the disputed object. */
+export const ART_STYLE_TRUTH_PASS = [
+  "the dog has decided the bed is not for sharing",
+  "he sneezes when he wants something",
+  "she considers the sofa hers",
+  "he refuses to acknowledge the lead",
+] as const;
+
+/** Truths the validator must flag. Each one is a picture, not a dispute. */
+export const ART_STYLE_TRUTH_FAIL = [
+  "dog in the front seat, door open, owner waiting",
+  "cat sitting on the keyboard while the owner types",
+  "dog standing at the door looking back",
+] as const;
 
 export function artStyleConceptShotFlags(text: string): string[] {
   const found: string[] = [];
@@ -185,18 +204,85 @@ export function artStyleConceptShotFlags(text: string): string[] {
   return found;
 }
 
+export type SettledArtStyleTruth = {
+  /** What renders unless the probe operator chooses the rejected original. */
+  funnyTruth: string;
+  punchline: string;
+  /** Flags on funnyTruth. Empty means the default render is clean. */
+  shotFlags: string[];
+  originalTruth: string;
+  originalFlags: string[];
+  rewritten: boolean;
+  /** The rewrite text when one was attempted, including a rewrite that still flags. */
+  rewriteAttempt: string;
+  rewriteFlags: string[];
+};
+
+/**
+ * A clean truth is kept. A flagged truth is replaced by a clean rewrite.
+ * If the rewrite still flags, the original stays and shotFlags stays set,
+ * so the probe can render that original on purpose.
+ */
+export function settleArtStyleTruth(original: string, punchline: string, rewrite: string | null): SettledArtStyleTruth {
+  const originalTruth = original.replace(/\s+/g, " ").trim();
+  const words = punchline.replace(/\s+/g, " ").trim();
+  const originalFlags = artStyleConceptShotFlags(originalTruth);
+  const attempt = (rewrite || "").replace(/\s+/g, " ").trim();
+  if (originalFlags.length === 0) {
+    return {
+      funnyTruth: originalTruth,
+      punchline: words,
+      shotFlags: [],
+      originalTruth,
+      originalFlags: [],
+      rewritten: false,
+      rewriteAttempt: "",
+      rewriteFlags: [],
+    };
+  }
+  const rewriteFlags = attempt ? artStyleConceptShotFlags(attempt) : [];
+  if (attempt && rewriteFlags.length === 0) {
+    return {
+      funnyTruth: attempt,
+      punchline: words,
+      shotFlags: [],
+      originalTruth,
+      originalFlags,
+      rewritten: true,
+      rewriteAttempt: attempt,
+      rewriteFlags: [],
+    };
+  }
+  return {
+    funnyTruth: originalTruth,
+    punchline: words,
+    shotFlags: originalFlags,
+    originalTruth,
+    originalFlags,
+    rewritten: false,
+    rewriteAttempt: attempt,
+    rewriteFlags,
+  };
+}
+
 /**
  * Short form is the only art-style compose. `length` is accepted so older
  * probe clients still resolve, and it no longer selects a longer prompt.
  * Concept and words are arguments. This function does not read the pinned batch.
  * Shared print and type rules sit once, immediately before the style block.
  */
-/** The two lines that change per idea. Shared print rules and the style block follow. */
+/** Truth and words. The device is the next block, then the shared rules and the style. */
 export function artStyleConceptHeading(concept: string, words: string): string {
   const clean = concept.replace(/\s+/g, " ").trim().replace(/\.+$/, "");
   if (!clean) return "";
   const wording = words.replace(/\s+/g, " ").trim();
   return [`CONCEPT: ${clean}.`, wording ? `Exact wording, once: ${wording}` : ""].filter(Boolean).join("\n");
+}
+
+export function artStyleDeviceLine(device: string): string {
+  const clean = device.replace(/\s+/g, " ").trim().replace(/\.+$/, "");
+  if (!clean) return "";
+  return `DEVICE: ${clean}.`;
 }
 
 export function composePetposterousArtStylePrompt(opts: {
@@ -205,6 +291,8 @@ export function composePetposterousArtStylePrompt(opts: {
   concept: string;
   /** Exact wording. Empty string means the design has no text line. */
   words: string;
+  /** How this style turns the truth into a graphic. One sentence. */
+  device: string;
   length?: "full" | "short";
 }): { prompt: string; style: PetposterousArtStyle; length: "short" } {
   const style = petposterousArtStyle(opts.styleId);
@@ -212,7 +300,9 @@ export function composePetposterousArtStylePrompt(opts: {
   void opts.length;
   const heading = artStyleConceptHeading(opts.concept, opts.words);
   if (!heading.startsWith("CONCEPT:")) throw new Error("Art style compose needs a concept");
-  const prompt = [heading, PETPOSTEROUS_APPAREL_PRINT, PETPOSTEROUS_TYPE_RESTRAINT, style.prompt]
+  const deviceLine = artStyleDeviceLine(opts.device);
+  if (!deviceLine) throw new Error("Art style compose needs a device");
+  const prompt = [heading, deviceLine, PETPOSTEROUS_APPAREL_PRINT, PETPOSTEROUS_TYPE_RESTRAINT, style.prompt]
     .filter(Boolean)
     .join("\n\n");
   return { prompt, style, length: "short" };
