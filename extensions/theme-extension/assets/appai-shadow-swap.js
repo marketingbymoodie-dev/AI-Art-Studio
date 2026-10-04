@@ -2,8 +2,8 @@
    Primary: Shopify.actions.updateCart changes the line's variant in place.
    The next cart image is decoded before that call when a thumbnail is on
    screen. Decode starts when the shadow variant id is known (mint complete),
-   not when the swap runs. If decode rejects or misses a 500ms budget, an
-   open drawer does not swap — the drawer-closed pass does.
+   not when the swap runs. If decode rejects or misses the budget, an open
+   drawer does not swap — the drawer-closed pass does.
    Fallback: /cart/add.js then /cart/change.js quantity 0, only when updateCart
    is not a function. That fallback logs every time it fires.
    No-op unless session atcMode is base-first and a pending swap was recorded.
@@ -11,7 +11,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.1";
+  var VER = "1.2";
   if (window.__APPAI_SHADOW_SWAP_VER__ === VER) return;
   window.__APPAI_SHADOW_SWAP_VER__ = VER;
 
@@ -23,7 +23,11 @@
   var running = false;
   var queued = false;
   var suppressNote = false;
-  var DECODE_BUDGET_MS = 500;
+  // Fresh-mint first decode measured ~791ms. Waiting does not blank the
+  // drawer: cart-images already paints the line's _mockup_url. Past this,
+  // leave the swap until the drawer closes. There is no pre-checkout hold
+  // yet, so this window is what lets the swap land before a drawer checkout.
+  var DECODE_BUDGET_MS = 2000;
   var warmByVariant = {};
 
   function readMap(key) {
