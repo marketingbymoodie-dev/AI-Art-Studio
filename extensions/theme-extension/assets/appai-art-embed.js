@@ -9,6 +9,66 @@
   }
   window.__APPAI_CUSTOMIZER_INIT__ = true;
 
+  // Saved-design reopen target — kept out of URLs so a job id is never in a
+  // link someone can share. Tab-scoped sessionStorage keyed by page handle.
+  // Mirror of client/src/lib/reopenDesign.ts: keep key + entry shape in sync.
+  var APPAI_REOPEN_KEY = 'appai_reopen_design';
+  var APPAI_REOPEN_URL_PARAMS = ['loadDesignId', 'loadMockup', 'loadProductName', 'savedDesignId', 'reuseJobId'];
+
+  function appaiPageHandleFromLocation() {
+    var m = (window.location.pathname || '').match(/\/pages\/([^/?#]+)/);
+    if (m) {
+      try { return decodeURIComponent(m[1]).toLowerCase(); } catch (e) { return m[1].toLowerCase(); }
+    }
+    try {
+      var p = new URLSearchParams(window.location.search);
+      return String(p.get('pageHandle') || p.get('page') || '').trim().toLowerCase();
+    } catch (e2) { return ''; }
+  }
+
+  function appaiWriteReopen(id, handle, mockup, productName) {
+    var h = String(handle || '').trim().toLowerCase();
+    if (!id || !h) return;
+    try {
+      sessionStorage.setItem(APPAI_REOPEN_KEY, JSON.stringify({
+        id: String(id), handle: h, mockup: mockup || null, productName: productName || null, ts: Date.now()
+      }));
+    } catch (e) {}
+  }
+
+  /** Reopen entry for the current page only (never another page's design). */
+  function appaiReadReopen() {
+    var h = appaiPageHandleFromLocation();
+    if (!h) return null;
+    try {
+      var e = JSON.parse(sessionStorage.getItem(APPAI_REOPEN_KEY) || 'null');
+      if (e && e.id && String(e.handle || '').toLowerCase() === h) return e;
+    } catch (err) {}
+    return null;
+  }
+
+  function appaiReopenDesignId() {
+    var e = appaiReadReopen();
+    return e ? String(e.id) : '';
+  }
+
+  // Legacy ?loadDesignId= links: move into storage, strip from the address bar.
+  (function appaiStashReopenFromUrl() {
+    try {
+      var url = new URL(window.location.href);
+      var id = url.searchParams.get('loadDesignId') || url.searchParams.get('savedDesignId') || '';
+      var mockup = url.searchParams.get('loadMockup');
+      var productName = url.searchParams.get('loadProductName');
+      var changed = false;
+      APPAI_REOPEN_URL_PARAMS.forEach(function (k) {
+        if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
+      });
+      if (!changed) return;
+      if (id) appaiWriteReopen(id, appaiPageHandleFromLocation(), mockup, productName);
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch (e) {}
+  })();
+
   function appaiTransitionInner(mockupUrl, productName) {
     return ''
       + '<div class="appai-transition-inner">'
@@ -657,8 +717,7 @@
 
   function appaiShowSavedDesignTransitionFromUrl() {
     try {
-      var params = new URLSearchParams(window.location.search);
-      var loadDesignId = params.get('loadDesignId') || '';
+      var loadDesignId = appaiReopenDesignId();
       if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
       appaiShowTransitionOverlay();
     } catch (e) {}
@@ -670,9 +729,7 @@
       var dest = data.url || '';
       if (!dest && data.pageHandle) {
         dest = '/pages/' + encodeURIComponent(String(data.pageHandle));
-        if (data.loadDesignId) {
-          dest += '?loadDesignId=' + encodeURIComponent(String(data.loadDesignId));
-        }
+        if (data.loadDesignId) appaiWriteReopen(data.loadDesignId, data.pageHandle, data.loadMockup, null);
       }
       if (dest && dest.indexOf('/pages/') === 0) {
         try { window.location.assign(dest); } catch (e) { window.location.href = dest; }
@@ -1038,7 +1095,7 @@
     }
 
     const urlParams = new URLSearchParams(window.location.search);
-    const transitionDesignId = urlParams.get('loadDesignId') || '';
+    const transitionDesignId = appaiReopenDesignId();
 
     function appaiLoadingInner() {
       // Page-level #appai-boot already shows the same title, viewport-centered.
@@ -1181,13 +1238,11 @@
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
     }
-    const loadDesignId = urlParams.get('loadDesignId');
-    if (loadDesignId) {
-      params.set('loadDesignId', loadDesignId);
-    }
-    const loadMockup = urlParams.get('loadMockup');
-    if (loadMockup) {
-      params.set('loadMockup', loadMockup);
+    // iframe src only (never the address bar); the iframe also reads the entry itself.
+    const reopenEntry = appaiReadReopen();
+    if (reopenEntry) {
+      params.set('loadDesignId', String(reopenEntry.id));
+      if (reopenEntry.mockup) params.set('loadMockup', String(reopenEntry.mockup));
     }
     // Reuse Artwork deep-link (cross-product regenerate / open-as-is).
     ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt'].forEach(function (key) {
@@ -2337,8 +2392,7 @@
         // Send loadDesignId from the parent page URL so the iframe can restore the saved design.
         // This is more reliable than passing it via iframe URL params (which may be cached by Shopify CDN).
         try {
-          var pageUrlParams = new URLSearchParams(window.location.search);
-          var loadDesignIdFromPage = pageUrlParams.get('loadDesignId');
+          var loadDesignIdFromPage = appaiReopenDesignId();
           if (loadDesignIdFromPage) {
             iframe.contentWindow.postMessage({
               type: 'AI_ART_STUDIO_LOAD_DESIGN',
@@ -2691,9 +2745,7 @@
         var savedDest = data.url || '';
         if (!savedDest && data.pageHandle) {
           savedDest = '/pages/' + encodeURIComponent(String(data.pageHandle));
-          if (data.loadDesignId) {
-            savedDest += '?loadDesignId=' + encodeURIComponent(String(data.loadDesignId));
-          }
+          if (data.loadDesignId) appaiWriteReopen(data.loadDesignId, data.pageHandle, data.loadMockup, null);
         }
         if (savedDest) {
           try {
@@ -3576,11 +3628,11 @@
   }
   function appaiFetchCustomizerConfig(handle, attempt, cacheBust) {
     var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
-    var savedDesignMatch = window.location.search.match(/[?&](?:savedDesignId|loadDesignId)=([^&]+)/);
+    var savedDesignId = appaiReopenDesignId();
     var url = '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle);
     if (previewMatch) url += '&appai_preview=' + previewMatch[1];
     // Disabled pages only load for saved-design reopen (ATC); pass id for server gate.
-    if (savedDesignMatch) url += '&savedDesignId=' + savedDesignMatch[1];
+    if (savedDesignId) url += '&savedDesignId=' + encodeURIComponent(savedDesignId);
     if (cacheBust) url += '&_t=' + Date.now();
     return appaiFetchWithTimeout(
       url,

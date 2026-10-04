@@ -44,6 +44,13 @@ import {
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
+import {
+  clearReopenDesign,
+  pageHandleFromUrl,
+  readReopenDesign,
+  stashReopenFromHostUrl,
+  writeReopenDesign,
+} from "@/lib/reopenDesign";
 import { isDataPreviewUrl, normalizePreviewUrl } from "@shared/previewUrl";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
@@ -278,6 +285,7 @@ import {
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
 import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
+import { printSidesTwinVariant } from "@shared/printSides";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
 import {
   formatStorefrontHeadlineDisplay,
@@ -1744,16 +1752,48 @@ function replaceCustomizerPageHistory(
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
+  const { loadDesignId, loadMockup, loadProductName, ...rest } = extra;
+  if (loadDesignId) {
+    writeReopenDesign(hostWindow(), {
+      id: loadDesignId,
+      handle: pageHandle,
+      mockup: loadMockup,
+      productName: loadProductName,
+    });
+  } else if ("loadDesignId" in extra) {
+    clearReopenDesign(hostWindow());
+  }
   try {
     const parentUrl = new URL(hostWindow().location.href);
-    applyCustomizerPageToUrl(parentUrl, pageHandle, extra);
+    applyCustomizerPageToUrl(parentUrl, pageHandle, {
+      ...rest,
+      loadDesignId: null,
+      loadMockup: null,
+      loadProductName: null,
+      savedDesignId: null,
+    });
     hostWindow().history.replaceState({}, "", parentUrl.toString());
   } catch {
     /* parent may be inaccessible */
   }
 }
 
-/** Homepage-pill URL: /pages/{handle}?loadDesignId=… — no designer leftovers. */
+/** Customizer page handle the reopen entry is keyed by (host URL, else this window's params). */
+function reopenPageHandle(): string {
+  try {
+    const fromHost = pageHandleFromUrl(new URL(hostWindow().location.href));
+    if (fromHost) return fromHost;
+  } catch {
+    /* cross-origin guard */
+  }
+  try {
+    return pageHandleFromUrl(new URL(window.location.href));
+  } catch {
+    return "";
+  }
+}
+
+/** Homepage-pill URL: /pages/{handle} — no designer leftovers, never a job id. */
 function buildCleanSavedDesignUrl(
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
@@ -1784,7 +1824,16 @@ function assignHostToSavedDesign(
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
-  const dest = buildCleanSavedDesignUrl(pageHandle, extra);
+  const { loadDesignId, loadMockup, loadProductName, ...rest } = extra;
+  if (loadDesignId) {
+    writeReopenDesign(hostWindow(), {
+      id: loadDesignId,
+      handle: pageHandle,
+      mockup: loadMockup,
+      productName: loadProductName,
+    });
+  }
+  const dest = buildCleanSavedDesignUrl(pageHandle, rest);
   try {
     window.parent.postMessage({ type: "ai-art-studio:open-saved-design", url: dest }, "*");
   } catch {
@@ -2466,6 +2515,13 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const requiresSessionToken = runtimeMode === 'admin-embedded';
   const usesPublicStorefrontApi = runtimeMode === 'storefront';
 
+  // Legacy ?loadDesignId= arrivals (old bookmarks, cached theme JS): keep the
+  // reopen target in tab storage and take the job id out of the address bar.
+  useState(() => {
+    if (runtimeMode === 'storefront') stashReopenFromHostUrl(hostWindow());
+    return null;
+  });
+
   // Anonymous session ID for storefront free-generation tracking.
   // Persisted in localStorage so it survives page refreshes.
   const [anonSessionId, setAnonSessionId] = useState(() => {
@@ -2669,13 +2725,18 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
   // The iframe is served on the same Shopify domain as the parent, so hostWindow().location
   // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
+  // Normally the tab-scoped reopen entry (see lib/reopenDesign) — the job id is no
+  // longer carried in the URL.
+  const reopenEntry = isStorefront && !isMerchantStudio ? readReopenDesign(hostWindow(), reopenPageHandle()) : null;
   const parentLoadDesignId = (() => {
     try {
       const parentParams = new URLSearchParams(hostWindow().location.search);
-      return parentParams.get('loadDesignId') || '';
+      const legacy = parentParams.get('loadDesignId') || '';
+      if (legacy) return legacy;
     } catch {
-      return ''; // cross-origin guard (shouldn't happen on same domain)
+      /* cross-origin guard (shouldn't happen on same domain) */
     }
+    return reopenEntry?.id || '';
   })();
   // bridgeLoadDesignId is set by Saved Designs clicks / postMessage. Must win over a
   // sticky parent ?loadDesignId= — otherwise clicking design A while the parent URL
@@ -2697,6 +2758,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       /* cross-origin guard */
     }
     if (!raw) raw = searchParams.get("loadMockup") || "";
+    if (!raw && reopenEntry?.mockup) raw = reopenEntry.mockup;
     if (!raw) {
       try {
         raw = hostWindow().sessionStorage.getItem("appai_landing_mockup") || "";
@@ -6895,22 +6957,12 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     const clickedId = design?.id ? String(design.id) : "";
     if (!clickedId) return;
     loadDesignAppliedRef.current = false;
-    try {
-      const parentUrl = new URL(hostWindow().location.href);
-      parentUrl.searchParams.set("loadDesignId", clickedId);
-      const mockupSrc = savedDesignPreviewUrl(design);
-      if (mockupSrc) {
-        parentUrl.searchParams.set("loadMockup", toAbsoluteImageUrl(mockupSrc));
-      } else {
-        parentUrl.searchParams.delete("loadMockup");
-      }
-      hostWindow().history.replaceState({}, "", parentUrl.toString());
-    } catch {
-      // cross-origin guard — fall back to iframe-only
-    }
-    const params = new URLSearchParams(window.location.search);
-    params.set("loadDesignId", clickedId);
-    window.history.replaceState({}, "", `${window.location.pathname}?${params}`);
+    const mockupSrc = savedDesignPreviewUrl(design);
+    writeReopenDesign(hostWindow(), {
+      id: clickedId,
+      handle: reopenPageHandle() || currentCustomizerPageHandle(),
+      mockup: mockupSrc ? toAbsoluteImageUrl(mockupSrc) : null,
+    });
     setBridgeLoadDesignId(clickedId);
     setLoadDesignNonce((n) => n + 1);
   }, [applySavedDesignRecord]);
@@ -7069,8 +7121,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     if (config.baseProductTitle || config.title) params.set("productTitle", config.baseProductTitle || config.title);
     if (config.title) params.set("displayName", config.title);
     if (baseVariant) params.set("selectedVariant", baseVariant);
-    params.set("loadDesignId", designId);
-    if (mockupAbsForUrl) params.set("loadMockup", mockupAbsForUrl);
+    params.delete("loadDesignId");
+    params.delete("loadMockup");
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
 
     applyDesignerConfig(config.designerConfig, "SWITCH SAVED DESIGN");
@@ -7259,10 +7311,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
     if (config.title) params.set("displayName", config.title);
     if (baseVariant) params.set("selectedVariant", baseVariant);
-    if (historyExtra.loadDesignId) params.set("loadDesignId", String(historyExtra.loadDesignId));
-    else params.delete("loadDesignId");
-    if (historyExtra.loadMockup) params.set("loadMockup", String(historyExtra.loadMockup));
-    else params.delete("loadMockup");
+    params.delete("loadDesignId");
+    params.delete("loadMockup");
     params.delete("reuseArtworkUrl");
     params.delete("reusePrompt");
     params.delete("reuseJobId");
@@ -7377,8 +7427,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configLoading, productTypeConfig, activeProductContext.pageHandle]);
 
-  /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
+  /** Drop the sticky reopen target (storage + legacy URL params) so a remount can't revive the wrong design. */
   const clearLoadDesignIdFromUrl = useCallback(() => {
+    clearReopenDesign(hostWindow());
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("loadDesignId");
@@ -12792,7 +12843,18 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
 
     // Normalize variant ID (strip GID prefix if present)
-    const normalizedVariant = normalizeVariantId(variantId);
+    const atcFrontVariantId = normalizeVariantId(variantId);
+    const atcFrontVariant =
+      shopifyVariants.find((v) => normalizeVariantId(String(v.id)) === atcFrontVariantId) ?? null;
+    // Print sides products: a back print sells as the size/colour's Front + Back
+    // variant at its own price. Legacy products (no option, or twin missing)
+    // keep the Front variant + bothPriceOverride surcharge below.
+    const atcBothTierVariant = printPlacementUsesBoth
+      ? printSidesTwinVariant(shopifyVariants, atcFrontVariant, "both")
+      : null;
+    const normalizedVariant = atcBothTierVariant
+      ? normalizeVariantId(String(atcBothTierVariant.id))
+      : atcFrontVariantId;
 
     // Build the full artwork URL — try to get hosted with a 10s cap, but don't block cart add
     let artworkFullUrl = '';
@@ -12933,15 +12995,16 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
       "";
-    const atcFrontPrice = parseFloat(
-      shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price || "0",
-    );
-    const bothRetailForAtc = printPlacementUsesBoth
+    const atcFrontPrice = parseFloat(atcFrontVariant?.price || "0");
+    const atcBothTierPrice = parseFloat(atcBothTierVariant?.price || "0");
+    const bothRetailForAtc = atcBothTierVariant && atcBothTierPrice > 0
+      ? atcBothTierPrice
+      : printPlacementUsesBoth
       ? bothRetailAboveFront(
           resolveBothRetailDollars({
             sizeName: atcSizeName,
             colorName: atcColorName,
-            shopifyVariantId: normalizedVariant,
+            shopifyVariantId: atcFrontVariantId,
           }),
           atcFrontPrice,
         ) ?? estimateBothRetailFromFront(atcFrontPrice)
@@ -12965,6 +13028,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       bothPriceOverride,
       atcFrontPrice,
       variantId: normalizedVariant,
+      frontVariantId: atcFrontVariantId,
+      bothTierVariant: !!atcBothTierVariant,
       size: atcSizeName,
       color: atcColorName,
     });
@@ -13143,6 +13208,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       : true;
     if (
       shopDomain &&
+      !atcBothTierVariant &&
       preShadowKeyMatches &&
       preShadowMatchesJob &&
       preShadowVariantId &&
@@ -14770,7 +14836,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           autoGenerate: true,
         });
         params.set("autoReuseGenerate", "1");
-        if (opts.designId) params.set("reuseJobId", opts.designId);
+        // Job id travels in the reuse handoff only — never the URL.
         // Always include artwork URL as fallback when handoff/job status fails.
         if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
@@ -14782,7 +14848,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
           autoGenerate: false,
           ...originStyle,
         });
-        if (opts.designId) params.set("loadDesignId", opts.designId);
+        if (opts.designId) writeReopenDesign(hostWindow(), { id: opts.designId, handle });
         params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       }
@@ -17783,6 +17849,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                 sessionStorage.removeItem(stateKey);
               } catch (_) {}
+              clearReopenDesign(hostWindow());
               const url = new URL(window.location.href);
               url.searchParams.delete('loadDesignId');
               window.history.replaceState({}, '', url.toString());
@@ -19200,7 +19267,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                                         params.set("creatorUsername", originCreator);
                                         if (d.creatorId) params.set("creatorId", String(d.creatorId));
                                         params.set("storefront", "true");
-                                        params.set("loadDesignId", clickedId);
+                                        writeReopenDesign(hostWindow(), { id: clickedId, handle });
                                         window.location.assign(`/s/designer?${params.toString()}`);
                                         return;
                                       }
@@ -19863,6 +19930,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                         const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                         sessionStorage.removeItem(stateKey);
                       } catch (_) {}
+                      clearReopenDesign(hostWindow());
                       const url = new URL(window.location.href);
                       url.searchParams.delete('loadDesignId');
                       window.history.replaceState({}, '', url.toString());

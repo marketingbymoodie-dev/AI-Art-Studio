@@ -94,6 +94,27 @@ export function sizeColorOptionValues(v: VariantLike): string[] {
 }
 
 /**
+ * The variant with the same size/colour options as `variant` that serves
+ * `sides` (e.g. the Front + Back twin of the selected Front variant).
+ * null when the catalog has no Print sides option or the twin is missing.
+ */
+export function printSidesTwinVariant<T extends VariantLike>(
+  catalog: T[] | null | undefined,
+  variant: VariantLike | null | undefined,
+  sides: PrintSides,
+): T | null {
+  if (!variant || !catalogHasPrintSides(catalog)) return null;
+  const key = sizeColorOptionValues(variant).map(norm).join("|");
+  return (
+    (catalog ?? []).find(
+      (v) =>
+        variantServesPrintSides(v, sides) &&
+        sizeColorOptionValues(v).map(norm).join("|") === key,
+    ) ?? null
+  );
+}
+
+/**
  * Split created/read-back variants into the Front and Front + Back
  * size:color → id maps. Key is `${option1}:${option2}` with the Print sides
  * value removed, matching the legacy shopifyVariantIds key shape.

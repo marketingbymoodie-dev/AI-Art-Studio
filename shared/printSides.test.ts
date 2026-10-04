@@ -8,6 +8,7 @@ import {
   printSidesTierCounts,
   productTypeHasBothSideCosts,
   sizeColorOptionValues,
+  printSidesTwinVariant,
   splitShopifyVariantIdsBySides,
   variantServesPrintSides,
 } from "./printSides";
@@ -180,5 +181,35 @@ describe("storefront headline price", () => {
   it("still shows 'from' across Front sizes", () => {
     const r = resolveStorefrontHeadlinePrice({ variants: sidesCatalog, sizeSelected: false });
     expect(r).toEqual({ amount: 20, showFrom: true });
+  });
+});
+
+describe("printSidesTwinVariant (ATC Front -> Front + Back)", () => {
+  it("returns the Front + Back twin with the same size and colour", () => {
+    expect(printSidesTwinVariant(sidesCatalog, sidesCatalog[1], "both")?.id).toBe("12");
+    expect(printSidesTwinVariant(sidesCatalog, sidesCatalog[3], "front")?.id).toBe("2");
+  });
+
+  it("is null for a legacy catalog with no Print sides option", () => {
+    const legacy = [
+      { id: "1", title: "S / Black", option1: "S", option2: "Black" },
+      { id: "2", title: "M / Black", option1: "M", option2: "Black" },
+    ];
+    expect(printSidesTwinVariant(legacy, legacy[0], "both")).toBeNull();
+  });
+
+  it("is null when the twin is missing (never another size)", () => {
+    const partial = sidesCatalog.filter((v) => v.id !== "12");
+    expect(printSidesTwinVariant(partial, sidesCatalog[1], "both")).toBeNull();
+  });
+
+  it("works for size-only products where Print sides is option2", () => {
+    const sizeOnly = [
+      { id: "1", option1: "11oz", option2: "Front" },
+      { id: "2", option1: "15oz", option2: "Front" },
+      { id: "3", option1: "15oz", option2: "Front + Back" },
+    ];
+    expect(printSidesTwinVariant(sizeOnly, sizeOnly[1], "both")?.id).toBe("3");
+    expect(printSidesTwinVariant(sizeOnly, sizeOnly[0], "both")).toBeNull();
   });
 });
