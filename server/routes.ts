@@ -82,10 +82,8 @@ import {
 import { syncShadowVariantPrice } from "./shadow-variant-price";
 import {
   awaitExistingFlight,
-  awaitInFlightOrGenerate,
   preShadowFlightKey,
   registerPreShadowInFlight,
-  runPreShadowMint,
 } from "./pre-shadow-mint";
 import {
   ATC_SHADOW_STILL_PREPARING,
@@ -10553,11 +10551,10 @@ ${orientationExtra}
         const token = installation.accessToken;
         const designId = preShadowDesignId;
         const cfgSnapshot = preShadowCfgInput;
-        const flightKey = preShadowFlightKey(shop, designId);
-        // Fire-and-forget. Same persist key already minting (ATC tap during
-        // debounce, or a second Apply) joins that promise — never a 2nd product.
-        void awaitInFlightOrGenerate(flightKey, () =>
-          runPreShadowMint({
+        const mode = normalizeAtcMode((installation as { atcMode?: string }).atcMode);
+        // shadow-direct stays inline. base-first enqueues; the worker mints.
+        void import("./shadow-mint-worker").then(({ startPreShadowForMode }) =>
+          startPreShadowForMode(mode, {
             shop,
             token,
             jobId,
@@ -10567,10 +10564,10 @@ ${orientationExtra}
             designId,
             cfgSnapshot,
             priceOverride: preShadowClientPrice,
-          }).catch((bgErr: any) => {
-            console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
-          }),
-        );
+          }, "Background"),
+        ).catch((bgErr: any) => {
+          console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
+        });
       }
 
       return res.json({ saved: true, ...(preShadowDesignId ? { shadowDesignId: preShadowDesignId } : {}) });
@@ -10641,10 +10638,11 @@ ${orientationExtra}
       const priceNum = parseFloat(String(price ?? ""));
       const priceOverride =
         Number.isFinite(priceNum) && priceNum > 0 ? priceNum.toFixed(2) : null;
-      const flightKey = preShadowFlightKey(shop, atomic.designId);
+      const mode = normalizeAtcMode((installation as { atcMode?: string }).atcMode);
       // Join exact key or mint once. ATC tap during debounce hits this same key.
-      void awaitInFlightOrGenerate(flightKey, () =>
-        runPreShadowMint({
+      // base-first enqueues instead; shadow-direct still mints inline.
+      void import("./shadow-mint-worker").then(({ startPreShadowForMode }) =>
+        startPreShadowForMode(mode, {
           shop,
           token: installation.accessToken!,
           jobId,
@@ -10654,10 +10652,10 @@ ${orientationExtra}
           designId: atomic.designId,
           cfgSnapshot: atomic.snapshot,
           priceOverride,
-        }).catch((e: any) => {
-          console.error(`[PreShadow] preshadow-variant error jobId=${jobId}:`, e?.message);
-        }),
-      );
+        }, "preshadow-variant"),
+      ).catch((e: any) => {
+        console.error(`[PreShadow] preshadow-variant error jobId=${jobId}:`, e?.message);
+      });
       return res.json({ started: true, shadowDesignId: atomic.designId });
     } catch (err: any) {
       console.error("[PreShadowVariant]", err);
@@ -11145,7 +11143,11 @@ ${orientationExtra}
       const shadowExpiresAt =
         (entry && entry.shadowExpiresAt) ||
         (!wantVid ? (job as any).shadowExpiresAt || null : null);
-      const ready = !!(shadowVariantId && shadowProductId && shadowDesignId);
+      let ready = !!(shadowVariantId && shadowProductId && shadowDesignId);
+      if (ready && shadowDesignId && normalizeAtcMode((installation as { atcMode?: string }).atcMode) === "base-first") {
+        const published = await storage.getPublishedProduct(shop, shadowDesignId);
+        ready = !!(published && published.status === "active" && published.readyAt);
+      }
       console.log(
         `[ShadowVariant] jobId=${jobId} vid=${wantVid || "-"} ready=${ready} variantId=${shadowVariantId} key=${shadowDesignId}`,
       );
@@ -13944,6 +13946,15 @@ ${orientationExtra}
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
+
+  // base-first mint queue. No-op while every shop stays on shadow-direct.
+  if (process.env.NODE_ENV !== "test") {
+    setInterval(() => {
+      import("./shadow-mint-worker")
+        .then((m) => m.tickShadowMintQueue())
+        .catch((e: Error) => console.error("[ShadowMint] Interval error:", e));
+    }, 2000);
+  }
 
   // Hourly: delete unpublished Mockup Preview / test-order products (1h grace).
   // Draft test *orders* still cancel only after 7 days. Never deletes published
@@ -24613,6 +24624,22 @@ ${orientationExtra}
     (req as any).proxyShop = normalizeMyshopifyShopDomain(query.shop ?? "");
     next();
   }
+
+  // Theme readiness read. Uncached, and includes the live atcMode so a
+  // kill-switch flip reaches a cart that never reloaded the customizer.
+  app.get("/api/proxy/shadow-ready", proxyAuth, async (req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "private, no-store");
+    const shop = (req as any).proxyShop as string;
+    if (!shop) return res.status(400).json({ error: "shop required" });
+    try {
+      const { readShadowReady } = await import("./shadow-mint-worker");
+      const keys = typeof req.query.keys === "string" ? req.query.keys : "";
+      res.json(await readShadowReady(shop, keys));
+    } catch (e: any) {
+      console.error("[ShadowReady]", e?.message);
+      res.status(500).json({ error: "Failed to read shadow readiness" });
+    }
+  });
 
   function presentmentFromRequest(
     req: Request,
