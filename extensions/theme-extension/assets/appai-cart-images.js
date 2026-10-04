@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.4';
+  var CART_IMG_VERSION = '3.5';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -767,6 +767,20 @@
     }
   }
 
+  // BuildMyPOD names the quantity field updates[] and puts the line key on the row.
+  function lineKeyForQtyInput(input) {
+    var name = input.getAttribute('name') || '';
+    var named = /^updates\[(.+)\]$/.exec(name);
+    if (named && named[1]) return named[1];
+    if (name !== 'updates[]') return '';
+    var row = input.closest('[data-key]');
+    var key = row && row.getAttribute('data-key');
+    if (key) return key;
+    var byId = input.closest('[id^="CartItem-"]');
+    if (byId && byId.id.indexOf('CartItem-') === 0) return byId.id.slice('CartItem-'.length);
+    return '';
+  }
+
   // First paint, before the 250ms cart.js pass. Only a URL stored for this line key.
   function paintCached(root) {
     if (!root || root.nodeType !== 1) return;
@@ -778,19 +792,23 @@
       return;
     }
     for (var i = 0; i < inputs.length; i++) {
-      var m = /^updates\[(.+)\]$/.exec(inputs[i].getAttribute('name') || '');
-      if (!m || !images[m[1]] || String(images[m[1]]).indexOf('https://') !== 0) continue;
+      var input = inputs[i];
+      var key = lineKeyForQtyInput(input);
+      if (!key || !images[key] || String(images[key]).indexOf('https://') !== 0) continue;
+      var row = input.closest('[data-key]');
       var c =
-        inputs[i].closest('[data-cart-item]') ||
-        inputs[i].closest("[id*='CartItem']") ||
-        inputs[i].closest('tr') ||
-        inputs[i].closest('li') ||
-        inputs[i].closest('.cart-item') ||
-        inputs[i].closest("[class*='cart']") ||
-        inputs[i].closest('form') ||
+        (row && row.getAttribute('data-key') === key && row) ||
+        input.closest('[id^="CartItem-"]') ||
+        input.closest('[data-cart-item]') ||
+        input.closest("[id*='CartItem']") ||
+        input.closest('tr') ||
+        input.closest('li') ||
+        input.closest('.cart-item') ||
+        input.closest("[class*='cart']") ||
+        input.closest('form') ||
         document;
       var imgs = [].slice.call(deepQueryAll(c, 'img')).filter(isLikelyProductImg);
-      if (imgs.length) setImg(imgs[0], images[m[1]]);
+      if (imgs.length) setImg(imgs[0], images[key]);
     }
   }
 
@@ -839,5 +857,5 @@
   document.addEventListener('cart:update', requestCartRefresh);
   document.addEventListener('shopify:section:load', schedule);
   window.addEventListener('pageshow', requestCartRefresh);
-  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint before the cart fetch)');
+  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint, including updates[] rows)');
 })();

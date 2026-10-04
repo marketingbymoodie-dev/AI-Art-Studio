@@ -12,7 +12,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.3";
+  var VER = "1.4";
   if (window.__APPAI_SHADOW_SWAP_VER__ === VER) return;
   window.__APPAI_SHADOW_SWAP_VER__ = VER;
 
@@ -393,10 +393,35 @@
   var releasing = false;
   var holdBanner = null;
 
+  var expressHiddenAt = 0;
+
+  function beaconExpress(result, waited) {
+    console.log("[AppAI express-hide] " + result + " waited=" + waited + "ms");
+    try {
+      if (!navigator.sendBeacon) return;
+      var body = JSON.stringify({ event: "express-hide", waitedMs: waited, result: result });
+      navigator.sendBeacon("/apps/appai/atc-telemetry", new Blob([body], { type: "application/json" }));
+    } catch (_) {}
+  }
+
   function syncPendingChrome() {
     var pending = mode() === "base-first" && Object.keys(readMap(PENDING_KEY)).length > 0;
+    var was = document.documentElement.classList.contains("appai-swap-pending");
     document.documentElement.classList.toggle("appai-swap-pending", pending);
+    if (pending && !was) {
+      expressHiddenAt = Date.now();
+      beaconExpress("start", 0);
+    } else if (!pending && was) {
+      beaconExpress("end", expressHiddenAt ? Date.now() - expressHiddenAt : 0);
+      expressHiddenAt = 0;
+    }
   }
+
+  window.addEventListener("pagehide", function () {
+    if (!expressHiddenAt) return;
+    beaconExpress("unload", Date.now() - expressHiddenAt);
+    expressHiddenAt = 0;
+  });
 
   (function injectHoldStyle() {
     var style = document.createElement("style");

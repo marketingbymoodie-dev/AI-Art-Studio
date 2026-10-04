@@ -24629,7 +24629,10 @@ ${orientationExtra}
     const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
     const waited = Number(body.waitedMs);
     const result = String(body.result || "").slice(0, 40);
-    console.log(`[AppAI swap-hold] waited=${Number.isFinite(waited) ? waited : "?"}ms result=${result}`);
+    const event = String(body.event || "hold").slice(0, 40);
+    console.log(
+      `[AppAI atc-telemetry] event=${event} waited=${Number.isFinite(waited) ? waited : "?"}ms result=${result}`,
+    );
     res.status(204).end();
   });
 
