@@ -34,6 +34,8 @@ describe("staging render probe gate", () => {
       expect(page.status).toBe(200);
       const html = await page.text();
       expect(html).toContain("Style example batch");
+      expect(html).toContain("Joke framework and Reuse this concept are not sent");
+      expect(html).toContain("belong to this button only");
       expect(html).toContain("editorial-deadpan");
       expect(html).toContain("Domestic Cinema");
       expect(html).toContain("pp-petty-crimes");

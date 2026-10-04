@@ -837,6 +837,8 @@ h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:rep
 .batch label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
 .batch textarea, .batch input[type=file]{font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:inherit}
 .batch textarea{min-height:68px}.batch .hint,.batchnote{margin:0;color:var(--muted);font-size:12.5px}
+.tool{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:8px;background:var(--bg)}
+.tool h3{margin:0;font-size:14px}
 .looks{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow-x:auto;align-items:start}
 .looks.artstyles{grid-template-columns:repeat(10,minmax(150px,1fr))}.looks.artstyles .card img{aspect-ratio:1/1}
 .lookcol h3{margin:0 0 8px;font-size:14px}
@@ -855,20 +857,29 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <select id="exp" aria-label="Experiment"><option value="">All experiments</option></select>
 </header>
 <section id="batch" class="batch" hidden>
-<p class="hint">Style example batch — six looks, one pet, one pinned joke. Uses the storefront prompt composition. Apparel, poster, and pillow are the products where all six looks are available.</p>
+<p class="hint">Two tools. Pet photo, Product, and What they do are shared. Each button below only reads the controls in its own panel.</p>
 <div class="row">
 <label>Pet photo<input id="photo" type="file" accept="image/jpeg,image/png,image/webp"></label>
-<label>Joke framework<select id="framework"></select></label>
 <label>Product<select id="family"></select></label>
-<label>Variants per look<input id="variants" type="number" min="1" max="4" value="3"></label>
 </div>
 <label>What they do<textarea id="behavior" placeholder="He takes the middle of the couch and waits for someone to move him."></textarea></label>
+<section class="tool" id="sixLook">
+<h3>Generate batch</h3>
+<p class="hint">Style example batch — six looks, one pet, one pinned joke. Uses the storefront prompt composition. Joke framework, variants per look, and Reuse this concept belong to this button only.</p>
+<div class="row">
+<label>Joke framework<select id="framework"></select></label>
+<label>Variants per look<input id="variants" type="number" min="1" max="4" value="3"></label>
+</div>
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
-<div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
+<div><button id="runBatch" type="button">Generate batch</button></div>
+</section>
+<section class="tool" id="artTool">
+<h3>Art style batch</h3>
+<p class="hint">Truth, then a device, then images. Joke framework and Reuse this concept are not sent. One style and the bench read What they do and Product, write three truths, and start the device for the first truth while you read them. The device is on the card before any image. Pinned confirms the passenger-seat line, which the validator flags. Render anyway is the operator override. Customers do not get it.</p>
 <label>Art style scope<select id="artMode"><option value="one" selected>One style — truths, then a device</option><option value="bench">Ten-style bench — one truth, a device each</option><option value="pinned">Pinned concept</option></select></label>
 <label>Style<select id="artStyle"></select></label>
-<p class="hint">Scope chooses what Art style batch does. One style and the bench read What they do and Product, write three truths, and start the device for the first truth while you read them. The device is on the card before any image. Pinned confirms the passenger-seat line, which the validator flags. Render anyway is the operator override. Customers do not get it.</p>
+<div><button id="runArt" type="button">Art style batch</button></div>
 <div id="artIdeas" hidden>
 <p id="artIdeasLead" class="hint"></p>
 <div id="artIdeaList"></div>
@@ -877,6 +888,8 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label>Pet swap photo<input id="swapPhoto" type="file" accept="image/jpeg,image/png,image/webp"></label>
 <div><button id="artConfirm" type="button">Render</button> <button id="artOriginal" type="button" hidden>Render the rejected original anyway</button> <button id="artSwap" type="button">Render this device on the swap photo</button> <button id="artCancel" type="button">Cancel</button></div>
 </div>
+</section>
+<div><span class="hint">Result view</span> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
 <main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
