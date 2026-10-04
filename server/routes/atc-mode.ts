@@ -33,6 +33,16 @@ export function registerAtcModeRoutes(app: Express, deps: { isAuthenticated: Aut
     }
   });
 
+  app.get("/api/platform/shadow-mint", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { shadowMintDiagnostics } = await import("../shadow-mint-worker");
+      res.json(await shadowMintDiagnostics());
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message ?? "Failed to load shadow mint diagnostics" });
+    }
+  });
+
   app.patch("/api/platform/atc-mode", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {

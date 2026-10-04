@@ -116,6 +116,8 @@ export async function runPreShadowMint(args: {
   designId: string;
   cfgSnapshot: PrintConfigFingerprintInput;
   priceOverride: string | null;
+  /** exact = this key only. legacy = also try pooled/URL-hash/bare-job rows. */
+  lookup?: "exact" | "legacy";
 }): Promise<FlightValue> {
   const {
     shop,
@@ -195,7 +197,7 @@ export async function runPreShadowMint(args: {
   // Exact-key reuse first. Never mint a second product for the same persist id
   // (tap-during-debounce: ATC may have just created this row).
   let existing = await storage.getPublishedProduct(shop, designId);
-  if ((!existing || existing.status !== "active") && !hasPrintConfigSuffix(designId)) {
+  if ((!existing || existing.status !== "active") && args.lookup !== "exact" && !hasPrintConfigSuffix(designId)) {
     for (const key of shadowLookupKeys(jobId, primaryMockupUrl, baseVariantId)) {
       const row = await storage.getPublishedProduct(shop, key);
       if (row?.status !== "active") continue;

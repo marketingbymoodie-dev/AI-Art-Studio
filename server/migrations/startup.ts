@@ -112,6 +112,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "generation_events",     column: "provider_mime",               type: "TEXT" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
+  { table: 'published_products',    column: 'ready_at',                    type: 'TIMESTAMP' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_variant_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
@@ -2162,6 +2163,31 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "shadow_mint_jobs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shadow_mint_jobs" (
+        "id" serial PRIMARY KEY,
+        "shop" text NOT NULL,
+        "key" text NOT NULL,
+        "job_id" text NOT NULL,
+        "base_variant_id" text NOT NULL,
+        "base_product_id" text NOT NULL,
+        "cfg_snapshot" jsonb NOT NULL,
+        "mockup_url" text NOT NULL,
+        "price_override" text,
+        "state" text NOT NULL DEFAULT 'pending',
+        "attempts" integer NOT NULL DEFAULT 0,
+        "lease_until" timestamp,
+        "claimed_at" timestamp,
+        "ready_at" timestamp,
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "key")
+      )
+    `,
+  },
+  {
     name: "shipping_store_variants",
     sql: `
       CREATE TABLE IF NOT EXISTS "shipping_store_variants" (
@@ -2203,6 +2229,11 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "shadow_mint_jobs_claim_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shadow_mint_jobs_claim_idx"
+      ON "shadow_mint_jobs" ("state", "created_at")`,
+  },
   {
     // One live (non-disabled) key per (scope, shop, provider, ref).
     name: "provider_credentials_live_ref_uidx",

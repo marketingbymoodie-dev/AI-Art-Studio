@@ -1518,6 +1518,12 @@ export async function clearShopShippingState(shopRaw: string): Promise<void> {
 
 const onProductImportedReconciles = new Map<string, Promise<void>>();
 
+/** Mint worker waits on a shop reconcile already in flight. Does not start one. */
+export function waitForInFlightProductImport(shopRaw: string): Promise<void> {
+  const shop = normalizeMyshopifyShopDomain(shopRaw);
+  return onProductImportedReconciles.get(shop) ?? Promise.resolve();
+}
+
 /**
  * Fast-path membership hook for newly created variants (shadow resolve, page
  * publish). Associates the variant into its mapped profile + writes weight.

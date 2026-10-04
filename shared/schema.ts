@@ -1302,6 +1302,7 @@ export const publishedProducts = pgTable("published_products", {
   status: text("status").notNull().default("active"), // active | archived
   expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
   cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
+  readyAt: timestamp("ready_at"),                     // set when the shadow is purchasable and Ajax-visible
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1313,6 +1314,30 @@ export const insertPublishedProductSchema = createInsertSchema(publishedProducts
 });
 export type PublishedProduct = typeof publishedProducts.$inferSelect;
 export type InsertPublishedProduct = z.infer<typeof insertPublishedProductSchema>;
+
+/** Background mint queue for base-first ATC. One row per (shop, exact shadow key). */
+export const shadowMintJobs = pgTable("shadow_mint_jobs", {
+  id: serial("id").primaryKey(),
+  shop: text("shop").notNull(),
+  key: text("key").notNull(),
+  jobId: text("job_id").notNull(),
+  baseVariantId: text("base_variant_id").notNull(),
+  baseProductId: text("base_product_id").notNull(),
+  cfgSnapshot: jsonb("cfg_snapshot").notNull(),
+  mockupUrl: text("mockup_url").notNull(),
+  priceOverride: text("price_override"),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
+  claimedAt: timestamp("claimed_at"),
+  readyAt: timestamp("ready_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("shadow_mint_jobs_shop_key_uidx").on(table.shop, table.key),
+  index("shadow_mint_jobs_claim_idx").on(table.state, table.createdAt),
+]);
 
 // Design Products — permanent, browsable Shopify products merchants publish from a saved
 // My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns

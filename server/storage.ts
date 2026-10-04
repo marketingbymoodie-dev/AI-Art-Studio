@@ -1612,7 +1612,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return row;
   }
 
-  /** Return all shadow products whose expiresAt has passed and are still active */
+  /** Expired shadows that were never added to a cart. cartAddedAt rows stay. */
   async getExpiredShadowProducts(): Promise<PublishedProduct[]> {
     return db
       .select()
@@ -1620,6 +1620,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .where(
         and(
           eq(publishedProducts.status, "active"),
+          isNull(publishedProducts.cartAddedAt),
           lte(publishedProducts.expiresAt, new Date())
         )
       );

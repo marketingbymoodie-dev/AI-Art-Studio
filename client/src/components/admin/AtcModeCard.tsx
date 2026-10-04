@@ -66,6 +66,7 @@ export default function AtcModeCard() {
       <CardContent className="space-y-2">
         {isLoading && <Skeleton className="h-24 w-full" />}
         {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
+        <ShadowMintDiagnostics />
         {(data?.shops ?? []).map((row) => (
           <div
             key={row.installationId}
@@ -92,5 +93,49 @@ export default function AtcModeCard() {
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+function ShadowMintDiagnostics() {
+  const { data, isLoading, error } = useQuery<{
+    counts: { shop: string; state: string; n: number }[];
+    timing: { shop: string; n: number; p50Ms: number | null; p95Ms: number | null; waitP50Ms: number | null }[];
+    failed: { shop: string; key: string; attempts: number; lastError: string; updatedAt: string }[];
+  }>({
+    queryKey: ["/api/platform/shadow-mint"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/platform/shadow-mint");
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to load mint queue");
+      }
+      return res.json();
+    },
+  });
+  if (isLoading) return <Skeleton className="h-16 w-full" />;
+  if (error) return <p className="text-sm text-destructive">{(error as Error).message}</p>;
+  const failed = data?.failed ?? [];
+  const timing = data?.timing ?? [];
+  const counts = data?.counts ?? [];
+  return (
+    <div className="space-y-2 rounded-lg border p-3" data-testid="shadow-mint-diagnostics">
+      <p className="text-xs font-medium">Shadow mint queue</p>
+      {counts.length === 0 && <p className="text-xs text-muted-foreground">No mint jobs yet.</p>}
+      {counts.map((row) => (
+        <p key={`${row.shop}:${row.state}`} className="font-mono text-xs text-muted-foreground">
+          {row.shop} {row.state} {row.n}
+        </p>
+      ))}
+      {timing.map((row) => (
+        <p key={row.shop} className="font-mono text-xs text-muted-foreground">
+          {row.shop} n={row.n} p50={row.p50Ms ?? "–"}ms p95={row.p95Ms ?? "–"}ms wait={row.waitP50Ms ?? "–"}ms
+        </p>
+      ))}
+      {failed.map((row) => (
+        <p key={`${row.shop}:${row.key}`} className="text-xs text-destructive">
+          {row.shop} dead after {row.attempts}: {row.lastError || "failed"} ({row.key})
+        </p>
+      ))}
+    </div>
   );
 }
