@@ -6,7 +6,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.5";
+  var VER = "1.6";
   if (window.__APPAI_PRINT_FILES_GATE_VER__ === VER) return;
   window.__APPAI_PRINT_FILES_GATE_VER__ = VER;
 
@@ -232,8 +232,8 @@
       return;
     }
     var text = gaveUp
-      ? "We couldn't finish preparing your print files. Try refreshing, or contact support if this persists."
-      : "Finalising print files… Checkout unlocks when they are ready.";
+      ? "We couldn't finish preparing print files for one item. Remove that item to check out with the rest of your cart."
+      : "Finalising print files for one item. Remove that item to check out with the rest of your cart.";
     if (bannerEl) {
       if (bannerEl.textContent !== text) bannerEl.textContent = text;
       return;
@@ -373,8 +373,19 @@
             }
           }
         }
+        var present = {};
+        for (var p = 0; p < items.length; p++) {
+          var presentId = String((items[p].properties || {})[JOB_PROP] || "");
+          if (presentId) present[presentId] = true;
+        }
+        for (var rid in tracked) {
+          if (!Object.prototype.hasOwnProperty.call(tracked, rid)) continue;
+          if (present[rid]) continue;
+          forgetJob(rid);
+          delete tracked[rid];
+        }
         var gaveUp = hasAnyGaveUp();
-        setCheckoutBlocked(cartPending || Object.keys(tracked).length > 0, gaveUp);
+        setCheckoutBlocked(cartPending, gaveUp);
         return { cart: cart, cartPending: cartPending, pendingJobs: tracked };
       })
       .catch(function () {

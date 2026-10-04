@@ -24625,6 +24625,14 @@ ${orientationExtra}
     next();
   }
 
+  app.post("/api/proxy/atc-telemetry", proxyAuth, (req: Request, res: Response) => {
+    const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+    const waited = Number(body.waitedMs);
+    const result = String(body.result || "").slice(0, 40);
+    console.log(`[AppAI swap-hold] waited=${Number.isFinite(waited) ? waited : "?"}ms result=${result}`);
+    res.status(204).end();
+  });
+
   // Theme readiness read. Uncached, and includes the live atcMode so a
   // kill-switch flip reaches a cart that never reloaded the customizer.
   app.get("/api/proxy/shadow-ready", proxyAuth, async (req: Request, res: Response) => {

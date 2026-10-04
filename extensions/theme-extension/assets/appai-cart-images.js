@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.3';
+  var CART_IMG_VERSION = '3.4';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -739,7 +739,6 @@
                     }
                     if (va) mu = varMap.get(String(va)) || null;
                   }
-                  if (!mu && indexed.length === 1) mu = indexed[0].mockupUrl;
                   if (mu) {
                     setImg(img, mu);
                     replaced++;
@@ -748,18 +747,6 @@
               }
             }
 
-            if (replaced === 0 && indexed.length === 1) {
-              var cs = cartUiRoots();
-              for (var ci = 0; ci < cs.length; ci++) {
-                if (!cs[ci]) continue;
-                var fi = [].slice.call(deepQueryAll(cs[ci], 'img')).find(isLikelyProductImg);
-                if (fi) {
-                  setImg(fi, indexed[0].mockupUrl);
-                  replaced++;
-                  break;
-                }
-              }
-            }
           }
         } catch (_) {}
 
@@ -769,6 +756,48 @@
         finishApply(false);
       });
   }
+
+  function lineImageCache() {
+    try {
+      var raw = sessionStorage.getItem('appai:lineImages');
+      var parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // First paint, before the 250ms cart.js pass. Only a URL stored for this line key.
+  function paintCached(root) {
+    if (!root || root.nodeType !== 1) return;
+    var images = lineImageCache();
+    var inputs;
+    try {
+      inputs = deepQueryAll(root, "input[name^='updates[']");
+    } catch (_) {
+      return;
+    }
+    for (var i = 0; i < inputs.length; i++) {
+      var m = /^updates\[(.+)\]$/.exec(inputs[i].getAttribute('name') || '');
+      if (!m || !images[m[1]] || String(images[m[1]]).indexOf('https://') !== 0) continue;
+      var c =
+        inputs[i].closest('[data-cart-item]') ||
+        inputs[i].closest("[id*='CartItem']") ||
+        inputs[i].closest('tr') ||
+        inputs[i].closest('li') ||
+        inputs[i].closest('.cart-item') ||
+        inputs[i].closest("[class*='cart']") ||
+        inputs[i].closest('form') ||
+        document;
+      var imgs = [].slice.call(deepQueryAll(c, 'img')).filter(isLikelyProductImg);
+      if (imgs.length) setImg(imgs[0], images[m[1]]);
+    }
+  }
+
+  window.AppAI = window.AppAI || {};
+  window.AppAI.paintCartFromCache = function () {
+    paintCached(document.documentElement);
+  };
 
   var t = null;
   function schedule(opts) {
@@ -783,6 +812,7 @@
   }
 
   function requestCartRefresh() {
+    paintCached(document.documentElement);
     schedule({ cartChanged: true });
   }
 
@@ -791,7 +821,13 @@
 
   applyMockups();
   try {
-    var ob = new MutationObserver(function () {
+    var ob = new MutationObserver(function (mutations) {
+      if (!(isApplying || hushMutations)) {
+        for (var i = 0; i < mutations.length; i++) {
+          var added = mutations[i].addedNodes;
+          for (var n = 0; n < added.length; n++) paintCached(added[n]);
+        }
+      }
       if (isApplying || hushMutations) return;
       schedule();
     });
@@ -803,5 +839,5 @@
   document.addEventListener('cart:update', requestCartRefresh);
   document.addEventListener('shopify:section:load', schedule);
   window.addEventListener('pageshow', requestCartRefresh);
-  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (demote cart media + customizer titles)');
+  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint before the cart fetch)');
 })();
