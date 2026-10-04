@@ -1,14 +1,12 @@
 /**
  * Pure policy for the background shadow mint queue.
- * Dead after 3 attempts. The first two failures wait 5s then 30s.
- * The 120s slot is recorded so the schedule stays visible, and is not used:
- * the third failure is terminal.
+ * Dead after 3 attempts. The first failure waits 5s, the second waits 30s.
  */
 export const SHADOW_MINT_MAX_IN_FLIGHT_PER_SHOP = 2;
 export const SHADOW_MINT_MAX_IN_FLIGHT_GLOBAL = 8;
 export const SHADOW_MINT_LEASE_MS = 60_000;
 export const SHADOW_MINT_MAX_ATTEMPTS = 3;
-export const SHADOW_MINT_BACKOFF_MS = [5_000, 30_000, 120_000] as const;
+export const SHADOW_MINT_BACKOFF_MS = [5_000, 30_000] as const;
 
 /** Delay before the next attempt after `attempts` failures. null = dead. */
 export function shadowMintRetryDelayMs(attempts: number): number | null {

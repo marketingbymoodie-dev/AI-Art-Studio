@@ -2,8 +2,9 @@
  * Background shadow mint queue. Runs only for atcMode=base-first.
  * shadow-direct keeps the inline runPreShadowMint path.
  *
- * Spike C-2 (2026-10-04) failed: the theme cannot call Storefront cartLinesUpdate.
- * This worker does not swap carts. Phase 2 swap is add-shadow + zero the base line.
+ * Spike C-2 (2026-10-04): the theme already has Shopify.actions.updateCart.
+ * Phase 2 swaps in place with that. No unauthenticated cart scopes.
+ * This worker does not swap carts.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { PrintConfigFingerprintInput } from "@shared/printConfigFingerprint";
