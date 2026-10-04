@@ -20,16 +20,33 @@ export type ArtStyleProbeMode = "pinned" | "full";
 /** Same fields the storefront concept writer returns. Full mode renders one of these. */
 export type ArtStyleProbeIdea = PackConceptOption;
 
+/** Product briefs for the concept writer. The ten styles still render as apparel graphics. */
+export const ART_STYLE_PRODUCT_BRIEFS: Record<string, string> = {
+  apparel: "Apparel: a shirt graphic. One subject, at most one supporting object, no rooms or vehicle interiors. The joke must read at arm's length.",
+  poster: "Poster: a wall artwork. The joke can use a wider scene than a shirt, still one idea, readable from across a room.",
+  pillow: "Pillow: a square cushion graphic. One joke, compact, readable across the cushion.",
+};
+
 /**
- * Full flow uses the storefront concept writer: behaviour in, three ideas out.
+ * Full flow uses the storefront concept writer: behaviour and product in, three ideas out.
  * Humour, relationship and exact words are not sent — the writer invents the punchline.
+ * The composed concept is the funny truth, not the writer's scene.
  */
-export async function generateArtStyleIdeas(behaviour: string): Promise<PackConceptOption[]> {
+export function artStyleConceptFields(behaviour: string, productFamily: string): Array<[string, string]> {
   const sentence = behaviour.replace(/\s+/g, " ").trim().slice(0, 400);
-  if (!sentence) throw Object.assign(new Error("A behaviour sentence is required"), { status: 400 });
+  const brief = ART_STYLE_PRODUCT_BRIEFS[productFamily];
+  if (!sentence) throw Object.assign(new Error("Describe what they do."), { status: 400 });
+  if (!brief) throw Object.assign(new Error("Choose apparel, poster, or pillow."), { status: 400 });
+  return [
+    ["behaviour", sentence],
+    ["product", brief],
+  ];
+}
+
+export async function generateArtStyleIdeas(behaviour: string, productFamily: string): Promise<PackConceptOption[]> {
   const profile = getStylePackProfile("petposterous");
   if (!profile) throw new Error("Petposterous has no concept writer");
-  return generatePackConceptOptions(profile, [["behaviour", sentence]]);
+  return generatePackConceptOptions(profile, artStyleConceptFields(behaviour, productFamily));
 }
 
 export function parseArtStyleProbeIdea(raw: unknown): ArtStyleProbeIdea | null {
@@ -60,16 +77,15 @@ export function composeArtStyleProbe(opts: {
 }) {
   const mode: ArtStyleProbeMode = opts.mode === "full" ? "full" : "pinned";
   const idea = mode === "full" ? opts.idea : null;
-  if (mode === "full") {
-    const joke = String(idea?.visualJoke || "").trim();
-    if (!joke) throw Object.assign(new Error("Full flow needs a selected idea"), { status: 400 });
+  if (mode === "full" && !String(idea?.funnyTruth || "").trim()) {
+    throw Object.assign(new Error("Full flow needs a selected idea"), { status: 400 });
   }
+  const batchForPinned = PETPOSTEROUS_ART_STYLE_BATCH;
   const composed = composePetposterousArtStylePrompt({
     styleId: opts.styleId,
     length: opts.length ?? "full",
-    ...(mode === "full" && idea
-      ? { concept: idea.visualJoke, words: idea.punchline || "" }
-      : {}),
+    concept: mode === "full" && idea ? idea.funnyTruth : batchForPinned.concept,
+    words: mode === "full" && idea ? idea.punchline || "" : batchForPinned.words,
   });
   const recipe = styleExampleRecipe("apparel");
   const params: GenerateImageParams = {
@@ -79,7 +95,7 @@ export function composeArtStyleProbe(opts: {
     isApparel: true,
     isAllOverPrint: false,
     isPatternStyle: false,
-    userPrompt: mode === "full" && idea ? idea.visualJoke : PETPOSTEROUS_ART_STYLE_BATCH.concept,
+    userPrompt: mode === "full" && idea ? idea.funnyTruth : PETPOSTEROUS_ART_STYLE_BATCH.concept,
     cylindricalWrap: false,
     generationModel: recipe.styleGen.model,
     generationQuality: recipe.styleGen.quality,

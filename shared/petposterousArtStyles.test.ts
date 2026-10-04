@@ -5,6 +5,8 @@ import {
   PETPOSTEROUS_ART_STYLE_BATCH,
   PETPOSTEROUS_ART_STYLES,
   PETPOSTEROUS_TYPE_RESTRAINT,
+  artStyleConceptHeading,
+  artStyleConceptShotFlags,
   artStyleMarker,
   composePetposterousArtStylePrompt,
   compositionLocksAboveStyle,
@@ -43,11 +45,16 @@ describe("Petposterous apparel art styles", () => {
     for (const style of PETPOSTEROUS_ART_STYLES) {
       expect(style.rendererId).toBeNull();
       expect(style.prompt).not.toContain("APPAREL PRINT");
-      const composed = composePetposterousArtStylePrompt({ styleId: style.id });
+      const composed = composePetposterousArtStylePrompt({
+        styleId: style.id,
+        concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
+        words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+      });
       const marker = artStyleMarker(style);
       expect(composed.length).toBe("short");
       expect(composed.prompt.split(PETPOSTEROUS_APPAREL_PRINT)).toHaveLength(2);
       expect(composed.prompt.split(PETPOSTEROUS_TYPE_RESTRAINT)).toHaveLength(2);
+      expect(composed.prompt.startsWith(artStyleConceptHeading(PETPOSTEROUS_ART_STYLE_BATCH.concept, PETPOSTEROUS_ART_STYLE_BATCH.words))).toBe(true);
       expect(composed.prompt.indexOf("CONCEPT:")).toBeLessThan(composed.prompt.indexOf("APPAREL PRINT:"));
       expect(composed.prompt.indexOf("APPAREL PRINT:")).toBeLessThan(composed.prompt.indexOf("TYPE:"));
       expect(composed.prompt.indexOf("TYPE:")).toBeLessThan(composed.prompt.indexOf(marker));
@@ -68,15 +75,30 @@ describe("Petposterous apparel art styles", () => {
   });
 
   it("uses the same short compose for every style, including a former long request", () => {
-    const woodcut = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "short" });
-    const requestedLong = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "full" });
+    const pinned = { concept: PETPOSTEROUS_ART_STYLE_BATCH.concept, words: PETPOSTEROUS_ART_STYLE_BATCH.words };
+    const woodcut = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "short", ...pinned });
+    const requestedLong = composePetposterousArtStylePrompt({ styleId: "woodcut", length: "full", ...pinned });
     expect(requestedLong.prompt).toBe(woodcut.prompt);
     expect(woodcut.prompt).toContain("WOODCUT:");
     expect(woodcut.prompt).not.toContain("WOODCUT STYLE:");
     for (const style of PETPOSTEROUS_ART_STYLES) {
-      const composed = composePetposterousArtStylePrompt({ styleId: style.id });
+      const composed = composePetposterousArtStylePrompt({
+        styleId: style.id,
+        concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
+        words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+      });
       expect(composed.prompt.length).toBeGreaterThan(700);
       expect(composed.prompt.length).toBeLessThan(1600);
     }
+  });
+
+  it("treats a truth as clean and a shot as flagged", () => {
+    expect(artStyleConceptShotFlags("the dog has decided the bed is not for sharing")).toEqual([]);
+    expect(artStyleConceptShotFlags(PETPOSTEROUS_ART_STYLE_BATCH.concept)).toEqual([]);
+    const shot = artStyleConceptShotFlags("dog in the front seat, door open, owner waiting");
+    expect(shot).toContain("position");
+    expect(shot).toContain("staging");
+    expect(shot).toContain("second person");
+    expect(() => composePetposterousArtStylePrompt({ styleId: "woodcut", concept: "  ", words: "HI" })).toThrow(/concept/);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PETPOSTEROUS_ART_STYLES, artStyleMarker, compositionLocksAboveStyle } from "@shared/petposterousArtStyles";
-import { composeArtStyleProbe } from "./art-style-probe";
+import { artStyleConceptFields, composeArtStyleProbe } from "./art-style-probe";
 
 describe("art style probe compose", () => {
   it("sends the short style block on Flare without the apparel vignette lock", () => {
@@ -43,10 +43,20 @@ describe("art style probe compose", () => {
       },
     });
     expect(result.mode).toBe("full");
-    expect(result.sentPrompt).toContain("a spaniel already buckled into the front seat, utterly unmoved");
+    expect(result.sentPrompt).toContain("the dog believes the good seat is a right, not a request");
     expect(result.sentPrompt).toContain("SEAT TAKEN.");
+    expect(result.sentPrompt).not.toContain("a spaniel already buckled into the front seat");
     expect(result.sentPrompt).not.toContain("PASSENGER SELECTED.");
     expect(result.sentPrompt).not.toContain("the dog has claimed the passenger seat and will not move");
     expect(result.idea?.conceptFramework).toBe("pp-hostile-negotiations");
+  });
+
+  it("sends a different product brief for apparel and poster", () => {
+    const apparel = artStyleConceptFields("he sleeps in the middle of the bed", "apparel");
+    const poster = artStyleConceptFields("he sleeps in the middle of the bed", "poster");
+    expect(apparel.find(([label]) => label === "product")?.[1]).toMatch(/shirt/i);
+    expect(poster.find(([label]) => label === "product")?.[1]).toMatch(/wall/i);
+    expect(apparel.map(([, value]) => value).join("\n")).not.toBe(poster.map(([, value]) => value).join("\n"));
+    expect(() => artStyleConceptFields("", "apparel")).toThrow(/what they do/i);
   });
 });

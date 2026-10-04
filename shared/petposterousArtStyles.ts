@@ -168,31 +168,51 @@ export const PETPOSTEROUS_ART_STYLE_BATCH = {
 };
 
 /**
+ * A truth can name the joke. A shot names where bodies are, a prop's state,
+ * or a second person — and then every style draws that shot.
+ */
+const ART_STYLE_SHOT_FLAGS: { kind: string; pattern: RegExp }[] = [
+  { kind: "second person", pattern: /\b(owner|driver|human|person|someone|man|woman)\b/i },
+  { kind: "staging", pattern: /\b(door|waiting|camera|interior)\b/i },
+  { kind: "position", pattern: /\b(front seat|back seat|in the front|in the back|beside|behind)\b/i },
+];
+
+export function artStyleConceptShotFlags(text: string): string[] {
+  const found: string[] = [];
+  for (const rule of ART_STYLE_SHOT_FLAGS) {
+    if (rule.pattern.test(text)) found.push(rule.kind);
+  }
+  return found;
+}
+
+/**
  * Short form is the only art-style compose. `length` is accepted so older
  * probe clients still resolve, and it no longer selects a longer prompt.
+ * Concept and words are arguments. This function does not read the pinned batch.
  * Shared print and type rules sit once, immediately before the style block.
  */
+/** The two lines that change per idea. Shared print rules and the style block follow. */
+export function artStyleConceptHeading(concept: string, words: string): string {
+  const clean = concept.replace(/\s+/g, " ").trim().replace(/\.+$/, "");
+  if (!clean) return "";
+  const wording = words.replace(/\s+/g, " ").trim();
+  return [`CONCEPT: ${clean}.`, wording ? `Exact wording, once: ${wording}` : ""].filter(Boolean).join("\n");
+}
+
 export function composePetposterousArtStylePrompt(opts: {
   styleId: string;
+  /** Funny truth only. Not a camera, a prop state, or a second person. */
+  concept: string;
+  /** Exact wording. Empty string means the design has no text line. */
+  words: string;
   length?: "full" | "short";
-  /** Selected visual joke. Omitted = the pinned batch concept. */
-  concept?: string;
-  /** Selected punchline. Omitted = the pinned batch wording. Empty string = no wording line. */
-  words?: string;
 }): { prompt: string; style: PetposterousArtStyle; length: "short" } {
   const style = petposterousArtStyle(opts.styleId);
   if (!style) throw new Error(`Unknown art style "${opts.styleId}"`);
   void opts.length;
-  const batch = PETPOSTEROUS_ART_STYLE_BATCH;
-  const concept = (opts.concept ?? batch.concept).trim();
-  const words = opts.words === undefined ? batch.words : opts.words.trim();
-  const prompt = [
-    `CONCEPT: ${concept}.`,
-    words ? `Exact wording, once: ${words}` : "",
-    PETPOSTEROUS_APPAREL_PRINT,
-    PETPOSTEROUS_TYPE_RESTRAINT,
-    style.prompt,
-  ]
+  const heading = artStyleConceptHeading(opts.concept, opts.words);
+  if (!heading.startsWith("CONCEPT:")) throw new Error("Art style compose needs a concept");
+  const prompt = [heading, PETPOSTEROUS_APPAREL_PRINT, PETPOSTEROUS_TYPE_RESTRAINT, style.prompt]
     .filter(Boolean)
     .join("\n\n");
   return { prompt, style, length: "short" };

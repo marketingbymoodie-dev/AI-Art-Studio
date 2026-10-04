@@ -39,6 +39,9 @@ describe("staging render probe gate", () => {
       expect(html).toContain("pp-petty-crimes");
       expect(html).toContain("Art style batch");
       expect(html).toContain("retro-character");
+      expect(html).toContain("Render ten styles");
+      expect(html).toContain("Funny truth");
+      expect(html).toContain("Full flow — behaviour, then three ideas");
       expect(html).not.toContain("/*__CATALOG__*/");
       const denied = await fetch(`http://127.0.0.1:${port}/api/staging/render-probe/style-batch/prepare`, {
         method: "POST",

@@ -51,7 +51,7 @@ import { estimateGoogleImageCostUsd, renderGoogleImage } from "../google-image-c
 import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../openai-image-client";
 import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
-import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH } from "@shared/petposterousArtStyles";
+import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags } from "@shared/petposterousArtStyles";
 import { composeArtStyleProbe, generateArtStyleIdeas, parseArtStyleProbeIdea } from "../art-style-probe";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
@@ -530,6 +530,8 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         behaviour: PETPOSTEROUS_ART_STYLE_BATCH.behaviour,
         concept: PETPOSTEROUS_ART_STYLE_BATCH.concept,
         words: PETPOSTEROUS_ART_STYLE_BATCH.words,
+        composedHeading: artStyleConceptHeading(PETPOSTEROUS_ART_STYLE_BATCH.concept, PETPOSTEROUS_ART_STYLE_BATCH.words),
+        shotFlags: artStyleConceptShotFlags(PETPOSTEROUS_ART_STYLE_BATCH.concept),
         conceptFramework: PETPOSTEROUS_ART_STYLE_BATCH.frameworkId,
         styles: PETPOSTEROUS_ART_STYLES.map((style) => ({ id: style.id, label: style.label })),
       });
@@ -544,10 +546,23 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
   app.post("/api/staging/render-probe/art-style/concepts", async (req: Request, res: Response) => {
     if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const behaviour = str(body.behaviour, 400) || PETPOSTEROUS_ART_STYLE_BATCH.behaviour;
+    const behaviour = str(body.behaviour, 400);
+    const productFamily = str(body.productFamily, 20, "apparel");
+    if (!behaviour) return res.status(400).json({ error: "Describe what they do." });
+    const familyError = styleExampleFamilyError(productFamily);
+    if (familyError) return res.status(400).json({ error: familyError });
     try {
-      const options = await generateArtStyleIdeas(behaviour);
-      return res.json({ mode: "full", behaviour, options });
+      const options = await generateArtStyleIdeas(behaviour, productFamily);
+      return res.json({
+        mode: "full",
+        behaviour,
+        productFamily,
+        options: options.map((option) => ({
+          ...option,
+          shotFlags: artStyleConceptShotFlags(option.funnyTruth),
+          composedHeading: artStyleConceptHeading(option.funnyTruth, option.punchline),
+        })),
+      });
     } catch (err) {
       const status = Number((err as { status?: number }).status) || 502;
       return res.status(status >= 400 && status < 600 ? status : 502).json({
@@ -605,7 +620,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       route: recipe.route,
       referencePhotoId: photoId,
       behavior: composed.behaviour,
-      productFamily: "apparel",
+      productFamily: str(body.productFamily, 20, "apparel"),
       conceptSnapshot: composed.mode === "full" && composed.idea
         ? {
             mode: "full",
@@ -619,7 +634,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
           }
         : {
             mode: "pinned",
-            funnyTruth: composed.batch.behaviour,
+            funnyTruth: composed.batch.concept,
             visualJoke: composed.batch.concept,
             punchline: composed.batch.words,
             subjectPriority: composed.batch.referenceLabel,
@@ -787,6 +802,10 @@ h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:rep
 .looks{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow-x:auto;align-items:start}
 .looks.artstyles{grid-template-columns:repeat(10,minmax(150px,1fr))}.looks.artstyles .card img{aspect-ratio:1/1}
 .lookcol h3{margin:0 0 8px;font-size:14px}
+#artIdeas{display:grid;gap:8px;margin-top:8px}#artIdeas[hidden]{display:none}
+.idea{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:grid;gap:4px}
+.idea .shot{color:var(--bad);font-weight:600}
+.idea pre{white-space:pre-wrap;margin:0;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 details.prompt summary{cursor:pointer;color:var(--muted);font-size:12px;padding:0 12px 10px}
 details.prompt pre{white-space:pre-wrap;max-height:220px;overflow:auto;font:11px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace;margin:0 12px 12px}
 dialog{border:0;padding:0;max-width:96vw;max-height:96vh;background:#111}dialog img{display:block;max-width:96vw;max-height:92vh}
@@ -809,8 +828,13 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
 <div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
-<label>Art style mode<select id="artMode"><option value="pinned">Pinned concept</option><option value="full">Full flow — behaviour, then three ideas</option></select></label>
-<p class="hint">Pinned holds one supplied concept and the supplied line PASSENGER SELECTED., so style is the only variable. Full flow sends the behaviour box to the concept writer, shows three ideas, and renders the one you pick. Ten short styles, two each, Flare, native transparent.</p>
+<label>Art style mode<select id="artMode"><option value="full" selected>Full flow — behaviour, then three ideas</option><option value="pinned">Pinned concept</option></select></label>
+<p class="hint">This dropdown chooses what Art style batch does. Full flow reads What they do and Product, writes three ideas, and waits for you to confirm the funny truth and the exact words. Pinned asks you to confirm the passenger-seat truth and PASSENGER SELECTED. Ten short styles, two each, only after that confirm.</p>
+<div id="artIdeas" hidden>
+<p id="artIdeasLead" class="hint"></p>
+<div id="artIdeaList"></div>
+<div><button id="artConfirm" type="button">Render ten styles</button> <button id="artCancel" type="button">Cancel</button></div>
+</div>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
 <main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
@@ -855,9 +879,11 @@ if(!list.some(r=>r.visualSystem)){sec.innerHTML="<h2>"+h(name)+"</h2>";const g=d
 list.sort((a,b)=>String(a.model+a.run).localeCompare(String(b.model+b.run)));
 for(const r of list)g.appendChild(probeCard(r));sec.appendChild(g);main.appendChild(sec);continue}
 const sample=list.find(r=>r.conceptSnapshot)||list[0];
-const joke=sample.conceptSnapshot&&sample.conceptSnapshot.visualJoke?sample.conceptSnapshot.visualJoke:"";
-sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
 const artBatch=String(name).indexOf("art-styles:")===0;
+const snap=sample.conceptSnapshot||{};
+const joke=artBatch?(snap.mode==="full"?(snap.funnyTruth||""):(snap.visualJoke||snap.funnyTruth||"")):(snap.visualJoke||"");
+const words=artBatch&&snap.punchline?snap.punchline:"";
+sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(words?"<p class='batchnote'>"+h(words)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
 if(blind&&artBatch){const g=document.createElement("div");g.className="grid";list.slice().sort(()=>Math.random()-0.5).forEach(r=>g.appendChild(styleCard(r)));sec.appendChild(g);main.appendChild(sec);continue}
 const board=document.createElement("div");board.className=artBatch?"looks artstyles":"looks";
 const byLook={};for(const r of list){(byLook[r.visualSystem||"other"]??=[]).push(r)}
@@ -888,21 +914,47 @@ await load("style-batch:"+prep.batchId);
 setStatus(failures.length?failures.join(" · "):("Batch "+prep.batchId+" finished. Reuse stays on, so the next run keeps this concept."))}
 catch(e){setStatus(e.message||"Batch failed")}
 finally{running=false;document.getElementById("runBatch").disabled=false}};
-document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
-running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
-try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
-const mode=document.getElementById("artMode").value==="full"?"full":"pinned";
-let idea=null;let behaviour="";
-if(mode==="full"){behaviour=(document.getElementById("behavior").value||"").trim();setStatus("Writing three ideas…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour});behaviour=concepts.behaviour;const lines=(concepts.options||[]).map((o,i)=>(i+1)+". "+o.visualJoke+"  ["+(o.punchline||"no text")+"]").join("\\n");const pick=prompt(lines+"\\n\\nRender which idea? 1, 2 or 3","1");if(pick==null)throw new Error("No idea selected");const index=Math.max(0,Math.min(2,(parseInt(pick,10)||1)-1));idea=(concepts.options||[])[index];if(!idea)throw new Error("No idea selected");setStatus("Rendering idea "+(index+1)+": "+idea.visualJoke)}
-const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v,promptLength:"short"});
+let artPending=null;
+function hideArtIdeas(){artPending=null;const box=document.getElementById("artIdeas");if(box)box.hidden=true;const list=document.getElementById("artIdeaList");if(list)list.innerHTML=""}
+function showArtIdeas(pending){artPending=pending;const list=document.getElementById("artIdeaList");list.innerHTML="";
+document.getElementById("artIdeasLead").textContent=pending.mode==="full"?("Written for "+pending.productLabel+". The ten styles still render as apparel graphics. Pick one. The funny truth and the exact words are what will be composed. The writer's scene is not."):"Pinned concept. Confirm before rendering twenty images.";
+pending.options.forEach(function(idea,i){const label=document.createElement("label");label.className="idea";const flags=(idea.shotFlags||[]).join(", ");const words=idea.punchline?idea.punchline:"(no words)";
+label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.visualJoke?'<span class="hint">Writer scene, not composed: '+h(idea.visualJoke)+"</span>":"")+(flags?'<span class="shot">Shot warning: '+h(flags)+". Every style will draw this as the picture.</span>":"");
+list.appendChild(label)});
+if(pending.options.length===1){const only=list.querySelector("input");if(only)only.checked=true}
+document.getElementById("artConfirm").textContent=(pending.options[0]&&pending.options[0].shotFlags&&pending.options[0].shotFlags.length&&pending.options.length===1)?"This truth is a shot. Render anyway?":"Render ten styles";
+document.getElementById("artIdeas").hidden=false}
+document.getElementById("artIdeaList").addEventListener("change",function(){if(!artPending)return;const picked=document.querySelector('input[name="artIdea"]:checked');const idea=picked?artPending.options[Number(picked.value)]:null;const flagged=idea&&idea.shotFlags&&idea.shotFlags.length;document.getElementById("artConfirm").textContent=flagged?"This truth is a shot. Render anyway?":"Render ten styles"});
+async function renderArtJobs(pending, idea){if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
+const prep=pending.prep;
+try{const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v});
 let done=0;const failures=[];let cursor=0;
-async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:job.promptLength,referencePhotoId:prep.referencePhotoId,mode,behaviour,idea})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:"short",referencePhotoId:prep.referencePhotoId,mode:pending.mode,behaviour:pending.behaviour,productFamily:pending.productFamily,idea:pending.mode==="full"?idea:undefined})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
 async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
 await Promise.all([worker(),worker()]);
 await load("art-styles:"+prep.batchId);
-setStatus(failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."))}
+setStatus(failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."));
+hideArtIdeas()}
 catch(e){setStatus(e.message||"Art style batch failed")}
+finally{running=false;document.getElementById("artConfirm").disabled=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false}}
+document.getElementById("artConfirm").onclick=function(){if(!artPending)return;const picked=document.querySelector('input[name="artIdea"]:checked');if(!picked){setStatus("Pick an idea first.");return}const idea=artPending.options[Number(picked.value)];if(!idea){setStatus("Pick an idea first.");return}renderArtJobs(artPending, idea)};
+document.getElementById("artCancel").onclick=function(){hideArtIdeas();setStatus("Cancelled. Nothing was rendered.")};
+document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
+const mode=document.getElementById("artMode").value==="full"?"full":"pinned";
+const behaviour=(document.getElementById("behavior").value||"").trim();
+const family=document.getElementById("family");
+const productFamily=family.value;
+const productLabel=family.selectedOptions[0]?family.selectedOptions[0].textContent:productFamily;
+if(mode==="full"&&!behaviour){setStatus("Describe what they do.");return}
+running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
+try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
+if(mode==="full"){setStatus("Writing three ideas for "+productLabel+"…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour,productFamily});
+showArtIdeas({prep,mode,behaviour:concepts.behaviour,productFamily,productLabel,options:concepts.options||[]});
+setStatus("Pick an idea, then confirm. Nothing has been rendered.")}
+else{showArtIdeas({prep,mode,behaviour,productFamily,productLabel,options:[{funnyTruth:prep.concept,punchline:prep.words,visualJoke:"",shotFlags:prep.shotFlags||[],composedHeading:prep.composedHeading||""}]});
+setStatus("Confirm the pinned truth before rendering.")}}
+catch(e){setStatus(e.message||"Art style batch failed");hideArtIdeas()}
 finally{running=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false}};
 document.getElementById("blind").onclick=()=>{blind=!blind;document.getElementById("blind").textContent=blind?"Reveal labels":"Blind";render()};
 document.getElementById("matte").onclick=()=>{matte=matte==="dark"?"":"dark";document.getElementById("matte").textContent=matte?"Checkerboard":"Dark garment";render()};
