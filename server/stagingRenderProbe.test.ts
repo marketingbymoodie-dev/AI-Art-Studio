@@ -37,6 +37,8 @@ describe("staging render probe gate", () => {
       expect(html).toContain("editorial-deadpan");
       expect(html).toContain("Domestic Cinema");
       expect(html).toContain("pp-petty-crimes");
+      expect(html).toContain("Art style batch");
+      expect(html).toContain("retro-character");
       expect(html).not.toContain("/*__CATALOG__*/");
       const denied = await fetch(`http://127.0.0.1:${port}/api/staging/render-probe/style-batch/prepare`, {
         method: "POST",
@@ -55,6 +57,7 @@ describe("staging render probe gate", () => {
 });
 
 import sharp from "sharp";
+import { measureSoftAlpha } from "./native-transparency";
 import { measureEdges } from "./routes/staging-render-probe";
 
 describe("probe edge measurement", () => {
@@ -74,5 +77,28 @@ describe("probe edge measurement", () => {
     const bleed = await measureEdges(await sharp(raw, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer());
     expect(bleed.top.palePct).toBe(0);
     expect(bleed.top.uniformPct).toBeLessThan(40);
+  });
+});
+
+describe("painterly soft alpha", () => {
+  it("reports no halo on a hard square and a halo on a feathered edge", async () => {
+    const W = 40, H = 40;
+    const hard = Buffer.alloc(W * H * 4, 0);
+    for (let y = 8; y < 32; y++) for (let x = 8; x < 32; x++) {
+      const i = (y * W + x) * 4;
+      hard[i] = 20; hard[i + 1] = 40; hard[i + 2] = 80; hard[i + 3] = 255;
+    }
+    const hardReport = await measureSoftAlpha(await sharp(hard, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer());
+    expect(hardReport.transparentFraction).toBeGreaterThan(0.4);
+    expect(hardReport.haloFractionOfInk).toBe(0);
+
+    const soft = Buffer.from(hard);
+    for (let x = 8; x < 32; x++) {
+      const i = (8 * W + x) * 4;
+      soft[i + 3] = 90;
+    }
+    const softReport = await measureSoftAlpha(await sharp(soft, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer());
+    expect(softReport.haloFractionOfInk).toBeGreaterThan(0);
+    expect(softReport.featherFractionOfInk).toBeGreaterThan(0);
   });
 });
