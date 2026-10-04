@@ -23,6 +23,30 @@ describe("art style probe compose", () => {
       expect(result.sentPrompt).toContain("PASSENGER SELECTED.");
       expect(result.sentPrompt).toContain("the dog has claimed the passenger seat and will not move");
       expect(result.sentPrompt).not.toContain("driver's door");
+      expect(result.mode).toBe("pinned");
+      expect(result.idea).toBeNull();
     }
+  });
+
+  it("full flow renders the selected idea and not the pinned punchline", () => {
+    const result = composeArtStyleProbe({
+      styleId: "woodcut",
+      mode: "full",
+      behaviour: "dog refuses to get into the back seat of the car",
+      referenceDataUrl: "data:image/png;base64,aaaa",
+      idea: {
+        funnyTruth: "the dog believes the good seat is a right, not a request",
+        visualJoke: "a spaniel already buckled into the front seat, utterly unmoved",
+        punchline: "SEAT TAKEN.",
+        subjectPriority: "the spaniel's face",
+        conceptFramework: "pp-hostile-negotiations",
+      },
+    });
+    expect(result.mode).toBe("full");
+    expect(result.sentPrompt).toContain("a spaniel already buckled into the front seat, utterly unmoved");
+    expect(result.sentPrompt).toContain("SEAT TAKEN.");
+    expect(result.sentPrompt).not.toContain("PASSENGER SELECTED.");
+    expect(result.sentPrompt).not.toContain("the dog has claimed the passenger seat and will not move");
+    expect(result.idea?.conceptFramework).toBe("pp-hostile-negotiations");
   });
 });

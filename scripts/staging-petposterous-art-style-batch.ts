@@ -7,7 +7,9 @@
  *   REFERENCE_PHOTO_ID=5eb9654283a8ab16 ^
  *   npx tsx scripts/staging-petposterous-art-style-batch.ts
  *
- * Flare, native transparent, pinned Hostile Negotiations. Never production.
+ * Flare, native transparent. Default is the pinned concept. ART_STYLE_MODE=full
+ * sends ART_STYLE_BEHAVIOUR (or the batch sentence) through the concept writer,
+ * logs the three ideas, and renders CONCEPT_INDEX (default 0). Never production.
  */
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -46,7 +48,28 @@ if (/^[a-f0-9]{16}$/.test(photoId)) {
   prepareBody.photoDataUrl = `data:${mime};base64,${buf.toString("base64")}`;
 }
 
+const mode = process.env.ART_STYLE_MODE === "full" ? "full" : "pinned";
 const prep = await post("/api/staging/render-probe/art-style/prepare", prepareBody);
+let selectedIdea: Record<string, unknown> | null = null;
+let ideas: unknown[] = [];
+let behaviour = "";
+if (mode === "full") {
+  behaviour = process.env.ART_STYLE_BEHAVIOUR || "";
+  const concepts = await post("/api/staging/render-probe/art-style/concepts", { behaviour });
+  behaviour = String(concepts.behaviour || behaviour);
+  ideas = Array.isArray(concepts.options) ? concepts.options : [];
+  ideas.forEach((idea, index) => {
+    const row = idea as { visualJoke?: string; punchline?: string; funnyTruth?: string; conceptFramework?: string };
+    console.log(
+      `idea ${index + 1}: ${row.visualJoke || ""} | ${row.punchline || "(no text)"} | ${row.conceptFramework || ""}`,
+    );
+    console.log(`  funny truth: ${row.funnyTruth || ""}`);
+  });
+  const index = Math.max(0, Math.min(ideas.length - 1, Number(process.env.CONCEPT_INDEX || 0) || 0));
+  selectedIdea = (ideas[index] as Record<string, unknown>) || null;
+  if (!selectedIdea) throw new Error("Concept writer returned no ideas");
+  console.log(`Rendering idea ${index + 1}.`);
+}
 const styles = prep.styles as { id: string; label: string }[];
 const variants = Number(prep.variants) || 2;
 const jobs: { artStyle: string; label: string; variant: number; promptLength: "short" }[] = [];
@@ -62,6 +85,9 @@ async function one(job: (typeof jobs)[number]) {
   const row = await post("/api/staging/render-probe/art-style", {
     batchId: prep.batchId,
     referencePhotoId: prep.referencePhotoId,
+    mode,
+    behaviour,
+    idea: selectedIdea,
     ...job,
   });
   manifest.push({ ...job, ...row });
@@ -80,7 +106,7 @@ await Promise.all([worker(), worker()]);
 const outDir = resolve("tmp/art-style-batch");
 mkdirSync(outDir, { recursive: true });
 const out = resolve(outDir, `${prep.batchId}.json`);
-writeFileSync(out, JSON.stringify({ batchId: prep.batchId, referencePhotoId: prep.referencePhotoId, results: manifest }, null, 2));
+writeFileSync(out, JSON.stringify({ batchId: prep.batchId, referencePhotoId: prep.referencePhotoId, mode, behaviour, ideas, selectedIdea, results: manifest }, null, 2));
 const cost = manifest.reduce((sum, row) => sum + (Number(row.estimatedCostUsd) || 0), 0);
 console.log(`Wrote ${manifest.length} rows to ${out}. Estimated cost $${cost.toFixed(4)}.`);
 console.log(`Grid: ${base}/staging/render-probe  experiment art-styles:${prep.batchId}`);

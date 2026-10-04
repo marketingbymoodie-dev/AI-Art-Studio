@@ -175,17 +175,25 @@ export const PETPOSTEROUS_ART_STYLE_BATCH = {
 export function composePetposterousArtStylePrompt(opts: {
   styleId: string;
   length?: "full" | "short";
+  /** Selected visual joke. Omitted = the pinned batch concept. */
+  concept?: string;
+  /** Selected punchline. Omitted = the pinned batch wording. Empty string = no wording line. */
+  words?: string;
 }): { prompt: string; style: PetposterousArtStyle; length: "short" } {
   const style = petposterousArtStyle(opts.styleId);
   if (!style) throw new Error(`Unknown art style "${opts.styleId}"`);
   void opts.length;
   const batch = PETPOSTEROUS_ART_STYLE_BATCH;
+  const concept = (opts.concept ?? batch.concept).trim();
+  const words = opts.words === undefined ? batch.words : opts.words.trim();
   const prompt = [
-    `CONCEPT: ${batch.concept}.`,
-    `Exact wording, once: ${batch.words}`,
+    `CONCEPT: ${concept}.`,
+    words ? `Exact wording, once: ${words}` : "",
     PETPOSTEROUS_APPAREL_PRINT,
     PETPOSTEROUS_TYPE_RESTRAINT,
     style.prompt,
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   return { prompt, style, length: "short" };
 }

@@ -52,7 +52,7 @@ import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } 
 import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
 import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH } from "@shared/petposterousArtStyles";
-import { composeArtStyleProbe } from "../art-style-probe";
+import { composeArtStyleProbe, generateArtStyleIdeas, parseArtStyleProbeIdea } from "../art-style-probe";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
   const envName = String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase();
@@ -541,6 +541,21 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     }
   });
 
+  app.post("/api/staging/render-probe/art-style/concepts", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const behaviour = str(body.behaviour, 400) || PETPOSTEROUS_ART_STYLE_BATCH.behaviour;
+    try {
+      const options = await generateArtStyleIdeas(behaviour);
+      return res.json({ mode: "full", behaviour, options });
+    } catch (err) {
+      const status = Number((err as { status?: number }).status) || 502;
+      return res.status(status >= 400 && status < 600 ? status : 502).json({
+        error: String((err as Error)?.message ?? err).slice(0, 300),
+      });
+    }
+  });
+
   app.post("/api/staging/render-probe/art-style", async (req: Request, res: Response) => {
     if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -550,12 +565,22 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     if (!Number.isInteger(variant) || variant < 1 || variant > 2) return res.status(400).json({ error: "variant out of range" });
     const artStyle = str(body.artStyle, 40);
     const promptLength = "short" as const;
+    const mode = body.mode === "full" ? "full" : "pinned";
+    const idea = mode === "full" ? parseArtStyleProbeIdea(body.idea) : null;
+    if (mode === "full" && !idea) return res.status(400).json({ error: "Full flow needs the selected idea" });
     const photoId = str(body.referencePhotoId, 16);
     const dataUrl = await loadProbePhoto(photoId);
     if (!dataUrl) return res.status(400).json({ error: "Reference photo was not found. Upload it again." });
     let composed: ReturnType<typeof composeArtStyleProbe>;
     try {
-      composed = composeArtStyleProbe({ styleId: artStyle, length: promptLength, referenceDataUrl: dataUrl });
+      composed = composeArtStyleProbe({
+        styleId: artStyle,
+        length: promptLength,
+        referenceDataUrl: dataUrl,
+        mode,
+        idea,
+        behaviour: str(body.behaviour, 400),
+      });
     } catch (err) {
       return res.status(400).json({ error: String((err as Error)?.message ?? err).slice(0, 200) });
     }
@@ -574,20 +599,32 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       imageSize: recipe.imageSize,
       batchId,
       visualSystem,
-      conceptFramework: composed.batch.frameworkId,
+      conceptFramework: composed.idea?.conceptFramework || composed.batch.frameworkId,
       composedPrompt: composed.sentPrompt,
       credentialRef: recipe.credentialRef,
       route: recipe.route,
       referencePhotoId: photoId,
-      behavior: composed.batch.behaviour,
+      behavior: composed.behaviour,
       productFamily: "apparel",
-      conceptSnapshot: {
-        funnyTruth: composed.batch.behaviour,
-        visualJoke: composed.batch.concept,
-        punchline: composed.batch.words,
-        subjectPriority: composed.batch.referenceLabel,
-        promptLength,
-      },
+      conceptSnapshot: composed.mode === "full" && composed.idea
+        ? {
+            mode: "full",
+            behaviour: composed.behaviour,
+            funnyTruth: composed.idea.funnyTruth,
+            visualJoke: composed.idea.visualJoke,
+            punchline: composed.idea.punchline,
+            subjectPriority: composed.idea.subjectPriority,
+            conceptFramework: composed.idea.conceptFramework || "",
+            promptLength,
+          }
+        : {
+            mode: "pinned",
+            funnyTruth: composed.batch.behaviour,
+            visualJoke: composed.batch.concept,
+            punchline: composed.batch.words,
+            subjectPriority: composed.batch.referenceLabel,
+            promptLength,
+          },
     };
     const started = Date.now();
     try {
@@ -654,6 +691,9 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         estimatedCostUsd: result.meta?.estimatedCostUsd ?? null,
         edges,
         promptChars: composed.sentPrompt.length,
+        composedPrompt: composed.sentPrompt,
+        mode: composed.mode,
+        idea: composed.idea,
         stored: !!storagePath,
         storageError,
       });
@@ -769,7 +809,8 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label class="hint"><span><input id="reuse" type="checkbox" disabled> Reuse this concept on the next run</span></label>
 <p id="conceptNote" class="hint">The first run writes one concept and pins that framework across all six looks.</p>
 <div><button id="runBatch" type="button">Generate batch</button> <button id="runArt" type="button">Art style batch</button> <button id="blind" type="button">Blind</button> <button id="matte" type="button">Dark garment</button></div>
-<p class="hint">Art style batch holds one funny truth (the dog has claimed the passenger seat and will not move), Hostile Negotiations pinned, PASSENGER SELECTED., ten short styles, two each, Flare, native transparent. Earlier long-form rows stay in their own experiments.</p>
+<label>Art style mode<select id="artMode"><option value="pinned">Pinned concept</option><option value="full">Full flow — behaviour, then three ideas</option></select></label>
+<p class="hint">Pinned holds one supplied concept and the supplied line PASSENGER SELECTED., so style is the only variable. Full flow sends the behaviour box to the concept writer, shows three ideas, and renders the one you pick. Ten short styles, two each, Flare, native transparent.</p>
 <p id="batchStatus" class="hint" role="status"></p>
 </section>
 <main id="main"><p>Enter the staging probe token to load results. The token stays in this tab only.</p></main>
@@ -850,9 +891,12 @@ finally{running=false;document.getElementById("runBatch").disabled=false}};
 document.getElementById("runArt").onclick=async()=>{if(running)return;const file=document.getElementById("photo").files[0];if(!token){setStatus("Unlock with the probe token first.");return}if(!file){setStatus("Choose the spaniel photo.");return}
 running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
+const mode=document.getElementById("artMode").value==="full"?"full":"pinned";
+let idea=null;let behaviour="";
+if(mode==="full"){behaviour=(document.getElementById("behavior").value||"").trim();setStatus("Writing three ideas…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour});behaviour=concepts.behaviour;const lines=(concepts.options||[]).map((o,i)=>(i+1)+". "+o.visualJoke+"  ["+(o.punchline||"no text")+"]").join("\\n");const pick=prompt(lines+"\\n\\nRender which idea? 1, 2 or 3","1");if(pick==null)throw new Error("No idea selected");const index=Math.max(0,Math.min(2,(parseInt(pick,10)||1)-1));idea=(concepts.options||[])[index];if(!idea)throw new Error("No idea selected");setStatus("Rendering idea "+(index+1)+": "+idea.visualJoke)}
 const jobs=[];for(const style of prep.styles)for(let v=1;v<=prep.variants;v++)jobs.push({artStyle:style.id,label:style.label,variant:v,promptLength:"short"});
 let done=0;const failures=[];let cursor=0;
-async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:job.promptLength,referencePhotoId:prep.referencePhotoId})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,promptLength:job.promptLength,referencePhotoId:prep.referencePhotoId,mode,behaviour,idea})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
 async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
 await Promise.all([worker(),worker()]);
