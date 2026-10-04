@@ -13146,7 +13146,22 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     };
 
     // Fast-path still AWAITS CONTINUE repair. Skipping resolve must not skip policy write.
-    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean }> = canSkipResolveInline
+    const baseFirstAtc = atcModeRef.current === "base-first" && !isCreatorStorefront;
+    const baseFirstReady =
+      baseFirstAtc &&
+      !!preShadowVariantId &&
+      !!preShadowDesignIdRef.current &&
+      preShadowDesignIdRef.current === persistShadowDesignId;
+    if (baseFirstAtc && persistShadowDesignId && !baseFirstReady) {
+      properties["_appai_swap_key"] = persistShadowDesignId;
+    }
+    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean; stillPreparing?: boolean }> = baseFirstAtc
+      ? Promise.resolve(
+          baseFirstReady
+            ? { shadowVariantId: String(preShadowVariantId), matched: true, created: false }
+            : { shadowVariantId: null, matched: false, created: false },
+        )
+      : canSkipResolveInline
       ? (async () => {
           console.log(
             "[Design Studio] ATC fast-path — reusing preShadow variant",
@@ -13231,6 +13246,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       ? !!preShadowDesignIdRef.current && preShadowDesignIdRef.current === persistShadowDesignId
       : true;
     if (
+      !baseFirstAtc &&
       shopDomain &&
       !atcBothTierVariant &&
       preShadowKeyMatches &&
@@ -13396,8 +13412,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     }
 
     if (
-      !finalVariantId ||
-      normalizeVariantId(finalVariantId) === normalizedVariant
+      !baseFirstAtc &&
+      (!finalVariantId ||
+      normalizeVariantId(finalVariantId) === normalizedVariant)
     ) {
       console.error("[Design Studio] Refusing base-catalog ATC — shadow is not storefront-ready", {
         finalVariantId,

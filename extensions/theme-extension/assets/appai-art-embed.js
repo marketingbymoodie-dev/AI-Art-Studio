@@ -2641,8 +2641,15 @@
             });
         }
 
+        var sessionMode = 'shadow-direct';
+        try { sessionMode = sessionStorage.getItem('appai:atcMode') || 'shadow-direct'; } catch (e) {}
+        var baseFirstSwap = sessionMode === 'base-first' && !!(data.properties && data.properties._appai_swap_key) && !alreadyShadow;
+
         var addPromise;
-        if (alreadyShadow) {
+        if (baseFirstSwap) {
+          console.log(B, 'base-first ATC — base variant, swap later', data.variantId);
+          addPromise = addToCart(data.variantId, data.quantity, data.properties, data.price);
+        } else if (alreadyShadow) {
           console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId,
             data.shadowCreated ? '(iframe created:true)' : '');
           addPromise = addWithPublishRetry(data.variantId, !!data.shadowCreated).catch(function(err) {
@@ -3555,6 +3562,7 @@
     // Cart/drawer pages never load this payload, so later phases read the mode from session.
     studioConfig.atcMode = pageCfg.atcMode || 'shadow-direct';
     try { sessionStorage.setItem('appai:atcMode', studioConfig.atcMode); } catch (_) {}
+    try { if (studioConfig.appUrl) sessionStorage.setItem('appai:appUrl', studioConfig.appUrl); } catch (_) {}
     if (typeof studioConfig.__pushDesignerConfig === 'function') {
       studioConfig.__pushDesignerConfig();
     }
