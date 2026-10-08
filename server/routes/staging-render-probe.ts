@@ -51,7 +51,7 @@ import { estimateGoogleImageCostUsd, renderGoogleImage } from "../google-image-c
 import { estimateOpenAIImageCostUsd, renderOpenAIImage, type OpenAIImageUsage } from "../openai-image-client";
 import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
-import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, petposterousArtStyle } from "@shared/petposterousArtStyles";
+import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, artStyleSurfaceForProduct, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { composeArtStyleProbe } from "../art-style-probe";
 import { generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 
@@ -587,8 +587,10 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     if (!styleIds.length || styleIds.some((id) => !petposterousArtStyle(id))) {
       return res.status(400).json({ error: "Choose an art style." });
     }
+    const productFamily = str(body.productFamily, 20, "apparel");
+    const surface = artStyleSurfaceForProduct(productFamily);
     try {
-      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline });
+      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline, surface });
       return res.json({
         ...result,
         devices: result.devices.map((row) => ({
@@ -635,6 +637,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         words,
         device,
         renderAnyway,
+        productFamily: str(body.productFamily, 20, "apparel"),
         behaviour: str(body.behaviour, 400),
       });
     } catch (err) {
@@ -668,6 +671,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         funnyTruth: composed.concept,
         punchline: composed.words,
         device: composed.device,
+        surface: composed.surface,
         shotFlags: composed.shotFlags,
         renderAnyway: composed.renderAnyway,
         deviceMs: Number(body.deviceMs) || 0,
@@ -775,7 +779,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
       ],
       defaultVariants: STYLE_EXAMPLE_DEFAULT_VARIANTS,
       maxVariants: STYLE_EXAMPLE_MAX_VARIANTS,
-      artStyles: PETPOSTEROUS_ART_STYLES.map((style) => ({ id: style.id, label: style.label })),
+      artStyles: PETPOSTEROUS_ART_STYLES.map((style) => ({ id: style.id, label: style.label, launch: style.launch })),
     };
     res.type("html").send(RESULTS_PAGE.replace("/*__CATALOG__*/null", JSON.stringify(catalog).replace(/</g, "\\u003c")));
   });
@@ -902,7 +906,7 @@ const h=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 function fillSelect(id, items, selected){const sel=document.getElementById(id);sel.innerHTML=items.map(it=>'<option value="'+h(it.id)+'"'+(it.id===selected?" selected":"")+">"+h(it.label)+"</option>").join("")}
 fillSelect("framework", CATALOG.frameworks, CATALOG.frameworks[0]&&CATALOG.frameworks[0].id);
 fillSelect("family", CATALOG.families, "apparel");
-fillSelect("artStyle", CATALOG.artStyles||[], "woodcut");
+fillSelect("artStyle", (CATALOG.artStyles||[]).map(function(it){return {id:it.id,label:it.launch===false?it.label+" (not in launch set)":it.label}}), "woodcut");
 document.getElementById("variants").max=String(CATALOG.maxVariants);
 function savedConcept(){try{return JSON.parse(sessionStorage.getItem(CONCEPT_KEY)||"null")}catch(e){return null}}
 function conceptMatches(saved){if(!saved||!saved.concept)return false;return saved.behavior===document.getElementById("behavior").value.trim()&&saved.conceptFramework===document.getElementById("framework").value&&saved.productFamily===document.getElementById("family").value}
@@ -980,7 +984,7 @@ function hideArtIdeas(){artPending=null;const box=document.getElementById("artId
 function paintArtDevices(pending){const box=document.getElementById("artDevices");const note=document.getElementById("artDeviceNote");const cached=pending.deviceCache[pending.deviceKey];const idea=pending.options[selectedArtIndex()];
 if(!cached){box.innerHTML="<p class='hint'>Writing the device…</p>";note.textContent="";document.getElementById("artConfirm").disabled=true;return}
 box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
-let latency="Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
+let latency=(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
 if(pending.discardedDeviceMs)latency="Speculative device discarded ("+pending.discardedDeviceMs+"ms). "+latency;
 else if(cached.speculative)latency="Speculative device was ready before confirm. "+latency;
 note.textContent=latency;
@@ -1000,14 +1004,15 @@ async function requestArtDevices(pending, index, useOriginal, reason){const idea
 if(reason!=="speculative"){const first=pending.deviceCache[artDeviceKey(0,false)];if(first&&first.speculative)pending.discardedDeviceMs=first.deviceMs}
 if(pending.deviceCache[key]){paintArtDevices(pending);return}
 const gen=++pending.deviceGen;paintArtDevices(pending);const started=performance.now();
-try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",artStyles:artStyleIds(pending)});
+try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",artStyles:artStyleIds(pending),productFamily:pending.productFamily});
 if(artPending!==pending)return;
 if(pending.deviceGen!==gen){pending.discardedDeviceMs=res.deviceMs||pending.discardedDeviceMs;if(pending.deviceCache[pending.deviceKey])paintArtDevices(pending);return}
-pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative"};
+pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||""};
 if(pending.deviceKey===key)paintArtDevices(pending)}
 catch(e){if(artPending===pending&&pending.deviceGen===gen)setStatus(e.message||"Device failed")}}
 document.getElementById("artIdeaList").addEventListener("change",function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});
 document.getElementById("artStyle").addEventListener("change",function(){if(!artPending||artPending.mode!=="one")return;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, false, "switch")});
+document.getElementById("family").addEventListener("change",function(){if(!artPending)return;artPending.productFamily=document.getElementById("family").value;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, artPending.useOriginal, "switch")});
 document.getElementById("artOriginal").onclick=function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, true, "switch")};
 async function renderArtJobs(pending, idea, petSwap){const cached=pending.deviceCache[pending.deviceKey];if(!cached||!cached.devices.length){setStatus("The device is still being written.");return}if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 const prep=pending.prep;const index=selectedArtIndex();const truth=pending.useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const flagged=pending.useOriginal?(idea.originalFlags||[]).length:(idea.shotFlags||[]).length;

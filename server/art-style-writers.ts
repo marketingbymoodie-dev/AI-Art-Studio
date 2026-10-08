@@ -9,6 +9,7 @@ import {
   artStyleConceptShotFlags,
   petposterousArtStyle,
   settleArtStyleTruth,
+  type ArtStyleSurface,
   type SettledArtStyleTruth,
 } from "@shared/petposterousArtStyles";
 import { runConceptEngine, type ConceptEngine } from "./concept-engine";
@@ -107,18 +108,22 @@ Return ONLY JSON: {"funny_truth": string}`,
   };
 }
 
-function deviceEngine(profile: ArtStyleProfile): ConceptEngine<string> {
+const SURFACE_DEVICE: Record<ArtStyleSurface, string> = {
+  apparel: "Apparel: one subject, a strong silhouette. Props only as abstracted forms. No environment or interior.",
+  decor: "Decor: a composed picture. One spare setting is permitted, held as graphic shapes rather than scenery. Margins are part of the design. The pet stays the dominant character.",
+};
+
+function deviceEngine(profile: ArtStyleProfile, surface: ArtStyleSurface): ConceptEngine<string> {
   const style = petposterousArtStyle(profile.styleId);
   return {
-    id: `art-style-device:${profile.styleId}`,
-    logTag: `[art-style-device:${profile.styleId}]`,
+    id: `art-style-device:${profile.styleId}:${surface}`,
+    logTag: `[art-style-device:${profile.styleId}:${surface}]`,
     noun: "Device writer",
     maxTokens: 300,
     system: `You write one visual device for a pet graphic.
-The device is how a funny truth becomes a picture in one art style. One sentence.
-It is not a photograph of a room. No full environment, interior, or scenery.
-You may call for one abstracted prop only if this style's profile allows it. A prop is a graphic form, not an object sitting in a space.
+The device is how a funny truth becomes a picture in one art style on one surface. One sentence.
 A second person may appear only as a hand, a foot, or a sliver of silhouette.
+Surface: ${surface}. ${SURFACE_DEVICE[surface]}
 Style: ${style?.label ?? profile.styleId}.
 Truth shape it suits: ${profile.truthShape}
 Text appetite: ${profile.textAppetite}.
@@ -164,35 +169,41 @@ export async function generateArtStyleDevice(opts: {
   styleId: string;
   funnyTruth: string;
   punchline: string;
-}): Promise<{ styleId: string; device: string; deviceMs: number }> {
+  surface?: ArtStyleSurface;
+}): Promise<{ styleId: string; device: string; deviceMs: number; surface: ArtStyleSurface }> {
   const profile = artStyleProfile(opts.styleId);
   const style = petposterousArtStyle(opts.styleId);
   if (!profile || !style) throw Object.assign(new Error("Choose an art style."), { status: 400 });
   const truth = opts.funnyTruth.replace(/\s+/g, " ").trim();
   if (!truth) throw Object.assign(new Error("A truth is required."), { status: 400 });
+  const surface = opts.surface ?? "apparel";
   const started = Date.now();
   const [device] = await runConceptEngine(
-    deviceEngine(profile),
+    deviceEngine(profile, surface),
     userLines([
       ["truth", truth],
       ["words", opts.punchline.replace(/\s+/g, " ").trim()],
       ["style", style.label],
+      ["surface", SURFACE_DEVICE[surface]],
     ]),
   );
-  return { styleId: opts.styleId, device, deviceMs: Date.now() - started };
+  return { styleId: opts.styleId, device, deviceMs: Date.now() - started, surface };
 }
 
 export async function generateArtStyleDevices(opts: {
   styleIds: string[];
   funnyTruth: string;
   punchline: string;
-}): Promise<{ devices: Array<{ styleId: string; device: string; deviceMs: number }>; deviceMs: number }> {
+  surface?: ArtStyleSurface;
+}): Promise<{ devices: Array<{ styleId: string; device: string; deviceMs: number; surface: ArtStyleSurface }>; deviceMs: number; surface: ArtStyleSurface }> {
   if (!opts.styleIds.length) throw Object.assign(new Error("Choose an art style."), { status: 400 });
+  const surface = opts.surface ?? "apparel";
   const started = Date.now();
   const devices = await Promise.all(opts.styleIds.map((styleId) => generateArtStyleDevice({
     styleId,
     funnyTruth: opts.funnyTruth,
     punchline: opts.punchline,
+    surface,
   })));
-  return { devices, deviceMs: Date.now() - started };
+  return { devices, deviceMs: Date.now() - started, surface };
 }

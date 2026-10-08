@@ -78,7 +78,7 @@ const punchline = mode === "full"
 const renderAnyway = mode === "pinned" || (Array.isArray(selectedIdea?.shotFlags) && (selectedIdea?.shotFlags as unknown[]).length > 0);
 const styleIds = (prep.styles as { id: string }[]).map((style) => style.id);
 const deviceStarted = Date.now();
-const deviceResult = await post("/api/staging/render-probe/art-style/device", { funnyTruth: truth, punchline, artStyles: styleIds });
+const deviceResult = await post("/api/staging/render-probe/art-style/device", { funnyTruth: truth, punchline, artStyles: styleIds, productFamily: "apparel" });
 const devices = new Map((deviceResult.devices as { styleId: string; device: string; deviceMs: number }[]).map((row) => [row.styleId, row]));
 console.log(`Devices took ${deviceResult.deviceMs ?? Date.now() - deviceStarted}ms.`);
 const styles = prep.styles as { id: string; label: string }[];

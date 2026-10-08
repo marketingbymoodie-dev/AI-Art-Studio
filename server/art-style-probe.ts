@@ -6,6 +6,7 @@
 import {
   PETPOSTEROUS_ART_STYLE_BATCH,
   artStyleConceptShotFlags,
+  artStyleSurfaceForProduct,
   composePetposterousArtStylePrompt,
 } from "@shared/petposterousArtStyles";
 import { compressPrompt, type GenerateImageParams } from "./replit_integrations/image/client";
@@ -22,6 +23,8 @@ export function composeArtStyleProbe(opts: {
   concept: string;
   words: string;
   device: string;
+  /** Product class. Apparel stays apparel; poster and pillow are decor. Does not change the Flare path. */
+  productFamily?: string;
   /** Probe only. A flagged truth renders when the operator asks to see it. */
   renderAnyway?: boolean;
   behaviour?: string;
@@ -35,12 +38,14 @@ export function composeArtStyleProbe(opts: {
       { status: 400, shotFlags: flags },
     );
   }
+  const productFamily = (opts.productFamily || "apparel").trim();
   const composed = composePetposterousArtStylePrompt({
     styleId: opts.styleId,
     length: opts.length ?? "full",
     concept,
     words: opts.words,
     device: opts.device,
+    productFamily,
   });
   const recipe = styleExampleRecipe("apparel");
   const params: GenerateImageParams = {
@@ -88,6 +93,8 @@ export function composeArtStyleProbe(opts: {
     concept,
     words: opts.words.replace(/\s+/g, " ").trim(),
     device: opts.device.replace(/\s+/g, " ").trim(),
+    productFamily,
+    surface: artStyleSurfaceForProduct(productFamily),
     shotFlags: flags,
     renderAnyway: opts.renderAnyway === true,
   };

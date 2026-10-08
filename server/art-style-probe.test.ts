@@ -65,6 +65,20 @@ describe("art style probe compose", () => {
     expect(result.sentPrompt).not.toContain("PASSENGER SELECTED.");
     expect(result.sentPrompt).not.toContain("the dog has claimed the passenger seat and will not move");
     expect(result.shotFlags).toEqual([]);
+    expect(result.surface).toBe("apparel");
+    const poster = composeArtStyleProbe({
+      styleId: "woodcut",
+      referenceDataUrl: "data:image/png;base64,aaaa",
+      concept: "the dog believes the good seat is a right, not a request",
+      words: "SEAT TAKEN.",
+      device: "the words lock the dog into the counter of a letter",
+      productFamily: "poster",
+    });
+    expect(poster.surface).toBe("decor");
+    expect(poster.sentPrompt).toContain("DECOR PRINT:");
+    expect(poster.sentPrompt).toContain("WOODCUT — DECOR:");
+    expect(poster.params.aspectRatio).toBe("1:1");
+    expect(poster.recipe.model).toMatch(/flare/i);
   });
 
   it("sends a different product brief for apparel and poster", () => {
