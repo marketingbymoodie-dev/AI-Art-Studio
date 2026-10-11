@@ -36,6 +36,10 @@ describe("art style writer recipe", () => {
       situation: "He's got a toilet seat stuck around his neck",
       wording: "How was your day",
     });
+    expect(suppliedWordingFromBehaviour("He's got a toilet seat stuck around his neck. Text says How was your day?")).toEqual({
+      situation: "He's got a toilet seat stuck around his neck",
+      wording: "How was your day?",
+    });
     const locked = parseArtStyleTruths({
       options: [option, { ...option, punchline: "Nailed it" }, { ...option, funny_truth: "she considers the sofa hers", punchline: "How was your day" }],
     }, "How was your day");

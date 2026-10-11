@@ -371,7 +371,8 @@ export function artStyleConceptHeading(concept: string, words: string): string {
 export function artStyleDeviceLine(device: string): string {
   const clean = device.replace(/\s+/g, " ").trim().replace(/\.+$/, "");
   if (!clean) return "";
-  return `DEVICE: ${clean}.`;
+  // Wording that already ends in ? or ! must not gain the sentence's full stop.
+  return /[.?!]$/.test(clean) ? `DEVICE: ${clean}` : `DEVICE: ${clean}.`;
 }
 
 export function composePetposterousArtStylePrompt(opts: {

@@ -32,12 +32,12 @@ export const ART_STYLE_PRODUCT_BRIEFS: Record<string, string> = {
 
 const PUNCHLINE_MAX_WORDS = 6;
 
-/** "Text reads:" in the behaviour box is the operator's line, not a suggestion. */
+/** A wording line in the behaviour box. The Exact wording field wins when it is filled. */
 export function suppliedWordingFromBehaviour(behaviour: string): { situation: string; wording: string } {
   const clean = behaviour.replace(/\s+/g, " ").trim();
-  const match = /\btext reads\s*:\s*(.+)$/i.exec(clean);
+  const match = /\btext\s+(?:reads|says|is)\s*:?\s*(.+)$/i.exec(clean);
   if (!match) return { situation: clean, wording: "" };
-  const wording = match[1].replace(/^["“”]+|["“”]+$/g, "").trim().replace(/[.]+$/, "");
+  const wording = match[1].replace(/^["“”]+|["“”]+$/g, "").trim();
   const situation = clean.slice(0, match.index).replace(/[\s.]+$/, "").trim();
   return { situation: situation || clean, wording };
 }
@@ -169,7 +169,7 @@ export function parseArtStyleDevice(raw: unknown): ArtStyleDeviceDraft | null {
 }
 
 /** What the device writer is told. The truth may abstract the incident; the behaviour still has it. */
-export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one.";
+export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one. If the words already end with punctuation, do not add a full stop after them.";
 
 export function artStyleDeviceSystem(profile: ArtStyleProfile, surface: ArtStyleSurface): string {
   const style = petposterousArtStyle(profile.styleId);
@@ -225,8 +225,10 @@ function userLines(fields: Array<[string, string]>): string {
   return fields.map(([label, value]) => `${label.toUpperCase()}: ${value}`).join("\n");
 }
 
-export async function generateArtStyleTruths(behaviour: string, productFamily: string, styleId: string): Promise<SettledArtStyleTruth[]> {
-  const split = suppliedWordingFromBehaviour(behaviour);
+export async function generateArtStyleTruths(behaviour: string, productFamily: string, styleId: string, exactWording = ""): Promise<SettledArtStyleTruth[]> {
+  const parsed = suppliedWordingFromBehaviour(behaviour);
+  const typed = exactWording.replace(/\s+/g, " ").trim().replace(/^["“”]+|["“”]+$/g, "");
+  const split = { situation: parsed.situation, wording: typed || parsed.wording };
   if (split.wording && countPunchlineWords(split.wording) > PUNCHLINE_MAX_WORDS) {
     throw Object.assign(new Error(`Exact wording is more than ${PUNCHLINE_MAX_WORDS} words.`), { status: 400 });
   }

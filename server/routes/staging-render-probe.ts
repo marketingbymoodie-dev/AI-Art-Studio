@@ -552,13 +552,14 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     const behaviour = str(body.behaviour, 400);
     const productFamily = str(body.productFamily, 20, "apparel");
     const artStyle = str(body.artStyle, 40);
+    const exactWording = str(body.exactWording, 120);
     if (!behaviour) return res.status(400).json({ error: "Describe what they do." });
     const familyError = styleExampleFamilyError(productFamily);
     if (familyError) return res.status(400).json({ error: familyError });
     if (artStyle && !petposterousArtStyle(artStyle)) return res.status(400).json({ error: "Choose an art style." });
     const started = Date.now();
     try {
-      const options = await generateArtStyleTruths(behaviour, productFamily, artStyle);
+      const options = await generateArtStyleTruths(behaviour, productFamily, artStyle, exactWording);
       return res.json({
         mode: "full",
         behaviour,
@@ -906,7 +907,7 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <label>Pet photo<input id="photo" type="file" accept="image/jpeg,image/png,image/webp"></label>
 <label>Product<select id="family"></select></label>
 </div>
-<label>What they do<textarea id="behavior" placeholder="He takes the middle of the couch and waits for someone to move him."></textarea></label>
+<label>What they do<textarea id="behavior" placeholder="What happened. Shirt text goes in Exact wording, under Art style batch."></textarea></label>
 <section class="tool" id="sixLook">
 <h3>Generate batch</h3>
 <p class="hint">Style example batch — six looks, one pet, one pinned joke. Uses the storefront prompt composition. Joke framework, variants per look, and Reuse this concept belong to this button only.</p>
@@ -923,6 +924,7 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <p class="hint">Truth, then a device, then images. Joke framework and Reuse this concept are not sent. One style and the bench read What they do and Product, write three truths, and start the device for the first truth while you read them. The device is on the card before any image. Pinned confirms the passenger-seat line, which the validator flags. Render anyway is the operator override. Customers do not get it.</p>
 <label>Art style scope<select id="artMode"><option value="one" selected>One style — truths, then a device</option><option value="bench">Ten-style bench — one truth, a device each</option><option value="pinned">Pinned concept</option></select></label>
 <label>Style<select id="artStyle"></select></label>
+<label>Exact wording<input id="exactWording" placeholder="Copied onto every idea. Leave blank and the writer may propose the line." autocomplete="off" aria-label="Exact wording"></label>
 <label>Shop<input id="flywheelShop" placeholder="demo-store.myshopify.com" autocomplete="off" aria-label="Shop domain"></label>
 <div><button id="runArt" type="button">Art style batch</button></div>
 <div id="artIdeas" hidden>
@@ -1088,7 +1090,7 @@ if(mode!=="pinned"&&!behaviour){setStatus("Describe what they do.");return}
 running=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 try{setStatus("Storing the photo…");const photoDataUrl=await fileToDataUrl(file);const prep=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl});
 if(mode==="pinned"){showArtIdeas({prep,mode,behaviour,productFamily,productLabel,styleLabel,options:[{funnyTruth:prep.concept,punchline:prep.words,shotFlags:prep.shotFlags||[],originalTruth:prep.concept,originalFlags:prep.shotFlags||[],rewritten:false,composedHeading:prep.composedHeading||""}]});setStatus("Confirm the pinned truth and its device. Nothing has been rendered.")}
-else{setStatus("Writing three truths for "+productLabel+"…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour,productFamily,artStyle:mode==="one"?styleSel.value:""});
+else{setStatus("Writing three truths for "+productLabel+"…");const concepts=await apiJson("/api/staging/render-probe/art-style/concepts",{behaviour,exactWording:(document.getElementById("exactWording").value||"").trim(),productFamily,artStyle:mode==="one"?styleSel.value:""});
 showArtIdeas({prep,mode,behaviour:concepts.behaviour,productFamily,productLabel,styleLabel,options:concepts.options||[]});
 setStatus("Three truths in "+(concepts.truthMs||"?")+"ms. The first device is already writing. Nothing has been rendered.")}}
 catch(e){setStatus(e.message||"Art style batch failed");hideArtIdeas()}

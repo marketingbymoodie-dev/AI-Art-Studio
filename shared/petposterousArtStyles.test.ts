@@ -85,7 +85,10 @@ describe("Petposterous apparel art styles", () => {
       expect(composed.prompt).toContain(PETPOSTEROUS_TYPE_RESTRAINT);
       expect(composed.prompt).not.toContain(PETPOSTEROUS_DECOR_PRINT);
       expect(composed.prompt).toContain(style.prompt);
-      expect(composed.prompt).toContain("PASSENGER SELECTED.");
+        expect(artStyleDeviceLine("beneath the words HOW WAS YOUR DAY?")).toBe("DEVICE: beneath the words HOW WAS YOUR DAY?");
+      expect(artStyleDeviceLine("beneath the words HOW WAS YOUR DAY?.")).toBe("DEVICE: beneath the words HOW WAS YOUR DAY?");
+      expect(artStyleDeviceLine("the dog wears the seat")).toBe("DEVICE: the dog wears the seat.");
+    expect(composed.prompt).toContain("PASSENGER SELECTED.");
       expect(composed.prompt).toContain(PETPOSTEROUS_ART_STYLE_BATCH.concept);
       expect(composed.prompt).not.toContain("driver's door");
       expect(composed.prompt).not.toContain("back seat");
