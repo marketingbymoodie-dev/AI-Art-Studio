@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseArtStyleDevice, parseArtStyleTruths } from "./art-style-writers";
+import { deviceContradictsSpecies, parseArtStyleDevice, parseArtStyleTruths, suppliedWordingFromBehaviour } from "./art-style-writers";
 
 const option = {
   funny_truth: "the bed is not for sharing",
@@ -28,5 +28,18 @@ describe("art style writer recipe", () => {
     });
     expect(parseArtStyleDevice({ device: "The dog takes the middle of the bed." })).toBeNull();
     expect(parseArtStyleDevice({ device_structure: "a picture", device_text: "The dog takes the middle." })).toBeNull();
+  });
+
+  it("keeps supplied wording on every idea and rejects a device that changes the animal", () => {
+    expect(suppliedWordingFromBehaviour("He's got a toilet seat stuck around his neck. Text reads: How was your day")).toEqual({
+      situation: "He's got a toilet seat stuck around his neck",
+      wording: "How was your day",
+    });
+    const locked = parseArtStyleTruths({
+      options: [option, { ...option, punchline: "Nailed it" }, { ...option, funny_truth: "she considers the sofa hers", punchline: "How was your day" }],
+    }, "How was your day");
+    expect(locked?.map((row) => row.punchline)).toEqual(["How was your day", "How was your day", "How was your day"]);
+    expect(deviceContradictsSpecies("A cat silhouette mid-air, launched from a tipped glass.", "dog")).toBe(true);
+    expect(deviceContradictsSpecies("A dog wearing the seat, inked in pen lines.", "dog")).toBe(false);
   });
 });
