@@ -53,7 +53,7 @@ import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
 import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, artStyleSurfaceForProduct, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { composeArtStyleProbe } from "../art-style-probe";
-import { generateArtStyleDevices, generateArtStyleTruths, suppliedWordingFromBehaviour } from "../art-style-writers";
+import { generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 import { adminCandidateDraft, flywheelSpecies } from "@shared/flywheelRecipe";
 import { insertAdminDesignCandidate } from "../design-candidates";
 
@@ -591,11 +591,15 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     }
     const productFamily = str(body.productFamily, 20, "apparel");
     const surface = artStyleSurfaceForProduct(productFamily);
+    const behaviour = str(body.behaviour, 400);
     const species = flywheelSpecies(body.species) ?? "";
-    const incident = suppliedWordingFromBehaviour(str(body.behaviour, 400)).situation;
+    if (!behaviour) return res.status(400).json({ error: "The behaviour is required." });
+    if (!species) return res.status(400).json({ error: "Species is required." });
     try {
-      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline, surface, species, incident });
+      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline, surface, behaviour, species });
       return res.json({
+        behaviour,
+        species,
         ...result,
         devices: result.devices.map((row) => ({
           ...row,
@@ -1021,7 +1025,7 @@ function hideArtIdeas(){artPending=null;const box=document.getElementById("artId
 function paintArtDevices(pending){const box=document.getElementById("artDevices");const note=document.getElementById("artDeviceNote");const cached=pending.deviceCache[pending.deviceKey];const idea=pending.options[selectedArtIndex()];
 if(!cached){box.innerHTML="<p class='hint'>Writing the device…</p>";note.textContent="";document.getElementById("artConfirm").disabled=true;return}
 box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceStructure||"")+" · "+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
-let latency=(cached.truth?("From: "+cached.truth+". "):"")+(cached.species?("Species "+cached.species+". "):"")+(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
+let latency=(cached.behaviour?("Behaviour sent: "+cached.behaviour+". "):"")+(cached.species?("Species sent: "+cached.species+". "):"")+(cached.truth?("Truth: "+cached.truth+". "):"")+(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
 if(pending.discardedDeviceMs)latency="Earlier device discarded ("+pending.discardedDeviceMs+"ms). "+latency;
 else if(cached.speculative)latency="Idea 1's device was written after the truths, before confirm. "+latency;
 note.textContent=latency;
@@ -1044,7 +1048,7 @@ const gen=++pending.deviceGen;paintArtDevices(pending);const started=performance
 try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const speciesEl=document.querySelectorAll("#artIdeaList select.species")[index];const species=speciesEl?speciesEl.value:(idea.species||"");const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",species:species,behaviour:pending.behaviour||"",artStyles:artStyleIds(pending),productFamily:pending.productFamily});
 if(artPending!==pending)return;
 if(pending.deviceGen!==gen){pending.discardedDeviceMs=res.deviceMs||pending.discardedDeviceMs;if(pending.deviceCache[pending.deviceKey])paintArtDevices(pending);return}
-pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||"",truth:truth,species:species};
+pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||"",truth:truth,behaviour:res.behaviour||"",species:res.species||""};
 if(pending.deviceKey===key)paintArtDevices(pending)}
 catch(e){if(artPending===pending&&pending.deviceGen===gen)setStatus(e.message||"Device failed")}}
 document.getElementById("artIdeaList").addEventListener("change",function(ev){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;if(ev.target&&ev.target.classList&&ev.target.classList.contains("species")){const idea=artPending.options[index];if(idea)idea.species=ev.target.value;delete artPending.deviceCache[artDeviceKey(index, artPending.useOriginal)];requestArtDevices(artPending, index, artPending.useOriginal, "switch");return}requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});

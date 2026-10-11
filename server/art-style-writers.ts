@@ -168,18 +168,16 @@ export function parseArtStyleDevice(raw: unknown): ArtStyleDeviceDraft | null {
   return { deviceStructure, deviceText };
 }
 
-function deviceEngine(profile: ArtStyleProfile, surface: ArtStyleSurface): ConceptEngine<ArtStyleDeviceDraft> {
+/** What the device writer is told. The truth may abstract the incident; the behaviour still has it. */
+export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one.";
+
+export function artStyleDeviceSystem(profile: ArtStyleProfile, surface: ArtStyleSurface): string {
   const style = petposterousArtStyle(profile.styleId);
-  return {
-    id: `art-style-device:${profile.styleId}:${surface}`,
-    logTag: `[art-style-device:${profile.styleId}:${surface}]`,
-    noun: "Device writer",
-    maxTokens: 400,
-    system: `You choose one device structure, then write one visual device for a pet graphic.
+  return `You choose one device structure, then write one visual device for a pet graphic.
 device_structure is exactly one of: ${ART_STYLE_DEVICE_STRUCTURES.join(", ")}.
-device_text is how the given truth becomes a picture in one art style on one surface. One sentence.
-Draw that truth, that species, and that incident. Do not change the animal. Do not invent a different object, joke, or scene.
-The props line is a limit, not a subject. Do not draw its example unless the truth is about that object.
+device_text is one sentence: the behaviour, seen from the truth, in this art style.
+${ART_STYLE_DEVICE_BINDING}
+The props line is a limit, not a subject. Do not draw its example unless the behaviour is about that object.
 If words are present, they are the only lettering.
 A second person may appear only as a hand, a foot, or a sliver of silhouette.
 Surface: ${surface}. ${SURFACE_DEVICE[surface]}
@@ -188,7 +186,34 @@ Truth shape it suits: ${profile.truthShape}
 Text appetite: ${profile.textAppetite}.
 Complexity ceiling: ${profile.complexityCeiling}
 Props it may call for: ${profile.props}
-Return ONLY JSON: {"device_structure": string, "device_text": string}`,
+Return ONLY JSON: {"device_structure": string, "device_text": string}`;
+}
+
+export function artStyleDeviceUserMessage(opts: {
+  behaviour: string;
+  truth: string;
+  words: string;
+  species: string;
+  styleLabel: string;
+  surfaceLine: string;
+}): string {
+  return userLines([
+    ["behaviour", opts.behaviour],
+    ["truth", opts.truth],
+    ["words", opts.words],
+    ["species", opts.species],
+    ["style", opts.styleLabel],
+    ["surface", opts.surfaceLine],
+  ]);
+}
+
+function deviceEngine(profile: ArtStyleProfile, surface: ArtStyleSurface): ConceptEngine<ArtStyleDeviceDraft> {
+  return {
+    id: `art-style-device:${profile.styleId}:${surface}`,
+    logTag: `[art-style-device:${profile.styleId}:${surface}]`,
+    noun: "Device writer",
+    maxTokens: 400,
+    system: artStyleDeviceSystem(profile, surface),
     parse: (raw) => {
       const device = parseArtStyleDevice(raw);
       return device ? [device] : null;
@@ -235,32 +260,32 @@ export async function generateArtStyleDevice(opts: {
   styleId: string;
   funnyTruth: string;
   punchline: string;
-  species?: string;
-  incident?: string;
+  behaviour: string;
+  species: string;
   surface?: ArtStyleSurface;
 }): Promise<{ styleId: string; device: string; deviceText: string; deviceStructure: ArtStyleDeviceStructure; deviceMs: number; surface: ArtStyleSurface }> {
   const profile = artStyleProfile(opts.styleId);
   const style = petposterousArtStyle(opts.styleId);
   if (!profile || !style) throw Object.assign(new Error("Choose an art style."), { status: 400 });
   const truth = opts.funnyTruth.replace(/\s+/g, " ").trim();
-  if (!truth) throw Object.assign(new Error("A truth is required."), { status: 400 });
-  const surface = opts.surface ?? "apparel";
+  const behaviour = opts.behaviour.replace(/\s+/g, " ").trim();
   const species = flywheelSpecies(opts.species) ?? "";
-  const incident = (opts.incident || "").replace(/\s+/g, " ").trim();
+  if (!truth) throw Object.assign(new Error("A truth is required."), { status: 400 });
+  if (!behaviour) throw Object.assign(new Error("The behaviour is required."), { status: 400 });
+  if (!species) throw Object.assign(new Error("Species is required."), { status: 400 });
+  const surface = opts.surface ?? "apparel";
   const started = Date.now();
   let written: ArtStyleDeviceDraft | undefined;
+  const userMessage = artStyleDeviceUserMessage({
+    behaviour,
+    truth,
+    words: opts.punchline.replace(/\s+/g, " ").trim(),
+    species,
+    styleLabel: style.label,
+    surfaceLine: SURFACE_DEVICE[surface],
+  });
   for (let attempt = 0; attempt < 2; attempt++) {
-    const [row] = await runConceptEngine(
-      deviceEngine(profile, surface),
-      userLines([
-        ["truth", truth],
-        ["species", species || "unspecified — take the animal from the truth and do not switch it"],
-        ["incident", incident || "the truth above"],
-        ["words", opts.punchline.replace(/\s+/g, " ").trim()],
-        ["style", style.label],
-        ["surface", SURFACE_DEVICE[surface]],
-      ]),
-    );
+    const [row] = await runConceptEngine(deviceEngine(profile, surface), userMessage);
     if (!deviceContradictsSpecies(row.deviceText, species)) {
       written = row;
       break;
@@ -281,8 +306,8 @@ export async function generateArtStyleDevices(opts: {
   styleIds: string[];
   funnyTruth: string;
   punchline: string;
-  species?: string;
-  incident?: string;
+  behaviour: string;
+  species: string;
   surface?: ArtStyleSurface;
 }): Promise<{ devices: Array<{ styleId: string; device: string; deviceText: string; deviceStructure: ArtStyleDeviceStructure; deviceMs: number; surface: ArtStyleSurface }>; deviceMs: number; surface: ArtStyleSurface }> {
   if (!opts.styleIds.length) throw Object.assign(new Error("Choose an art style."), { status: 400 });
@@ -292,8 +317,8 @@ export async function generateArtStyleDevices(opts: {
     styleId,
     funnyTruth: opts.funnyTruth,
     punchline: opts.punchline,
+    behaviour: opts.behaviour,
     species: opts.species,
-    incident: opts.incident,
     surface,
   })));
   return { devices, deviceMs: Date.now() - started, surface };

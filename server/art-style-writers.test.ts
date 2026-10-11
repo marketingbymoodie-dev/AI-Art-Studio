@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { deviceContradictsSpecies, parseArtStyleDevice, parseArtStyleTruths, suppliedWordingFromBehaviour } from "./art-style-writers";
+import { artStyleProfile } from "@shared/petposterousArtStyleProfiles";
+import { ART_STYLE_DEVICE_BINDING, artStyleDeviceSystem, artStyleDeviceUserMessage, deviceContradictsSpecies, parseArtStyleDevice, parseArtStyleTruths, suppliedWordingFromBehaviour } from "./art-style-writers";
 
 const option = {
   funny_truth: "the bed is not for sharing",
@@ -41,5 +42,24 @@ describe("art style writer recipe", () => {
     expect(locked?.map((row) => row.punchline)).toEqual(["How was your day", "How was your day", "How was your day"]);
     expect(deviceContradictsSpecies("A cat silhouette mid-air, launched from a tipped glass.", "dog")).toBe(true);
     expect(deviceContradictsSpecies("A dog wearing the seat, inked in pen lines.", "dog")).toBe(false);
+  });
+
+  it("sends the original behaviour and the species in the device prompt", () => {
+    const behaviour = "He's got a toilet seat stuck around his neck. Text reads: How was your day";
+    const message = artStyleDeviceUserMessage({
+      behaviour,
+      truth: "he escalated the situation faster than anyone could intervene",
+      words: "How was your day",
+      species: "dog",
+      styleLabel: "Pen & Ink",
+      surfaceLine: "Apparel: one subject, a strong silhouette.",
+    });
+    expect(message).toContain("BEHAVIOUR: " + behaviour);
+    expect(message).toContain("TRUTH: he escalated the situation faster than anyone could intervene");
+    expect(message).toContain("WORDS: How was your day");
+    expect(message).toContain("SPECIES: dog");
+    expect(message).not.toContain("the truth above");
+    const system = artStyleDeviceSystem(artStyleProfile("pen-ink")!, "apparel");
+    expect(system).toContain(ART_STYLE_DEVICE_BINDING);
   });
 });
