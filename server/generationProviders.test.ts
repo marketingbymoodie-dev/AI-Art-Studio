@@ -528,6 +528,7 @@ describe("alpha, secrets, telemetry", () => {
 
   it("size and cost helpers follow the documented constraints", () => {
     expect(openAIImageSize("1:1")).toBe("1024x1024");
+    expect(openAIImageSize("1024:1168")).toBe("1024x1168");
     expect(openAIImageSize("4:5")).toBe("1024x1280");
     expect(openAIImageSize("2:3")).toBe("1024x1536");
     expect(openAIImageSize("16:9")).toBe("1824x1024");

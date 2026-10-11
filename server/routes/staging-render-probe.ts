@@ -53,7 +53,7 @@ import { recordGenerationEvent } from "../generation-events";
 import { measureSoftAlpha } from "../native-transparency";
 import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, artStyleSurfaceForProduct, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { composeArtStyleProbe } from "../art-style-probe";
-import { generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
+import { behaviourObject, generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 import { adminCandidateDraft, flywheelSpecies } from "@shared/flywheelRecipe";
 import { insertAdminDesignCandidate } from "../design-candidates";
 
@@ -594,13 +594,16 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     const surface = artStyleSurfaceForProduct(productFamily);
     const behaviour = str(body.behaviour, 400);
     const species = flywheelSpecies(body.species) ?? "";
+    const object = behaviourObject(body.object);
     if (!behaviour) return res.status(400).json({ error: "The behaviour is required." });
     if (!species) return res.status(400).json({ error: "Species is required." });
+    if (object === undefined) return res.status(400).json({ error: "Object must be a short noun phrase or null." });
     try {
-      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline, surface, behaviour, species });
+      const result = await generateArtStyleDevices({ styleIds, funnyTruth, punchline, surface, behaviour, species, object });
       return res.json({
         behaviour,
         species,
+        object,
         ...result,
         devices: result.devices.map((row) => ({
           ...row,
@@ -686,6 +689,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         deviceMs: Number(body.deviceMs) || 0,
         speculativeHit: body.speculativeHit === true,
         discardedDeviceMs: Number(body.discardedDeviceMs) || 0,
+        discardedDeviceReason: str(body.discardedDeviceReason, 80),
         pickedIndex: Number(body.pickedIndex) || 0,
         truths: Array.isArray(body.truths) ? body.truths.slice(0, 3) : [],
         petSwap: body.petSwap === true,
@@ -885,7 +889,7 @@ h2{font-size:16px;margin:24px 0 8px}.grid{display:grid;grid-template-columns:rep
 .tool{border:1px solid var(--line);border-radius:10px;padding:12px;display:grid;gap:8px;background:var(--bg)}
 .tool h3{margin:0;font-size:14px}
 .looks{display:grid;grid-template-columns:repeat(6,minmax(190px,1fr));gap:10px;overflow-x:auto;align-items:start}
-.looks.artstyles{grid-template-columns:repeat(10,minmax(150px,1fr))}.looks.artstyles .card img{aspect-ratio:1/1}
+.looks.artstyles{grid-template-columns:repeat(10,minmax(150px,1fr))}.looks.artstyles .card img{aspect-ratio:1024/1168}
 .lookcol h3{margin:0 0 8px;font-size:14px}
 #artIdeas{display:grid;gap:8px;margin-top:8px}#artIdeas[hidden]{display:none}
 .idea{border:1px solid var(--line);border-radius:8px;padding:8px 10px;display:grid;gap:4px}
@@ -987,7 +991,7 @@ const snap=sample.conceptSnapshot||{};
 const joke=artBatch?(snap.funnyTruth||snap.visualJoke||""):(snap.visualJoke||"");
 const words=artBatch&&snap.punchline?snap.punchline:"";
 const deviceNote=artBatch&&snap.device?snap.device:"";
-const deviceTiming=artBatch&&snap.deviceMs?("device "+snap.deviceMs+"ms"+(snap.speculativeHit?" · speculative hit":"")+(snap.discardedDeviceMs?(" · discarded "+snap.discardedDeviceMs+"ms"):"")) :"";
+const deviceTiming=artBatch&&snap.deviceMs?("device "+snap.deviceMs+"ms"+(snap.speculativeHit?" · speculative hit":"")+(snap.discardedDeviceMs?(" · discarded "+snap.discardedDeviceMs+"ms"+(snap.discardedDeviceReason?(" — "+snap.discardedDeviceReason):"")):"")) :"";
 sec.innerHTML="<h2>"+h(fwLabel(sample.conceptFramework))+"</h2><p class='batchnote'>"+h(name)+" · "+h(sample.productFamily)+" · "+h(sample.route)+" · "+h(sample.model)+" · "+h(sample.aspectRatio)+(sample.imageSize?" · "+h(sample.imageSize):"")+" · photo "+h(sample.referencePhotoId)+"</p>"+(joke?"<p class='batchnote'>"+h(joke)+"</p>":"")+(words?"<p class='batchnote'>"+h(words)+"</p>":"")+(deviceNote?"<p class='batchnote'>"+h(deviceNote)+"</p>":"")+(deviceTiming?"<p class='batchnote'>"+h(deviceTiming)+"</p>":"")+(sample.behavior?"<p class='batchnote'>"+h(sample.behavior)+"</p>":"");
 if(blind&&artBatch){const g=document.createElement("div");g.className="grid";list.slice().sort(()=>Math.random()-0.5).forEach(r=>g.appendChild(styleCard(r)));sec.appendChild(g);main.appendChild(sec);continue}
 const board=document.createElement("div");board.className=artBatch?"looks artstyles":"looks";
@@ -1027,37 +1031,38 @@ function hideArtIdeas(){artPending=null;const box=document.getElementById("artId
 function paintArtDevices(pending){const box=document.getElementById("artDevices");const note=document.getElementById("artDeviceNote");const cached=pending.deviceCache[pending.deviceKey];const idea=pending.options[selectedArtIndex()];
 if(!cached){box.innerHTML="<p class='hint'>Writing the device…</p>";note.textContent="";document.getElementById("artConfirm").disabled=true;return}
 box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceStructure||"")+" · "+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
-let latency=(cached.behaviour?("Behaviour sent: "+cached.behaviour+". "):"")+(cached.species?("Species sent: "+cached.species+". "):"")+(cached.truth?("Truth: "+cached.truth+". "):"")+(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
-if(pending.discardedDeviceMs)latency="Earlier device discarded ("+pending.discardedDeviceMs+"ms). "+latency;
+let latency=(cached.behaviour?("Behaviour sent: "+cached.behaviour+". "):"")+(cached.object?("Object sent: "+cached.object+". "):"")+(cached.species?("Species sent: "+cached.species+". "):"")+(cached.truth?("Truth: "+cached.truth+". "):"")+(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
+if(pending.discardedDeviceMs)latency="Earlier device discarded ("+pending.discardedDeviceMs+"ms"+(pending.discardedDeviceReason?": "+pending.discardedDeviceReason:"")+"). "+latency;
 else if(cached.speculative)latency="Idea 1's device was written after the truths, before confirm. "+latency;
 note.textContent=latency;
 const flagged=idea&&((pending.useOriginal&&idea.originalFlags&&idea.originalFlags.length)||(!pending.useOriginal&&idea.shotFlags&&idea.shotFlags.length));
 document.getElementById("artConfirm").disabled=false;
 document.getElementById("artConfirm").textContent=flagged?"This truth is a shot. Render anyway?":(artStyleIds(pending).length>1?"Render ten styles":"Render this style");
 document.getElementById("artOriginal").hidden=!(idea&&idea.rewritten&&!pending.useOriginal)}
-function showArtIdeas(pending){artPending=pending;pending.deviceGen=0;pending.deviceCache={};pending.deviceKey="";pending.useOriginal=false;pending.discardedDeviceMs=0;const list=document.getElementById("artIdeaList");list.innerHTML="";
+function showArtIdeas(pending){artPending=pending;pending.deviceGen=0;pending.deviceCache={};pending.deviceKey="";pending.useOriginal=false;pending.discardedDeviceMs=0;pending.discardedDeviceReason="";pending.deviceError="";const list=document.getElementById("artIdeaList");list.innerHTML="";
 document.getElementById("artIdeasLead").textContent=pending.mode==="pinned"?"Pinned concept. The validator flags a placed seat. Render anyway is the operator override. Read the device before any image.":("Written for "+pending.productLabel+(pending.mode==="one"?" in "+pending.styleLabel:" across ten styles")+". The first truth is selected. Its device is already being written.");
 pending.options.forEach(function(idea,i){const label=document.createElement("label");label.className="idea";const flags=(idea.shotFlags||[]).join(", ");const originalFlags=(idea.originalFlags||[]).join(", ");const words=idea.punchline?idea.punchline:"(no words)";
-label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span><span><b>Operator</b> "+h(idea.humourOperator||"—")+"</span><span><b>Darkness</b> "+h(idea.darknessLevel?String(idea.darknessLevel):"—")+"</span><span><b>Species</b> <select class='species' aria-label='Species'>"+["dog","cat","other"].map(function(s){return "<option value='"+s+"'"+(idea.species===s?" selected":"")+">"+s+"</option>"}).join("")+"</select></span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.rewritten?"<span class='hint'>Rewritten. Rejected original: "+h(idea.originalTruth)+" ("+h(originalFlags)+")</span>":"")+(flags?"<span class='shot'>Shot warning: "+h(flags)+". Render anyway is the only way this reaches an image.</span>":"");
+label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span><span><b>Object</b> "+h(idea.object||"none")+"</span><span><b>Operator</b> "+h(idea.humourOperator||"—")+"</span><span><b>Darkness</b> "+h(idea.darknessLevel?String(idea.darknessLevel):"—")+"</span><span><b>Species</b> <select class='species' aria-label='Species'>"+["dog","cat","other"].map(function(s){return "<option value='"+s+"'"+(idea.species===s?" selected":"")+">"+s+"</option>"}).join("")+"</select></span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.rewritten?"<span class='hint'>Rewritten. Rejected original: "+h(idea.originalTruth)+" ("+h(originalFlags)+")</span>":"")+(flags?"<span class='shot'>Shot warning: "+h(flags)+". Render anyway is the only way this reaches an image.</span>":"");
 list.appendChild(label)});
 const first=list.querySelector("input");if(first)first.checked=true;
 document.getElementById("artIdeas").hidden=false;
 requestArtDevices(pending, 0, false, "speculative")}
+function noteDiscard(pending, ms, reason){if(!ms)return;pending.discardedDeviceMs=ms;pending.discardedDeviceReason=reason}
 async function requestArtDevices(pending, index, useOriginal, reason){const idea=pending.options[index];if(!idea)return;const key=artDeviceKey(index, useOriginal);pending.deviceKey=key;pending.useOriginal=useOriginal;
-if(reason!=="speculative"){const first=pending.deviceCache[artDeviceKey(0,false)];if(first&&first.speculative)pending.discardedDeviceMs=first.deviceMs}
+if(reason!=="speculative"){const first=pending.deviceCache[artDeviceKey(0,false)];if(first&&first.speculative)noteDiscard(pending, first.deviceMs, reason)}
 if(pending.deviceCache[key]){paintArtDevices(pending);return}
-const gen=++pending.deviceGen;paintArtDevices(pending);const started=performance.now();
-try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const speciesEl=document.querySelectorAll("#artIdeaList select.species")[index];const species=speciesEl?speciesEl.value:(idea.species||"");const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",species:species,behaviour:pending.behaviour||"",artStyles:artStyleIds(pending),productFamily:pending.productFamily});
+const gen=++pending.deviceGen;pending.deviceError="";paintArtDevices(pending);const started=performance.now();
+try{const truth=useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const speciesEl=document.querySelectorAll("#artIdeaList select.species")[index];const species=speciesEl?speciesEl.value:(idea.species||"");const res=await apiJson("/api/staging/render-probe/art-style/device",{funnyTruth:truth,punchline:idea.punchline||"",species:species,object:idea.object||null,behaviour:pending.behaviour||"",artStyles:artStyleIds(pending),productFamily:pending.productFamily});
 if(artPending!==pending)return;
-if(pending.deviceGen!==gen){pending.discardedDeviceMs=res.deviceMs||pending.discardedDeviceMs;if(pending.deviceCache[pending.deviceKey])paintArtDevices(pending);return}
-pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||"",truth:truth,behaviour:res.behaviour||"",species:res.species||""};
+if(pending.deviceGen!==gen){noteDiscard(pending, res.deviceMs||pending.discardedDeviceMs, "superseded by a newer request");if(pending.deviceCache[pending.deviceKey])paintArtDevices(pending);return}
+pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||"",truth:truth,behaviour:res.behaviour||"",species:res.species||"",object:res.object||""};
 if(pending.deviceKey===key)paintArtDevices(pending)}
-catch(e){if(artPending===pending&&pending.deviceGen===gen)setStatus(e.message||"Device failed")}}
-document.getElementById("artIdeaList").addEventListener("change",function(ev){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;if(ev.target&&ev.target.classList&&ev.target.classList.contains("species")){const idea=artPending.options[index];if(idea)idea.species=ev.target.value;delete artPending.deviceCache[artDeviceKey(index, artPending.useOriginal)];requestArtDevices(artPending, index, artPending.useOriginal, "switch");return}requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});
-document.getElementById("artStyle").addEventListener("change",function(){if(!artPending||artPending.mode!=="one")return;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, false, "switch")});
-document.getElementById("family").addEventListener("change",function(){if(!artPending)return;artPending.productFamily=document.getElementById("family").value;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, artPending.useOriginal, "switch")});
-document.getElementById("artOriginal").onclick=function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, true, "switch")};
-async function renderArtJobs(pending, idea, petSwap){const cached=pending.deviceCache[pending.deviceKey];if(!cached||!cached.devices.length){setStatus("The device is still being written.");return}if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
+catch(e){if(artPending!==pending||pending.deviceGen!==gen)return;pending.deviceError=e.message||"Device failed";document.getElementById("artDevices").innerHTML="<p class='shot'>"+h(pending.deviceError)+"</p>";document.getElementById("artDeviceNote").textContent=pending.deviceError;document.getElementById("artConfirm").disabled=true;setStatus(pending.deviceError)}}
+document.getElementById("artIdeaList").addEventListener("change",function(ev){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;if(ev.target&&ev.target.classList&&ev.target.classList.contains("species")){const idea=artPending.options[index];if(idea)idea.species=ev.target.value;const key=artDeviceKey(index, artPending.useOriginal);const current=artPending.deviceCache[key];if(current)noteDiscard(artPending, current.deviceMs, "switched species");delete artPending.deviceCache[key];requestArtDevices(artPending, index, artPending.useOriginal, "switched species");return}requestArtDevices(artPending, index, false, index===0?"speculative":"switched idea")});
+document.getElementById("artStyle").addEventListener("change",function(){if(!artPending||artPending.mode!=="one")return;const current=artPending.deviceCache[artPending.deviceKey];if(current)noteDiscard(artPending, current.deviceMs, "switched style");artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, false, "switched style")});
+document.getElementById("family").addEventListener("change",function(){if(!artPending)return;artPending.productFamily=document.getElementById("family").value;const current=artPending.deviceCache[artPending.deviceKey];if(current)noteDiscard(artPending, current.deviceMs, "switched product");artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, artPending.useOriginal, "switched product")});
+document.getElementById("artOriginal").onclick=function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;const current=artPending.deviceCache[artPending.deviceKey];if(current)noteDiscard(artPending, current.deviceMs, "chose the rejected original");requestArtDevices(artPending, index, true, "chose the rejected original")};
+async function renderArtJobs(pending, idea, petSwap){if(pending.deviceError){setStatus(pending.deviceError);return}const cached=pending.deviceCache[pending.deviceKey];if(!cached||!cached.devices.length){setStatus("The device is still being written.");return}if(running)return;running=true;document.getElementById("artConfirm").disabled=true;document.getElementById("runArt").disabled=true;document.getElementById("runBatch").disabled=true;
 const prep=pending.prep;const index=selectedArtIndex();const truth=pending.useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const flagged=pending.useOriginal?(idea.originalFlags||[]).length:(idea.shotFlags||[]).length;
 try{let photoId=prep.referencePhotoId;if(petSwap){const swap=document.getElementById("swapPhoto").files[0];if(!swap)throw new Error("Choose a pet swap photo.");setStatus("Storing the swap photo…");const stored=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl:await fileToDataUrl(swap)});photoId=stored.referencePhotoId}
 const deviceRows=petSwap?[cached.devices[0]]:cached.devices;const variants=petSwap?1:prep.variants;const jobs=[];
@@ -1066,7 +1071,7 @@ let done=0;const failures=[];const stored=[];let cursor=0;
 const speciesEl=document.querySelectorAll("#artIdeaList select.species")[index];
 const species=speciesEl?speciesEl.value:(idea.species||"");
 const shopDomain=(document.getElementById("flywheelShop").value||"").trim();
-async function one(job){try{const out=await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,referencePhotoId:photoId,mode:pending.mode==="pinned"?"pinned":"full",behaviour:pending.behaviour,productFamily:pending.productFamily,funnyTruth:truth,punchline:idea.punchline||"",device:job.device,deviceStructure:job.deviceStructure,humourOperator:idea.humourOperator||"",darknessLevel:idea.darknessLevel||0,species:species,shopDomain:shopDomain,renderAnyway:flagged>0,deviceMs:job.deviceMs,speculativeHit:!pending.discardedDeviceMs&&!!cached.speculative,discardedDeviceMs:pending.discardedDeviceMs||0,pickedIndex:index,truths:pending.options.map(function(o){return {funnyTruth:o.funnyTruth,punchline:o.punchline||"",shotFlags:o.shotFlags||[],originalTruth:o.originalTruth||"",rewritten:!!o.rewritten}}),petSwap:!!petSwap});if(out.candidateId)stored.push(out.candidateId);else if(out.candidateSkipped)stored.push(job.label+" "+job.variant+" not stored ("+out.candidateSkipped+")")}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+async function one(job){try{const out=await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,referencePhotoId:photoId,mode:pending.mode==="pinned"?"pinned":"full",behaviour:pending.behaviour,productFamily:pending.productFamily,funnyTruth:truth,punchline:idea.punchline||"",device:job.device,deviceStructure:job.deviceStructure,humourOperator:idea.humourOperator||"",darknessLevel:idea.darknessLevel||0,species:species,shopDomain:shopDomain,renderAnyway:flagged>0,deviceMs:job.deviceMs,speculativeHit:!pending.discardedDeviceMs&&!!cached.speculative,discardedDeviceMs:pending.discardedDeviceMs||0,discardedDeviceReason:pending.discardedDeviceReason||"",pickedIndex:index,truths:pending.options.map(function(o){return {funnyTruth:o.funnyTruth,punchline:o.punchline||"",shotFlags:o.shotFlags||[],originalTruth:o.originalTruth||"",rewritten:!!o.rewritten}}),petSwap:!!petSwap});if(out.candidateId)stored.push(out.candidateId);else if(out.candidateSkipped)stored.push(job.label+" "+job.variant+" not stored ("+out.candidateSkipped+")")}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
 async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
 await Promise.all([worker(),worker()]);

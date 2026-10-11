@@ -19,14 +19,14 @@ describe("art style probe compose", () => {
       const marker = artStyleMarker(result.composed.style);
       expect(result.recipe.model).toMatch(/flare/i);
       expect(result.recipe.aspectRatio).toBe("2:3");
-      expect(result.params.aspectRatio).toBe("1:1");
+      expect(result.params.aspectRatio).toBe("1024:1168");
       expect(result.params.packLayered).toBe(true);
       expect(result.params.transparencyCheck).toBe("enforce");
       expect(result.sentPrompt).toBe(result.composed.prompt);
       expect(result.sentPrompt).toContain(marker);
       expect(result.sentPrompt).toContain("DEVICE:");
       expect(result.sentPrompt.length).toBeGreaterThan(700);
-      expect(result.sentPrompt.length).toBeLessThan(2200);
+      expect(result.sentPrompt.length).toBeLessThan(2500);
       expect(compositionLocksAboveStyle(result.sentPrompt, marker)).toEqual([]);
       expect(result.sentPrompt).toContain("PASSENGER SELECTED.");
       expect(result.sentPrompt).toContain("the dog has claimed the passenger seat and will not move");

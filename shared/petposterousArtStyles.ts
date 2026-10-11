@@ -275,6 +275,8 @@ export type ArtStyleRecipeStamp = {
   humourOperator: string;
   darknessLevel: number;
   species: "dog" | "cat" | "other";
+  /** Plain noun from the behaviour. Null when the behaviour has no object. */
+  object: string | null;
 };
 
 export type SettledArtStyleTruth = {
@@ -284,6 +286,7 @@ export type SettledArtStyleTruth = {
   humourOperator: string;
   darknessLevel: number;
   species: "dog" | "cat" | "other";
+  object: string | null;
   /** Flags on funnyTruth. Empty means the default render is clean. */
   shotFlags: string[];
   originalTruth: string;
@@ -309,6 +312,7 @@ export function settleArtStyleTruth(
     humourOperator: recipe?.humourOperator ?? "",
     darknessLevel: recipe?.darknessLevel ?? 0,
     species: recipe?.species ?? "other",
+    object: recipe?.object ?? null,
   };
   const originalTruth = original.replace(/\s+/g, " ").trim();
   const words = punchline.replace(/\s+/g, " ").trim();

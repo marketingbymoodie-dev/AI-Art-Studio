@@ -50,7 +50,8 @@ export function composeArtStyleProbe(opts: {
   const recipe = styleExampleRecipe("apparel");
   const params: GenerateImageParams = {
     prompt: composed.prompt,
-    aspectRatio: PETPOSTEROUS_ART_STYLE_BATCH.aspectRatio,
+    // Tee preview is the print-area ratio: 1024×1168. Decor stays square.
+    aspectRatio: artStyleSurfaceForProduct(productFamily) === "apparel" ? "1024:1168" : PETPOSTEROUS_ART_STYLE_BATCH.aspectRatio,
     inputImageUrl: opts.referenceDataUrl,
     isApparel: true,
     isAllOverPrint: false,

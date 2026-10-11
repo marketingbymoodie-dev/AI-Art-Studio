@@ -50,12 +50,68 @@ export function deviceContradictsSpecies(text: string, species: string): boolean
   return other.test(text) && !same.test(text);
 }
 
+/** A device that names an object has to be long enough to say how that object sits. */
+export const DEVICE_OBJECT_MIN_WORDS = 18;
+
+export type DeviceRejectReason = "object" | "short" | "species";
+
+/** Noun phrase from the behaviour. Null when there is no object. Undefined when the value is unusable. */
+export function behaviourObject(value: unknown): string | null | undefined {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") return undefined;
+  let clean = value.replace(/\s+/g, " ").trim().replace(/^["“”]+|["“”]+$/g, "");
+  if (!clean || /^(null|none|n\/a)$/i.test(clean)) return null;
+  clean = clean.replace(/^(?:a|an|the|his|her|its)\s+/i, "");
+  clean = clean.split(/\s+like\s+/i)[0].replace(/[.?!].*$/, "").trim();
+  clean = clean.split(" ").slice(0, 6).join(" ").replace(/[,:;]+$/g, "").trim();
+  if (!clean) return null;
+  if (clean.length > 80) return undefined;
+  return clean;
+}
+
+export function deviceWordCount(text: string): number {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean ? clean.split(" ").length : 0;
+}
+
+/** Object is a case-insensitive substring. A short sentence is rejected only when an object exists. */
+export function deviceRejectReasons(text: string, species: string, object: string | null): DeviceRejectReason[] {
+  const reasons: DeviceRejectReason[] = [];
+  if (object && !text.toLowerCase().includes(object.toLowerCase())) reasons.push("object");
+  if (object && deviceWordCount(text) < DEVICE_OBJECT_MIN_WORDS) reasons.push("short");
+  if (deviceContradictsSpecies(text, species)) reasons.push("species");
+  return reasons;
+}
+
+export function deviceRetryNote(reasons: DeviceRejectReason[], object: string | null, species: string): string {
+  const lines: string[] = [];
+  if (reasons.includes("object") && object) {
+    lines.push(`The previous device omitted the object. The sentence must contain the words "${object}". Name its shape, its parts, and how it sits on or around the subject.`);
+  }
+  if (reasons.includes("short") && object) {
+    lines.push(`The previous device was under ${DEVICE_OBJECT_MIN_WORDS} words. Write about thirty words: the shape, the parts, how "${object}" sits, and the pose.`);
+  }
+  if (reasons.includes("species")) lines.push(`The previous device named the wrong animal. Species is ${species}.`);
+  return lines.join(" ");
+}
+
+export function deviceRejectMessage(reasons: DeviceRejectReason[], text: string, object: string | null): string {
+  const parts: string[] = [];
+  if (reasons.includes("object") && object) parts.push(`Device omitted the object "${object}".`);
+  if (reasons.includes("short")) parts.push(`Device was ${deviceWordCount(text)} words. It needs the object's shape, parts, and how it sits.`);
+  if (reasons.includes("species")) parts.push("Device writer changed the animal.");
+  const rejected = text.replace(/\s+/g, " ").trim();
+  return `${parts.join(" ")} Rejected: ${rejected}`.slice(0, 300);
+}
+
 export type ArtStyleTruthDraft = {
   funnyTruth: string;
   punchline: string;
   humourOperator: string;
   darknessLevel: number;
   species: "dog" | "cat" | "other";
+  /** Plain noun from the behaviour. Null when the behaviour has no object. */
+  object: string | null;
 };
 
 export type ArtStyleDeviceDraft = {
@@ -108,7 +164,8 @@ The three options are different angles on the same behaviour, not three drawings
 You do not see a photo. species is dog, cat, or other, taken from the behaviour. If the behaviour does not say, use other.
 humour_operator is exactly one of: ${Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS).join(", ")}.
 darkness_level is an integer from 1 (light) to 5 (bleak).
-Return ONLY JSON: {"options":[{"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string}, {"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string}, {"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string}]}
+object is the concrete thing the behaviour is about, as a plain noun phrase with no article, the same on every option. It is not the truth's metaphor. For a toilet seat stuck around his neck, object is "toilet seat". Use null when the behaviour names no object.
+Return ONLY JSON: {"options":[{"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string, "object": string | null}, {"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string, "object": string | null}, {"funny_truth": string, "punchline": string, "humour_operator": string, "darkness_level": number, "species": string, "object": string | null}]}
 ${punchlineRule}`,
     parse: (raw) => parseArtStyleTruths(raw, suppliedWording),
   };
@@ -129,9 +186,11 @@ export function parseArtStyleTruths(raw: unknown, suppliedWording = ""): ArtStyl
     const humourOperator = humourOperatorId(o.humour_operator);
     const darkness = darknessLevel(o.darkness_level);
     const species = flywheelSpecies(o.species);
-    if (!funnyTruth || !humourOperator || darkness == null || !species) return null;
+    if (!("object" in o)) return null;
+    const object = behaviourObject(o.object);
+    if (!funnyTruth || !humourOperator || darkness == null || !species || object === undefined) return null;
     if (countPunchlineWords(punchline) > PUNCHLINE_MAX_WORDS) return null;
-    out.push({ funnyTruth, punchline, humourOperator, darknessLevel: darkness, species });
+    out.push({ funnyTruth, punchline, humourOperator, darknessLevel: darkness, species, object });
   }
   return out;
 }
@@ -169,13 +228,13 @@ export function parseArtStyleDevice(raw: unknown): ArtStyleDeviceDraft | null {
 }
 
 /** What the device writer is told. The truth may abstract the incident; the behaviour still has it. */
-export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one.";
+export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one. OBJECT is that thing, as a noun. When it is present, the sentence contains those exact words. The truth does not replace it.";
 
 export function artStyleDeviceSystem(profile: ArtStyleProfile, surface: ArtStyleSurface): string {
   const style = petposterousArtStyle(profile.styleId);
   return `You choose one device structure, then write one visual device for a pet graphic.
 device_structure is exactly one of: ${ART_STYLE_DEVICE_STRUCTURES.join(", ")}.
-device_text is one sentence: the behaviour, seen from the truth, in this art style.
+device_text is one sentence: the behaviour, seen from the truth, in this art style. When OBJECT is present, the sentence is about thirty words and includes the object's shape, its parts, how it sits on or around the subject, and the pose. Under ${DEVICE_OBJECT_MIN_WORDS} words is rejected.
 ${ART_STYLE_DEVICE_BINDING}
 The props line is a limit, not a subject. Do not draw its example unless the behaviour is about that object.
 You receive the exact wording so your composition can leave room for it. Do not repeat it, quote it, or describe how it appears. The type rules already govern the lettering, and a second instruction about the words will override them — whatever object you attach the words to is where the renderer will put them. Describe the picture and leave clear space for the lettering.
@@ -196,11 +255,13 @@ export function artStyleDeviceUserMessage(opts: {
   truth: string;
   words: string;
   species: string;
+  object: string | null;
   styleLabel: string;
   surfaceLine: string;
 }): string {
   return userLines([
     ["behaviour", opts.behaviour],
+    ["object", opts.object || "(none)"],
     ["truth", opts.truth],
     ["words", opts.words],
     ["species", opts.species],
@@ -255,6 +316,7 @@ export async function generateArtStyleTruths(behaviour: string, productFamily: s
       humourOperator: draft.humourOperator,
       darknessLevel: draft.darknessLevel,
       species: draft.species,
+      object: draft.object,
     }));
   }
   return settled;
@@ -266,6 +328,7 @@ export async function generateArtStyleDevice(opts: {
   punchline: string;
   behaviour: string;
   species: string;
+  object?: string | null;
   surface?: ArtStyleSurface;
 }): Promise<{ styleId: string; device: string; deviceText: string; deviceStructure: ArtStyleDeviceStructure; deviceMs: number; surface: ArtStyleSurface }> {
   const profile = artStyleProfile(opts.styleId);
@@ -274,28 +337,36 @@ export async function generateArtStyleDevice(opts: {
   const truth = opts.funnyTruth.replace(/\s+/g, " ").trim();
   const behaviour = opts.behaviour.replace(/\s+/g, " ").trim();
   const species = flywheelSpecies(opts.species) ?? "";
+  const object = behaviourObject(opts.object);
   if (!truth) throw Object.assign(new Error("A truth is required."), { status: 400 });
   if (!behaviour) throw Object.assign(new Error("The behaviour is required."), { status: 400 });
   if (!species) throw Object.assign(new Error("Species is required."), { status: 400 });
+  if (object === undefined) throw Object.assign(new Error("Object must be a short noun phrase or null."), { status: 400 });
   const surface = opts.surface ?? "apparel";
   const started = Date.now();
   let written: ArtStyleDeviceDraft | undefined;
+  let reasons: DeviceRejectReason[] = [];
+  let lastText = "";
   const userMessage = artStyleDeviceUserMessage({
     behaviour,
     truth,
     words: opts.punchline.replace(/\s+/g, " ").trim(),
     species,
+    object,
     styleLabel: style.label,
     surfaceLine: SURFACE_DEVICE[surface],
   });
   for (let attempt = 0; attempt < 2; attempt++) {
-    const [row] = await runConceptEngine(deviceEngine(profile, surface), userMessage);
-    if (!deviceContradictsSpecies(row.deviceText, species)) {
+    const message = attempt === 0 ? userMessage : `${userMessage}\n${deviceRetryNote(reasons, object, species)}`;
+    const [row] = await runConceptEngine(deviceEngine(profile, surface), message);
+    lastText = row.deviceText;
+    reasons = deviceRejectReasons(row.deviceText, species, object);
+    if (reasons.length === 0) {
       written = row;
       break;
     }
   }
-  if (!written) throw Object.assign(new Error("Device writer changed the animal."), { status: 502 });
+  if (!written) throw Object.assign(new Error(deviceRejectMessage(reasons, lastText, object)), { status: 502 });
   return {
     styleId: opts.styleId,
     device: written.deviceText,
@@ -312,6 +383,7 @@ export async function generateArtStyleDevices(opts: {
   punchline: string;
   behaviour: string;
   species: string;
+  object?: string | null;
   surface?: ArtStyleSurface;
 }): Promise<{ devices: Array<{ styleId: string; device: string; deviceText: string; deviceStructure: ArtStyleDeviceStructure; deviceMs: number; surface: ArtStyleSurface }>; deviceMs: number; surface: ArtStyleSurface }> {
   if (!opts.styleIds.length) throw Object.assign(new Error("Choose an art style."), { status: 400 });
@@ -323,6 +395,7 @@ export async function generateArtStyleDevices(opts: {
     punchline: opts.punchline,
     behaviour: opts.behaviour,
     species: opts.species,
+    object: opts.object,
     surface,
   })));
   return { devices, deviceMs: Date.now() - started, surface };
