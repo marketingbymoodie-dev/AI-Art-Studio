@@ -1349,6 +1349,8 @@ export const designCandidates = pgTable("design_candidates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   shopDomain: text("shop_domain").notNull(),
   status: text("status").notNull().default("pending"),
+  /** generated | manual. Manual rows must not train the writer weights. */
+  source: text("source").notNull().default("generated"),
   humourOperator: text("humour_operator").notNull(),
   darknessLevel: integer("darkness_level").notNull(),
   species: text("species").notNull(),

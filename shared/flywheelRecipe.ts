@@ -23,8 +23,14 @@ export type FlywheelSpecies = (typeof FLYWHEEL_SPECIES)[number];
 
 const PRODUCT_FAMILIES = ["apparel", "poster", "pillow", "tapestry", "bedding"] as const;
 
+export type CandidateConceptSource = "generated" | "manual";
+
 export type AdminCandidateDraft = {
   shopDomain: string;
+  /** generated | manual. Set from which fields the operator supplied, not from a free-text flag. */
+  conceptSource: CandidateConceptSource;
+  /** approved is only available when the operator wrote the concept. */
+  status: "pending" | "approved";
   humourOperator: string;
   darknessLevel: number;
   species: FlywheelSpecies;
@@ -91,6 +97,12 @@ export function adminCandidateDraft(input: {
   renderProbeResultId: unknown;
   /** Probe image draw. Draws after the first are the same design, not a new candidate. */
   imageVariant?: unknown;
+  /** The operator typed the truth. Skips the truth writer. */
+  suppliedTruth?: unknown;
+  /** The operator typed the device. Skips the device writer. */
+  suppliedDevice?: unknown;
+  /** Manual concepts may skip the pending queue. Ignored for generated rows. */
+  approveNow?: unknown;
 }): { draft: AdminCandidateDraft } | { skip: string } {
   if (input.petSwap === true) return { skip: "pet-swap" };
   if (input.source !== "admin-probe") return { skip: "source" };
@@ -120,9 +132,13 @@ export function adminCandidateDraft(input: {
   if (!credentialRef || /[\r\n]/.test(credentialRef)) return { skip: "credential" };
   const probeId = Number(input.renderProbeResultId);
   const renderProbeResultId = Number.isInteger(probeId) && probeId > 0 ? probeId : null;
+  const conceptSource: CandidateConceptSource = input.suppliedTruth === true || input.suppliedDevice === true ? "manual" : "generated";
+  const status = conceptSource === "manual" && input.approveNow === true ? "approved" : "pending";
   return {
     draft: {
       shopDomain,
+      conceptSource,
+      status,
       humourOperator,
       darknessLevel: darkness,
       species,

@@ -52,5 +52,11 @@ describe("flywheel recipe", () => {
     expect(adminCandidateDraft({ ...valid, shopDomain: "demo-store" })).toEqual({ skip: "shop" });
     expect(adminCandidateDraft({ ...valid, humourOperator: "not-a-framework" })).toEqual({ skip: "operator" });
     expect(adminCandidateDraft({ ...valid, credentialRef: "" })).toEqual({ skip: "credential" });
+    const generated = adminCandidateDraft({ ...valid, approveNow: true });
+    expect(generated).toMatchObject({ draft: { conceptSource: "generated", status: "pending" } });
+    const manual = adminCandidateDraft({ ...valid, suppliedDevice: true });
+    expect(manual).toMatchObject({ draft: { conceptSource: "manual", status: "pending" } });
+    const judged = adminCandidateDraft({ ...valid, suppliedTruth: true, approveNow: true });
+    expect(judged).toMatchObject({ draft: { conceptSource: "manual", status: "approved" } });
   });
 });
