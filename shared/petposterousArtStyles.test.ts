@@ -83,6 +83,8 @@ describe("Petposterous apparel art styles", () => {
       expect(composed.prompt).toContain(PETPOSTEROUS_APPAREL_PRINT);
       expect(composed.prompt).toContain(PETPOSTEROUS_BRAND);
       expect(composed.prompt).toContain(PETPOSTEROUS_TYPE_RESTRAINT);
+      expect(composed.prompt).toContain("lettering printed on the garment");
+      expect(composed.prompt).toContain("caption plate or institutional label");
       expect(composed.prompt).not.toContain(PETPOSTEROUS_DECOR_PRINT);
       expect(composed.prompt).toContain(style.prompt);
         expect(artStyleDeviceLine("beneath the words HOW WAS YOUR DAY?")).toBe("DEVICE: beneath the words HOW WAS YOUR DAY?");
@@ -126,7 +128,7 @@ describe("Petposterous apparel art styles", () => {
         device: DEVICE,
       });
       expect(composed.prompt.length).toBeGreaterThan(700);
-      expect(composed.prompt.length).toBeLessThan(2200);
+      expect(composed.prompt.length).toBeLessThan(2500);
     }
   });
 

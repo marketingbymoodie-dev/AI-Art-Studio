@@ -65,5 +65,7 @@ describe("art style writer recipe", () => {
     expect(message).not.toContain("the truth above");
     const system = artStyleDeviceSystem(artStyleProfile("pen-ink")!, "apparel");
     expect(system).toContain(ART_STYLE_DEVICE_BINDING);
+    expect(system).toContain("Do not repeat it, quote it, or describe how it appears.");
+    expect(system).not.toContain("they are the only lettering");
   });
 });

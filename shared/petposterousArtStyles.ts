@@ -44,7 +44,7 @@ export function artStyleSurfaceRule(surface: ArtStyleSurface): string {
 
 /** Bans decoration around the letters. Ornament remains allowed when the style itself asks for it. */
 export const PETPOSTEROUS_TYPE_RESTRAINT =
-  "TYPE: Set the words plainly within the composition. No dashes, rules, lines, ticks or bars flanking them; no starbursts, sparkles, radiating lines, speed lines or impact marks; no swashes, scrolls, banners, ribbons, laurels, asterisks, dots or diamond separators bracketing a phrase. The words stand on their own. Ornament appears only where the art style calls for it, as part of the illustration — never as default decoration around type.";
+  "TYPE: Set the words plainly within the composition. No dashes, rules, lines, ticks or bars flanking them; no starbursts, sparkles, radiating lines, speed lines or impact marks; no swashes, scrolls, banners, ribbons, laurels, asterisks, dots or diamond separators bracketing a phrase. The words stand on their own. Ornament appears only where the art style calls for it, as part of the illustration — never as default decoration around type. The words occupy their own clear area of the composition, above or below the illustration, as lettering printed on the garment. They are never written on, carved into, draped over, stitched onto or printed across an object inside the picture — not a sign, a label, a tag, a collar, a banner, or any surface the subject wears or holds. The only exception is where the art style block itself calls for a caption plate or institutional label, and then only there.";
 
 /** Roles kept out of the customer UI so they are not folded back into art style. */
 export const PETPOSTEROUS_SECONDARY_ROLES = {

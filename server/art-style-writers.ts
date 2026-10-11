@@ -169,7 +169,7 @@ export function parseArtStyleDevice(raw: unknown): ArtStyleDeviceDraft | null {
 }
 
 /** What the device writer is told. The truth may abstract the incident; the behaviour still has it. */
-export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one. If the words already end with punctuation, do not add a full stop after them.";
+export const ART_STYLE_DEVICE_BINDING = "The behaviour is what happened. Draw that incident. The truth is the angle on it, not a replacement incident. Species is the animal. Do not change the animal or swap the behaviour's object for a different one.";
 
 export function artStyleDeviceSystem(profile: ArtStyleProfile, surface: ArtStyleSurface): string {
   const style = petposterousArtStyle(profile.styleId);
@@ -178,7 +178,7 @@ device_structure is exactly one of: ${ART_STYLE_DEVICE_STRUCTURES.join(", ")}.
 device_text is one sentence: the behaviour, seen from the truth, in this art style.
 ${ART_STYLE_DEVICE_BINDING}
 The props line is a limit, not a subject. Do not draw its example unless the behaviour is about that object.
-If words are present, they are the only lettering.
+You receive the exact wording so your composition can leave room for it. Do not repeat it, quote it, or describe how it appears. The type rules already govern the lettering, and a second instruction about the words will override them — whatever object you attach the words to is where the renderer will put them. Describe the picture and leave clear space for the lettering.
 A second person may appear only as a hand, a foot, or a sliver of silhouette.
 Surface: ${surface}. ${SURFACE_DEVICE[surface]}
 Style: ${style?.label ?? profile.styleId}.
