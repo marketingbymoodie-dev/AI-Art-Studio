@@ -66,6 +66,10 @@ describe("art style writer recipe", () => {
     const system = artStyleDeviceSystem(artStyleProfile("pen-ink")!, "apparel");
     expect(system).toContain(ART_STYLE_DEVICE_BINDING);
     expect(system).toContain("Do not repeat it, quote it, or describe how it appears.");
+    expect(system).toContain("NAME THE OBJECT, THEN COMPARE IT.");
+    expect(system).toContain("a reader who does not know the joke");
+    expect(system).toContain("POSE IS THE PERFORMANCE.");
+    expect(system).toContain("deadpan front-on stare is itself the joke");
     expect(system).not.toContain("they are the only lettering");
   });
 });

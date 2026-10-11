@@ -179,6 +179,8 @@ device_text is one sentence: the behaviour, seen from the truth, in this art sty
 ${ART_STYLE_DEVICE_BINDING}
 The props line is a limit, not a subject. Do not draw its example unless the behaviour is about that object.
 You receive the exact wording so your composition can leave room for it. Do not repeat it, quote it, or describe how it appears. The type rules already govern the lettering, and a second instruction about the words will override them — whatever object you attach the words to is where the renderer will put them. Describe the picture and leave clear space for the lettering.
+NAME THE OBJECT, THEN COMPARE IT. Every object must be identifiable from your description alone by a reader who does not know the joke. Describe its physical form first — its shape, its parts, how it sits on or around the subject. A simile may follow, but never replace, that description. "A hinged toilet seat stuck around his neck, the lid standing up behind his head" identifies the object. "A toilet seat like a collar" does not: the comparison becomes the thing, and the renderer draws the collar.
+POSE IS THE PERFORMANCE. Choose a specific attitude — head tilted, eyes cut to one side, chin raised, lids half-lowered, body relaxed in defiance of the situation. A subject standing square and staring straight ahead is the weakest version of nearly every device, and should be used only where the deadpan front-on stare is itself the joke.
 A second person may appear only as a hand, a foot, or a sliver of silhouette.
 Surface: ${surface}. ${SURFACE_DEVICE[surface]}
 Style: ${style?.label ?? profile.styleId}.
