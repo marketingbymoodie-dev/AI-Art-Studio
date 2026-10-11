@@ -271,10 +271,19 @@ export function artStyleConceptShotFlags(text: string): string[] {
   return found;
 }
 
+export type ArtStyleRecipeStamp = {
+  humourOperator: string;
+  darknessLevel: number;
+  species: "dog" | "cat" | "other";
+};
+
 export type SettledArtStyleTruth = {
   /** What renders unless the probe operator chooses the rejected original. */
   funnyTruth: string;
   punchline: string;
+  humourOperator: string;
+  darknessLevel: number;
+  species: "dog" | "cat" | "other";
   /** Flags on funnyTruth. Empty means the default render is clean. */
   shotFlags: string[];
   originalTruth: string;
@@ -290,13 +299,24 @@ export type SettledArtStyleTruth = {
  * If the rewrite still flags, the original stays and shotFlags stays set,
  * so the probe can render that original on purpose.
  */
-export function settleArtStyleTruth(original: string, punchline: string, rewrite: string | null): SettledArtStyleTruth {
+export function settleArtStyleTruth(
+  original: string,
+  punchline: string,
+  rewrite: string | null,
+  recipe?: ArtStyleRecipeStamp,
+): SettledArtStyleTruth {
+  const stamp: ArtStyleRecipeStamp = {
+    humourOperator: recipe?.humourOperator ?? "",
+    darknessLevel: recipe?.darknessLevel ?? 0,
+    species: recipe?.species ?? "other",
+  };
   const originalTruth = original.replace(/\s+/g, " ").trim();
   const words = punchline.replace(/\s+/g, " ").trim();
   const originalFlags = artStyleConceptShotFlags(originalTruth);
   const attempt = (rewrite || "").replace(/\s+/g, " ").trim();
   if (originalFlags.length === 0) {
     return {
+      ...stamp,
       funnyTruth: originalTruth,
       punchline: words,
       shotFlags: [],
@@ -310,6 +330,7 @@ export function settleArtStyleTruth(original: string, punchline: string, rewrite
   const rewriteFlags = attempt ? artStyleConceptShotFlags(attempt) : [];
   if (attempt && rewriteFlags.length === 0) {
     return {
+      ...stamp,
       funnyTruth: attempt,
       punchline: words,
       shotFlags: [],
@@ -321,6 +342,7 @@ export function settleArtStyleTruth(original: string, punchline: string, rewrite
     };
   }
   return {
+    ...stamp,
     funnyTruth: originalTruth,
     punchline: words,
     shotFlags: originalFlags,

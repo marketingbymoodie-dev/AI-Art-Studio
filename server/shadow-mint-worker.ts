@@ -49,6 +49,7 @@ type JobRow = {
   price_override: string | null;
   attempts: number;
   created_at: Date | string;
+  enqueued_at: Date | string | null;
   claimed_at: Date | string | null;
 };
 
@@ -84,7 +85,7 @@ export async function enqueueShadowMint(args: ShadowMintEnqueueArgs): Promise<vo
 
   await db.execute(sql`
     INSERT INTO shadow_mint_jobs (
-      shop, key, job_id, base_variant_id, base_product_id, cfg_snapshot, mockup_url, price_override
+      shop, key, job_id, base_variant_id, base_product_id, cfg_snapshot, mockup_url, price_override, enqueued_at
     ) VALUES (
       ${shop},
       ${key},
@@ -93,13 +94,15 @@ export async function enqueueShadowMint(args: ShadowMintEnqueueArgs): Promise<vo
       ${String(args.baseProductId)},
       CAST(${JSON.stringify(args.cfgSnapshot ?? {})} AS jsonb),
       ${args.primaryMockupUrl},
-      ${args.priceOverride}
+      ${args.priceOverride},
+      now()
     )
     ON CONFLICT (shop, key) DO UPDATE SET
       mockup_url = EXCLUDED.mockup_url,
       cfg_snapshot = EXCLUDED.cfg_snapshot,
       price_override = EXCLUDED.price_override,
       base_product_id = EXCLUDED.base_product_id,
+      enqueued_at = now(),
       state = CASE WHEN shadow_mint_jobs.state = 'failed' THEN 'pending' ELSE shadow_mint_jobs.state END,
       attempts = CASE WHEN shadow_mint_jobs.state = 'failed' THEN 0 ELSE shadow_mint_jobs.attempts END,
       last_error = CASE WHEN shadow_mint_jobs.state = 'failed' THEN NULL ELSE shadow_mint_jobs.last_error END,
@@ -184,7 +187,7 @@ async function claimOne(): Promise<JobRow | null> {
             OR (cfg_snapshot->'aopPattern') IS NOT NULL
           THEN 1 ELSE 0
         END,
-        created_at
+        COALESCE(enqueued_at, created_at)
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     )
@@ -197,7 +200,7 @@ async function claimOne(): Promise<JobRow | null> {
     FROM picked
     WHERE j.id = picked.id
     RETURNING j.id, j.shop, j.key, j.job_id, j.base_variant_id, j.base_product_id, j.cfg_snapshot,
-              j.mockup_url, j.price_override, j.attempts, j.created_at, j.claimed_at
+              j.mockup_url, j.price_override, j.attempts, j.created_at, j.enqueued_at, j.claimed_at
   `);
   return rowsOf<JobRow>(result)[0] ?? null;
 }
@@ -226,7 +229,7 @@ async function finishFailure(id: number, attempts: number, message: string): Pro
 
 async function processJob(job: JobRow): Promise<void> {
   const started = Date.now();
-  const enqueuedAt = ms(job.created_at);
+  const enqueuedAt = ms(job.enqueued_at || job.created_at);
   const claimedAt = ms(job.claimed_at);
   try {
     await waitForInFlightProductImport(job.shop);
@@ -345,32 +348,37 @@ export async function shadowMintDiagnostics() {
   `);
   const timingResult = await db.execute(sql`
     SELECT shop,
-      EXTRACT(EPOCH FROM (ready_at - created_at)) * 1000 AS total_ms,
-      EXTRACT(EPOCH FROM (claimed_at - created_at)) * 1000 AS waited_ms
+      EXTRACT(EPOCH FROM (ready_at - claimed_at)) * 1000 AS hold_ms,
+      EXTRACT(EPOCH FROM (claimed_at - COALESCE(enqueued_at, created_at))) * 1000 AS waited_ms
     FROM shadow_mint_jobs
     WHERE state = 'ready' AND ready_at IS NOT NULL AND claimed_at IS NOT NULL
     ORDER BY ready_at DESC
     LIMIT 200
   `);
 
-  const byShop = new Map<string, { total: number[]; waited: number[] }>();
-  for (const row of rowsOf<{ shop: string; total_ms: string | number; waited_ms: string | number }>(timingResult)) {
-    const bucket = byShop.get(row.shop) ?? { total: [], waited: [] };
-    const total = Number(row.total_ms);
+  const byShop = new Map<string, { hold: number[]; waited: number[] }>();
+  for (const row of rowsOf<{ shop: string; hold_ms: string | number; waited_ms: string | number }>(timingResult)) {
+    const bucket = byShop.get(row.shop) ?? { hold: [], waited: [] };
+    const hold = Number(row.hold_ms);
     const waited = Number(row.waited_ms);
-    if (Number.isFinite(total)) bucket.total.push(total);
+    if (Number.isFinite(hold)) bucket.hold.push(hold);
     if (Number.isFinite(waited)) bucket.waited.push(waited);
     byShop.set(row.shop, bucket);
   }
   const timing = [...byShop.entries()].map(([shop, bucket]) => {
-    const total = [...bucket.total].sort((a, b) => a - b);
+    const hold = [...bucket.hold].sort((a, b) => a - b);
     const waited = [...bucket.waited].sort((a, b) => a - b);
+    const holdP50Ms = percentile(hold, 50);
+    const holdP95Ms = percentile(hold, 95);
     return {
       shop,
-      n: total.length,
-      p50Ms: percentile(total, 50),
-      p95Ms: percentile(total, 95),
+      n: hold.length,
+      p50Ms: holdP50Ms,
+      p95Ms: holdP95Ms,
+      holdP50Ms,
+      holdP95Ms,
       waitP50Ms: percentile(waited, 50),
+      waitP95Ms: percentile(waited, 95),
     };
   });
 

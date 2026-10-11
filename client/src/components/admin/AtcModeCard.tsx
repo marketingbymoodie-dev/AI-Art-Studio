@@ -99,7 +99,7 @@ export default function AtcModeCard() {
 function ShadowMintDiagnostics() {
   const { data, isLoading, error } = useQuery<{
     counts: { shop: string; state: string; n: number }[];
-    timing: { shop: string; n: number; p50Ms: number | null; p95Ms: number | null; waitP50Ms: number | null }[];
+    timing: { shop: string; n: number; holdP50Ms?: number | null; holdP95Ms?: number | null; waitP50Ms: number | null; waitP95Ms?: number | null; p50Ms: number | null; p95Ms: number | null }[];
     failed: { shop: string; key: string; attempts: number; lastError: string; updatedAt: string }[];
   }>({
     queryKey: ["/api/platform/shadow-mint"],
@@ -128,7 +128,7 @@ function ShadowMintDiagnostics() {
       ))}
       {timing.map((row) => (
         <p key={row.shop} className="font-mono text-xs text-muted-foreground">
-          {row.shop} n={row.n} p50={row.p50Ms ?? "–"}ms p95={row.p95Ms ?? "–"}ms wait={row.waitP50Ms ?? "–"}ms
+          {row.shop} n={row.n} hold p50={row.holdP50Ms ?? row.p50Ms ?? "–"}ms p95={row.holdP95Ms ?? row.p95Ms ?? "–"}ms wait p50={row.waitP50Ms ?? "–"}ms p95={row.waitP95Ms ?? "–"}ms
         </p>
       ))}
       {failed.map((row) => (

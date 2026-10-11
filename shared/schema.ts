@@ -1331,12 +1331,45 @@ export const shadowMintJobs = pgTable("shadow_mint_jobs", {
   leaseUntil: timestamp("lease_until"),
   claimedAt: timestamp("claimed_at"),
   readyAt: timestamp("ready_at"),
+  /** Set on every enqueue, including a reused row. created_at stays the first insert. */
+  enqueuedAt: timestamp("enqueued_at"),
   lastError: text("last_error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
   uniqueIndex("shadow_mint_jobs_shop_key_uidx").on(table.shop, table.key),
   index("shadow_mint_jobs_claim_idx").on(table.state, table.createdAt),
+]);
+
+/**
+ * One flywheel design. Recipe columns are required at insert.
+ * Title and description stay empty until approval. Dropped rows are kept.
+ */
+export const designCandidates = pgTable("design_candidates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  status: text("status").notNull().default("pending"),
+  humourOperator: text("humour_operator").notNull(),
+  darknessLevel: integer("darkness_level").notNull(),
+  species: text("species").notNull(),
+  deviceStructure: text("device_structure").notNull(),
+  deviceText: text("device_text").notNull(),
+  funnyTruth: text("funny_truth").notNull(),
+  punchline: text("punchline").notNull().default(""),
+  artStyle: text("art_style").notNull(),
+  behaviour: text("behaviour").notNull(),
+  productFamily: text("product_family").notNull(),
+  credentialRef: text("credential_ref").notNull(),
+  renderProbeResultId: integer("render_probe_result_id"),
+  title: text("title"),
+  description: text("description"),
+  dropReason: text("drop_reason"),
+  designProductId: varchar("design_product_id"),
+  shopifyProductId: text("shopify_product_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("design_candidates_shop_status_idx").on(table.shopDomain, table.status),
 ]);
 
 // Design Products — permanent, browsable Shopify products merchants publish from a saved

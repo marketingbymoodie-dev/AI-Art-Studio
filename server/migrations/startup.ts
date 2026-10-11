@@ -157,6 +157,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "refresh_token_expires_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "theme_snapshot", type: "JSONB" },
   { table: "shopify_installations", column: "atc_mode", type: "TEXT NOT NULL DEFAULT 'shadow-direct'" },
+  { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },
@@ -2180,6 +2181,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "lease_until" timestamp,
         "claimed_at" timestamp,
         "ready_at" timestamp,
+        "enqueued_at" timestamp,
         "last_error" text,
         "created_at" timestamp DEFAULT NOW() NOT NULL,
         "updated_at" timestamp DEFAULT NOW() NOT NULL,
@@ -2226,6 +2228,35 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  {
+    name: "design_candidates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "design_candidates" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'pending',
+        "humour_operator" text NOT NULL,
+        "darkness_level" integer NOT NULL,
+        "species" text NOT NULL,
+        "device_structure" text NOT NULL,
+        "device_text" text NOT NULL,
+        "funny_truth" text NOT NULL,
+        "punchline" text NOT NULL DEFAULT '',
+        "art_style" text NOT NULL,
+        "behaviour" text NOT NULL,
+        "product_family" text NOT NULL,
+        "credential_ref" text NOT NULL,
+        "render_probe_result_id" integer,
+        "title" text,
+        "description" text,
+        "drop_reason" text,
+        "design_product_id" varchar,
+        "shopify_product_id" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
@@ -2233,6 +2264,11 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "shadow_mint_jobs_claim_idx",
     sql: `CREATE INDEX IF NOT EXISTS "shadow_mint_jobs_claim_idx"
       ON "shadow_mint_jobs" ("state", "created_at")`,
+  },
+  {
+    name: "design_candidates_shop_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_candidates_shop_status_idx"
+      ON "design_candidates" ("shop_domain", "status")`,
   },
   {
     // One live (non-disabled) key per (scope, shop, provider, ref).

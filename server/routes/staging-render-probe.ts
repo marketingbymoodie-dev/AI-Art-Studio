@@ -54,6 +54,8 @@ import { measureSoftAlpha } from "../native-transparency";
 import { PETPOSTEROUS_ART_STYLES, PETPOSTEROUS_ART_STYLE_BATCH, artStyleConceptHeading, artStyleConceptShotFlags, artStyleDeviceLine, artStyleSurfaceForProduct, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { composeArtStyleProbe } from "../art-style-probe";
 import { generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
+import { adminCandidateDraft } from "@shared/flywheelRecipe";
+import { insertAdminDesignCandidate } from "../design-candidates";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
   const envName = String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase();
@@ -733,8 +735,40 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
           error: storageError,
         })
         .returning({ id: renderProbeResults.id });
+      let candidateId: string | null = null;
+      let candidateSkipped: string | null = null;
+      const decision = adminCandidateDraft({
+        source: "admin-probe",
+        petSwap: body.petSwap === true,
+        shopDomain: body.shopDomain,
+        humourOperator: body.humourOperator,
+        darknessLevel: body.darknessLevel,
+        species: body.species,
+        deviceStructure: body.deviceStructure,
+        deviceText: device,
+        funnyTruth: concept,
+        punchline: words,
+        artStyle,
+        behaviour: body.behaviour,
+        productFamily: body.productFamily,
+        credentialRef: recipe.credentialRef,
+        renderProbeResultId: row?.id ?? null,
+        imageVariant: variant,
+      });
+      if ("skip" in decision) {
+        candidateSkipped = decision.skip;
+      } else {
+        try {
+          candidateId = await insertAdminDesignCandidate(decision.draft);
+        } catch (insertErr) {
+          candidateSkipped = "insert";
+          console.warn("[design-candidates] insert failed:", String((insertErr as Error)?.message ?? insertErr).slice(0, 200));
+        }
+      }
       return res.json({
         id: row?.id,
+        candidateId,
+        candidateSkipped,
         batchId,
         visualSystem,
         variant,
@@ -883,6 +917,7 @@ dialog::backdrop{background:rgba(0,0,0,.8)}dialog .bar{color:#ddd;padding:6px 10
 <p class="hint">Truth, then a device, then images. Joke framework and Reuse this concept are not sent. One style and the bench read What they do and Product, write three truths, and start the device for the first truth while you read them. The device is on the card before any image. Pinned confirms the passenger-seat line, which the validator flags. Render anyway is the operator override. Customers do not get it.</p>
 <label>Art style scope<select id="artMode"><option value="one" selected>One style — truths, then a device</option><option value="bench">Ten-style bench — one truth, a device each</option><option value="pinned">Pinned concept</option></select></label>
 <label>Style<select id="artStyle"></select></label>
+<label>Shop<input id="flywheelShop" placeholder="demo-store.myshopify.com" autocomplete="off" aria-label="Shop domain"></label>
 <div><button id="runArt" type="button">Art style batch</button></div>
 <div id="artIdeas" hidden>
 <p id="artIdeasLead" class="hint"></p>
@@ -983,7 +1018,7 @@ function selectedArtIndex(){const picked=document.querySelector('input[name="art
 function hideArtIdeas(){artPending=null;const box=document.getElementById("artIdeas");if(box)box.hidden=true;const list=document.getElementById("artIdeaList");if(list)list.innerHTML="";const devices=document.getElementById("artDevices");if(devices)devices.innerHTML=""}
 function paintArtDevices(pending){const box=document.getElementById("artDevices");const note=document.getElementById("artDeviceNote");const cached=pending.deviceCache[pending.deviceKey];const idea=pending.options[selectedArtIndex()];
 if(!cached){box.innerHTML="<p class='hint'>Writing the device…</p>";note.textContent="";document.getElementById("artConfirm").disabled=true;return}
-box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
+box.innerHTML=cached.devices.map(function(row){return "<p class='idea'><b>"+h(row.label)+"</b> <span class='hint'>"+h(row.deviceStructure||"")+" · "+h(row.deviceMs)+"ms</span><pre>"+h(row.deviceLine||row.device)+"</pre></p>"}).join("");
 let latency=(cached.surface?("Surface "+cached.surface+". "):"")+"Device server "+cached.deviceMs+"ms, round trip "+cached.clientMs+"ms.";
 if(pending.discardedDeviceMs)latency="Speculative device discarded ("+pending.discardedDeviceMs+"ms). "+latency;
 else if(cached.speculative)latency="Speculative device was ready before confirm. "+latency;
@@ -995,7 +1030,7 @@ document.getElementById("artOriginal").hidden=!(idea&&idea.rewritten&&!pending.u
 function showArtIdeas(pending){artPending=pending;pending.deviceGen=0;pending.deviceCache={};pending.deviceKey="";pending.useOriginal=false;pending.discardedDeviceMs=0;const list=document.getElementById("artIdeaList");list.innerHTML="";
 document.getElementById("artIdeasLead").textContent=pending.mode==="pinned"?"Pinned concept. The validator flags a placed seat. Render anyway is the operator override. Read the device before any image.":("Written for "+pending.productLabel+(pending.mode==="one"?" in "+pending.styleLabel:" across ten styles")+". The first truth is selected. Its device is already being written.");
 pending.options.forEach(function(idea,i){const label=document.createElement("label");label.className="idea";const flags=(idea.shotFlags||[]).join(", ");const originalFlags=(idea.originalFlags||[]).join(", ");const words=idea.punchline?idea.punchline:"(no words)";
-label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.rewritten?"<span class='hint'>Rewritten. Rejected original: "+h(idea.originalTruth)+" ("+h(originalFlags)+")</span>":"")+(flags?"<span class='shot'>Shot warning: "+h(flags)+". Render anyway is the only way this reaches an image.</span>":"");
+label.innerHTML='<span><input type="radio" name="artIdea" value="'+i+'"> <b>Idea '+(i+1)+"</b></span><span><b>Funny truth</b> "+h(idea.funnyTruth)+"</span><span><b>Exact wording</b> "+h(words)+"</span><span><b>Operator</b> "+h(idea.humourOperator||"—")+"</span><span><b>Darkness</b> "+h(idea.darknessLevel?String(idea.darknessLevel):"—")+"</span><span><b>Species</b> <select class="species" aria-label="Species">'+["dog","cat","other"].map(function(s){return '<option value="'+s+'"'+(idea.species===s?" selected":"")+">"+s+"</option>"}).join("")+"</select></span>"+(idea.composedHeading?"<pre>"+h(idea.composedHeading)+"</pre>":"")+(idea.rewritten?"<span class='hint'>Rewritten. Rejected original: "+h(idea.originalTruth)+" ("+h(originalFlags)+")</span>":"")+(flags?"<span class='shot'>Shot warning: "+h(flags)+". Render anyway is the only way this reaches an image.</span>":"");
 list.appendChild(label)});
 const first=list.querySelector("input");if(first)first.checked=true;
 document.getElementById("artIdeas").hidden=false;
@@ -1010,7 +1045,7 @@ if(pending.deviceGen!==gen){pending.discardedDeviceMs=res.deviceMs||pending.disc
 pending.deviceCache[key]={devices:res.devices||[],deviceMs:res.deviceMs||0,clientMs:Math.round(performance.now()-started),speculative:reason==="speculative",surface:res.surface||""};
 if(pending.deviceKey===key)paintArtDevices(pending)}
 catch(e){if(artPending===pending&&pending.deviceGen===gen)setStatus(e.message||"Device failed")}}
-document.getElementById("artIdeaList").addEventListener("change",function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});
+document.getElementById("artIdeaList").addEventListener("change",function(ev){if(ev.target&&ev.target.classList&&ev.target.classList.contains("species"))return;if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, false, index===0?"speculative":"switch")});
 document.getElementById("artStyle").addEventListener("change",function(){if(!artPending||artPending.mode!=="one")return;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, false, "switch")});
 document.getElementById("family").addEventListener("change",function(){if(!artPending)return;artPending.productFamily=document.getElementById("family").value;const current=artPending.deviceCache[artPending.deviceKey];if(current)artPending.discardedDeviceMs=current.deviceMs;artPending.deviceCache={};const index=selectedArtIndex();requestArtDevices(artPending, index<0?0:index, artPending.useOriginal, "switch")});
 document.getElementById("artOriginal").onclick=function(){if(!artPending)return;const index=selectedArtIndex();if(index<0)return;requestArtDevices(artPending, index, true, "switch")};
@@ -1018,14 +1053,17 @@ async function renderArtJobs(pending, idea, petSwap){const cached=pending.device
 const prep=pending.prep;const index=selectedArtIndex();const truth=pending.useOriginal&&idea.originalTruth?idea.originalTruth:idea.funnyTruth;const flagged=pending.useOriginal?(idea.originalFlags||[]).length:(idea.shotFlags||[]).length;
 try{let photoId=prep.referencePhotoId;if(petSwap){const swap=document.getElementById("swapPhoto").files[0];if(!swap)throw new Error("Choose a pet swap photo.");setStatus("Storing the swap photo…");const stored=await apiJson("/api/staging/render-probe/art-style/prepare",{photoDataUrl:await fileToDataUrl(swap)});photoId=stored.referencePhotoId}
 const deviceRows=petSwap?[cached.devices[0]]:cached.devices;const variants=petSwap?1:prep.variants;const jobs=[];
-deviceRows.forEach(function(row){for(let v=1;v<=variants;v++)jobs.push({artStyle:row.styleId,label:row.label,variant:v,device:row.device,deviceMs:row.deviceMs})});
-let done=0;const failures=[];let cursor=0;
-async function one(job){try{await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,referencePhotoId:photoId,mode:pending.mode==="pinned"?"pinned":"full",behaviour:pending.behaviour,productFamily:pending.productFamily,funnyTruth:truth,punchline:idea.punchline||"",device:job.device,renderAnyway:flagged>0,deviceMs:job.deviceMs,speculativeHit:!pending.discardedDeviceMs&&!!cached.speculative,discardedDeviceMs:pending.discardedDeviceMs||0,pickedIndex:index,truths:pending.options.map(function(o){return {funnyTruth:o.funnyTruth,punchline:o.punchline||"",shotFlags:o.shotFlags||[],originalTruth:o.originalTruth||"",rewritten:!!o.rewritten}}),petSwap:!!petSwap})}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
+deviceRows.forEach(function(row){for(let v=1;v<=variants;v++)jobs.push({artStyle:row.styleId,label:row.label,variant:v,device:row.device,deviceStructure:row.deviceStructure||"",deviceMs:row.deviceMs})});
+let done=0;const failures=[];const stored=[];let cursor=0;
+const speciesEl=document.querySelectorAll("#artIdeaList select.species")[index];
+const species=speciesEl?speciesEl.value:(idea.species||"");
+const shopDomain=(document.getElementById("flywheelShop").value||"").trim();
+async function one(job){try{const out=await apiJson("/api/staging/render-probe/art-style",{batchId:prep.batchId,variant:job.variant,artStyle:job.artStyle,referencePhotoId:photoId,mode:pending.mode==="pinned"?"pinned":"full",behaviour:pending.behaviour,productFamily:pending.productFamily,funnyTruth:truth,punchline:idea.punchline||"",device:job.device,deviceStructure:job.deviceStructure,humourOperator:idea.humourOperator||"",darknessLevel:idea.darknessLevel||0,species:species,shopDomain:shopDomain,renderAnyway:flagged>0,deviceMs:job.deviceMs,speculativeHit:!pending.discardedDeviceMs&&!!cached.speculative,discardedDeviceMs:pending.discardedDeviceMs||0,pickedIndex:index,truths:pending.options.map(function(o){return {funnyTruth:o.funnyTruth,punchline:o.punchline||"",shotFlags:o.shotFlags||[],originalTruth:o.originalTruth||"",rewritten:!!o.rewritten}}),petSwap:!!petSwap});if(out.candidateId)stored.push(out.candidateId);else if(out.candidateSkipped)stored.push(job.label+" "+job.variant+" not stored ("+out.candidateSkipped+")")}catch(e){failures.push(job.label+" "+job.variant+": "+e.message)}
 done++;setStatus(prep.batchId+" · "+done+"/"+jobs.length+(failures.length?" · "+failures.length+" failed":""));if(done%2===0||done===jobs.length)load("art-styles:"+prep.batchId).catch(()=>{})}
 async function worker(){while(cursor<jobs.length){const job=jobs[cursor++];await one(job)}}
 await Promise.all([worker(),worker()]);
 await load("art-styles:"+prep.batchId);
-setStatus(failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."));
+setStatus((failures.length?failures.join(" · "):("Art style batch "+prep.batchId+" finished. Blind hides the labels."))+(stored.length?" · "+stored.join(", "):""));
 if(!petSwap)hideArtIdeas()}
 catch(e){setStatus(e.message||"Art style batch failed")}
 finally{running=false;document.getElementById("artConfirm").disabled=false;document.getElementById("runArt").disabled=false;document.getElementById("runBatch").disabled=false;if(artPending)paintArtDevices(artPending)}}
