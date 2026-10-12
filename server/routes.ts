@@ -22019,6 +22019,22 @@ ${orientationExtra}
     const productType = await storage.getProductType(productTypeId);
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
+    // Same publisher promote uses. Refuse before any Shopify product exists
+    // when this type has no studio variant on the shipping map.
+    try {
+      const { assertProductTypeReadyToPromote } = await import("./promote-shipping");
+      await assertProductTypeReadyToPromote({
+        shop,
+        productTypeName: productType.name,
+        variantIdMaps: [productType.shopifyVariantIds, productType.shopifyVariantIdsBoth],
+      });
+    } catch (err) {
+      if (err instanceof Error && (err as { status?: number }).status === 409) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
+    }
+
     const plan = getEffectivePlan(installation as any, shop);
     const limit = getDesignProductLimit(plan.planName);
 
