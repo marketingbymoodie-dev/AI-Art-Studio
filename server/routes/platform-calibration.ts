@@ -53,7 +53,10 @@ import {
 } from "../supabaseFlatCalibration";
 import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
-import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
+import {
+  isPrintifyAuthError,
+  isPrintifyDecoratorUnavailableError,
+} from "../printifyDecoratorErrors";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
 import {
   catalogSizeCalibratorModels,
@@ -524,6 +527,69 @@ async function listBlueprintProductTypes(
   return out;
 }
 
+type HarvestCred = { token: string; shopId: string; label: string };
+
+function pushHarvestCred(
+  list: HarvestCred[],
+  token: string | null | undefined,
+  shopId: string | number | null | undefined,
+  label: string,
+) {
+  const trimmed = token?.trim();
+  if (!trimmed || shopId == null || shopId === "") return;
+  const sid = String(shopId);
+  if (list.some((t) => t.token === trimmed && t.shopId === sid)) return;
+  list.push({ token: trimmed, shopId: sid, label });
+}
+
+function harvestListHasToken(list: HarvestCred[], token: string | null | undefined): boolean {
+  const trimmed = token?.trim();
+  return !!trimmed && list.some((t) => t.token === trimmed);
+}
+
+/**
+ * Append every shop on each token already in `list`, and drop tokens Printify rejects.
+ * Extra shops stay in this list so a platform account is exhausted before any merchant token.
+ * Decorator 6002 is shop-scoped (US vs EU shops on the same token).
+ */
+async function expandHarvestCredShops(list: HarvestCred[]): Promise<HarvestCred[]> {
+  const deadTokens = new Set<string>();
+  for (const token of [...new Set(list.map((t) => t.token))]) {
+    try {
+      const resp = await fetch("https://api.printify.com/v1/shops.json", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (resp.status === 401 || resp.status === 403) {
+        deadTokens.add(token);
+        console.warn(
+          `[platform-canonical] Printify token rejected (${resp.status}) while listing shops; skipping that account`,
+        );
+        continue;
+      }
+      if (!resp.ok) continue;
+      const shops = await resp.json();
+      const shopsList = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
+      for (const shop of shopsList) {
+        const id = shop?.id ?? shop?.attributes?.id;
+        if (id != null) pushHarvestCred(list, token, id, `printify-shop:${id}`);
+      }
+    } catch {
+      /* ignore shop list failures */
+    }
+  }
+  return list.filter((t) => !deadTokens.has(t.token));
+}
+
+/**
+ * Credential order for canonical harvest — a platform operation.
+ *
+ * 1. PRINTIFY_API_TOKEN and every shop on that token. When the env token is unset,
+ *    the operator platform creds (owner shop) take this slot.
+ * 2. Merchant listings, only after the platform account fails. Printify 6002 is
+ *    shop-scoped: the platform shop often does not have a US decorator enabled,
+ *    and the shop that imported the product type usually does. A revoked merchant
+ *    token must not run before the platform account.
+ */
 async function listHarvestCredsForProvider(
   storage: StorageLike,
   args: {
@@ -531,58 +597,51 @@ async function listHarvestCredsForProvider(
     platformCreds: { token: string; shopId: string; merchant: any };
     sessionMerchant: any | null;
   },
-): Promise<Array<{ token: string; shopId: string; label: string }>> {
-  const tried: Array<{ token: string; shopId: string; label: string }> = [];
-  const pushPair = (token: string | null | undefined, shopId: string | number | null | undefined, label: string) => {
-    if (!token || shopId == null || shopId === "") return;
-    const sid = String(shopId);
-    if (tried.some((t) => t.token === token && t.shopId === sid)) return;
-    tried.push({ token, shopId: sid, label });
+): Promise<HarvestCred[]> {
+  const platform: HarvestCred[] = [];
+  const merchants: HarvestCred[] = [];
+  const envToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
+  const envShopId = (process.env.PRINTIFY_SHOP_ID || "").trim();
+  if (envToken && envShopId) {
+    pushHarvestCred(platform, envToken, envShopId, "env-printify");
+  } else {
+    pushHarvestCred(platform, args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
+    pushHarvestCred(
+      platform,
+      args.platformCreds.merchant?.printifyApiToken,
+      args.platformCreds.merchant?.printifyShopId,
+      "platform-merchant",
+    );
+  }
+
+  const pushMerchantFallback = (token: string | null | undefined, shopId: string | number | null | undefined, label: string) => {
+    if (harvestListHasToken(platform, token)) return;
+    pushHarvestCred(merchants, token, shopId, label);
   };
-  const pushMerchant = (m: any | null | undefined, label: string) => {
-    pushPair(m?.printifyApiToken, m?.printifyShopId, label);
-  };
+
   if (args.refProduct?.merchantId) {
     try {
       const m = await storage.getMerchant(String(args.refProduct.merchantId));
-      pushMerchant(m, `listing-merchant:${args.refProduct.merchantId}`);
+      pushMerchantFallback(m?.printifyApiToken, m?.printifyShopId, `listing-merchant:${args.refProduct.merchantId}`);
     } catch {
       /* ignore */
     }
   }
-  pushMerchant(args.sessionMerchant, "session-merchant");
-  pushMerchant(args.platformCreds.merchant, "platform-merchant");
-  pushPair(args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
+  pushMerchantFallback(
+    args.sessionMerchant?.printifyApiToken,
+    args.sessionMerchant?.printifyShopId,
+    "session-merchant",
+  );
+  pushMerchantFallback(
+    args.platformCreds.merchant?.printifyApiToken,
+    args.platformCreds.merchant?.printifyShopId,
+    "platform-merchant",
+  );
+  pushMerchantFallback(args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
 
-  // Same Printify token can own multiple shops (US vs EU). Decorator 6002 is
-  // often shop-scoped — try every shop on each distinct token.
-  const tokens = [...new Set(tried.map((t) => t.token))];
-  for (const token of tokens) {
-    try {
-      const resp = await fetch("https://api.printify.com/v1/shops.json", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) continue;
-      const shops = await resp.json();
-      const list = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
-      for (const shop of list) {
-        const id = shop?.id ?? shop?.attributes?.id;
-        if (id != null) pushPair(token, id, `printify-shop:${id}`);
-      }
-    } catch {
-      /* ignore shop list failures */
-    }
-  }
-
-  return tried.length > 0
-    ? tried
-    : [
-        {
-          token: args.platformCreds.token,
-          shopId: String(args.platformCreds.shopId),
-          label: "platform-creds",
-        },
-      ];
+  const platformLive = await expandHarvestCredShops(platform);
+  const merchantLive = await expandHarvestCredShops(merchants);
+  return [...platformLive, ...merchantLive];
 }
 
 async function findReferenceProduct(
@@ -1133,6 +1192,9 @@ export function registerPlatformCalibrationRoutes(
         const providersUsed: number[] = [];
         const harvestWarnings: string[] = [];
         let wiped = false;
+        const deadTokens = new Set<string>();
+        const authError =
+          "Printify API token unauthenticated (401). Reconnect Printify for that merchant, or set a valid PRINTIFY_API_TOKEN.";
 
         const writeManifest = async (
           manifest: FlatCalibrationManifest,
@@ -1170,8 +1232,8 @@ export function registerPlatformCalibrationRoutes(
         try {
           // Pass 1: first provider that can create products wins for masks/geometry.
           // Pass 2+: other providers only add blank colours not already harvested
-          // (e.g. JAMS Black/Red after UK White/*). Each provider tries the Printify
-          // shop tied to that listing first — owner shops often reject US decorators.
+          // (e.g. JAMS Black/Red after UK White/*). Credentials: platform Printify
+          // account first; the listing merchant shop is only the 6002 fallback.
           for (let i = 0; i < providerCandidates.length; i++) {
             const providerId = providerCandidates[i]!;
             const providerPts = blueprintProducts.filter(
@@ -1181,11 +1243,13 @@ export function registerPlatformCalibrationRoutes(
             const skipBlankColorIds = accumulated ? existingBlankIds() : [];
             const shopifyBlankSources = await resolveShopifyBlankSources(storage, providerPts);
             const shopifyBlankSource = shopifyBlankSources[0];
-            const credOptions = await listHarvestCredsForProvider(storage, {
-              refProduct: ref,
-              platformCreds: creds,
-              sessionMerchant,
-            });
+            const credOptions = (
+              await listHarvestCredsForProvider(storage, {
+                refProduct: ref,
+                platformCreds: creds,
+                sessionMerchant,
+              })
+            ).filter((c) => !deadTokens.has(c.token));
             console.log(
               `[platform-canonical] harvest bp ${blueprintId} v${version} provider ${providerId}` +
                 ` (${i + 1}/${providerCandidates.length}` +
@@ -1201,7 +1265,11 @@ export function registerPlatformCalibrationRoutes(
 
             let providerOk = false;
             let providerLastErr = "";
+            if (credOptions.length === 0) {
+              providerLastErr = authError;
+            }
             for (const shopCreds of credOptions) {
+              if (deadTokens.has(shopCreds.token)) continue;
               try {
                 const result = await harvestFlatCalibration({
                   productTypeId: 0,
@@ -1325,6 +1393,14 @@ export function registerPlatformCalibrationRoutes(
                 const msg = (err as Error)?.message || String(err);
                 providerLastErr = msg;
                 lastError = msg;
+                if (isPrintifyAuthError(msg)) {
+                  deadTokens.add(shopCreds.token);
+                  providerLastErr = authError;
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} token unauthenticated; trying next Printify account: ${msg.slice(0, 180)}`,
+                  );
+                  continue;
+                }
                 if (isPrintifyDecoratorUnavailableError(msg)) {
                   console.warn(
                     `[platform-canonical] provider ${providerId} via ${shopCreds.label} decorator error; trying next shop: ${msg}`,

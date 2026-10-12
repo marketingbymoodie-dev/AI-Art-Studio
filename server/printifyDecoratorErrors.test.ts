@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isPrintifyDecoratorUnavailableError } from "./printifyDecoratorErrors";
+import {
+  isPrintifyAuthError,
+  isPrintifyDecoratorUnavailableError,
+} from "./printifyDecoratorErrors";
 
 describe("isPrintifyDecoratorUnavailableError", () => {
   it("matches Printify 6002 decorator messages", () => {
@@ -18,5 +21,21 @@ describe("isPrintifyDecoratorUnavailableError", () => {
       false,
     );
     expect(isPrintifyDecoratorUnavailableError("Printify 429 rate limited")).toBe(false);
+  });
+});
+
+describe("isPrintifyAuthError", () => {
+  it("matches upload 401 Unauthenticated", () => {
+    expect(
+      isPrintifyAuthError(
+        'Printify 401 on /uploads/images.json: {"error":"Unauthenticated","request_id":"1791836109@abc"}',
+      ),
+    ).toBe(true);
+    expect(isPrintifyAuthError("Printify 403 on /shops.json: forbidden")).toBe(true);
+  });
+
+  it("ignores decorator and probe failures", () => {
+    expect(isPrintifyAuthError("Decorator 99 not available for this blueprint 145")).toBe(false);
+    expect(isPrintifyAuthError("probe: no mockup returned for front")).toBe(false);
   });
 });

@@ -8,3 +8,9 @@ export function isPrintifyDecoratorUnavailableError(message: string): boolean {
     m.includes('"code":6002')
   );
 }
+
+/** Revoked or wrong API token. Catalog reads and image uploads both fail closed. */
+export function isPrintifyAuthError(message: string): boolean {
+  const m = String(message || "").toLowerCase();
+  return m.includes("unauthenticated") || /printify 401\b/.test(m) || /printify 403\b/.test(m);
+}

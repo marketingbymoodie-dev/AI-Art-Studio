@@ -55,7 +55,10 @@ import {
   shouldAllowFlatHarvest,
   shouldForceFlatTierDespiteProbe,
 } from "@shared/productLayoutPolicy";
-import { isPrintifyDecoratorUnavailableError } from "./printifyDecoratorErrors";
+import {
+  isPrintifyAuthError,
+  isPrintifyDecoratorUnavailableError,
+} from "./printifyDecoratorErrors";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -3129,7 +3132,11 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           createdProductIds,
         );
       } catch (e) {
-        console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, (e as Error).message);
+        const message = (e as Error).message || String(e);
+        console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, message);
+        // 401 is a dead token, not a curved garment. Rethrow so canonical harvest
+        // can try the next Printify account instead of continuing registration.
+        if (isPrintifyAuthError(message)) throw e;
       }
     }
     const tiers = Object.values(probes).map((p) => p!.tier);
