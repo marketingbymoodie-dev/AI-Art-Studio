@@ -85,23 +85,18 @@ export function carrierRegistrationSkipReason(origin: string, shop: string): str
   return `intentional skip: origin host ${host} is not a registerable https callback for shop ${shopLabel}`;
 }
 
-function printifyToken(): string {
-  return String(process.env.PRINTIFY_API_TOKEN || "").trim();
-}
-
-async function printifyTokenForShop(shop: string): Promise<string> {
-  const envTok = printifyToken();
-  try {
-    const installation = await storage.getShopifyInstallationByShop(shop);
-    if (installation?.merchantId) {
-      const merchant = await storage.getMerchant(installation.merchantId);
-      const tok = String(merchant?.printifyApiToken || "").trim();
-      if (tok) return tok;
-    }
-  } catch {
-    /* fall through */
+/**
+ * Catalogue shipping (`/v2/catalog/.../shipping.json`) is global.
+ * The platform token only. A missing token fails the quote; a merchant token is not borrowed.
+ */
+export function platformCatalogueShippingToken(): string {
+  const token = String(process.env.PRINTIFY_API_TOKEN || "").trim();
+  if (!token) {
+    const message = "PRINTIFY_API_TOKEN is not set";
+    console.error(`[carrier-shipping] ${message}`);
+    throw new Error(message);
   }
-  return envTok;
+  return token;
 }
 
 export async function fetchPrintifyShippingTable(
@@ -122,7 +117,9 @@ export async function fetchPrintifyShippingTable(
     { headers },
   );
   if (!listResp.ok) {
-    throw new Error(`Printify shipping list ${listResp.status}`);
+    const message = `PRINTIFY_API_TOKEN rejected by Printify catalogue shipping.json: HTTP ${listResp.status}`;
+    console.error(`[carrier-shipping] ${message}`);
+    throw new Error(message);
   }
   const listData = (await listResp.json()) as { data?: Array<{ attributes?: { name?: string } }> };
   const tiers = (listData.data || []).map((m) => m.attributes?.name).filter(Boolean) as string[];
@@ -300,11 +297,7 @@ export async function quoteShopifyCarrierRates(params: {
   items: any[];
 }): Promise<ShopifyCarrierRate[]> {
   const shop = normalizeMyshopifyShopDomain(params.shop);
-  const token = await printifyTokenForShop(shop);
-  if (!token) {
-    console.warn("[carrier-shipping] no Printify token");
-    return [];
-  }
+  const token = platformCatalogueShippingToken();
 
   const physical: Array<{
     blueprintId: number;
