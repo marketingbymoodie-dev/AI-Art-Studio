@@ -600,8 +600,9 @@ async function expandHarvestCredShops(list: HarvestCred[]): Promise<HarvestCred[
 /**
  * Credential order for canonical harvest — a platform operation.
  *
- * 1. PRINTIFY_API_TOKEN and every shop on that token. When the env token is unset,
- *    the operator platform creds (owner shop) take this slot.
+ * 1. PRINTIFY_API_TOKEN and every shop on that token, but only when PRINTIFY_SHOP_ID
+ *    is also set. If the shop id is absent, this slot is the owner merchant even
+ *    when the env token is present.
  * 2. Merchant listings, only after the platform account fails. Printify 6002 is
  *    shop-scoped: the platform shop often does not have a US decorator enabled,
  *    and the shop that imported the product type usually does. A revoked merchant

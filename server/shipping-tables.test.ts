@@ -4,7 +4,9 @@ import {
   deriveVariantGroups,
   evaluateTier,
   groupByVariantFromDefs,
-  orderShippingCredentialCandidates,
+  assertPlatformCatalogueToken,
+  scheduledSyncSkipReason,
+  SYNC_FAILURE_BACKOFF_MS,
   pickStandardMethod,
   retryDelayMs,
   stableStringify,
@@ -29,31 +31,31 @@ describe("retryDelayMs", () => {
   });
 });
 
-describe("orderShippingCredentialCandidates", () => {
-  it("tries merchant tokens before the env token and drops duplicates", () => {
-    const ordered = orderShippingCredentialCandidates(
-      [
-        { token: "merchant-a", source: "owner merchant printify shop 1" },
-        { token: "merchant-b", source: "merchant printify shop 2" },
-        { token: "", source: "merchant printify shop 3" },
-      ],
-      "merchant-b",
-    );
-    expect(ordered.map((c) => c.source)).toEqual([
-      "owner merchant printify shop 1",
-      "merchant printify shop 2",
-    ]);
+describe("platform catalogue token", () => {
+  it("rejects a missing token and a non-200 shops.json status", () => {
+    expect(() => assertPlatformCatalogueToken("", 200)).toThrow(/PRINTIFY_API_TOKEN is not set/);
+    expect(() => assertPlatformCatalogueToken("tok", 401)).toThrow(/HTTP 401/);
+    expect(() => assertPlatformCatalogueToken("tok", 200)).not.toThrow();
+  });
+});
+
+describe("scheduledSyncSkipReason", () => {
+  const hour = 60 * 60 * 1000;
+  const success = new Date("2026-10-12T09:00:00.000Z").toISOString();
+  const failure = new Date("2026-10-12T10:00:00.000Z").toISOString();
+
+  it("skips for 20 hours after a success that is newer than any failure", () => {
+    const now = Date.parse(success) + 19 * hour;
+    expect(scheduledSyncSkipReason(now, success, null)).toBe("recent_sync");
+    expect(scheduledSyncSkipReason(now + 2 * hour, success, null)).toBeNull();
   });
 
-  it("keeps the env token when no merchant token matches it", () => {
-    const ordered = orderShippingCredentialCandidates(
-      [{ token: "merchant-a", source: "merchant printify shop 9" }],
-      "env-token",
+  it("uses a minute-scale backoff after a failure and does not apply the 20-hour guard", () => {
+    const failedAt = Date.parse(failure);
+    expect(scheduledSyncSkipReason(failedAt + SYNC_FAILURE_BACKOFF_MS - 1000, success, failure)).toBe(
+      "failure_backoff",
     );
-    expect(ordered.map((c) => c.source)).toEqual([
-      "merchant printify shop 9",
-      "env PRINTIFY_API_TOKEN",
-    ]);
+    expect(scheduledSyncSkipReason(failedAt + SYNC_FAILURE_BACKOFF_MS + 1000, success, failure)).toBeNull();
   });
 });
 
