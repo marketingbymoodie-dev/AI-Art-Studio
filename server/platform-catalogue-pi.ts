@@ -263,6 +263,7 @@ async function upsertPlatformRefForEntry(args: {
       sortOrder: 0,
     };
 
+    const { mapVariantShippingForProductTypes } = await import("./shipping-tables");
     if (existing) {
       await storage.updateProductType(existing.id, {
         name: payload.name,
@@ -279,9 +280,15 @@ async function upsertPlatformRefForEntry(args: {
         panelMappingTemplate: payload.panelMappingTemplate,
         isActive: true,
       } as any);
+      await mapVariantShippingForProductTypes([existing.id]).catch((err) => {
+        console.error(`${TAG} shipping map failed for product type ${existing.id}:`, err);
+      });
       return "updated";
     }
-    await storage.createProductType(payload as any);
+    const created = await storage.createProductType(payload as any);
+    await mapVariantShippingForProductTypes([created.id]).catch((err) => {
+      console.error(`${TAG} shipping map failed for product type ${created.id}:`, err);
+    });
     return "created";
   } catch (e) {
     console.error(`${TAG} ensure failed for bp ${blueprintId}:`, e);

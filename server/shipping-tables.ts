@@ -546,6 +546,181 @@ async function resolveClassName(blueprintId: number, providerId: number): Promis
   return `Blueprint ${blueprintId} — provider ${providerId}`;
 }
 
+/** printify variant id → group name, from a class's stored variantGroupsJson. */
+export function groupByVariantFromDefs(groups: VariantGroupDef[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const g of groups) {
+    for (const id of g.printifyVariantIds || []) {
+      if (id) out[String(id)] = g.group;
+    }
+  }
+  return out;
+}
+
+type VariantShippingProduct = {
+  id: number;
+  variantMap: string | null;
+  shopifyVariantIds: unknown;
+};
+
+function variantShippingRowsForProduct(
+  p: VariantShippingProduct,
+  classId: number,
+  groupByVariant: Record<string, string>,
+): (typeof variantShipping.$inferInsert)[] {
+  let map: Record<string, { printifyVariantId?: number | string }> = {};
+  try {
+    map = JSON.parse(p.variantMap || "{}");
+  } catch {
+    return [];
+  }
+  // shopifyVariantIds is keyed by display labels ("S:Black", `14" × 14":default`)
+  // while variantMap uses id keys ("s:black", "14-x-14:default") — bridge via
+  // the loose normalized form or the ids never match.
+  const shopifyIdsByLooseKey = new Map<string, string>();
+  if (p.shopifyVariantIds && typeof p.shopifyVariantIds === "object") {
+    for (const [label, vid] of Object.entries(p.shopifyVariantIds as Record<string, unknown>)) {
+      if (vid != null) shopifyIdsByLooseKey.set(normalizeVariantKeyLoose(label), String(vid));
+    }
+  }
+  const inserts: (typeof variantShipping.$inferInsert)[] = [];
+  for (const [key, entry] of Object.entries(map)) {
+    const pvid = entry?.printifyVariantId != null ? String(entry.printifyVariantId) : "";
+    if (!pvid) continue;
+    const group = groupByVariant[pvid];
+    if (!group) continue;
+    inserts.push({
+      shippingClassId: classId,
+      productTypeId: p.id,
+      sizeColorKey: key,
+      printifyVariantId: pvid,
+      shopifyVariantId: shopifyIdsByLooseKey.get(normalizeVariantKeyLoose(key)) ?? null,
+      variantGroup: group,
+      updatedAt: new Date(),
+    });
+  }
+  return inserts;
+}
+
+function dedupeVariantShippingRows(
+  inserts: (typeof variantShipping.$inferInsert)[],
+): (typeof variantShipping.$inferInsert)[] {
+  // Dedupe on (productTypeId, printifyVariantId) — multiple sizeColor keys can
+  // map to the same Printify variant on odd imports; keep the first.
+  const seen = new Set<string>();
+  return inserts.filter((row) => {
+    const k = `${row.productTypeId}:${row.printifyVariantId}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+export type VariantShippingMapResult = {
+  productTypeId: number;
+  shippingClassId: number | null;
+  mapped: number;
+  skippedReason?: string;
+};
+
+/**
+ * Join product types to an existing shipping class using the stored variant
+ * groups. Does not refetch Printify. Logs the mapped row count per type,
+ * including zero.
+ */
+export async function mapVariantShippingForProductTypes(
+  productTypeIds: number[],
+): Promise<VariantShippingMapResult[]> {
+  const ids = [...new Set(productTypeIds.filter((n) => Number.isFinite(n) && n > 0))];
+  const results: VariantShippingMapResult[] = [];
+  const classIdsTouched = new Set<number>();
+
+  for (const id of ids) {
+    const [p] = await db
+      .select({
+        id: productTypes.id,
+        variantMap: productTypes.variantMap,
+        shopifyVariantIds: productTypes.shopifyVariantIds,
+        printifyBlueprintId: productTypes.printifyBlueprintId,
+        printifyProviderId: productTypes.printifyProviderId,
+      })
+      .from(productTypes)
+      .where(eq(productTypes.id, id));
+    if (!p) {
+      console.log(`[shipping-tables] product type ${id}: mapped 0 (not found)`);
+      results.push({ productTypeId: id, shippingClassId: null, mapped: 0, skippedReason: "not_found" });
+      continue;
+    }
+    if (!p.printifyBlueprintId || !p.printifyProviderId) {
+      console.log(`[shipping-tables] product type ${id}: mapped 0 (no blueprint/provider)`);
+      results.push({
+        productTypeId: id,
+        shippingClassId: null,
+        mapped: 0,
+        skippedReason: "no_blueprint",
+      });
+      continue;
+    }
+    const [cls] = await db
+      .select()
+      .from(shippingClasses)
+      .where(
+        and(
+          eq(shippingClasses.blueprintId, p.printifyBlueprintId),
+          eq(shippingClasses.providerId, p.printifyProviderId),
+        ),
+      )
+      .limit(1);
+    if (!cls) {
+      console.log(
+        `[shipping-tables] product type ${id}: mapped 0 (no shipping class for bp ${p.printifyBlueprintId} provider ${p.printifyProviderId})`,
+      );
+      results.push({
+        productTypeId: id,
+        shippingClassId: null,
+        mapped: 0,
+        skippedReason: "no_class",
+      });
+      continue;
+    }
+    let groups: VariantGroupDef[] = [];
+    try {
+      groups = JSON.parse(cls.variantGroupsJson || "[]") as VariantGroupDef[];
+    } catch {
+      groups = [];
+    }
+    const groupByVariant = groupByVariantFromDefs(groups);
+    if (Object.keys(groupByVariant).length === 0) {
+      console.log(
+        `[shipping-tables] product type ${id}: mapped 0 (class ${cls.id} has no variant groups)`,
+      );
+      results.push({
+        productTypeId: id,
+        shippingClassId: cls.id,
+        mapped: 0,
+        skippedReason: "no_groups",
+      });
+      continue;
+    }
+
+    await db.delete(variantShipping).where(eq(variantShipping.productTypeId, id));
+    const rows = dedupeVariantShippingRows(
+      variantShippingRowsForProduct(p, cls.id, groupByVariant),
+    );
+    if (rows.length) await db.insert(variantShipping).values(rows);
+    classIdsTouched.add(cls.id);
+    console.log(
+      `[shipping-tables] product type ${id}: mapped ${rows.length} variant(s) onto class ${cls.id}`,
+    );
+    results.push({ productTypeId: id, shippingClassId: cls.id, mapped: rows.length });
+  }
+
+  for (const classId of classIdsTouched) {
+    await rebuildCoverageForClass(classId);
+  }
+  return results;
+}
+
 /** Rebuild variant_shipping rows for every product type using this class. */
 async function rebuildVariantShipping(
   classId: number,
@@ -582,50 +757,16 @@ async function rebuildVariantShipping(
   const productIds: number[] = [];
   const inserts: (typeof variantShipping.$inferInsert)[] = [];
   for (const p of products) {
-    let map: Record<string, { printifyVariantId?: number | string }> = {};
-    try {
-      map = JSON.parse(p.variantMap || "{}");
-    } catch {
-      continue;
-    }
-    // shopifyVariantIds is keyed by display labels ("S:Black", `14" × 14":default`)
-    // while variantMap uses id keys ("s:black", "14-x-14:default") — bridge via
-    // the loose normalized form or the ids never match.
-    const shopifyIdsByLooseKey = new Map<string, string>();
-    if (p.shopifyVariantIds && typeof p.shopifyVariantIds === "object") {
-      for (const [label, vid] of Object.entries(p.shopifyVariantIds as Record<string, unknown>)) {
-        if (vid != null) shopifyIdsByLooseKey.set(normalizeVariantKeyLoose(label), String(vid));
-      }
-    }
-    let matched = 0;
-    for (const [key, entry] of Object.entries(map)) {
-      const pvid = entry?.printifyVariantId != null ? String(entry.printifyVariantId) : "";
-      if (!pvid) continue;
-      const group = groupByVariant[pvid];
-      if (!group) continue; // variant not present in the shipping table
-      matched++;
-      inserts.push({
-        shippingClassId: classId,
-        productTypeId: p.id,
-        sizeColorKey: key,
-        printifyVariantId: pvid,
-        shopifyVariantId: shopifyIdsByLooseKey.get(normalizeVariantKeyLoose(key)) ?? null,
-        variantGroup: group,
-        updatedAt: new Date(),
-      });
-    }
-    if (matched > 0) productIds.push(p.id);
+    const rows = dedupeVariantShippingRows(
+      variantShippingRowsForProduct(p, classId, groupByVariant),
+    );
+    console.log(
+      `[shipping-tables] product type ${p.id}: mapped ${rows.length} variant(s) onto class ${classId}`,
+    );
+    if (rows.length > 0) productIds.push(p.id);
+    inserts.push(...rows);
   }
-  // Dedupe on (productTypeId, printifyVariantId) — multiple sizeColor keys can
-  // map to the same Printify variant on odd imports; keep the first.
-  const seen = new Set<string>();
-  const deduped = inserts.filter((row) => {
-    const k = `${row.productTypeId}:${row.printifyVariantId}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  if (deduped.length) await db.insert(variantShipping).values(deduped);
+  if (inserts.length) await db.insert(variantShipping).values(inserts);
   return productIds;
 }
 

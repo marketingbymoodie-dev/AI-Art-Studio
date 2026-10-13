@@ -18271,6 +18271,16 @@ ${orientationExtra}
         });
       }
 
+      try {
+        const { mapVariantShippingForProductTypes } = await import("./shipping-tables");
+        await mapVariantShippingForProductTypes([productType.id]);
+      } catch (e) {
+        console.error(
+          `[shipping-tables] import map failed for product type ${productType.id}:`,
+          (e as Error)?.message || e,
+        );
+      }
+
       res.json(productType);
 
       // No per-merchant harvest for catalog-managed products with shared calibration.

@@ -3,6 +3,7 @@ import {
   computeTableHash,
   deriveVariantGroups,
   evaluateTier,
+  groupByVariantFromDefs,
   pickStandardMethod,
   retryDelayMs,
   stableStringify,
@@ -181,5 +182,16 @@ describe("evaluateTier (spec 0.4)", () => {
     });
     expect(allowed.tier).toBe("normal");
     expect(allowed.shippable).toBe(true);
+  });
+});
+
+describe("groupByVariantFromDefs", () => {
+  it("indexes every printify variant id onto its group", () => {
+    expect(
+      groupByVariantFromDefs([
+        { group: "g1", label: "S-M", printifyVariantIds: ["11", "12"] },
+        { group: "g2", label: "L", printifyVariantIds: ["13"] },
+      ]),
+    ).toEqual({ "11": "g1", "12": "g1", "13": "g2" });
   });
 });
