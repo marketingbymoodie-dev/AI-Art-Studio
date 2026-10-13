@@ -2685,7 +2685,12 @@ export const shippingCoverage = pgTable(
 
 export type ShippingCoverage = typeof shippingCoverage.$inferSelect;
 
-/** One shipping-tables sync run (nightly | boot | manual | seed). */
+/**
+ * One shipping-tables sync run (nightly | boot | manual | seed).
+ * started_at and finished_at are `timestamp without time zone`. The skip guard
+ * does not read them; it compares platform_config ISO strings with Date.now().
+ * A reader in a non-UTC zone will treat these naive values as local time.
+ */
 export const shippingSyncRuns = pgTable("shipping_sync_runs", {
   id: serial("id").primaryKey(),
   source: text("source").notNull().default("manual"),

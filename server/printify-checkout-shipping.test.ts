@@ -3,7 +3,20 @@ import {
   canRegisterCarrierService,
   carrierRegistrationSkipReason,
   parseCarrierRateRequest,
+  platformCatalogueShippingToken,
 } from "./printify-checkout-shipping";
+
+describe("platformCatalogueShippingToken", () => {
+  it("returns PRINTIFY_API_TOKEN and throws when it is unset", () => {
+    const prev = process.env.PRINTIFY_API_TOKEN;
+    process.env.PRINTIFY_API_TOKEN = "platform-token";
+    expect(platformCatalogueShippingToken()).toBe("platform-token");
+    delete process.env.PRINTIFY_API_TOKEN;
+    expect(() => platformCatalogueShippingToken()).toThrow(/PRINTIFY_API_TOKEN is not set/);
+    if (prev === undefined) delete process.env.PRINTIFY_API_TOKEN;
+    else process.env.PRINTIFY_API_TOKEN = prev;
+  });
+});
 
 describe("parseCarrierRateRequest", () => {
   it("reads destination country, currency, and items from Shopify rate payload", () => {
