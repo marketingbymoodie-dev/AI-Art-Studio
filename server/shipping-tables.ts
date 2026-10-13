@@ -16,7 +16,6 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   catalogVariantCosts,
-  merchants,
   platformConfig,
   productTypes,
   shippingClasses,
@@ -26,14 +25,11 @@ import {
   shippingSyncRuns,
   shippingTableSnapshots,
   shippingZoneRules,
-  shopifyInstallations,
   variantShipping,
   type ShippingClass,
   type ShippingZoneRule,
 } from "@shared/schema";
 import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
-import { collectOwnerShopDomains } from "./platformAdmin";
-import { normalizeMyshopifyShopDomain } from "./shopDomain";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -46,8 +42,10 @@ export const SHIPPING_CONFIG_KEYS = {
   absoluteCapCents: "SHIPPING_ABSOLUTE_CAP_CENTS",
   /** Retail fallback = median group COGS × this multiplier (basis points; 30000 = 3.0×). */
   retailMarkupBp: "SHIPPING_RETAIL_FALLBACK_MARKUP_BP",
-  /** ISO timestamp of the last completed sync (nightly/boot dedupe guard). */
+  /** ISO timestamp of the last sync that fetched with zero class failures. */
   lastSyncAt: "SHIPPING_TABLES_LAST_SYNC_AT",
+  /** ISO timestamp of the last sync that failed or rejected the platform token. */
+  lastFailureAt: "SHIPPING_TABLES_LAST_FAILURE_AT",
 } as const;
 
 export type ShippingTierConfig = {
@@ -131,27 +129,23 @@ const PRINTIFY_BASE = "https://api.printify.com";
 export type ShippingCredentialSource = { token: string; source: string };
 
 /**
- * Active token for this process. Catalogue shipping has no request merchant:
- * stored merchant tokens (owner shops first), then PRINTIFY_API_TOKEN.
- * Env-only died whenever that personal access token was revoked.
+ * Catalogue shipping is global. This process uses PRINTIFY_API_TOKEN only.
+ * A dead platform token fails the sync; merchant tokens are not borrowed.
  */
 let activeShippingCredential: ShippingCredentialSource | null = null;
 
-export function orderShippingCredentialCandidates(
-  merchantsFirst: ShippingCredentialSource[],
-  envToken: string,
-): ShippingCredentialSource[] {
-  const out: ShippingCredentialSource[] = [];
-  const seen = new Set<string>();
-  const push = (token: string, source: string) => {
-    const t = String(token || "").trim();
-    if (!t || seen.has(t)) return;
-    seen.add(t);
-    out.push({ token: t, source });
-  };
-  for (const candidate of merchantsFirst) push(candidate.token, candidate.source);
-  push(envToken, "env PRINTIFY_API_TOKEN");
-  return out;
+export function platformCatalogueToken(): string {
+  return String(process.env.PRINTIFY_API_TOKEN || "").trim();
+}
+
+/** Reject anything other than a present platform token that Printify accepted. */
+export function assertPlatformCatalogueToken(token: string, shopsStatus: number): void {
+  if (!token) {
+    throw new Error("PRINTIFY_API_TOKEN is not set");
+  }
+  if (shopsStatus !== 200) {
+    throw new Error(`PRINTIFY_API_TOKEN rejected by Printify shops.json: HTTP ${shopsStatus}`);
+  }
 }
 
 function printifyToken(): string {
@@ -226,88 +220,27 @@ async function probePrintifyToken(token: string): Promise<number> {
   }
 }
 
-async function loadMerchantShippingCredentials(): Promise<ShippingCredentialSource[]> {
-  const ownerShops = collectOwnerShopDomains();
-  const installs = await db
-    .select({
-      merchantId: shopifyInstallations.merchantId,
-      shopDomain: shopifyInstallations.shopDomain,
-    })
-    .from(shopifyInstallations);
-  const ownerIds = new Set(
-    installs
-      .filter(
-        (row) =>
-          row.merchantId && ownerShops.has(normalizeMyshopifyShopDomain(row.shopDomain || "")),
-      )
-      .map((row) => row.merchantId as string),
-  );
-  const rows = await db
-    .select({
-      id: merchants.id,
-      shopId: merchants.printifyShopId,
-      token: merchants.printifyApiToken,
-    })
-    .from(merchants);
-  const ranked = [...rows].sort((a, b) => {
-    const ao = ownerIds.has(a.id) ? 0 : 1;
-    const bo = ownerIds.has(b.id) ? 0 : 1;
-    return ao - bo;
-  });
-  const out: ShippingCredentialSource[] = [];
-  for (const row of ranked) {
-    const token = String(row.token || "").trim();
-    if (!token) continue;
-    const shopId = String(row.shopId || "").trim() || "unset";
-    const owner = ownerIds.has(row.id) ? "owner " : "";
-    out.push({ token, source: `${owner}merchant printify shop ${shopId}` });
-  }
-  return out;
-}
-
-/** Probe candidates. Merchant tokens first; env is fallback and is always reported. */
+/** Probe PRINTIFY_API_TOKEN. A non-200 fails the sync; no other token is tried. */
 export async function ensureShippingPrintifyCredential(): Promise<ShippingCredentialSource> {
   if (activeShippingCredential) return activeShippingCredential;
-  const envToken = String(process.env.PRINTIFY_API_TOKEN || "").trim();
-  const candidates = orderShippingCredentialCandidates(
-    await loadMerchantShippingCredentials(),
-    envToken,
-  );
-  if (!envToken) {
-    console.log("[shipping-tables] credential env PRINTIFY_API_TOKEN: unset");
+  const token = platformCatalogueToken();
+  if (!token) {
+    console.error("[shipping-tables] credential env PRINTIFY_API_TOKEN: unset");
+    assertPlatformCatalogueToken(token, 0);
   }
-  let chosen: ShippingCredentialSource | null = null;
-  let envSeen = !envToken;
-  for (const candidate of candidates) {
-    const isEnv = candidate.source === "env PRINTIFY_API_TOKEN";
-    if (chosen && !isEnv) continue;
-    let status = 0;
-    try {
-      status = await probePrintifyToken(candidate.token);
-    } catch (e: any) {
-      console.warn(
-        `[shipping-tables] credential ${candidate.source}: probe failed (${String(e?.message || e).slice(0, 160)})`,
-      );
-      if (isEnv) envSeen = true;
-      continue;
-    }
-    console.log(`[shipping-tables] credential ${candidate.source}: HTTP ${status}`);
-    if (isEnv) envSeen = true;
-    if (status === 200 && !chosen) chosen = candidate;
+  let status = 0;
+  try {
+    status = await probePrintifyToken(token);
+  } catch (e: any) {
+    const message = String(e?.message || e).slice(0, 160);
+    console.error(`[shipping-tables] credential env PRINTIFY_API_TOKEN: probe failed (${message})`);
+    throw new Error(`PRINTIFY_API_TOKEN probe failed: ${message}`);
   }
-  if (!envSeen) {
-    console.log(
-      "[shipping-tables] credential env PRINTIFY_API_TOKEN: same token as a merchant credential already probed",
-    );
-  }
-  if (!chosen) {
-    throw new Error(
-      "No accepted Printify credential (merchant tokens and PRINTIFY_API_TOKEN were unset or rejected)",
-    );
-  }
-  activeShippingCredential = chosen;
-  console.log(`[shipping-tables] using ${chosen.source}`);
-  return chosen;
+  console.log(`[shipping-tables] credential env PRINTIFY_API_TOKEN: HTTP ${status}`);
+  assertPlatformCatalogueToken(token, status);
+  activeShippingCredential = { token, source: "env PRINTIFY_API_TOKEN" };
+  console.log("[shipping-tables] using env PRINTIFY_API_TOKEN");
+  return activeShippingCredential;
 }
 
 async function fetchJson(url: string): Promise<any> {
@@ -1320,7 +1253,31 @@ export async function listSyncTargets(): Promise<Array<{ blueprintId: number; pr
   return Array.from(pairs.values());
 }
 
-const SYNC_GUARD_MS = 20 * 60 * 60 * 1000; // 20h — same dedupe pattern as PI sync
+const SYNC_GUARD_MS = 20 * 60 * 60 * 1000; // 20h after a sync that actually succeeded
+/** Minutes, not hours: a failed run must not buy itself the success guard. */
+export const SYNC_FAILURE_BACKOFF_MS = 15 * 60 * 1000;
+
+/**
+ * Nightly/boot skip. Both timestamps are `Date.toISOString()` (UTC) compared
+ * with `Date.now()`. A failure newer than the last success uses the 15-minute
+ * backoff. A success with no later failure uses the 20-hour guard.
+ */
+export function scheduledSyncSkipReason(
+  nowMs: number,
+  lastSuccessRaw: string | null,
+  lastFailureRaw: string | null,
+): "recent_sync" | "failure_backoff" | null {
+  const successAt = lastSuccessRaw ? Date.parse(lastSuccessRaw) : NaN;
+  const failureAt = lastFailureRaw ? Date.parse(lastFailureRaw) : NaN;
+  const failureIsLatest =
+    Number.isFinite(failureAt) && (!Number.isFinite(successAt) || failureAt > successAt);
+  if (failureIsLatest) {
+    if (nowMs - failureAt < SYNC_FAILURE_BACKOFF_MS) return "failure_backoff";
+    return null;
+  }
+  if (Number.isFinite(successAt) && nowMs - successAt < SYNC_GUARD_MS) return "recent_sync";
+  return null;
+}
 
 export type ShippingSyncSummary = {
   ok: boolean;
@@ -1335,9 +1292,28 @@ export type ShippingSyncSummary = {
 
 let syncInFlight = false;
 
+async function recordShippingSyncFailure(
+  source: "nightly" | "boot" | "manual" | "seed",
+  error: string,
+): Promise<number | undefined> {
+  await writeConfigValue(SHIPPING_CONFIG_KEYS.lastFailureAt, new Date().toISOString());
+  const [run] = await db
+    .insert(shippingSyncRuns)
+    .values({
+      source,
+      status: "failed",
+      error: error.slice(0, 500),
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    })
+    .returning();
+  return run?.id;
+}
+
 /**
- * Full-catalogue diff sync. Nightly + run-on-boot catch-up share the same
- * lastRunAt guard (platform_config), so a boot never double-runs same-day.
+ * Full-catalogue diff sync. Nightly and boot share a success guard of 20 hours.
+ * A failed run stamps SHIPPING_TABLES_LAST_FAILURE_AT and retries after 15 minutes.
+ * Manual sync bypasses both.
  */
 export async function runShippingTablesSync(opts: {
   source: "nightly" | "boot" | "manual" | "seed";
@@ -1348,10 +1324,13 @@ export async function runShippingTablesSync(opts: {
     return { ok: true, skipped: true, reason: "already_running", checked: 0, changed: 0, failed: 0 };
   }
   if ((source === "nightly" || source === "boot") && !force) {
-    const lastRaw = await readConfigValue(SHIPPING_CONFIG_KEYS.lastSyncAt);
-    const last = lastRaw ? Date.parse(lastRaw) : NaN;
-    if (Number.isFinite(last) && Date.now() - last < SYNC_GUARD_MS) {
-      return { ok: true, skipped: true, reason: "recent_sync", checked: 0, changed: 0, failed: 0 };
+    const [lastSuccessRaw, lastFailureRaw] = await Promise.all([
+      readConfigValue(SHIPPING_CONFIG_KEYS.lastSyncAt),
+      readConfigValue(SHIPPING_CONFIG_KEYS.lastFailureAt),
+    ]);
+    const skip = scheduledSyncSkipReason(Date.now(), lastSuccessRaw, lastFailureRaw);
+    if (skip) {
+      return { ok: true, skipped: true, reason: skip, checked: 0, changed: 0, failed: 0 };
     }
   }
 
@@ -1360,7 +1339,15 @@ export async function runShippingTablesSync(opts: {
   } catch (e: any) {
     const message = String(e?.message || e);
     console.error(`[shipping-tables] ${message}`);
-    return { ok: false, skipped: true, reason: "no_printify_token", checked: 0, changed: 0, failed: 0 };
+    const runId = await recordShippingSyncFailure(source, message);
+    return {
+      ok: false,
+      reason: "platform_printify_token_rejected",
+      runId,
+      checked: 0,
+      changed: 0,
+      failed: 0,
+    };
   }
 
   syncInFlight = true;
@@ -1393,7 +1380,7 @@ export async function runShippingTablesSync(opts: {
     await db
       .update(shippingSyncRuns)
       .set({
-        status: failed === results.length && results.length > 0 ? "failed" : "complete",
+        status: failed > 0 ? "failed" : "complete",
         classesChecked: results.length,
         classesChanged: changed,
         classesFailed: failed,
@@ -1408,7 +1395,15 @@ export async function runShippingTablesSync(opts: {
         finishedAt: new Date(),
       })
       .where(eq(shippingSyncRuns.id, run.id));
-    await writeConfigValue(SHIPPING_CONFIG_KEYS.lastSyncAt, new Date().toISOString());
+    const succeeded = failed === 0;
+    if (succeeded) {
+      await writeConfigValue(SHIPPING_CONFIG_KEYS.lastSyncAt, new Date().toISOString());
+    } else {
+      await writeConfigValue(SHIPPING_CONFIG_KEYS.lastFailureAt, new Date().toISOString());
+      console.error(
+        `[shipping-tables] sync ${source} failed ${failed}/${results.length} classes; next boot/nightly retries after ${SYNC_FAILURE_BACKOFF_MS / 60000} minutes`,
+      );
+    }
     console.log(
       `[shipping-tables] sync ${source} done: checked=${results.length} changed=${changed} failed=${failed}`,
     );
@@ -1421,12 +1416,13 @@ export async function runShippingTablesSync(opts: {
       .catch((e) =>
         console.error("[shipping-tables] post-sync reconcile failed:", e?.message || e),
       );
-    return { ok: true, runId: run.id, checked: results.length, changed, failed, results };
+    return { ok: succeeded, runId: run.id, checked: results.length, changed, failed, results };
   } catch (e: any) {
     await db
       .update(shippingSyncRuns)
       .set({ status: "failed", error: e?.message || String(e), finishedAt: new Date() })
       .where(eq(shippingSyncRuns.id, run.id));
+    await writeConfigValue(SHIPPING_CONFIG_KEYS.lastFailureAt, new Date().toISOString());
     console.error("[shipping-tables] sync failed:", e?.message || e);
     return {
       ok: false,

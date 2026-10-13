@@ -19382,7 +19382,14 @@ ${orientationExtra}
     const resp = await fetch("https://api.printify.com/v1/shops.json", {
       headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
     });
-    if (!resp.ok) return [];
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `Printify rejected this token (HTTP ${resp.status}). Reconnect Printify in Settings.`,
+      );
+    }
+    if (!resp.ok) {
+      throw new Error(`Printify shops.json failed: HTTP ${resp.status}`);
+    }
     const data = await resp.json();
     const shops = Array.isArray(data) ? data : (data.data || []);
     return shops.map((s: any) => ({
@@ -19392,48 +19399,30 @@ ${orientationExtra}
     }));
   }
 
-  async function testPrintifyShopProductsAccess(apiToken: string, shopId: string): Promise<boolean> {
-    const resp = await fetch(
-      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=1`,
-      { headers: { Authorization: `Bearer ${apiToken}` } },
-    );
-    return resp.ok;
-  }
-
-  /** Shipping uses catalog-only APIs; production costs need a shop the token can write products to. */
+  /**
+   * Shop-scoped calls must use the pinned shop on this token.
+   * A mismatch is logged with both ids and thrown. The shop id is not rewritten.
+   */
   async function resolvePrintifyShopIdForProducts(
     apiToken: string,
     preferredShopId: string | null | undefined,
-  ): Promise<{ shopId: string; corrected: boolean }> {
-    const trimmed = preferredShopId?.trim();
-    if (trimmed && (await testPrintifyShopProductsAccess(apiToken, trimmed))) {
-      return { shopId: trimmed, corrected: false };
+  ): Promise<{ shopId: string }> {
+    const expected = preferredShopId?.trim() || "";
+    if (!expected) {
+      throw new Error("Printify shop id is not set. Add it in Settings.");
     }
-
     const shops = await listPrintifyShops(apiToken);
-    if (shops.length === 0) {
-      throw new Error("No Printify shops found for this API token");
+    const liveIds = shops.map((s) => s.id);
+    if (!liveIds.includes(expected)) {
+      const live = liveIds.length ? liveIds.join(", ") : "(none)";
+      console.error(
+        `[Printify] pinned shop ${expected} is not in this token's shops.json: ${live}`,
+      );
+      throw new Error(
+        `Printify shop ${expected} is not on this token. shops.json returned: ${live}. Reconnect Printify in Settings.`,
+      );
     }
-
-    const shopifyLinked = shops.filter((s) =>
-      String(s.sales_channel || "").toLowerCase().includes("shopify"),
-    );
-    const candidates = [...shopifyLinked, ...shops.filter((s) => !shopifyLinked.includes(s))];
-
-    for (const shop of candidates) {
-      if (await testPrintifyShopProductsAccess(apiToken, shop.id)) {
-        const corrected = shop.id !== trimmed;
-        if (corrected) {
-          console.log(
-            `[Printify Costs] Auto-corrected shop ID ${trimmed ?? "(empty)"} → ${shop.id} (${shop.title}, ${shop.sales_channel ?? "unknown channel"})`,
-          );
-        }
-        return { shopId: shop.id, corrected };
-      }
-    }
-
-    // Fall back to first shop — product create may still work even if list probe failed
-    return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
+    return { shopId: expected };
   }
 
   /** Placeholder names from official catalog variants.json (not the dead placeholders.json URL). */
@@ -19840,16 +19829,9 @@ ${orientationExtra}
     }
 
     let shopId = args.merchant.printifyShopId?.trim() ?? "";
-    if (shopId && args.merchant.printifyApiToken) {
-      try {
-        const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
-        shopId = resolved.shopId;
-        if (resolved.corrected) {
-          await storage.updateMerchant(args.merchant.id, { printifyShopId: shopId });
-        }
-      } catch {
-        shopId = args.merchant.printifyShopId?.trim() ?? "";
-      }
+    if (args.merchant.printifyApiToken) {
+      const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
+      shopId = resolved.shopId;
     }
 
     if (args.printifyVariantIds.length > 0 && args.merchant.printifyApiToken) {
@@ -20248,10 +20230,7 @@ ${orientationExtra}
         }
       }
       if (preferred) {
-        const shopIdForProbe =
-          merchant.printifyShopId?.trim() ||
-          process.env.PRINTIFY_SHOP_ID?.trim() ||
-          "";
+        const shopIdForProbe = merchant.printifyShopId?.trim() || "";
         const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
 
         /** Fill costsBoth when the blueprint has a back print area (baseball tee, etc.). */
@@ -20917,19 +20896,11 @@ ${orientationExtra}
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      let shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
-      const costApiToken = apiToken || process.env.PRINTIFY_API_TOKEN || "";
-      if (shopId && costApiToken) {
-        try {
-          const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
-          shopId = resolved.shopId;
-          if (resolved.corrected && merchant.printifyShopId?.trim()) {
-            await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
-          }
-        } catch (resolveErr: any) {
-          console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
-          shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
-        }
+      let shopId = merchant.printifyShopId?.trim() || "";
+      const costApiToken = apiToken || "";
+      if (costApiToken) {
+        const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
+        shopId = resolved.shopId;
       }
 
       let costs: Record<string, number> = {};
@@ -21039,7 +21010,7 @@ ${orientationExtra}
         }
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
-          "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
+          "[Printify Costs] Front+back probe skipped — merchant Printify shop id is not set",
         );
       }
 

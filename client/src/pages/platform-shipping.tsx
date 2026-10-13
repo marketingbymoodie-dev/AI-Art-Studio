@@ -140,6 +140,23 @@ type ReconcileSummary = {
   errors: string[];
 };
 
+/** Nightly sync is 24h. Two missed fetches is stale for the tier thresholds. */
+const CLASS_STALE_MS = 48 * 60 * 60 * 1000;
+
+function classAgeMs(iso: string | null): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  return Date.now() - t;
+}
+
+function formatClassAge(ms: number): string {
+  const hours = Math.max(0, Math.floor(ms / (60 * 60 * 1000)));
+  if (hours < 48) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${hours % 24}h`;
+}
+
 function usd(cents: number | null | undefined): string {
   if (cents == null) return "—";
   return `$${(cents / 100).toFixed(2)}`;
@@ -859,6 +876,26 @@ export default function PlatformShippingPage() {
             ) : overviewQ.error ? (
               <div className="text-sm text-destructive">{(overviewQ.error as Error).message}</div>
             ) : (
+              <div className="space-y-3">
+                {(() => {
+                  const ranked = (overviewQ.data?.classes || [])
+                    .map((c) => ({ c, age: classAgeMs(c.lastFetchedAt) }))
+                    .filter((row): row is { c: ClassSummary; age: number } => row.age != null)
+                    .sort((a, b) => b.age - a.age);
+                  const oldest = ranked[0];
+                  if (!oldest || oldest.age < CLASS_STALE_MS) return null;
+                  return (
+                    <div
+                      className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+                      data-testid="alert-shipping-class-stale"
+                    >
+                      Oldest class {oldest.c.name} (bp {oldest.c.blueprintId} / provider{" "}
+                      {oldest.c.providerId}) was last fetched {formatClassAge(oldest.age)} ago.
+                      Threshold is 48 hours. These rates still feed the offer, exclude, and absolute
+                      cap thresholds.
+                    </div>
+                  );
+                })()}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -870,6 +907,7 @@ export default function PlatformShippingPage() {
                       <th className="py-2 pr-3">Warned</th>
                       <th className="py-2 pr-3">Excluded</th>
                       <th className="py-2 pr-3">Products</th>
+                      <th className="py-2 pr-3">Fetched</th>
                       <th className="py-2 pr-3">Last change</th>
                       <th className="py-2" />
                     </tr>
@@ -926,6 +964,19 @@ export default function PlatformShippingPage() {
                         <td className="py-2 pr-3">
                           {c.productCount} ({c.variantCount}v)
                         </td>
+                        <td className="py-2 pr-3">
+                          {(() => {
+                            const age = classAgeMs(c.lastFetchedAt);
+                            if (age == null) return <span className="text-muted-foreground">never</span>;
+                            const stale = age >= CLASS_STALE_MS;
+                            return (
+                              <Badge variant={stale ? "destructive" : "secondary"}>
+                                {formatClassAge(age)}
+                                {stale ? " stale" : ""}
+                              </Badge>
+                            );
+                          })()}
+                        </td>
                         <td className="py-2 pr-3 text-muted-foreground">
                           {c.lastChangedAt ? new Date(c.lastChangedAt).toLocaleString() : "—"}
                         </td>
@@ -946,13 +997,14 @@ export default function PlatformShippingPage() {
                     ))}
                     {(overviewQ.data?.classes || []).length === 0 && (
                       <tr>
-                        <td colSpan={9} className="py-6 text-center text-muted-foreground">
+                        <td colSpan={10} className="py-6 text-center text-muted-foreground">
                           No shipping classes yet — run “Sync all tables”.
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
+              </div>
               </div>
             )}
           </CardContent>
