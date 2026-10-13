@@ -58,6 +58,7 @@ import {
 import {
   isPrintifyAuthError,
   isPrintifyDecoratorUnavailableError,
+  isPrintifyShopAccessError,
 } from "./printifyDecoratorErrors";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
@@ -3134,9 +3135,9 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       } catch (e) {
         const message = (e as Error).message || String(e);
         console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, message);
-        // 401 is a dead token, not a curved garment. Rethrow so canonical harvest
-        // can try the next Printify account instead of continuing registration.
-        if (isPrintifyAuthError(message)) throw e;
+        // Auth or shop-access failures are not a curved garment. Rethrow so
+        // canonical harvest can try the next shop or Printify account.
+        if (isPrintifyAuthError(message) || isPrintifyShopAccessError(message)) throw e;
       }
     }
     const tiers = Object.values(probes).map((p) => p!.tier);

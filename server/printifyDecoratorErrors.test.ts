@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isPrintifyAuthError,
   isPrintifyDecoratorUnavailableError,
+  isPrintifyShopAccessError,
 } from "./printifyDecoratorErrors";
 
 describe("isPrintifyDecoratorUnavailableError", () => {
@@ -37,5 +38,21 @@ describe("isPrintifyAuthError", () => {
   it("ignores decorator and probe failures", () => {
     expect(isPrintifyAuthError("Decorator 99 not available for this blueprint 145")).toBe(false);
     expect(isPrintifyAuthError("probe: no mockup returned for front")).toBe(false);
+  });
+
+  it("does not treat a shop-scoped 401 as a dead token", () => {
+    const shop401 = "Printify 401 on /shops/1931226/products.json: {}";
+    expect(isPrintifyAuthError(shop401)).toBe(false);
+    expect(isPrintifyShopAccessError(shop401)).toBe(true);
+  });
+});
+
+describe("isPrintifyShopAccessError", () => {
+  it("ignores token-level upload failures", () => {
+    expect(
+      isPrintifyShopAccessError(
+        'Printify 401 on /uploads/images.json: {"error":"Unauthenticated","request_id":"abc"}',
+      ),
+    ).toBe(false);
   });
 });

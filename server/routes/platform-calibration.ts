@@ -56,6 +56,7 @@ import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
 import {
   isPrintifyAuthError,
   isPrintifyDecoratorUnavailableError,
+  isPrintifyShopAccessError,
 } from "../printifyDecoratorErrors";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
 import {
@@ -549,11 +550,13 @@ function harvestListHasToken(list: HarvestCred[], token: string | null | undefin
 
 /**
  * Append every shop on each token already in `list`, and drop tokens Printify rejects.
+ * A stored shop id that shops.json does not return is dropped (stale id, often a 401 on create).
  * Extra shops stay in this list so a platform account is exhausted before any merchant token.
  * Decorator 6002 is shop-scoped (US vs EU shops on the same token).
  */
 async function expandHarvestCredShops(list: HarvestCred[]): Promise<HarvestCred[]> {
   const deadTokens = new Set<string>();
+  const confirmedShops = new Map<string, Set<string>>();
   for (const token of [...new Set(list.map((t) => t.token))]) {
     try {
       const resp = await fetch("https://api.printify.com/v1/shops.json", {
@@ -569,15 +572,29 @@ async function expandHarvestCredShops(list: HarvestCred[]): Promise<HarvestCred[
       if (!resp.ok) continue;
       const shops = await resp.json();
       const shopsList = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
+      const liveIds = new Set<string>();
       for (const shop of shopsList) {
         const id = shop?.id ?? shop?.attributes?.id;
-        if (id != null) pushHarvestCred(list, token, id, `printify-shop:${id}`);
+        if (id == null) continue;
+        liveIds.add(String(id));
+        pushHarvestCred(list, token, id, `printify-shop:${id}`);
       }
+      if (liveIds.size > 0) confirmedShops.set(token, liveIds);
     } catch {
       /* ignore shop list failures */
     }
   }
-  return list.filter((t) => !deadTokens.has(t.token));
+  return list.filter((t) => {
+    if (deadTokens.has(t.token)) return false;
+    const liveIds = confirmedShops.get(t.token);
+    if (liveIds && !liveIds.has(t.shopId)) {
+      console.warn(
+        `[platform-canonical] shop ${t.shopId} (${t.label}) is not on this Printify account; skipping`,
+      );
+      return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -1393,6 +1410,13 @@ export function registerPlatformCalibrationRoutes(
                 const msg = (err as Error)?.message || String(err);
                 providerLastErr = msg;
                 lastError = msg;
+                if (isPrintifyShopAccessError(msg)) {
+                  providerLastErr = msg;
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} shop rejected; trying next shop: ${msg.slice(0, 180)}`,
+                  );
+                  continue;
+                }
                 if (isPrintifyAuthError(msg)) {
                   deadTokens.add(shopCreds.token);
                   providerLastErr = authError;
