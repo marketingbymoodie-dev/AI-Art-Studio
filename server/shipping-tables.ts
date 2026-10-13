@@ -16,6 +16,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   catalogVariantCosts,
+  merchants,
   platformConfig,
   productTypes,
   shippingClasses,
@@ -25,11 +26,14 @@ import {
   shippingSyncRuns,
   shippingTableSnapshots,
   shippingZoneRules,
+  shopifyInstallations,
   variantShipping,
   type ShippingClass,
   type ShippingZoneRule,
 } from "@shared/schema";
 import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
+import { collectOwnerShopDomains } from "./platformAdmin";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -124,8 +128,34 @@ export type NormalizedTable = {
 
 const PRINTIFY_BASE = "https://api.printify.com";
 
+export type ShippingCredentialSource = { token: string; source: string };
+
+/**
+ * Active token for this process. Catalogue shipping has no request merchant:
+ * stored merchant tokens (owner shops first), then PRINTIFY_API_TOKEN.
+ * Env-only died whenever that personal access token was revoked.
+ */
+let activeShippingCredential: ShippingCredentialSource | null = null;
+
+export function orderShippingCredentialCandidates(
+  merchantsFirst: ShippingCredentialSource[],
+  envToken: string,
+): ShippingCredentialSource[] {
+  const out: ShippingCredentialSource[] = [];
+  const seen = new Set<string>();
+  const push = (token: string, source: string) => {
+    const t = String(token || "").trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    out.push({ token: t, source });
+  };
+  for (const candidate of merchantsFirst) push(candidate.token, candidate.source);
+  push(envToken, "env PRINTIFY_API_TOKEN");
+  return out;
+}
+
 function printifyToken(): string {
-  return String(process.env.PRINTIFY_API_TOKEN || "").trim();
+  return activeShippingCredential?.token || "";
 }
 
 function printifyHeaders(): Record<string, string> {
@@ -182,6 +212,104 @@ export function retryDelayMs(status: number, retryAfter: string | null, attempt:
   return PRINTIFY_RETRY_BACKOFF_MS[attempt];
 }
 
+async function probePrintifyToken(token: string): Promise<number> {
+  for (let attempt = 0; ; attempt++) {
+    await paceShippingRequest();
+    const res = await fetch(`${PRINTIFY_BASE}/v1/shops.json`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const delay = retryDelayMs(res.status, res.headers.get("retry-after"), attempt);
+    await res.arrayBuffer().catch(() => undefined);
+    if (delay == null) return res.status;
+    console.warn(`[shipping-tables] credential probe HTTP ${res.status} — retry in ${delay}ms`);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+}
+
+async function loadMerchantShippingCredentials(): Promise<ShippingCredentialSource[]> {
+  const ownerShops = collectOwnerShopDomains();
+  const installs = await db
+    .select({
+      merchantId: shopifyInstallations.merchantId,
+      shopDomain: shopifyInstallations.shopDomain,
+    })
+    .from(shopifyInstallations);
+  const ownerIds = new Set(
+    installs
+      .filter(
+        (row) =>
+          row.merchantId && ownerShops.has(normalizeMyshopifyShopDomain(row.shopDomain || "")),
+      )
+      .map((row) => row.merchantId as string),
+  );
+  const rows = await db
+    .select({
+      id: merchants.id,
+      shopId: merchants.printifyShopId,
+      token: merchants.printifyApiToken,
+    })
+    .from(merchants);
+  const ranked = [...rows].sort((a, b) => {
+    const ao = ownerIds.has(a.id) ? 0 : 1;
+    const bo = ownerIds.has(b.id) ? 0 : 1;
+    return ao - bo;
+  });
+  const out: ShippingCredentialSource[] = [];
+  for (const row of ranked) {
+    const token = String(row.token || "").trim();
+    if (!token) continue;
+    const shopId = String(row.shopId || "").trim() || "unset";
+    const owner = ownerIds.has(row.id) ? "owner " : "";
+    out.push({ token, source: `${owner}merchant printify shop ${shopId}` });
+  }
+  return out;
+}
+
+/** Probe candidates. Merchant tokens first; env is fallback and is always reported. */
+export async function ensureShippingPrintifyCredential(): Promise<ShippingCredentialSource> {
+  if (activeShippingCredential) return activeShippingCredential;
+  const envToken = String(process.env.PRINTIFY_API_TOKEN || "").trim();
+  const candidates = orderShippingCredentialCandidates(
+    await loadMerchantShippingCredentials(),
+    envToken,
+  );
+  if (!envToken) {
+    console.log("[shipping-tables] credential env PRINTIFY_API_TOKEN: unset");
+  }
+  let chosen: ShippingCredentialSource | null = null;
+  let envSeen = !envToken;
+  for (const candidate of candidates) {
+    const isEnv = candidate.source === "env PRINTIFY_API_TOKEN";
+    if (chosen && !isEnv) continue;
+    let status = 0;
+    try {
+      status = await probePrintifyToken(candidate.token);
+    } catch (e: any) {
+      console.warn(
+        `[shipping-tables] credential ${candidate.source}: probe failed (${String(e?.message || e).slice(0, 160)})`,
+      );
+      if (isEnv) envSeen = true;
+      continue;
+    }
+    console.log(`[shipping-tables] credential ${candidate.source}: HTTP ${status}`);
+    if (isEnv) envSeen = true;
+    if (status === 200 && !chosen) chosen = candidate;
+  }
+  if (!envSeen) {
+    console.log(
+      "[shipping-tables] credential env PRINTIFY_API_TOKEN: same token as a merchant credential already probed",
+    );
+  }
+  if (!chosen) {
+    throw new Error(
+      "No accepted Printify credential (merchant tokens and PRINTIFY_API_TOKEN were unset or rejected)",
+    );
+  }
+  activeShippingCredential = chosen;
+  console.log(`[shipping-tables] using ${chosen.source}`);
+  return chosen;
+}
+
 async function fetchJson(url: string): Promise<any> {
   for (let attempt = 0; ; attempt++) {
     await paceShippingRequest();
@@ -207,7 +335,7 @@ export async function fetchStandardShippingTable(
   blueprintId: number,
   providerId: number,
 ): Promise<NormalizedTable> {
-  if (!printifyToken()) throw new Error("PRINTIFY_API_TOKEN is not set");
+  await ensureShippingPrintifyCredential();
   const base = `${PRINTIFY_BASE}/v2/catalog/blueprints/${blueprintId}/print_providers/${providerId}/shipping`;
   const listData = await fetchJson(`${base}.json`);
   const methods = ((listData?.data || []) as Array<{ attributes?: { name?: string } }>)
@@ -1219,15 +1347,20 @@ export async function runShippingTablesSync(opts: {
   if (syncInFlight) {
     return { ok: true, skipped: true, reason: "already_running", checked: 0, changed: 0, failed: 0 };
   }
-  if (!printifyToken()) {
-    return { ok: false, skipped: true, reason: "no_printify_token", checked: 0, changed: 0, failed: 0 };
-  }
   if ((source === "nightly" || source === "boot") && !force) {
     const lastRaw = await readConfigValue(SHIPPING_CONFIG_KEYS.lastSyncAt);
     const last = lastRaw ? Date.parse(lastRaw) : NaN;
     if (Number.isFinite(last) && Date.now() - last < SYNC_GUARD_MS) {
       return { ok: true, skipped: true, reason: "recent_sync", checked: 0, changed: 0, failed: 0 };
     }
+  }
+
+  try {
+    await ensureShippingPrintifyCredential();
+  } catch (e: any) {
+    const message = String(e?.message || e);
+    console.error(`[shipping-tables] ${message}`);
+    return { ok: false, skipped: true, reason: "no_printify_token", checked: 0, changed: 0, failed: 0 };
   }
 
   syncInFlight = true;

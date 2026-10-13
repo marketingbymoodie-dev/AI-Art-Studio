@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { canRegisterCarrierService, parseCarrierRateRequest } from "./printify-checkout-shipping";
+import {
+  canRegisterCarrierService,
+  carrierRegistrationSkipReason,
+  parseCarrierRateRequest,
+} from "./printify-checkout-shipping";
 
 describe("parseCarrierRateRequest", () => {
   it("reads destination country, currency, and items from Shopify rate payload", () => {
@@ -34,9 +38,9 @@ describe("canRegisterCarrierService", () => {
     );
   });
 
-  it("blocks localhost and staging callbacks on the creator checkout shop", () => {
+  it("blocks localhost and staging callbacks on the live creator shop only", () => {
     const prev = process.env.CREATOR_PLATFORM_SHOP_DOMAIN;
-    process.env.CREATOR_PLATFORM_SHOP_DOMAIN = "whi6jd-nv.myshopify.com";
+    process.env.CREATOR_PLATFORM_SHOP_DOMAIN = "staging-demo.myshopify.com";
     expect(canRegisterCarrierService("http://localhost:5000", "demo.myshopify.com")).toBe(false);
     expect(
       canRegisterCarrierService(
@@ -47,9 +51,32 @@ describe("canRegisterCarrierService", () => {
     expect(
       canRegisterCarrierService(
         "https://ai-art-studio-staging.up.railway.app",
+        "aiartstudio-creators.myshopify.com",
+      ),
+    ).toBe(false);
+    expect(
+      canRegisterCarrierService(
+        "https://ai-art-studio-staging.up.railway.app",
+        "staging-demo.myshopify.com",
+      ),
+    ).toBe(true);
+    expect(
+      canRegisterCarrierService(
+        "https://ai-art-studio-staging.up.railway.app",
         "demo.myshopify.com",
       ),
     ).toBe(true);
+    const liveSkip = carrierRegistrationSkipReason(
+      "https://ai-art-studio-staging.up.railway.app",
+      "whi6jd-nv.myshopify.com",
+    );
+    expect(liveSkip).toContain("intentional skip");
+    expect(liveSkip).toContain("ai-art-studio-staging.up.railway.app");
+    expect(liveSkip).toContain("whi6jd-nv.myshopify.com");
+    const localSkip = carrierRegistrationSkipReason("http://localhost:5000", "demo.myshopify.com");
+    expect(localSkip).toContain("intentional skip");
+    expect(localSkip).toContain("localhost");
+    expect(localSkip).toContain("demo.myshopify.com");
     if (prev === undefined) delete process.env.CREATOR_PLATFORM_SHOP_DOMAIN;
     else process.env.CREATOR_PLATFORM_SHOP_DOMAIN = prev;
   });

@@ -4,6 +4,7 @@ import {
   deriveVariantGroups,
   evaluateTier,
   groupByVariantFromDefs,
+  orderShippingCredentialCandidates,
   pickStandardMethod,
   retryDelayMs,
   stableStringify,
@@ -25,6 +26,34 @@ describe("retryDelayMs", () => {
   it("does not retry other 4xx", () => {
     expect(retryDelayMs(404, null, 0)).toBeNull();
     expect(retryDelayMs(401, "5", 0)).toBeNull();
+  });
+});
+
+describe("orderShippingCredentialCandidates", () => {
+  it("tries merchant tokens before the env token and drops duplicates", () => {
+    const ordered = orderShippingCredentialCandidates(
+      [
+        { token: "merchant-a", source: "owner merchant printify shop 1" },
+        { token: "merchant-b", source: "merchant printify shop 2" },
+        { token: "", source: "merchant printify shop 3" },
+      ],
+      "merchant-b",
+    );
+    expect(ordered.map((c) => c.source)).toEqual([
+      "owner merchant printify shop 1",
+      "merchant printify shop 2",
+    ]);
+  });
+
+  it("keeps the env token when no merchant token matches it", () => {
+    const ordered = orderShippingCredentialCandidates(
+      [{ token: "merchant-a", source: "merchant printify shop 9" }],
+      "env-token",
+    );
+    expect(ordered.map((c) => c.source)).toEqual([
+      "merchant printify shop 9",
+      "env PRINTIFY_API_TOKEN",
+    ]);
   });
 });
 

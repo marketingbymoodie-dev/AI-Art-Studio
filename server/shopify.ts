@@ -419,7 +419,8 @@ if (res.locals.shopify?.session?.shop) {
         console.warn("[creator-webhooks] post-OAuth register failed:", e?.message || e),
       );
       void ensureShopifyCarrierService({ shop, accessToken: access_token }).then((r) => {
-        if (!r.ok) console.warn("[carrier-shipping] post-OAuth register:", r.reason);
+        if (r.intentionalSkip) console.log("[carrier-shipping] post-OAuth", r.reason);
+        else if (!r.ok) console.warn("[carrier-shipping] post-OAuth register:", r.reason);
         else console.log("[carrier-shipping] post-OAuth", r.reason, shop);
       });
 

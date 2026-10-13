@@ -454,7 +454,8 @@ app.use((req, res, next) => {
     void import("./printify-checkout-shipping")
       .then(({ ensurePlatformCarrierService }) => ensurePlatformCarrierService())
       .then((r) => {
-        if (!r.ok) console.warn("[carrier-shipping] startup:", r.reason);
+        if (r.intentionalSkip) console.log("[carrier-shipping] startup", r.reason);
+        else if (!r.ok) console.warn("[carrier-shipping] startup:", r.reason);
         else console.log("[carrier-shipping] startup", r.reason);
       })
       .catch((e: any) =>
