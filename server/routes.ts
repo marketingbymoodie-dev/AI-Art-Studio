@@ -21756,22 +21756,21 @@ ${orientationExtra}
   // to the ONE color/style the design was generated in (per-color re-rendering is a follow-up —
   // see the plan's "Colors that can't render are excluded from the variant set" note).
 
-  /** Live Shopify prices for a product type's customizer page, keyed by "sizeId:colorId" / "sizeId:default". */
+  /** Front Shopify variant prices. A catalogue design prints the front only. */
   async function fetchCustomizerPagePriceMap(
     shop: string,
     installation: any,
     productType: any,
   ): Promise<Record<string, string>> {
+    const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
     try {
-      const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
-      const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
       const pages = await storage.listCustomizerPagesByProductTypeId(productType.id);
       const page = pages.find((p: any) => p.shop === shop && p.baseProductId);
       if (!page) return {};
       const prodRes = await getProductRestCompat(shop, installation.accessToken, page.baseProductId);
       const variants = prodRes.data?.product?.variants || [];
       const priceMap: Record<string, string> = {};
-      // Design products are Front-only; never copy a Front + Back price.
       for (const v of filterCatalogByPrintSides(variants as any[], "front")) {
         const size = allSizes.find((s: any) => s.name === v.option1);
         if (!size) continue;
@@ -21818,8 +21817,10 @@ ${orientationExtra}
       const colorKey = jobColorId ? `${size.id}:${jobColorId}` : null;
       const defaultKey = `${size.id}:default`;
       if (!(colorKey && variantMap[colorKey]) && !variantMap[defaultKey]) continue;
-      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey] || "0.00";
+      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey];
+      if (!price) continue;
       const numericPrice = parseFloat(price);
+      if (!Number.isFinite(numericPrice) || numericPrice <= 0) continue;
       shopifyVariants.push({
         option1: size.name,
         price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
@@ -26545,6 +26546,8 @@ ${orientationExtra}
   registerCreatorMarketplaceRoutes(app, { isAuthenticated });
   const { registerShippingRoutes } = await import("./routes/shipping");
   registerShippingRoutes(app, { isAuthenticated });
+  const { registerCatalogueStudioRoutes } = await import("./routes/catalogue-studio");
+  registerCatalogueStudioRoutes(app, { isAuthenticated });
   // Shipping Coverage Service: boot catch-up (lastRunAt-guarded) + nightly diff sync.
   const { scheduleShippingTablesSync } = await import("./shipping-tables");
   scheduleShippingTablesSync();

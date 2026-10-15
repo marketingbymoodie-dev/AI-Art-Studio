@@ -77,6 +77,7 @@ const platformMenuItems = [
   { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
   { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
   { title: "Shipping Coverage", url: "/admin/platform/shipping", icon: Truck },
+  { title: "Design Studio", url: "/admin/catalogue-studio", icon: Shirt },
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
