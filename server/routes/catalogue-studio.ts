@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { customizerPages, productTypes } from "@shared/schema";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
+import { parseMockupImport } from "@shared/mockupBundle";
 import { PENDING_CANDIDATE } from "../catalogue-studio-preview";
 import { getProductRestCompat } from "../shopify-product-graphql";
 import { storage } from "../storage";
@@ -125,6 +126,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
     }
+  });
+
+  app.post("/api/platform/catalogue-studio/panels/import/plan", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((path: unknown) => String(path)) : [];
+    res.json(parseMockupImport(paths));
   });
 
   app.post("/api/platform/catalogue-studio/panels/prepare", isAuthenticated, async (req: any, res: Response) => {
