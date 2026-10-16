@@ -1,10 +1,18 @@
 import { useState } from "react";
-import { parseMockupImport, type MockupPlanRow } from "@shared/mockupBundle";
+import { MASK_AREA_FAR, parseMockupImport, type MockupPlanRow } from "@shared/mockupBundle";
 import { Button } from "@/components/ui/button";
 
 type Held = { row: MockupPlanRow; file: File; width: number; height: number };
-type Outline = { panelId: string; uploadId: string; maskPngBase64: string; photoDataUrl: string };
-type ReportLine = { panelId: string; garmentColor: string; result: string };
+type SheetCell = {
+  panelId: string;
+  garmentColor: string;
+  hex: string;
+  areaFraction: number;
+  touchesEdge: boolean;
+  disconnected: boolean;
+  outlineJpegBase64: string;
+  error: string;
+};
 
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -70,15 +78,14 @@ async function readZip(file: File): Promise<Array<{ path: string; file: File }>>
 export function MockupBulkImport({ onImported }: { onImported: () => Promise<unknown> }) {
   const [held, setHeld] = useState<Held[]>([]);
   const [problems, setProblems] = useState<string[]>([]);
-  const [outlines, setOutlines] = useState<Outline[]>([]);
-  const [report, setReport] = useState<ReportLine[]>([]);
+  const [notes, setNotes] = useState<string[]>([]);
+  const [sheet, setSheet] = useState<SheetCell[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
   async function loadEntries(entries: Array<{ path: string; file: File }>) {
     setError("");
-    setOutlines([]);
-    setReport([]);
+    setSheet([]);
     const planRes = await fetch("/api/platform/catalogue-studio/panels/import/plan", {
       method: "POST",
       credentials: "include",
@@ -97,6 +104,7 @@ export function MockupBulkImport({ onImported }: { onImported: () => Promise<unk
     }
     setHeld(next);
     setProblems((plan.problems as Array<{ message: string }>).map((problem) => problem.message));
+    setNotes(Array.isArray(plan.notes) ? plan.notes : []);
   }
 
   async function onFolder(list: FileList | null) {
@@ -128,15 +136,16 @@ export function MockupBulkImport({ onImported }: { onImported: () => Promise<unk
   }
 
   async function importFolder() {
-    setBusy("Segmenting the white masters");
+    setBusy("Segmenting 1 of " + held.length);
     setError("");
-    setReport([]);
-    const whites = held.filter((item) => item.row.kind === "white-master");
-    const pending: Outline[] = [];
+    setSheet([]);
+    const cells: SheetCell[] = [];
     try {
-      for (const item of whites) {
+      for (let i = 0; i < held.length; i++) {
+        const item = held[i];
+        setBusy(`Segmenting ${i + 1} of ${held.length}: ${item.row.panelId} ${item.row.garmentColor}`);
         const imageBase64 = await fileToDataUrl(item.file);
-        const res = await fetch("/api/platform/catalogue-studio/panels/prepare", {
+        const res = await fetch("/api/platform/catalogue-studio/panels/import/file", {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
@@ -145,85 +154,51 @@ export function MockupBulkImport({ onImported }: { onImported: () => Promise<unk
             panelId: item.row.panelId,
             garmentColor: item.row.garmentColor,
             garmentHex: item.row.hex,
-            kind: "white-master",
+            kind: item.row.kind,
             isDefault: item.row.panelId.toLowerCase() === "mockup_01",
             imageBase64,
           }),
         });
         const body = await res.json();
-        if (!res.ok) throw new Error(body.error || `${item.row.panelId} white master failed`);
-        if (body.needsConfirm) {
-          pending.push({
-            panelId: item.row.panelId,
-            uploadId: body.uploadId,
-            maskPngBase64: body.maskPngBase64,
-            photoDataUrl: imageBase64,
-          });
-        }
-      }
-      setOutlines(pending);
-      setBusy(pending.length ? "Confirm one outline per scene, then the colours upload." : "");
-    } catch (e: any) {
-      setError(String(e?.message || e));
-      setBusy("");
-    }
-  }
-
-  async function storeOutlines() {
-    setBusy("Storing the white masks");
-    setError("");
-    try {
-      for (const outline of outlines) {
-        const res = await fetch("/api/platform/catalogue-studio/panels/confirm", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uploadId: outline.uploadId, maskPngBase64: outline.maskPngBase64 }),
-        });
-        const body = await res.json();
-        if (!res.ok) throw new Error(body.error || `${outline.panelId} mask was not stored`);
-      }
-      setOutlines([]);
-      const lines: ReportLine[] = [];
-      const colours = held.filter((item) => item.row.kind === "produced");
-      for (const item of colours) {
-        setBusy(`Checking ${item.row.panelId} ${item.row.garmentColor}`);
-        const imageBase64 = await fileToDataUrl(item.file);
-        const res = await fetch("/api/platform/catalogue-studio/panels/prepare", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            label: item.row.panelId,
-            panelId: item.row.panelId,
-            garmentColor: item.row.garmentColor,
-            garmentHex: item.row.hex,
-            kind: "produced",
-            isDefault: false,
-            imageBase64,
-          }),
-        });
-        const body = await res.json();
-        if (!res.ok) {
-          lines.push({ panelId: item.row.panelId, garmentColor: item.row.garmentColor, result: body.error || "failed" });
-          continue;
-        }
-        lines.push({
+        cells.push({
           panelId: item.row.panelId,
           garmentColor: item.row.garmentColor,
-          result: body.stored ? "copied mask" : "needs confirmation",
+          hex: item.row.hex,
+          areaFraction: Number(body.areaFraction) || 0,
+          touchesEdge: body.touchesEdge === true,
+          disconnected: body.disconnected === true,
+          outlineJpegBase64: String(body.outlineJpegBase64 || ""),
+          error: res.ok ? "" : String(body.error || "not stored"),
         });
       }
-      setReport(lines);
+      setSheet(cells);
       setBusy("");
       await onImported();
     } catch (e: any) {
+      setSheet(cells);
       setError(String(e?.message || e));
       setBusy("");
     }
   }
 
   const whites = new Map(held.filter((item) => item.row.kind === "white-master").map((item) => [item.row.panelId, item]));
+  const medianByScene = new Map<string, number>();
+  for (const panelId of new Set(sheet.map((cell) => cell.panelId))) {
+    const areas = sheet.filter((cell) => cell.panelId === panelId && !cell.error).map((cell) => cell.areaFraction).sort((a, b) => a - b);
+    if (!areas.length) continue;
+    const mid = Math.floor(areas.length / 2);
+    medianByScene.set(panelId, areas.length % 2 ? areas[mid] : (areas[mid - 1] + areas[mid]) / 2);
+  }
+  function attention(cell: SheetCell): string[] {
+    const reasons: string[] = [];
+    if (cell.error) reasons.push(cell.error);
+    const median = medianByScene.get(cell.panelId);
+    if (median != null && Math.abs(cell.areaFraction - median) > MASK_AREA_FAR) reasons.push("area far from this scene");
+    if (cell.touchesEdge) reasons.push("touches the frame");
+    if (cell.disconnected) reasons.push("disconnected");
+    return reasons;
+  }
+  const scenes = [...new Set(sheet.map((cell) => cell.panelId))];
 
   return (
     <section className="space-y-2" data-testid="catalogue-studio-bulk-import">
@@ -249,6 +224,7 @@ export function MockupBulkImport({ onImported }: { onImported: () => Promise<unk
       {busy ? <p className="text-xs">{busy}</p> : null}
       {error ? <p className="text-xs">{error}</p> : null}
       {problems.map((problem) => <p key={problem} className="text-xs">{problem}</p>)}
+      {notes.map((note) => <p key={note} className="text-xs text-muted-foreground">{note}</p>)}
       {held.length ? (
         <div className="max-h-64 overflow-auto">
           <table className="w-full text-left text-xs">
@@ -276,42 +252,40 @@ export function MockupBulkImport({ onImported }: { onImported: () => Promise<unk
         const white = whites.get(item.row.panelId);
         return item.row.kind === "produced" && !!white && (white.width !== item.width || white.height !== item.height);
       }) ? (
-        <p className="text-xs">Some colour files are a different pixel size from their white master. Those masks will not be copied.</p>
+        <p className="text-xs">Some colour files are a different pixel size from the white file in that scene.</p>
       ) : null}
-      {held.length && !outlines.length ? (
+      {held.length && !sheet.length ? (
         <Button type="button" size="sm" disabled={!!busy || problems.length > 0} onClick={() => void importFolder()}>
           Import this list
         </Button>
       ) : null}
-      {outlines.length ? (
-        <div className="space-y-3">
-          {outlines.map((outline) => (
-            <figure key={outline.panelId} className="space-y-1">
-              <figcaption className="text-xs">{outline.panelId} white outline</figcaption>
-              <img src={outline.photoDataUrl} alt="" className="max-h-28 w-full object-contain" />
-              <canvas data-panel={outline.panelId} ref={(node) => {
-                if (!node) return;
-                const mask = new Image();
-                mask.onload = () => {
-                  node.width = mask.width;
-                  node.height = mask.height;
-                  node.getContext("2d")?.drawImage(mask, 0, 0);
-                };
-                mask.src = `data:image/png;base64,${outline.maskPngBase64}`;
-              }} className="max-h-28 w-full bg-neutral-800 object-contain" />
-            </figure>
+      {sheet.length ? (
+        <div className="space-y-3" data-testid="catalogue-studio-import-sheet">
+          <p className="text-xs">
+            {sheet.filter((cell) => attention(cell).length).length} of {sheet.length} need a look. The rest are stored.
+          </p>
+          {scenes.map((panelId) => (
+            <div key={panelId}>
+              <h3 className="text-xs font-medium">{panelId}</h3>
+              <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
+                {sheet.filter((cell) => cell.panelId === panelId).map((cell) => {
+                  const reasons = attention(cell);
+                  return (
+                    <figure key={`${cell.panelId}-${cell.hex}`} className={reasons.length ? "rounded border border-amber-700 p-1" : "p-1"}>
+                      {cell.outlineJpegBase64 ? (
+                        <img src={`data:image/jpeg;base64,${cell.outlineJpegBase64}`} alt="" className="w-full" />
+                      ) : null}
+                      <figcaption className="text-[10px] leading-tight">
+                        {cell.garmentColor}
+                        {reasons.length ? ` — ${reasons.join(", ")}` : ""}
+                      </figcaption>
+                    </figure>
+                  );
+                })}
+              </div>
+            </div>
           ))}
-          <Button type="button" size="sm" disabled={!!busy} onClick={() => void storeOutlines()}>
-            Store these {outlines.length} outlines and continue
-          </Button>
         </div>
-      ) : null}
-      {report.length ? (
-        <ul className="space-y-1 text-xs" data-testid="catalogue-studio-import-report">
-          {report.map((line) => (
-            <li key={`${line.panelId}-${line.garmentColor}`}>{line.panelId} {line.garmentColor}: {line.result}</li>
-          ))}
-        </ul>
       ) : null}
     </section>
   );

@@ -26,14 +26,19 @@ export type MockupPlanProblem = { relativePath: string; message: string };
 export type MockupImportPlan = {
   rows: MockupPlanRow[];
   problems: MockupPlanProblem[];
+  notes: string[];
 };
 
+/** A mask whose area is this far from its scene's median asks for a look. */
+export const MASK_AREA_FAR = 0.12;
+
 const SCENE = /^Mockup_\d+$/i;
-const FILE = /_([0-9A-Fa-f]{6})(?:_[A-Za-z0-9]+)?\.(png|jpe?g|webp)$/i;
+const FILE = /^(Mockup_\d+)_([0-9A-Fa-f]{6})\.png$/i;
 
 export function parseMockupImport(relativePaths: string[]): MockupImportPlan {
   const rows: MockupPlanRow[] = [];
   const problems: MockupPlanProblem[] = [];
+  const notes: string[] = [];
   const seen = new Map<string, string>();
   for (const relativePath of relativePaths) {
     const parts = relativePath.split(/[/\\]/).filter(Boolean);
@@ -41,13 +46,22 @@ export function parseMockupImport(relativePaths: string[]): MockupImportPlan {
     if (!filename || filename.startsWith(".")) continue;
     const panelId = parts.find((part) => SCENE.test(part));
     const hexMatch = filename.match(FILE);
-    if (!panelId || !hexMatch) {
+    if (!hexMatch) {
       if (/\.(png|jpe?g|webp)$/i.test(filename)) {
-        problems.push({ relativePath, message: "No Mockup_NN folder or no 6-digit hex in the filename." });
+        notes.push(`${filename} is not named Mockup_NN_HEX.png, so it is left out.`);
       }
       continue;
     }
-    const hex = hexMatch[1].toUpperCase();
+    if (!panelId) {
+      problems.push({ relativePath, message: `${filename} is not inside a Mockup_NN folder.` });
+      continue;
+    }
+    const fileScene = hexMatch[1];
+    const hex = hexMatch[2].toUpperCase();
+    if (fileScene.toLowerCase() !== panelId.toLowerCase()) {
+      problems.push({ relativePath, message: `${filename} is in ${panelId}, not ${fileScene}.` });
+      continue;
+    }
     const key = `${panelId}:${hex}`;
     const prior = seen.get(key);
     if (prior) {
@@ -77,5 +91,5 @@ export function parseMockupImport(relativePaths: string[]): MockupImportPlan {
       problems.push({ relativePath: panelId, message: `${panelId} has no FFFFFF white master.` });
     }
   }
-  return { rows, problems };
+  return { rows, problems, notes };
 }

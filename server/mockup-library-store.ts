@@ -12,11 +12,15 @@ import {
   backgroundAgrees,
   decodeRgba,
   DEFAULT_PRINT_FRACTIONS,
+  describeWhiteSegment,
+  garmentOutlineJpeg,
   maskFromPng,
   maskToPng,
+  printRectForMask,
   renderArtworkOnPanel,
   resolvePanelColour,
   scaleMask,
+  segmentGarmentNearHex,
   segmentWhiteGarment,
   type PanelColour,
 } from "./mockup-library";
@@ -100,6 +104,7 @@ export async function listScenes(productTypeId: number): Promise<SceneGroup[]> {
       groups.set(row.panelId, group);
     }
     if (row.isDefault) group.isDefault = true;
+    if (group.colours.some((colour) => colour.name.toLowerCase() === row.garmentColor.toLowerCase())) continue;
     group.colours.push({
       id: row.id,
       name: row.garmentColor,
@@ -171,7 +176,8 @@ async function sceneRows(productTypeId: number, panelId: string) {
   return db
     .select()
     .from(mockupPanels)
-    .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, VIEW), eq(mockupPanels.panelId, panelId)));
+    .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, VIEW), eq(mockupPanels.panelId, panelId)))
+    .orderBy(desc(mockupPanels.createdAt));
 }
 
 async function insertPanel(args: {
@@ -185,7 +191,7 @@ async function insertPanel(args: {
   mask: Uint8Array;
   width: number;
   height: number;
-  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed";
+  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment";
   isDefault: boolean;
   uploadedBy: string | null;
 }): Promise<void> {
@@ -235,6 +241,59 @@ async function insertPanel(args: {
       .set({ isDefault: true })
       .where(and(eq(mockupPanels.productTypeId, args.productTypeId), eq(mockupPanels.view, VIEW), eq(mockupPanels.panelId, args.panelId)));
   }
+}
+
+export async function storeSegmentedPanel(args: {
+  productTypeId: number;
+  label: string;
+  panelId?: string | null;
+  garmentColor: string;
+  garmentHex: string;
+  kind: "produced" | "white-master";
+  isDefault: boolean;
+  imageBase64: string;
+  uploadedBy: string | null;
+}): Promise<{
+  stored: true;
+  panelId: string;
+  areaFraction: number;
+  touchesEdge: boolean;
+  disconnected: boolean;
+  outlineJpegBase64: string;
+}> {
+  const photo = decodeImage(args.imageBase64);
+  const decoded = await decodeRgba(photo);
+  const panelId = (args.panelId || slug(args.label)).slice(0, 80);
+  const hex = args.garmentHex.replace(/^#/, "").toUpperCase();
+  const white = args.kind === "white-master" || hex === "FFFFFF";
+  const segment = white
+    ? describeWhiteSegment(decoded.rgba, decoded.width, decoded.height)
+    : segmentGarmentNearHex(decoded.rgba, decoded.width, decoded.height, hex);
+  printRectForMask(segment.mask, decoded.width, decoded.height);
+  await insertPanel({
+    productTypeId: args.productTypeId,
+    panelId,
+    label: args.label || panelId,
+    garmentColor: args.garmentColor,
+    garmentHex: hex,
+    kind: white ? "white-master" : "produced",
+    photo,
+    mask: segment.mask,
+    width: decoded.width,
+    height: decoded.height,
+    maskSource: white ? "white-rule" : "hex-segment",
+    isDefault: args.isDefault,
+    uploadedBy: args.uploadedBy,
+  });
+  const outline = await garmentOutlineJpeg(decoded.rgba, decoded.width, decoded.height, segment.mask);
+  return {
+    stored: true,
+    panelId,
+    areaFraction: segment.areaFraction,
+    touchesEdge: segment.touchesEdge,
+    disconnected: segment.disconnected,
+    outlineJpegBase64: outline.toString("base64"),
+  };
 }
 
 export type PrepareResult =
