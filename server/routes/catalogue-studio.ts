@@ -21,6 +21,7 @@ import {
   saveArtwork,
   saveChoice,
   softstyleType,
+  storeSegmentedPanel,
 } from "../mockup-library-store";
 
 /** Front Shopify variant prices for the Softstyle page. Same read as list-as-product. */
@@ -132,6 +133,28 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((path: unknown) => String(path)) : [];
     res.json(parseMockupImport(paths));
+  });
+
+  app.post("/api/platform/catalogue-studio/panels/import/file", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const body = req.body ?? {};
+      const garment = await softstyleType();
+      const result = await storeSegmentedPanel({
+        productTypeId: garment.id,
+        label: String(body.label || ""),
+        panelId: body.panelId ? String(body.panelId) : null,
+        garmentColor: String(body.garmentColor || ""),
+        garmentHex: String(body.garmentHex || ""),
+        kind: body.kind === "white-master" ? "white-master" : "produced",
+        isDefault: body.isDefault === true,
+        imageBase64: String(body.imageBase64 || ""),
+        uploadedBy: req.user?.id ? String(req.user.id) : null,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
   });
 
   app.post("/api/platform/catalogue-studio/panels/prepare", isAuthenticated, async (req: any, res: Response) => {

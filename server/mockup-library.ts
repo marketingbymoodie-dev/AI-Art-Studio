@@ -154,7 +154,14 @@ function garmentPixel(r: number, g: number, b: number): boolean {
   return lightness > 185 && sat < 0.17;
 }
 
-/** White-file segmentation. Not used on a dark photograph. */
+export type GarmentSegment = {
+  mask: Uint8Array;
+  areaFraction: number;
+  touchesEdge: boolean;
+  disconnected: boolean;
+};
+
+/** White-file segmentation. Lightness above 185 and saturation under 0.17. */
 export function segmentWhiteGarment(rgba: Uint8Array, w: number, h: number): Uint8Array {
   const raw = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
@@ -173,6 +180,111 @@ export function segmentWhiteGarment(rgba: Uint8Array, w: number, h: number): Uin
   if (kept[0]) for (const p of kept[0]) keep[p] = 1;
   fillHoles(keep, w, h);
   return keep;
+}
+
+function hexHsv(hex: string): [number, number, number] {
+  const n = parseInt(hex, 16);
+  return rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+}
+
+/**
+ * Garment pixels near a known hex. Hue and saturation carry the match.
+ * Lightness is a wide band so fold shading stays inside the shirt.
+ * A near-grey hex has no stable hue, so those files match low saturation
+ * and the lightness band only.
+ */
+function pixelNearHex(r: number, g: number, b: number, target: [number, number, number]): boolean {
+  const [h, s, v] = rgbToHsv(r, g, b);
+  const [th, ts, tv] = target;
+  if (ts < 0.15) return s < 0.2 && Math.abs(v - tv) <= 0.34;
+  let dh = Math.abs(h - th);
+  if (dh > 0.5) dh = 1 - dh;
+  return dh <= 0.07 && s >= ts * 0.35 && s <= Math.min(1, ts + 0.3) && v >= Math.max(0.04, tv - 0.45) && v <= Math.min(1, tv + 0.38);
+}
+
+function borderTouch(mask: Uint8Array, w: number, h: number): boolean {
+  for (let x = 0; x < w; x++) {
+    if (mask[x] || mask[(h - 1) * w + x]) return true;
+  }
+  for (let y = 0; y < h; y++) {
+    if (mask[y * w] || mask[y * w + w - 1]) return true;
+  }
+  return false;
+}
+
+function maskQuality(mask: Uint8Array, w: number, h: number, secondRatio: number, touchesEdge: boolean): GarmentSegment {
+  let area = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) area++;
+  return {
+    mask,
+    areaFraction: area / (w * h),
+    touchesEdge,
+    disconnected: secondRatio >= 0.12,
+  };
+}
+
+/** Small contact-sheet cell: the photograph with the mask contour in red. */
+export async function garmentOutlineJpeg(rgba: Uint8Array, w: number, h: number, mask: Uint8Array): Promise<Buffer> {
+  const side = 160;
+  const scale = side / Math.max(w, h);
+  const dw = Math.max(1, Math.round(w * scale));
+  const dh = Math.max(1, Math.round(h * scale));
+  const raw = Buffer.alloc(dw * dh * 3);
+  for (let y = 0; y < dh; y++) {
+    const sy = Math.min(h - 1, Math.floor(y / scale));
+    for (let x = 0; x < dw; x++) {
+      const sx = Math.min(w - 1, Math.floor(x / scale));
+      const i = sy * w + sx;
+      const on = mask[i] === 1;
+      const edgePx = on && (
+        sx === 0 || sy === 0 || sx === w - 1 || sy === h - 1
+        || mask[i - 1] !== 1 || mask[i + 1] !== 1 || mask[i - w] !== 1 || mask[i + w] !== 1
+      );
+      const o = (y * dw + x) * 3;
+      if (edgePx) {
+        raw[o] = 220;
+        raw[o + 1] = 30;
+        raw[o + 2] = 30;
+      } else {
+        const p = i * 4;
+        raw[o] = rgba[p];
+        raw[o + 1] = rgba[p + 1];
+        raw[o + 2] = rgba[p + 2];
+      }
+    }
+  }
+  return sharp(raw, { raw: { width: dw, height: dh, channels: 3 } }).jpeg({ quality: 62 }).toBuffer();
+}
+
+/** Segment one colour file from its own hex. Close, open, largest component, fill holes. */
+export function segmentGarmentNearHex(rgba: Uint8Array, w: number, h: number, hex: string): GarmentSegment {
+  const target = hexHsv(hex);
+  const raw = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    raw[i] = pixelNearHex(rgba[o], rgba[o + 1], rgba[o + 2], target) ? 1 : 0;
+  }
+  const closeR = disk(7);
+  const openR = disk(4);
+  let mask = erode(dilate(raw, w, h, closeR), w, h, closeR);
+  mask = dilate(erode(mask, w, h, openR), w, h, openR);
+  const kept = components(mask, w, h).sort((a, b) => b.length - a.length);
+  const keep = new Uint8Array(w * h);
+  if (kept[0]) for (const p of kept[0]) keep[p] = 1;
+  fillHoles(keep, w, h);
+  const secondRatio = kept[0]?.length ? (kept[1]?.length || 0) / kept[0].length : 0;
+  return maskQuality(keep, w, h, secondRatio, borderTouch(raw, w, h));
+}
+
+export function describeWhiteSegment(rgba: Uint8Array, w: number, h: number): GarmentSegment {
+  const raw = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    raw[i] = garmentPixel(rgba[o], rgba[o + 1], rgba[o + 2]) ? 1 : 0;
+  }
+  const comps = components(raw, w, h).sort((a, b) => b.length - a.length);
+  const secondRatio = comps[0]?.length ? (comps[1]?.length || 0) / comps[0].length : 0;
+  return maskQuality(segmentWhiteGarment(rgba, w, h), w, h, secondRatio, borderTouch(raw, w, h));
 }
 
 /**

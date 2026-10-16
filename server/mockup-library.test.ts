@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   MASK_BACKGROUND_MAX_MEAN,
   backgroundAgrees,
+  describeWhiteSegment,
   missingPanelMessage,
   printRectForMask,
   resolvePanelColour,
+  segmentGarmentNearHex,
 } from "./mockup-library";
 
 describe("mockup library", () => {
@@ -48,5 +50,59 @@ describe("mockup library", () => {
     expect(rect.width).toBe(Math.round(0.4415 * 100));
     expect(rect.top).toBe(20 + Math.round(0.2074 * 100));
     expect(Math.abs(rect.left + rect.width / 2 - 49.5)).toBeLessThan(1);
+  });
+
+  it("segments a coloured garment from its hex and leaves the tan mat out", () => {
+    const w = 48;
+    const h = 48;
+    const rgba = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4;
+      rgba[o] = 161;
+      rgba[o + 1] = 110;
+      rgba[o + 2] = 77;
+      rgba[o + 3] = 255;
+    }
+    for (let y = 8; y < 40; y++) {
+      for (let x = 8; x < 36; x++) {
+        const o = (y * w + x) * 4;
+        rgba[o] = y < 14 ? 110 : 172;
+        rgba[o + 1] = y < 14 ? 28 : 43;
+        rgba[o + 2] = y < 14 ? 36 : 55;
+      }
+    }
+    const seg = segmentGarmentNearHex(rgba, w, h, "AC2B37");
+    expect(seg.touchesEdge).toBe(false);
+    expect(seg.disconnected).toBe(false);
+    expect(seg.mask[0]).toBe(0);
+    expect(seg.mask[20 * w + 20]).toBe(1);
+    const rect = printRectForMask(seg.mask, w, h);
+    expect(rect.height).toBeGreaterThan(10);
+    expect(rect.top).toBeGreaterThan(8);
+  });
+
+  it("keeps the white lightness rule and flags a mask that touches the frame", () => {
+    const w = 80;
+    const h = 80;
+    const rgba = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      const o = i * 4;
+      rgba[o] = 180;
+      rgba[o + 1] = 120;
+      rgba[o + 2] = 70;
+      rgba[o + 3] = 255;
+    }
+    for (let y = 16; y < 64; y++) {
+      for (let x = 0; x < 48; x++) {
+        const o = (y * w + x) * 4;
+        rgba[o] = 250;
+        rgba[o + 1] = 250;
+        rgba[o + 2] = 250;
+      }
+    }
+    const seg = describeWhiteSegment(rgba, w, h);
+    expect(seg.mask[32 * w + 12]).toBe(1);
+    expect(seg.mask[79 * w + 79]).toBe(0);
+    expect(seg.touchesEdge).toBe(true);
   });
 });
