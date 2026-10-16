@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Loader2 } from "lucide-react";
+import { MockupBulkImport } from "@/pages/admin/MockupBulkImport";
 
 type ColourReading = {
   name: string;
@@ -39,9 +40,7 @@ type PendingCandidate = {
 
 function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>) {
   if (!scene) return [] as Array<{ name: string; hex: string; path: "produced" | "recolour" }>;
-  const rows = scene.colours
-    .filter((c) => c.kind === "produced")
-    .map((c) => ({ name: c.name, hex: c.hex, path: "produced" as const }));
+  const rows = scene.colours.map((c) => ({ name: c.name, hex: c.hex, path: "produced" as const }));
   if (scene.colours.some((c) => c.kind === "white-master")) {
     for (const color of fallback) {
       if (!rows.some((row) => row.name.toLowerCase() === color.name.toLowerCase())) {
@@ -433,6 +432,8 @@ export default function CatalogueStudioPage() {
                 })}
               </ul>
             </section>
+
+            <MockupBulkImport onImported={() => candidate.refetch()} />
 
             <section className="space-y-2">
               <h2 className="font-medium">Upload a panel</h2>

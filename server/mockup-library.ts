@@ -39,8 +39,8 @@ export function resolvePanelColour(
   panelLabel: string,
 ): { kind: "produced" | "recolour"; hex: string; sourceName: string } {
   const wanted = requested.name.trim().toLowerCase();
-  const produced = colours.find((c) => c.kind === "produced" && c.name.trim().toLowerCase() === wanted);
-  if (produced) return { kind: "produced", hex: produced.hex, sourceName: produced.name };
+  const exact = colours.find((c) => c.name.trim().toLowerCase() === wanted);
+  if (exact) return { kind: "produced", hex: exact.hex, sourceName: exact.name };
   const white = colours.find((c) => c.kind === "white-master");
   if (white) return { kind: "recolour", hex: requested.hex, sourceName: white.name };
   throw new Error(missingPanelMessage(requested.name, typeName, typeId, panelLabel));

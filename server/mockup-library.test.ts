@@ -24,6 +24,7 @@ describe("mockup library", () => {
       { name: "White", hex: "FFFFFF", kind: "white-master" as const },
       { name: "Sage", hex: "819E87", kind: "produced" as const },
     ];
+    expect(resolvePanelColour(colours, { name: "White", hex: "FFFFFF" }, "Softstyle", 54, "Rope and sneakers").kind).toBe("produced");
     expect(resolvePanelColour(colours, { name: "Sage", hex: "819E87" }, "Softstyle", 54, "Rope and sneakers").kind).toBe("produced");
     expect(resolvePanelColour(colours, { name: "Black", hex: "25282A" }, "Softstyle", 54, "Rope and sneakers").kind).toBe("recolour");
     expect(() => resolvePanelColour(
