@@ -7,20 +7,55 @@
  *   outlive a token that was only injected by the fetch monkey-patch.
  *   We mint a fresh idToken on each request (and retry once on 401).
  *
- *   In non-embedded mode (customer storefront, dev), cookie-based auth is
- *   used via credentials: "include".
+ *   Outside Shopify Admin there is no session cookie. credentials: "include"
+ *   is still set; the API accepts the bearer token only.
  */
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-async function getFreshShopifySessionToken(): Promise<string | null> {
+const SESSION_RESTORE_MS = 8000;
+
+function shopifyIdToken(): (() => Promise<string>) | null {
   const shopify = (window as { shopify?: { idToken?: () => Promise<string> } }).shopify;
-  if (!shopify?.idToken) return null;
+  return typeof shopify?.idToken === "function" ? shopify.idToken : null;
+}
+
+/**
+ * Admin deep links boot before App Bridge can mint a session token.
+ * The first admin requests share one wait: retry until a token mints, or
+ * eight seconds pass. Later requests mint a fresh token and do not wait.
+ */
+let sessionGate: Promise<void> | null = null;
+
+async function mintSessionToken(): Promise<string | null> {
+  const idToken = shopifyIdToken();
+  if (!idToken) return null;
   try {
-    const token = await shopify.idToken();
+    const token = await idToken();
     return typeof token === "string" && token.trim() ? token : null;
   } catch {
     return null;
   }
+}
+
+function openSessionGate(): Promise<void> {
+  if (!sessionGate) {
+    sessionGate = (async () => {
+      const deadline = Date.now() + SESSION_RESTORE_MS;
+      for (;;) {
+        if (await mintSessionToken()) return;
+        if (Date.now() >= deadline) return;
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+    })();
+  }
+  return sessionGate;
+}
+
+async function getFreshShopifySessionToken(): Promise<string | null> {
+  if (typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
+    await openSessionGate();
+  }
+  return mintSessionToken();
 }
 
 export function isSessionAuthError(raw: unknown): boolean {
