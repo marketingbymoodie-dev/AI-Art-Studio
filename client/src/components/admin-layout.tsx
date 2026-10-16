@@ -149,7 +149,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     );
   }
 
-  // Non-embedded: redirect to landing if not logged in via app auth
+  // Redirect only after /api/auth/user has settled. An unresolved session
+  // stays on the skeleton above. A fast 401 from before App Bridge mints
+  // its token is not a logout.
   if (!isAuthenticated && !embedded) {
     window.location.href = "/";
     return null;
