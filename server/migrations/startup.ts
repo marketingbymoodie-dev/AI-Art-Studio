@@ -159,6 +159,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "atc_mode", type: "TEXT NOT NULL DEFAULT 'shadow-direct'" },
   { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
+  { table: "design_candidates", column: "print_file_path", type: "TEXT" },
+  { table: "design_candidates", column: "panel_id", type: "TEXT" },
+  { table: "design_candidates", column: "selected_colors", type: "JSONB" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },
@@ -2230,6 +2233,46 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "mockup_panels",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "mockup_panels" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "panel_id" text NOT NULL,
+        "product_type_id" integer NOT NULL,
+        "view" text NOT NULL DEFAULT 'front',
+        "label" text NOT NULL,
+        "garment_color" text NOT NULL,
+        "garment_hex" text NOT NULL,
+        "kind" text NOT NULL,
+        "storage_path" text NOT NULL,
+        "mask_path" text NOT NULL,
+        "mask_source" text NOT NULL,
+        "width" integer NOT NULL,
+        "height" integer NOT NULL,
+        "print_width_of_h" numeric(6,4) NOT NULL DEFAULT 0.4415,
+        "print_height_of_h" numeric(6,4) NOT NULL DEFAULT 0.5041,
+        "print_top_of_h" numeric(6,4) NOT NULL DEFAULT 0.2074,
+        "print_rotation_deg" numeric(6,2) NOT NULL DEFAULT 0,
+        "is_default" boolean NOT NULL DEFAULT false,
+        "uploaded_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalogue_candidate_choices",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_candidate_choices" (
+        "candidate_id" text PRIMARY KEY,
+        "panel_id" text,
+        "selected_colors" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "artwork_path" text,
+        "approved_at" timestamp,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "design_candidates",
     sql: `
       CREATE TABLE IF NOT EXISTS "design_candidates" (
@@ -2249,6 +2292,9 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "product_family" text NOT NULL,
         "credential_ref" text NOT NULL,
         "render_probe_result_id" integer,
+        "print_file_path" text,
+        "panel_id" text,
+        "selected_colors" jsonb,
         "title" text,
         "description" text,
         "drop_reason" text,
@@ -2266,6 +2312,11 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "shadow_mint_jobs_claim_idx",
     sql: `CREATE INDEX IF NOT EXISTS "shadow_mint_jobs_claim_idx"
       ON "shadow_mint_jobs" ("state", "created_at")`,
+  },
+  {
+    name: "mockup_panels_type_view_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "mockup_panels_type_view_idx"
+      ON "mockup_panels" ("product_type_id", "view", "panel_id")`,
   },
   {
     name: "design_candidates_shop_status_idx",

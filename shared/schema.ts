@@ -1363,6 +1363,12 @@ export const designCandidates = pgTable("design_candidates", {
   productFamily: text("product_family").notNull(),
   credentialRef: text("credential_ref").notNull(),
   renderProbeResultId: integer("render_probe_result_id"),
+  /** Stored print file. Set at approval. Null while the design is still pending. */
+  printFilePath: text("print_file_path"),
+  /** Scene chosen for this design. Re-approval reads this and does not pick another. */
+  panelId: text("panel_id"),
+  /** Colours the operator ticked. Promote publishes these and no others. */
+  selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>(),
   title: text("title"),
   description: text("description"),
   dropReason: text("drop_reason"),
@@ -1373,6 +1379,42 @@ export const designCandidates = pgTable("design_candidates", {
 }, (table) => [
   index("design_candidates_shop_status_idx").on(table.shopDomain, table.status),
 ]);
+
+/** One photograph: one scene (`panel_id`) and one garment colour. */
+export const mockupPanels = pgTable("mockup_panels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  panelId: text("panel_id").notNull(),
+  productTypeId: integer("product_type_id").notNull(),
+  view: text("view").notNull().default("front"),
+  label: text("label").notNull(),
+  garmentColor: text("garment_color").notNull(),
+  garmentHex: text("garment_hex").notNull(),
+  kind: text("kind").notNull(),
+  storagePath: text("storage_path").notNull(),
+  maskPath: text("mask_path").notNull(),
+  maskSource: text("mask_source").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  printWidthOfH: decimal("print_width_of_h", { precision: 6, scale: 4 }).notNull().default("0.4415"),
+  printHeightOfH: decimal("print_height_of_h", { precision: 6, scale: 4 }).notNull().default("0.5041"),
+  printTopOfH: decimal("print_top_of_h", { precision: 6, scale: 4 }).notNull().default("0.2074"),
+  printRotationDeg: decimal("print_rotation_deg", { precision: 6, scale: 2 }).notNull().default("0"),
+  isDefault: boolean("is_default").notNull().default(false),
+  uploadedBy: text("uploaded_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("mockup_panels_type_view_idx").on(table.productTypeId, table.view, table.panelId),
+]);
+
+/** Scene and ticked colours for a candidate, including the studio fixture that is not a design_candidates row yet. */
+export const catalogueCandidateChoices = pgTable("catalogue_candidate_choices", {
+  candidateId: text("candidate_id").primaryKey(),
+  panelId: text("panel_id"),
+  selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>().notNull().default(sql`'[]'::jsonb`),
+  artworkPath: text("artwork_path"),
+  approvedAt: timestamp("approved_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
 
 // Design Products — permanent, browsable Shopify products merchants publish from a saved
 // My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns
