@@ -3,6 +3,8 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
 import { isShopifyEmbedded, getShopifyParams } from "@/lib/shopify";
+import { openedOutsideShopify } from "@/lib/shopifyContext";
+import { stagingCatalogueStudioUrl } from "@shared/themeEditorUrl";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -114,6 +116,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [location] = useLocation();
   const embedded = isShopifyEmbedded();
+  const [outsideShopify] = useState(openedOutsideShopify);
+  const catalogueStudioUrl = stagingCatalogueStudioUrl();
   const wideContent = prefersCollapsedSidebar(location);
   const [sidebarOpen, setSidebarOpen] = useState(() => !prefersCollapsedSidebar(location));
 
@@ -139,6 +143,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     enabled: isAuthenticated || embedded,
     staleTime: 30_000,
   });
+
+  if (outsideShopify) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" data-testid="admin-open-from-shopify">
+        <div className="max-w-lg space-y-3">
+          <h1 className="text-xl font-semibold">Open this page from Shopify Admin</h1>
+          <p className="text-sm text-muted-foreground">
+            This tab has no shop session, so the studio cannot sign you in. Bookmark this admin link. It opens the staging store on the catalogue studio.
+          </p>
+          <a className="block text-sm break-all underline" href={catalogueStudioUrl}>
+            {catalogueStudioUrl}
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   // Show skeleton while auth or (in embedded mode) merchant data is loading
   if (authLoading || (embedded && merchantLoading)) {
