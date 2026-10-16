@@ -11,6 +11,7 @@
  *   is still set; the API accepts the bearer token only.
  */
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { openedOutsideShopify } from "@/lib/shopifyContext";
 
 const SESSION_RESTORE_MS = 8000;
 
@@ -52,7 +53,11 @@ function openSessionGate(): Promise<void> {
 }
 
 async function getFreshShopifySessionToken(): Promise<string | null> {
-  if (typeof window !== "undefined" && window.location.pathname.startsWith("/admin")) {
+  if (
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/admin") &&
+    !openedOutsideShopify()
+  ) {
     await openSessionGate();
   }
   return mintSessionToken();

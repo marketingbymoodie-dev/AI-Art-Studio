@@ -1,6 +1,23 @@
 /** Theme app-embed block filename without `.liquid`. */
 export const THEME_EMBED_HANDLE = "ai-art-embed";
 
+/** Confirmed from the staging installation. This is the admin handle, not the client id. */
+export const STAGING_STORE_HANDLE = "ai-art-studio-staging";
+export const STAGING_APP_HANDLE = "ai-art-studio-staging";
+
+/**
+ * Shopify Admin URL that opens an embedded app on one of its routes.
+ * The path is the app route (`/admin/catalogue-studio`), not a Railway URL.
+ */
+export function buildShopifyAdminAppUrl(storeHandle: string, appHandle: string, appPath: string): string {
+  const path = appPath.replace(/^\//, "");
+  return `https://admin.shopify.com/store/${storeHandle}/apps/${appHandle}/${path}`;
+}
+
+export function stagingCatalogueStudioUrl(): string {
+  return buildShopifyAdminAppUrl(STAGING_STORE_HANDLE, STAGING_APP_HANDLE, "/admin/catalogue-studio");
+}
+
 function activateQuery(apiKey: string): string {
   return apiKey
     ? `&activateAppId=${encodeURIComponent(`${apiKey}/${THEME_EMBED_HANDLE}`)}`
