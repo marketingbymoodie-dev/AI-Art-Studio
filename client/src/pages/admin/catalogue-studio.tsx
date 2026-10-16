@@ -79,6 +79,9 @@ export default function CatalogueStudioPage() {
   const candidate = useQuery<PendingCandidate>({
     queryKey: ["/api/platform/catalogue-studio/pending"],
   });
+  const panels = useQuery<{ scenes: SceneGroup[] }>({
+    queryKey: ["/api/platform/catalogue-studio/panels"],
+  });
   const [size, setSize] = useState("L");
   const [color, setColor] = useState("White");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -209,8 +212,8 @@ export default function CatalogueStudioPage() {
       enableDrag={false}
     />
   ) : (
-    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-      {previewError ? previewError : <Loader2 className="h-5 w-5 animate-spin" />}
+    <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+      {candidate.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : !panelId ? "No panel is stored yet." : previewError ? previewError : <Loader2 className="h-5 w-5 animate-spin" />}
     </div>
   );
 
@@ -221,6 +224,12 @@ export default function CatalogueStudioPage() {
         <Button type="button" size="sm" variant="outline" onClick={() => setShowAdmin((v) => !v)}>
           {showAdmin ? "Simulate customer" : "Show operator panel"}
         </Button>
+      </div>
+      <div className="mb-6 rounded-md border p-4" data-testid="catalogue-studio-panels">
+        <MockupBulkImport onImported={() => Promise.all([candidate.refetch(), panels.refetch()])} />
+        <p className="mt-2 text-xs text-muted-foreground">
+          Panels on file: {panels.data ? panels.data.scenes.length : "…"}
+        </p>
       </div>
       <div className={showAdmin ? "grid gap-8 xl:grid-cols-[minmax(0,1fr)_420px]" : ""}>
         <div>
@@ -432,8 +441,6 @@ export default function CatalogueStudioPage() {
                 })}
               </ul>
             </section>
-
-            <MockupBulkImport onImported={() => candidate.refetch()} />
 
             <section className="space-y-2">
               <h2 className="font-medium">Upload a panel</h2>
