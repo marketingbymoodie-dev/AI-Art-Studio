@@ -69,6 +69,16 @@ async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesBySize: 
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
   const { isAuthenticated } = deps;
 
+  app.get("/api/platform/catalogue-studio/panels", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const garment = await softstyleType();
+      res.json({ scenes: await listScenes(garment.id) });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   app.get("/api/platform/catalogue-studio/pending", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
