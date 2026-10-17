@@ -44,9 +44,9 @@ export function mockupSheetMarks(
   cell: { error: string; areaFraction: number; disconnected: boolean },
   median: number | null,
 ): string[] {
+  if (cell.error) return [`Failed: ${cell.error}`];
   const reasons: string[] = [];
-  if (cell.error) reasons.push(cell.error);
-  if (median != null && Math.abs(cell.areaFraction - median) > MASK_AREA_FAR) reasons.push("area far from this scene");
+  if (median != null && Number.isFinite(cell.areaFraction) && Math.abs(cell.areaFraction - median) > MASK_AREA_FAR) reasons.push("area far from this scene");
   if (cell.disconnected) reasons.push("disconnected");
   return reasons;
 }
