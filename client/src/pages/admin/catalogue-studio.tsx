@@ -36,6 +36,8 @@ type PendingCandidate = {
   scenes: SceneGroup[];
   choice: { panelId: string | null; selectedColors: TickedColour[]; artworkPath: string | null };
   recentScenes: string[];
+  productTypeId: number;
+  productTypeName: string;
 };
 
 function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>) {
@@ -226,7 +228,11 @@ export default function CatalogueStudioPage() {
         </Button>
       </div>
       <div className="mb-6 rounded-md border p-4" data-testid="catalogue-studio-panels">
-        <MockupBulkImport onImported={() => Promise.all([candidate.refetch(), panels.refetch()])} />
+        <MockupBulkImport
+          productType={candidate.data ? { id: candidate.data.productTypeId, name: candidate.data.productTypeName } : null}
+          storedScenes={(panels.data?.scenes ?? []).map((scene) => scene.panelId)}
+          onImported={() => Promise.all([candidate.refetch(), panels.refetch()])}
+        />
         <p className="mt-2 text-xs text-muted-foreground">
           Panels on file: {panels.data ? panels.data.scenes.length : "…"}
         </p>

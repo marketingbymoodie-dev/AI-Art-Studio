@@ -32,6 +32,25 @@ export type MockupImportPlan = {
 /** A mask whose area is this far from its scene's median asks for a look. */
 export const MASK_AREA_FAR = 0.12;
 
+export function sceneMedian(areas: number[]): number | null {
+  if (!areas.length) return null;
+  const sorted = [...areas].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** Marks on the contact sheet. Touching the frame is not one of them. */
+export function mockupSheetMarks(
+  cell: { error: string; areaFraction: number; disconnected: boolean },
+  median: number | null,
+): string[] {
+  const reasons: string[] = [];
+  if (cell.error) reasons.push(cell.error);
+  if (median != null && Math.abs(cell.areaFraction - median) > MASK_AREA_FAR) reasons.push("area far from this scene");
+  if (cell.disconnected) reasons.push("disconnected");
+  return reasons;
+}
+
 const SCENE = /^Mockup_\d+$/i;
 const FILE = /^(Mockup_\d+)_([0-9A-Fa-f]{6})\.png$/i;
 

@@ -18,6 +18,7 @@ import {
   readChoice,
   recentSceneLabels,
   renderCandidateOnPanel,
+  reviewStoredScene,
   saveArtwork,
   saveChoice,
   softstyleType,
@@ -139,10 +140,27 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
   });
 
+  app.get("/api/platform/catalogue-studio/panels/review", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const panelId = typeof req.query.panelId === "string" ? req.query.panelId : "";
+      if (!/^Mockup_\d+$/i.test(panelId)) {
+        res.status(400).json({ error: "Name the scene." });
+        return;
+      }
+      const garment = await softstyleType();
+      const cells = await reviewStoredScene(garment.id, panelId);
+      res.json({ productTypeId: garment.id, productTypeName: garment.name, panelId, cells });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   app.post("/api/platform/catalogue-studio/panels/import/plan", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((path: unknown) => String(path)) : [];
-    res.json(parseMockupImport(paths));
+    const garment = await softstyleType();
+    res.json({ ...parseMockupImport(paths), productTypeId: garment.id, productTypeName: garment.name });
   });
 
   app.post("/api/platform/catalogue-studio/panels/import/file", isAuthenticated, async (req: any, res: Response) => {
@@ -150,6 +168,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     try {
       const body = req.body ?? {};
       const garment = await softstyleType();
+      const requested = Number(body.productTypeId);
+      if (Number.isFinite(requested) && requested > 0 && requested !== garment.id) {
+        res.status(400).json({ error: `This page stores panels on ${garment.name} (${garment.id}).` });
+        return;
+      }
       const result = await storeSegmentedPanel({
         productTypeId: garment.id,
         label: String(body.label || ""),
@@ -161,9 +184,15 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         imageBase64: String(body.imageBase64 || ""),
         uploadedBy: req.user?.id ? String(req.user.id) : null,
       });
-      res.json(result);
+      res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
-      res.status(400).json({ error: String(e?.message || e) });
+      res.status(400).json({
+        error: String(e?.message || e),
+        areaFraction: e?.areaFraction,
+        touchesEdge: e?.touchesEdge,
+        disconnected: e?.disconnected,
+        outlineJpegBase64: e?.outlineJpegBase64,
+      });
     }
   });
 
@@ -182,6 +211,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         isDefault: body.isDefault === true,
         imageBase64: String(body.imageBase64 || ""),
         uploadedBy: req.user?.id ? String(req.user.id) : null,
+        forceConfirm: body.forceConfirm === true,
       });
       res.json(result);
     } catch (e: any) {

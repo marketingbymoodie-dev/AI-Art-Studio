@@ -22,6 +22,7 @@ import {
   scaleMask,
   segmentGarmentNearHex,
   segmentWhiteGarment,
+  storedMaskReport,
   type PanelColour,
 } from "./mockup-library";
 
@@ -269,7 +270,17 @@ export async function storeSegmentedPanel(args: {
   const segment = white
     ? describeWhiteSegment(decoded.rgba, decoded.width, decoded.height)
     : segmentGarmentNearHex(decoded.rgba, decoded.width, decoded.height, hex);
-  printRectForMask(segment.mask, decoded.width, decoded.height);
+  const outline = await garmentOutlineJpeg(decoded.rgba, decoded.width, decoded.height, segment.mask);
+  try {
+    printRectForMask(segment.mask, decoded.width, decoded.height);
+  } catch (e: any) {
+    throw Object.assign(new Error(String(e?.message || e)), {
+      areaFraction: segment.areaFraction,
+      touchesEdge: segment.touchesEdge,
+      disconnected: segment.disconnected,
+      outlineJpegBase64: outline.toString("base64"),
+    });
+  }
   await insertPanel({
     productTypeId: args.productTypeId,
     panelId,
@@ -285,7 +296,6 @@ export async function storeSegmentedPanel(args: {
     isDefault: args.isDefault,
     uploadedBy: args.uploadedBy,
   });
-  const outline = await garmentOutlineJpeg(decoded.rgba, decoded.width, decoded.height, segment.mask);
   return {
     stored: true,
     panelId,
@@ -310,6 +320,7 @@ export async function preparePanelUpload(args: {
   isDefault: boolean;
   imageBase64: string;
   uploadedBy: string | null;
+  forceConfirm?: boolean;
 }): Promise<PrepareResult> {
   const photo = decodeImage(args.imageBase64);
   const decoded = await decodeRgba(photo);
@@ -326,7 +337,7 @@ export async function preparePanelUpload(args: {
     const white = await decodeRgba(whitePhoto);
     const whiteMask = await maskFromPng(whiteMaskPng, white.width, white.height);
     const check = backgroundAgrees(white.rgba, decoded.rgba, whiteMask, white.width, white.height, decoded.width, decoded.height);
-    if (check.agree) {
+    if (check.agree && !args.forceConfirm) {
       await insertPanel({
         productTypeId: args.productTypeId,
         panelId,
@@ -408,6 +419,41 @@ export async function confirmPanelUpload(uploadId: string, maskPngBase64: string
     uploadedBy: meta.uploadedBy,
   });
   return { panelId: meta.panelId };
+}
+
+/** Outlines from the masks already stored. Does not segment again. */
+export async function reviewStoredScene(productTypeId: number, panelId: string): Promise<Array<{
+  panelId: string;
+  garmentColor: string;
+  hex: string;
+  areaFraction: number;
+  disconnected: boolean;
+  outlineJpegBase64: string;
+  error: string;
+}>> {
+  const rows = await sceneRows(productTypeId, panelId);
+  const seen = new Set<string>();
+  const cells = [];
+  for (const row of rows) {
+    const key = row.garmentColor.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const [photo, maskPng] = await Promise.all([getObject(row.storagePath), getObject(row.maskPath)]);
+    const decoded = await decodeRgba(photo);
+    const mask = await maskFromPng(maskPng, decoded.width, decoded.height);
+    const report = storedMaskReport(mask, decoded.width, decoded.height);
+    const outline = await garmentOutlineJpeg(decoded.rgba, decoded.width, decoded.height, mask);
+    cells.push({
+      panelId: row.panelId,
+      garmentColor: row.garmentColor,
+      hex: row.garmentHex,
+      areaFraction: report.areaFraction,
+      disconnected: report.disconnected,
+      outlineJpegBase64: outline.toString("base64"),
+      error: "",
+    });
+  }
+  return cells;
 }
 
 export async function renderCandidateOnPanel(args: {
