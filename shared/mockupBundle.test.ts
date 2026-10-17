@@ -34,5 +34,6 @@ describe("mockup folder import", () => {
     expect(mockupSheetMarks({ error: "", areaFraction: 0.58, disconnected: false }, median)).toEqual([]);
     expect(mockupSheetMarks({ error: "", areaFraction: 0.78, disconnected: false }, median)).toEqual(["area far from this scene"]);
     expect(mockupSheetMarks({ error: "", areaFraction: 0.58, disconnected: true }, median)).toEqual(["disconnected"]);
+    expect(mockupSheetMarks({ error: "not stored", areaFraction: 0, disconnected: false }, median)).toEqual(["Failed: not stored"]);
   });
 });

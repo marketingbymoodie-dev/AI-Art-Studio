@@ -413,11 +413,14 @@ function SheetFigures({ cells, onDraw }: { cells: SheetCell[]; onDraw?: (cell: S
   for (const panelId of new Set(cells.map((cell) => cell.panelId))) {
     medians.set(panelId, sceneMedian(cells.filter((cell) => cell.panelId === panelId && !cell.error).map((cell) => cell.areaFraction)));
   }
-  const marked = cells.filter((cell) => mockupSheetMarks(cell, medians.get(cell.panelId) ?? null).length);
+  const failed = cells.filter((cell) => cell.error);
+  const marked = cells.filter((cell) => !cell.error && mockupSheetMarks(cell, medians.get(cell.panelId) ?? null).length);
   const scenes = [...new Set(cells.map((cell) => cell.panelId))];
   return (
     <div className="space-y-3">
-      <p className="text-xs">{marked.length} of {cells.length} need a look. A mark does not hold a panel back.</p>
+      <p className="text-xs">
+        {failed.length ? `${failed.length} failed.` : ""} {marked.length} of {cells.length - failed.length} stored need a look. A mark does not hold a panel back. A failure is not stored.
+      </p>
       {scenes.map((panelId) => (
         <div key={panelId}>
           <h3 className="text-xs font-medium">{panelId}</h3>
@@ -425,7 +428,7 @@ function SheetFigures({ cells, onDraw }: { cells: SheetCell[]; onDraw?: (cell: S
             {cells.filter((cell) => cell.panelId === panelId).map((cell) => {
               const reasons = mockupSheetMarks(cell, medians.get(panelId) ?? null);
               return (
-                <figure key={`${cell.panelId}-${cell.hex}`} className={reasons.length ? "rounded border border-amber-700 p-1" : "p-1"}>
+                <figure key={`${cell.panelId}-${cell.hex}`} className={cell.error ? "rounded border border-red-700 p-1" : reasons.length ? "rounded border border-amber-700 p-1" : "p-1"}>
                   {cell.outlineJpegBase64 ? (
                     <img src={`data:image/jpeg;base64,${cell.outlineJpegBase64}`} alt="" className="w-full" />
                   ) : null}

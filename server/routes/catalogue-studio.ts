@@ -186,8 +186,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       });
       res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
+      const message = String(e?.message || e);
+      const failed = req.body ?? {};
+      console.error(`[mockup-import] ${String(failed.panelId || "")} ${String(failed.garmentHex || "")} failed: ${message}`);
       res.status(400).json({
-        error: String(e?.message || e),
+        error: message,
         areaFraction: e?.areaFraction,
         touchesEdge: e?.touchesEdge,
         disconnected: e?.disconnected,
