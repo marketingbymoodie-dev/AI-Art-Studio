@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMockupImport } from "./mockupBundle";
+import { mockupSheetMarks, parseMockupImport, sceneMedian } from "./mockupBundle";
 
 describe("mockup folder import", () => {
   it("reads the scene from the folder and the colour from the hex", () => {
@@ -27,5 +27,12 @@ describe("mockup folder import", () => {
     ]);
     expect(plan.rows).toHaveLength(1);
     expect(plan.problems[0].message).toContain("already");
+  });
+
+  it("marks area and a second region, and ignores a full-bleed edge", () => {
+    const median = sceneMedian([0.5, 0.58, 0.62]);
+    expect(mockupSheetMarks({ error: "", areaFraction: 0.58, disconnected: false }, median)).toEqual([]);
+    expect(mockupSheetMarks({ error: "", areaFraction: 0.78, disconnected: false }, median)).toEqual(["area far from this scene"]);
+    expect(mockupSheetMarks({ error: "", areaFraction: 0.58, disconnected: true }, median)).toEqual(["disconnected"]);
   });
 });

@@ -212,6 +212,15 @@ function borderTouch(mask: Uint8Array, w: number, h: number): boolean {
   return false;
 }
 
+/** Area and a second region, measured on a mask that is already stored. */
+export function storedMaskReport(mask: Uint8Array, w: number, h: number): { areaFraction: number; disconnected: boolean } {
+  let area = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) area++;
+  const kept = components(mask, w, h).sort((a, b) => b.length - a.length);
+  const secondRatio = kept[0]?.length ? (kept[1]?.length || 0) / kept[0].length : 0;
+  return { areaFraction: mask.length ? area / mask.length : 0, disconnected: secondRatio >= 0.12 };
+}
+
 function maskQuality(mask: Uint8Array, w: number, h: number, secondRatio: number, touchesEdge: boolean): GarmentSegment {
   let area = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i]) area++;
