@@ -82,22 +82,19 @@ export function isSessionAuthError(raw: unknown): boolean {
 export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
+  attempts = 2,
 ): Promise<Response> {
-  const headers = new Headers(init.headers);
-  if (init.body !== undefined && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const token = await getFreshShopifySessionToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
-  let res = await fetch(input, { ...init, headers, credentials: "include" });
-  if (res.status === 401 && token) {
-    const retryToken = await getFreshShopifySessionToken();
-    if (retryToken) {
-      headers.set("Authorization", `Bearer ${retryToken}`);
-      res = await fetch(input, { ...init, headers, credentials: "include" });
+  let res!: Response;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt - 1)));
+    const headers = new Headers(init.headers);
+    if (init.body !== undefined && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
     }
+    const token = await getFreshShopifySessionToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    res = await fetch(input, { ...init, headers, credentials: "include" });
+    if (res.status !== 401) return res;
   }
   return res;
 }
