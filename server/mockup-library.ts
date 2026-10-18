@@ -6,6 +6,7 @@
  * Do not raise it.
  */
 import sharp from "sharp";
+import { MASK_AREA_FAR, sceneMedian } from "@shared/mockupBundle";
 import { compositePlacedInk, medianShadingLuminance } from "./mockup-compositor";
 
 /** Mean per-channel absolute difference, on the 0–255 scale. Do not raise this. */
@@ -219,6 +220,63 @@ export function storedMaskReport(mask: Uint8Array, w: number, h: number): { area
   const kept = components(mask, w, h).sort((a, b) => b.length - a.length);
   const secondRatio = kept[0]?.length ? (kept[1]?.length || 0) / kept[0].length : 0;
   return { areaFraction: mask.length ? area / mask.length : 0, disconnected: secondRatio >= 0.12 };
+}
+
+export type SceneClipRow = { key: string; mask: Uint8Array; areaFraction: number; clipped: boolean };
+export type SceneClip =
+  | { ok: true; rows: SceneClipRow[] }
+  | { ok: false; reason: "size" | "no-reference" | "no-overlap" | "still-outside" };
+
+function maskArea(mask: Uint8Array, pixels: number): number {
+  let n = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) n++;
+  return pixels ? n / pixels : 0;
+}
+
+/**
+ * Clip every mask that misses the scene median to the pixels a majority of
+ * the passing masks agree on, then recheck. A plain OR of the passers keeps
+ * props that only the largest passer included, so the clipped area stays
+ * outside 0.12. A mask that only passed because an outlier pulled the median
+ * fails the recheck and is clipped on the next pass. No passing mask, or a
+ * clip that still misses after every mask has had a turn, stores nothing.
+ */
+export function clipSceneMasks(rows: Array<{ key: string; mask: Uint8Array }>, width: number, height: number): SceneClip {
+  const pixels = width * height;
+  if (!rows.length || rows.some((row) => row.mask.length !== pixels)) return { ok: false, reason: "size" };
+  let current: SceneClipRow[] = rows.map((row) => ({
+    key: row.key,
+    mask: row.mask,
+    areaFraction: maskArea(row.mask, pixels),
+    clipped: false,
+  }));
+  for (let round = 0; round < rows.length; round++) {
+    const median = sceneMedian(current.map((row) => row.areaFraction));
+    if (median == null) return { ok: false, reason: "no-reference" };
+    const passing = current.filter((row) => row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR);
+    if (!passing.length) return { ok: false, reason: "no-reference" };
+    const outside = current.filter((row) => !(row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR));
+    if (!outside.length) return { ok: true, rows: current };
+    const votes = new Uint16Array(pixels);
+    for (const row of passing) for (let i = 0; i < pixels; i++) if (row.mask[i]) votes[i]++;
+    const need = Math.floor(passing.length / 2) + 1;
+    const reference = new Uint8Array(pixels);
+    for (let i = 0; i < pixels; i++) if (votes[i] >= need) reference[i] = 1;
+    const next: SceneClipRow[] = [];
+    for (const row of current) {
+      if (row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR) {
+        next.push(row);
+        continue;
+      }
+      const clipped = new Uint8Array(pixels);
+      for (let i = 0; i < pixels; i++) if (row.mask[i] && reference[i]) clipped[i] = 1;
+      const area = maskArea(clipped, pixels);
+      if (area === 0) return { ok: false, reason: "no-overlap" };
+      next.push({ key: row.key, mask: clipped, areaFraction: area, clipped: true });
+    }
+    current = next;
+  }
+  return { ok: false, reason: "still-outside" };
 }
 
 function maskQuality(mask: Uint8Array, w: number, h: number, secondRatio: number, touchesEdge: boolean): GarmentSegment {

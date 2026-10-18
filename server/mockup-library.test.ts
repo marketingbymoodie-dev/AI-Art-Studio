@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MASK_BACKGROUND_MAX_MEAN,
   backgroundAgrees,
+  clipSceneMasks,
   describeWhiteSegment,
   missingPanelMessage,
   printRectForMask,
@@ -104,5 +105,38 @@ describe("mockup library", () => {
     expect(seg.mask[32 * w + 12]).toBe(1);
     expect(seg.mask[79 * w + 79]).toBe(0);
     expect(seg.touchesEdge).toBe(true);
+  });
+
+  it("clips an oversized mask to the passing union and refuses a scene with no reference", () => {
+    const w = 30;
+    const h = 30;
+    const square = () => {
+      const mask = new Uint8Array(w * h);
+      for (let y = 10; y < 20; y++) for (let x = 10; x < 20; x++) mask[y * w + x] = 1;
+      return mask;
+    };
+    const oversized = square();
+    for (let y = 20; y < 30; y++) for (let x = 0; x < 16; x++) oversized[y * w + x] = 1;
+    const clipped = clipSceneMasks(
+      [
+        { key: "sage", mask: square() },
+        { key: "pink", mask: square() },
+        { key: "blue", mask: square() },
+        { key: "black", mask: oversized },
+      ],
+      w,
+      h,
+    );
+    expect(clipped.ok).toBe(true);
+    if (!clipped.ok) return;
+    const black = clipped.rows.find((row) => row.key === "black");
+    expect(black?.clipped).toBe(true);
+    expect(black?.areaFraction).toBeCloseTo(100 / 900, 5);
+    expect(clipped.rows.every((row) => Math.abs(row.areaFraction - 100 / 900) <= 0.12)).toBe(true);
+    const tiny = new Uint8Array(w * h);
+    tiny[0] = 1;
+    const huge = new Uint8Array(w * h);
+    huge.fill(1);
+    expect(clipSceneMasks([{ key: "a", mask: tiny }, { key: "b", mask: huge }], w, h).ok).toBe(false);
   });
 });

@@ -22,7 +22,8 @@ import {
   saveArtwork,
   saveChoice,
   softstyleType,
-  storeSegmentedPanel,
+  stageImportFile,
+  commitStagedImport,
 } from "../mockup-library-store";
 
 /** Front Shopify variant prices for the Softstyle page. Same read as list-as-product. */
@@ -173,8 +174,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: `This page stores panels on ${garment.name} (${garment.id}).` });
         return;
       }
-      const result = await storeSegmentedPanel({
-        productTypeId: garment.id,
+      const result = await stageImportFile({
         label: String(body.label || ""),
         panelId: body.panelId ? String(body.panelId) : null,
         garmentColor: String(body.garmentColor || ""),
@@ -182,7 +182,6 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         kind: body.kind === "white-master" ? "white-master" : "produced",
         isDefault: body.isDefault === true,
         imageBase64: String(body.imageBase64 || ""),
-        uploadedBy: req.user?.id ? String(req.user.id) : null,
       });
       res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
@@ -196,6 +195,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         disconnected: e?.disconnected,
         outlineJpegBase64: e?.outlineJpegBase64,
       });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/panels/import/commit", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const garment = await softstyleType();
+      const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => String(id)) : [];
+      const result = await commitStagedImport(garment.id, stageIds, req.user?.id ? String(req.user.id) : null);
+      res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
+    } catch (e: any) {
+      const message = String(e?.message || e);
+      console.error(`[mockup-import] commit failed: ${message}`);
+      res.status(400).json({ error: message });
     }
   });
 

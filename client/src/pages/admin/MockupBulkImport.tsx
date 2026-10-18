@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { mockupSheetMarks, parseMockupImport, sceneMedian, type MockupPlanRow } from "@shared/mockupBundle";
+import { apiFetch } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 
 type Held = { row: MockupPlanRow; file: File; width: number; height: number };
@@ -12,7 +13,18 @@ type SheetCell = {
   disconnected: boolean;
   outlineJpegBase64: string;
   error: string;
+  clipped?: boolean;
 };
+
+async function postJson(url: string, body: unknown): Promise<{ res: Response; tries: number }> {
+  let res!: Response;
+  for (let tries = 1; tries <= 3; tries++) {
+    if (tries > 1) await new Promise((resolve) => setTimeout(resolve, 400 * (tries - 1)));
+    res = await apiFetch(url, { method: "POST", body: JSON.stringify(body) }, 1);
+    if (res.status !== 401) return { res, tries };
+  }
+  return { res, tries: 3 };
+}
 
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -92,6 +104,7 @@ export function MockupBulkImport({
   const [reviewBusy, setReviewBusy] = useState("");
   const [destination, setDestination] = useState<{ id: number; name: string } | null>(null);
   const [drawing, setDrawing] = useState<{ uploadId: string; maskPngBase64: string; photoDataUrl: string; label: string } | null>(null);
+  const [retried, setRetried] = useState<string[]>([]);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const sceneKey = storedScenes.join("|");
@@ -108,7 +121,7 @@ export function MockupBulkImport({
       for (let i = 0; i < ids.length; i++) {
         if (cancel) return;
         setReviewBusy(`Reading stored outlines ${i + 1} of ${ids.length}`);
-        const res = await fetch(`/api/platform/catalogue-studio/panels/review?panelId=${encodeURIComponent(ids[i])}`, { credentials: "include" });
+        const res = await apiFetch(`/api/platform/catalogue-studio/panels/review?panelId=${encodeURIComponent(ids[i])}`);
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Stored outlines failed");
         if (body.productTypeId) setDestination({ id: body.productTypeId, name: body.productTypeName });
@@ -138,10 +151,8 @@ export function MockupBulkImport({
   async function loadEntries(entries: Array<{ path: string; file: File }>) {
     setError("");
     setSheet([]);
-    const planRes = await fetch("/api/platform/catalogue-studio/panels/import/plan", {
+    const planRes = await apiFetch("/api/platform/catalogue-studio/panels/import/plan", {
       method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paths: entries.map((entry) => entry.path) }),
     });
     const plan = await planRes.json();
@@ -193,37 +204,63 @@ export function MockupBulkImport({
     setError("");
     setSheet([]);
     const cells: SheetCell[] = [];
+    const stageIds: string[] = [];
+    const retriedNames: string[] = [];
     try {
       for (let i = 0; i < held.length; i++) {
         const item = held[i];
         setBusy(`Segmenting ${i + 1} of ${held.length}: ${item.row.panelId} ${item.row.garmentColor}`);
         const imageBase64 = await fileToDataUrl(item.file);
-        const res = await fetch("/api/platform/catalogue-studio/panels/import/file", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            label: item.row.panelId,
-            panelId: item.row.panelId,
-            garmentColor: item.row.garmentColor,
-            garmentHex: item.row.hex,
-            kind: item.row.kind,
-            isDefault: item.row.panelId.toLowerCase() === "mockup_01",
-            imageBase64,
-            productTypeId: (destination ?? productType)?.id,
-          }),
-        });
-        const body = await res.json();
-        cells.push({
+        const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/file", {
+          label: item.row.panelId,
           panelId: item.row.panelId,
           garmentColor: item.row.garmentColor,
-          hex: item.row.hex,
-          areaFraction: Number(body.areaFraction) || 0,
-          touchesEdge: body.touchesEdge === true,
-          disconnected: body.disconnected === true,
-          outlineJpegBase64: String(body.outlineJpegBase64 || ""),
-          error: res.ok ? "" : String(body.error || "not stored"),
+          garmentHex: item.row.hex,
+          kind: item.row.kind,
+          isDefault: item.row.panelId.toLowerCase() === "mockup_01",
+          imageBase64,
+          productTypeId: (destination ?? productType)?.id,
         });
+        if (tries > 1) retriedNames.push(`${item.row.panelId} ${item.row.garmentColor}`);
+        const body = await res.json();
+        if (!res.ok || !body.stageId) {
+          cells.push({
+            panelId: item.row.panelId,
+            garmentColor: item.row.garmentColor,
+            hex: item.row.hex,
+            areaFraction: 0,
+            touchesEdge: false,
+            disconnected: false,
+            outlineJpegBase64: "",
+            error: String(body.error || "not stored"),
+          });
+          continue;
+        }
+        stageIds.push(String(body.stageId));
+      }
+      setRetried(retriedNames);
+      if (stageIds.length) {
+        setBusy("Clipping each scene to the masks that passed");
+        const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/commit", { stageIds });
+        if (tries > 1) retriedNames.push("scene clip");
+        setRetried([...retriedNames]);
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "The scenes were not stored.");
+        for (const scene of body.scenes as Array<{ panelId: string; rows: SheetCell[] }>) {
+          for (const row of scene.rows) {
+            cells.push({
+              panelId: scene.panelId,
+              garmentColor: row.garmentColor,
+              hex: row.hex,
+              areaFraction: Number(row.areaFraction) || 0,
+              touchesEdge: false,
+              disconnected: row.disconnected === true,
+              outlineJpegBase64: String(row.outlineJpegBase64 || ""),
+              error: String(row.error || ""),
+              clipped: row.clipped === true,
+            });
+          }
+        }
       }
       setSheet(cells);
       setBusy("");
@@ -243,10 +280,8 @@ export function MockupBulkImport({
     setError("");
     try {
       const imageBase64 = await fileToDataUrl(file);
-      const res = await fetch("/api/platform/catalogue-studio/panels/prepare", {
+      const res = await apiFetch("/api/platform/catalogue-studio/panels/prepare", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           label: row.panelId,
           panelId: row.panelId,
@@ -342,10 +377,8 @@ export function MockupBulkImport({
           maskPngBase64={drawing.maskPngBase64}
           photoDataUrl={drawing.photoDataUrl}
           onConfirm={async (maskPngBase64) => {
-            const res = await fetch("/api/platform/catalogue-studio/panels/confirm", {
+            const res = await apiFetch("/api/platform/catalogue-studio/panels/confirm", {
               method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ uploadId: drawing.uploadId, maskPngBase64 }),
             });
             const body = await res.json().catch(() => ({}));
@@ -395,6 +428,9 @@ export function MockupBulkImport({
       ) : null}
       {sheet.length ? (
         <div className="space-y-3" data-testid="catalogue-studio-import-sheet">
+          <p className="text-xs" data-testid="catalogue-studio-import-retried">
+            Retried after a session expiry: {retried.length ? retried.join(", ") : "none"}.
+          </p>
           <SheetFigures
             cells={sheet}
             onDraw={(cell) => {
@@ -435,6 +471,7 @@ function SheetFigures({ cells, onDraw }: { cells: SheetCell[]; onDraw?: (cell: S
                   <figcaption className="text-[10px] leading-tight">
                     {cell.garmentColor}
                     {reasons.length ? ` — ${reasons.join(", ")}` : ""}
+                    {cell.clipped && !cell.error ? " — clipped" : ""}
                   </figcaption>
                   {cell.error && onDraw ? (
                     <button type="button" className="text-[10px] underline" onClick={() => onDraw(cell)}>Draw this mask</button>
