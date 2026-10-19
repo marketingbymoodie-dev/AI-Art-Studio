@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MASK_BACKGROUND_MAX_MEAN,
   backgroundAgrees,
-  clipSceneMasks,
+  chooseSceneReference,
   describeWhiteSegment,
   missingPanelMessage,
   printRectForMask,
@@ -107,36 +107,40 @@ describe("mockup library", () => {
     expect(seg.touchesEdge).toBe(true);
   });
 
-  it("clips an oversized mask to the passing union and refuses a scene with no reference", () => {
-    const w = 30;
-    const h = 30;
-    const square = () => {
-      const mask = new Uint8Array(w * h);
-      for (let y = 10; y < 20; y++) for (let x = 10; x < 20; x++) mask[y * w + x] = 1;
-      return mask;
+  it("uses the first chromatic file that is one shirt-sized region", () => {
+    const w = 80;
+    const h = 80;
+    const paint = (hex: [number, number, number], x0: number, y0: number, x1: number, y1: number) => {
+      const rgba = new Uint8Array(w * h * 4);
+      rgba.fill(255);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const o = (y * w + x) * 4;
+          rgba[o] = 214;
+          rgba[o + 1] = 186;
+          rgba[o + 2] = 148;
+          rgba[o + 3] = 255;
+        }
+      }
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const o = (y * w + x) * 4;
+          rgba[o] = hex[0];
+          rgba[o + 1] = hex[1];
+          rgba[o + 2] = hex[2];
+        }
+      }
+      return rgba;
     };
-    const oversized = square();
-    for (let y = 20; y < 30; y++) for (let x = 0; x < 16; x++) oversized[y * w + x] = 1;
-    const clipped = clipSceneMasks(
-      [
-        { key: "sage", mask: square() },
-        { key: "pink", mask: square() },
-        { key: "blue", mask: square() },
-        { key: "black", mask: oversized },
-      ],
-      w,
-      h,
-    );
-    expect(clipped.ok).toBe(true);
-    if (!clipped.ok) return;
-    const black = clipped.rows.find((row) => row.key === "black");
-    expect(black?.clipped).toBe(true);
-    expect(black?.areaFraction).toBeCloseTo(100 / 900, 5);
-    expect(clipped.rows.every((row) => Math.abs(row.areaFraction - 100 / 900) <= 0.12)).toBe(true);
-    const tiny = new Uint8Array(w * h);
-    tiny[0] = 1;
-    const huge = new Uint8Array(w * h);
-    huge.fill(1);
-    expect(clipSceneMasks([{ key: "a", mask: tiny }, { key: "b", mask: huge }], w, h).ok).toBe(false);
+    const chosen = chooseSceneReference([
+      { hex: "819E87", rgba: paint([129, 158, 135], 30, 10, 36, 16), width: w, height: h },
+      { hex: "DD74A1", rgba: paint([221, 116, 161], 18, 16, 62, 68), width: w, height: h },
+      { hex: "25282A", rgba: paint([37, 40, 42], 18, 16, 62, 68), width: w, height: h },
+    ]);
+    expect(chosen?.hex).toBe("DD74A1");
+    expect(chosen && chosen.areaFraction > 0.2).toBe(true);
+    expect(chooseSceneReference([
+      { hex: "819E87", rgba: paint([129, 158, 135], 30, 10, 36, 16), width: w, height: h },
+    ])).toBeNull();
   });
 });

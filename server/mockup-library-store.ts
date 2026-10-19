@@ -10,7 +10,7 @@ import { db } from "./db";
 import "./load-env";
 import {
   backgroundAgrees,
-  clipSceneMasks,
+  chooseSceneReference,
   decodeRgba,
   DEFAULT_PRINT_FRACTIONS,
   describeWhiteSegment,
@@ -193,7 +193,7 @@ async function insertPanel(args: {
   mask: Uint8Array;
   width: number;
   height: number;
-  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-clip";
+  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-reference";
   isDefault: boolean;
   uploadedBy: string | null;
 }): Promise<void> {
@@ -315,17 +315,9 @@ export type ImportSegment = {
   kind: "produced" | "white-master";
   isDefault: boolean;
   photo: Buffer;
-  mask: Uint8Array;
   width: number;
   height: number;
 };
-
-function clipSceneError(panelId: string, reason: string): string {
-  if (reason === "size") return `${panelId} has files of different pixel sizes, so nothing in that scene was stored.`;
-  if (reason === "no-overlap") return `${panelId} has a colour outside the reference that does not overlap it, so nothing in that scene was stored.`;
-  if (reason === "still-outside") return `${panelId} is still outside the area check after the clip, so nothing in that scene was stored.`;
-  return `${panelId} has no mask inside the area check, so nothing was stored.`;
-}
 
 export async function segmentImportPhoto(photo: Buffer, hex: string, kind: "produced" | "white-master"): Promise<{
   mask: Uint8Array;
@@ -351,12 +343,11 @@ export async function stageImportFile(args: {
   imageBase64: string;
 }): Promise<{ stageId: string; panelId: string; areaFraction: number; garmentHex: string; garmentColor: string }> {
   const photo = decodeImage(args.imageBase64);
+  const decoded = await decodeRgba(photo);
   const hex = args.garmentHex.replace(/^#/, "").toUpperCase();
-  const segment = await segmentImportPhoto(photo, hex, args.kind);
   const stageId = randomUUID();
   const base = `pending-import/${stageId}`;
   await putObject(`${base}/photo.png`, photo, "image/png");
-  await putObject(`${base}/mask.png`, await maskToPng(segment.mask, segment.width, segment.height), "image/png");
   await putObject(`${base}/meta.json`, Buffer.from(JSON.stringify({
     panelId: (args.panelId || slug(args.label)).slice(0, 80),
     label: args.label,
@@ -364,13 +355,13 @@ export async function stageImportFile(args: {
     garmentHex: hex,
     kind: args.kind === "white-master" || hex === "FFFFFF" ? "white-master" : "produced",
     isDefault: args.isDefault,
-    width: segment.width,
-    height: segment.height,
+    width: decoded.width,
+    height: decoded.height,
   })), "application/json");
   return {
     stageId,
     panelId: (args.panelId || slug(args.label)).slice(0, 80),
-    areaFraction: segment.areaFraction,
+    areaFraction: 0,
     garmentHex: hex,
     garmentColor: args.garmentColor,
   };
@@ -379,13 +370,12 @@ export async function stageImportFile(args: {
 async function loadStaged(stageId: string): Promise<ImportSegment> {
   if (!/^[0-9a-f-]{36}$/i.test(stageId)) throw new Error("Unknown staged file");
   const base = `pending-import/${stageId}`;
-  const meta = JSON.parse((await getObject(`${base}/meta.json`)).toString("utf8")) as Omit<ImportSegment, "photo" | "mask">;
+  const meta = JSON.parse((await getObject(`${base}/meta.json`)).toString("utf8")) as Omit<ImportSegment, "photo">;
   const photo = await getObject(`${base}/photo.png`);
-  const mask = await maskFromPng(await getObject(`${base}/mask.png`), meta.width, meta.height);
-  return { ...meta, photo, mask };
+  return { ...meta, photo };
 }
 
-export async function finalizeClippedImport(
+export async function finalizeSceneImport(
   productTypeId: number,
   batch: ImportSegment[],
   uploadedBy: string | null,
@@ -393,7 +383,16 @@ export async function finalizeClippedImport(
   scenes: Array<{
     panelId: string;
     error: string;
-    rows: Array<{ garmentColor: string; hex: string; areaFraction: number; clipped: boolean; disconnected: boolean; outlineJpegBase64: string; error: string }>;
+    referenceHex: string;
+    referenceColor: string;
+    areaFraction: number;
+    printWidthOfH: number;
+    printHeightOfH: number;
+    printTopOfH: number;
+    heightOfImage: number;
+    topOfImage: number;
+    centreOfImage: number;
+    rows: Array<{ garmentColor: string; hex: string; areaFraction: number; disconnected: boolean; outlineJpegBase64: string; error: string }>;
   }>;
 }> {
   const groups = new Map<string, ImportSegment[]>();
@@ -404,14 +403,25 @@ export async function finalizeClippedImport(
   }
   const scenes = [];
   for (const [panelId, files] of groups) {
+    const empty = {
+      referenceHex: "",
+      referenceColor: "",
+      areaFraction: 0,
+      printWidthOfH: 0,
+      printHeightOfH: 0,
+      printTopOfH: 0,
+      heightOfImage: 0,
+      topOfImage: 0,
+      centreOfImage: 0,
+    };
     const fail = (message: string) => scenes.push({
       panelId,
       error: message,
+      ...empty,
       rows: files.map((file) => ({
         garmentColor: file.garmentColor,
         hex: file.garmentHex,
         areaFraction: 0,
-        clipped: false,
         disconnected: false,
         outlineJpegBase64: "",
         error: message,
@@ -420,56 +430,28 @@ export async function finalizeClippedImport(
     const width = files[0].width;
     const height = files[0].height;
     if (files.some((file) => file.width !== width || file.height !== height)) {
-      fail(clipSceneError(panelId, "size"));
+      fail(`${panelId} has files of different pixel sizes, so nothing in that scene was stored.`);
       continue;
     }
-    const batchHexes = new Set(files.map((file) => file.garmentHex.toUpperCase()));
-    const inputs = files.map((file) => ({ key: file.garmentHex.toUpperCase(), mask: file.mask }));
-    const storedRows = await sceneRows(productTypeId, panelId);
-    const seenStored = new Set<string>();
-    let sizeMismatch = false;
-    for (const row of storedRows) {
-      const hex = row.garmentHex.toUpperCase();
-      if (batchHexes.has(hex) || seenStored.has(hex)) continue;
-      seenStored.add(hex);
-      if (row.width !== width || row.height !== height) {
-        sizeMismatch = true;
-        break;
-      }
-      const mask = await maskFromPng(await getObject(row.maskPath), row.width, row.height);
-      inputs.push({ key: `stored:${hex}`, mask });
-    }
-    if (sizeMismatch) {
-      fail(clipSceneError(panelId, "size"));
-      continue;
-    }
-    const clipped = clipSceneMasks(inputs, width, height);
-    if (!clipped.ok) {
-      fail(clipSceneError(panelId, clipped.reason));
-      continue;
-    }
-    let rectError = "";
+    const decoded = new Map<string, { rgba: Uint8Array; width: number; height: number }>();
     for (const file of files) {
-      const next = clipped.rows.find((row) => row.key === file.garmentHex.toUpperCase());
-      if (!next) continue;
-      try {
-        printRectForMask(next.mask, width, height);
-      } catch (e: any) {
-        rectError = `${panelId} ${file.garmentHex} ${String(e?.message || e)}`;
-        break;
-      }
+      const photo = await decodeRgba(file.photo);
+      decoded.set(file.garmentHex.toUpperCase(), photo);
     }
-    if (rectError) {
-      fail(rectError);
+    const reference = chooseSceneReference(
+      files.map((file) => {
+        const photo = decoded.get(file.garmentHex.toUpperCase())!;
+        return { hex: file.garmentHex, rgba: photo.rgba, width: photo.width, height: photo.height };
+      }),
+    );
+    if (!reference) {
+      fail(`${panelId} has no usable mask from sage, pink or blue, so nothing in that scene was stored.`);
       continue;
     }
     const rows = [];
     for (const file of files) {
-      const next = clipped.rows.find((row) => row.key === file.garmentHex.toUpperCase());
-      if (!next) continue;
-      const decoded = await decodeRgba(file.photo);
-      const outline = await garmentOutlineJpeg(decoded.rgba, width, height, next.mask);
-      const report = storedMaskReport(next.mask, width, height);
+      const photo = decoded.get(file.garmentHex.toUpperCase())!;
+      const outline = await garmentOutlineJpeg(photo.rgba, width, height, reference.mask);
       const white = file.kind === "white-master" || file.garmentHex.toUpperCase() === "FFFFFF";
       await insertPanel({
         productTypeId,
@@ -479,24 +461,37 @@ export async function finalizeClippedImport(
         garmentHex: file.garmentHex,
         kind: white ? "white-master" : "produced",
         photo: file.photo,
-        mask: next.mask,
+        mask: reference.mask,
         width,
         height,
-        maskSource: next.clipped ? "scene-clip" : white ? "white-rule" : "hex-segment",
+        maskSource: "scene-reference",
         isDefault: file.isDefault,
         uploadedBy,
       });
       rows.push({
         garmentColor: file.garmentColor,
         hex: file.garmentHex,
-        areaFraction: next.areaFraction,
-        clipped: next.clipped,
-        disconnected: report.disconnected,
+        areaFraction: reference.areaFraction,
+        disconnected: false,
         outlineJpegBase64: outline.toString("base64"),
         error: "",
       });
     }
-    scenes.push({ panelId, error: "", rows });
+    const referenceFile = files.find((file) => file.garmentHex.toUpperCase() === reference.hex);
+    scenes.push({
+      panelId,
+      error: "",
+      referenceHex: reference.hex,
+      referenceColor: referenceFile?.garmentColor || reference.hex,
+      areaFraction: reference.areaFraction,
+      printWidthOfH: reference.printWidthOfH,
+      printHeightOfH: reference.printHeightOfH,
+      printTopOfH: reference.printTopOfH,
+      heightOfImage: reference.heightOfImage,
+      topOfImage: reference.topOfImage,
+      centreOfImage: reference.centreOfImage,
+      rows,
+    });
   }
   return { scenes };
 }
@@ -504,7 +499,7 @@ export async function finalizeClippedImport(
 export async function commitStagedImport(productTypeId: number, stageIds: string[], uploadedBy: string | null) {
   const batch: ImportSegment[] = [];
   for (const stageId of stageIds) batch.push(await loadStaged(stageId));
-  return finalizeClippedImport(productTypeId, batch, uploadedBy);
+  return finalizeSceneImport(productTypeId, batch, uploadedBy);
 }
 
 export type PrepareResult =
