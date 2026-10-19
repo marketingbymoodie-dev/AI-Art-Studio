@@ -3,7 +3,8 @@
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, eq } from "drizzle-orm";
-import { customizerPages, productTypes } from "@shared/schema";
+import { customizerPages, merchants, productTypes } from "@shared/schema";
+import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
@@ -15,6 +16,7 @@ import {
   confirmPanelUpload,
   listScenes,
   preparePanelUpload,
+  candidatePrintifyArtwork,
   readChoice,
   recentSceneLabels,
   renderCandidateOnPanel,
@@ -138,6 +140,80 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.send(png);
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/printify-preview", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const panelId = String(req.body?.panelId || "");
+      const colorName = String(req.body?.color || "");
+      const size = String(req.body?.size || "L");
+      if (!panelId) {
+        res.status(400).json({ error: "Choose a scene." });
+        return;
+      }
+      const { db } = await import("../db");
+      const garment = await softstyleType();
+      const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, garment.id)).limit(1);
+      if (!typeRow?.printifyBlueprintId || !typeRow.printifyProviderId || !typeRow.merchantId) {
+        res.status(400).json({ error: "This product type has no Printify blueprint." });
+        return;
+      }
+      const [merchant] = await db.select().from(merchants).where(eq(merchants.id, typeRow.merchantId)).limit(1);
+      if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
+        res.status(400).json({ error: "Printify is not connected on this product type." });
+        return;
+      }
+      const known = PENDING_CANDIDATE.colors.find((c) => c.name === colorName) ?? { name: colorName, hex: "FFFFFF" };
+      const choice = await readChoice(PENDING_CANDIDATE.id);
+      const artwork = await candidatePrintifyArtwork({
+        productTypeId: garment.id,
+        typeName: garment.name,
+        panelId,
+        colorName: known.name,
+        colorHex: known.hex,
+        artworkPath: choice.artworkPath,
+      });
+      let variantMap: VariantMap = {};
+      try {
+        variantMap = JSON.parse(typeRow.variantMap || "{}");
+      } catch {
+        variantMap = {};
+      }
+      const colorId = known.name.toLowerCase().replace(/\s+/g, "-");
+      const resolved = resolveVariantFromMap(variantMap, size, colorId, { allowSizeFallbackForColor: true });
+      if (!resolved?.entry.printifyVariantId) {
+        res.status(400).json({ error: `${known.name} has no Printify variant on ${garment.name}.` });
+        return;
+      }
+      const { generatePrintifyMockup } = await import("../printify-mockups");
+      const result = await generatePrintifyMockup({
+        blueprintId: typeRow.printifyBlueprintId,
+        providerId: typeRow.printifyProviderId,
+        variantId: Number(resolved.entry.printifyVariantId),
+        imageUrl: `data:image/png;base64,${artwork.png.toString("base64")}`,
+        printifyApiToken: merchant.printifyApiToken,
+        printifyShopId: merchant.printifyShopId,
+        x: artwork.x,
+        y: artwork.y,
+        scale: artwork.scale,
+        printPlacement: "front",
+        internalProductTitle: `Mockup Preview - ${Date.now()}`,
+        internalProductDescription: "Temporary product for mockup generation - will be deleted immediately",
+      });
+      if (!result.success || !result.mockupImages.length) {
+        res.status(502).json({ error: result.error || "Printify did not return a mockup." });
+        return;
+      }
+      const front = result.mockupImages.find((image) => /front/i.test(image.label)) ?? result.mockupImages[0];
+      res.json({
+        mockupUrl: front.url,
+        label: front.label,
+        note: "placement preview, not print resolution",
+      });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
     }
   });
 

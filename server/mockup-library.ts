@@ -608,14 +608,47 @@ async function trimArtwork(file: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-export async function renderArtworkOnPanel(args: {
+type PlacedArtwork = {
+  width: number;
+  height: number;
+  rect: { left: number; top: number; width: number; height: number };
+  ink: Buffer;
+  inkWidth: number;
+  inkHeight: number;
+  inkLeft: number;
+  inkTop: number;
+  mask: Uint8Array;
+  garment: Uint8Array;
+  shading: Uint8Array;
+};
+
+/** Printify's create call treats x/y as offsets from centre. Scale 1 is the print-area width. */
+export function printifyPlacementForInk(
+  rect: { left: number; top: number; width: number; height: number },
+  inkLeft: number,
+  inkTop: number,
+  inkWidth: number,
+  inkHeight: number,
+): { x: number; y: number; scale: number } {
+  const cx = inkLeft + inkWidth / 2;
+  const cy = inkTop + inkHeight / 2;
+  const rectCx = rect.left + rect.width / 2;
+  const rectCy = rect.top + rect.height / 2;
+  return {
+    x: (cx - rectCx) / (rect.width / 2),
+    y: (cy - rectCy) / (rect.height / 2),
+    scale: inkWidth / rect.width,
+  };
+}
+
+async function placeArtwork(args: {
   photo: Buffer;
   maskPng: Buffer;
   artwork: Buffer;
   mode: "produced" | "recolour";
   hex: string;
   fractions?: PrintFractions;
-}): Promise<Buffer> {
+}): Promise<PlacedArtwork> {
   const photoRaw = await decodeRgba(args.photo);
   const mask = await maskFromPng(args.maskPng, photoRaw.width, photoRaw.height);
   const fractions = args.fractions ?? DEFAULT_PRINT_FRACTIONS;
@@ -629,21 +662,108 @@ export async function renderArtworkOnPanel(args: {
   const meta = await sharp(trimmed).metadata();
   const iw = meta.width || 1;
   const ih = meta.height || 1;
-  const scale = Math.min(rect.width / iw, rect.height / ih) * 0.85;
-  const inkWidth = Math.max(1, Math.round(iw * scale));
-  const inkHeight = Math.max(1, Math.round(ih * scale));
+  const fit = Math.min(rect.width / iw, rect.height / ih) * 0.85;
+  const inkWidth = Math.max(1, Math.round(iw * fit));
+  const inkHeight = Math.max(1, Math.round(ih * fit));
   const ink = await sharp(trimmed).resize(inkWidth, inkHeight, { fit: "inside" }).ensureAlpha().raw().toBuffer();
-  const composited = compositePlacedInk({
-    garment: Buffer.from(garment),
-    shading: Buffer.from(shading),
+  return {
     width: photoRaw.width,
     height: photoRaw.height,
+    rect,
     ink,
     inkWidth,
     inkHeight,
-    left: Math.round(rect.left + (rect.width - inkWidth) / 2),
-    top: Math.round(rect.top + (rect.height - inkHeight) / 2),
+    inkLeft: Math.round(rect.left + (rect.width - inkWidth) / 2),
+    inkTop: Math.round(rect.top + (rect.height - inkHeight) / 2),
     mask,
+    garment,
+    shading,
+  };
+}
+
+export async function measurePlacedInk(args: {
+  photo: Buffer;
+  maskPng: Buffer;
+  artwork: Buffer;
+  mode: "produced" | "recolour";
+  hex: string;
+  fractions?: PrintFractions;
+}): Promise<{
+  printCentreX: number;
+  printCentreY: number;
+  boundsCentreX: number;
+  boundsCentreY: number;
+  centroidX: number;
+  centroidY: number;
+}> {
+  const placed = await placeArtwork(args);
+  let minX = placed.inkWidth;
+  let minY = placed.inkHeight;
+  let maxX = -1;
+  let maxY = -1;
+  let weight = 0;
+  let sumX = 0;
+  let sumY = 0;
+  for (let y = 0; y < placed.inkHeight; y++) {
+    for (let x = 0; x < placed.inkWidth; x++) {
+      const alpha = placed.ink[(y * placed.inkWidth + x) * 4 + 3];
+      if (alpha < 30) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+      weight += alpha;
+      sumX += (placed.inkLeft + x + 0.5) * alpha;
+      sumY += (placed.inkTop + y + 0.5) * alpha;
+    }
+  }
+  if (maxX < minX || weight === 0) throw new Error("Candidate artwork has no ink");
+  return {
+    printCentreX: placed.rect.left + placed.rect.width / 2,
+    printCentreY: placed.rect.top + placed.rect.height / 2,
+    boundsCentreX: placed.inkLeft + (minX + maxX) / 2,
+    boundsCentreY: placed.inkTop + (minY + maxY) / 2,
+    centroidX: sumX / weight,
+    centroidY: sumY / weight,
+  };
+}
+
+export async function artworkForPrintifyPreview(args: {
+  photo: Buffer;
+  maskPng: Buffer;
+  artwork: Buffer;
+  mode: "produced" | "recolour";
+  hex: string;
+  fractions?: PrintFractions;
+}): Promise<{ png: Buffer; x: number; y: number; scale: number }> {
+  const placed = await placeArtwork(args);
+  const png = await sharp(placed.ink, {
+    raw: { width: placed.inkWidth, height: placed.inkHeight, channels: 4 },
+  }).png().toBuffer();
+  const placement = printifyPlacementForInk(placed.rect, placed.inkLeft, placed.inkTop, placed.inkWidth, placed.inkHeight);
+  return { png, ...placement };
+}
+
+export async function renderArtworkOnPanel(args: {
+  photo: Buffer;
+  maskPng: Buffer;
+  artwork: Buffer;
+  mode: "produced" | "recolour";
+  hex: string;
+  fractions?: PrintFractions;
+}): Promise<Buffer> {
+  const placed = await placeArtwork(args);
+  const composited = compositePlacedInk({
+    garment: Buffer.from(placed.garment),
+    shading: Buffer.from(placed.shading),
+    width: placed.width,
+    height: placed.height,
+    ink: placed.ink,
+    inkWidth: placed.inkWidth,
+    inkHeight: placed.inkHeight,
+    left: placed.inkLeft,
+    top: placed.inkTop,
+    mask: placed.mask,
   });
-  return sharp(composited, { raw: { width: photoRaw.width, height: photoRaw.height, channels: 4 } }).png().toBuffer();
+  return sharp(composited, { raw: { width: placed.width, height: placed.height, channels: 4 } }).png().toBuffer();
 }

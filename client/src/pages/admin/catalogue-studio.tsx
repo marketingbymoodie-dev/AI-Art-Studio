@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Loader2 } from "lucide-react";
+import { apiFetch } from "@/lib/queryClient";
 import { MockupBulkImport } from "@/pages/admin/MockupBulkImport";
 
 type ColourReading = {
@@ -110,6 +111,9 @@ export default function CatalogueStudioPage() {
   const [panelId, setPanelId] = useState("");
   const [ticked, setTicked] = useState<TickedColour[]>([]);
   const [cellSource, setCellSource] = useState<"" | "produced" | "recolour">("");
+  const [printifyUrl, setPrintifyUrl] = useState<string | null>(null);
+  const [printifyBusy, setPrintifyBusy] = useState(false);
+  const [printifyError, setPrintifyError] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [confirmUpload, setConfirmUpload] = useState<{ uploadId: string; maskPngBase64: string; photoDataUrl: string } | null>(null);
   const [previewNonce, setPreviewNonce] = useState(0);
@@ -241,9 +245,44 @@ export default function CatalogueStudioPage() {
         <div>
           <div className="grid gap-8 md:grid-cols-2">
             <div data-testid="catalogue-studio-hero">
-              <div className="mx-auto aspect-square max-w-[520px] overflow-hidden rounded-md bg-white">
-                {hero}
+              <div className={printifyUrl ? "grid gap-3 sm:grid-cols-2" : ""}>
+                <div className="mx-auto aspect-square w-full max-w-[520px] overflow-hidden rounded-md bg-white">
+                  {hero}
+                </div>
+                {printifyUrl ? (
+                  <div>
+                    <div className="mx-auto aspect-square w-full max-w-[520px] overflow-hidden rounded-md bg-white">
+                      <img src={printifyUrl} alt="" className="h-full w-full object-contain" />
+                    </div>
+                    <p className="mt-2 text-center text-xs text-muted-foreground">placement preview, not print resolution</p>
+                  </div>
+                ) : null}
               </div>
+              <div className="mt-3 flex justify-center">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={printifyBusy || !panelId}
+                  onClick={() => {
+                    setPrintifyBusy(true);
+                    setPrintifyError("");
+                    void apiFetch("/api/platform/catalogue-studio/printify-preview", {
+                      method: "POST",
+                      body: JSON.stringify({ panelId, color, size }),
+                    }).then(async (res) => {
+                      const body = await res.json().catch(() => ({}));
+                      if (!res.ok) throw new Error(body.error || "Printify did not return a mockup.");
+                      setPrintifyUrl(String(body.mockupUrl || ""));
+                    }).catch((e: any) => {
+                      setPrintifyError(String(e?.message || e));
+                    }).finally(() => setPrintifyBusy(false));
+                  }}
+                >
+                  {printifyBusy ? "Asking Printify" : "Preview on Printify"}
+                </Button>
+              </div>
+              {printifyError ? <p className="mt-2 text-center text-xs">{printifyError}</p> : null}
               <div className="mt-3 flex items-center justify-center gap-2">
                 <button type="button" className="h-14 w-14 overflow-hidden rounded border-2 border-foreground" aria-current="true">
                   {previewUrl ? <img src={previewUrl} alt="" className="h-full w-full object-contain" /> : null}
