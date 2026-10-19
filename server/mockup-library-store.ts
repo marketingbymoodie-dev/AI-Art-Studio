@@ -14,8 +14,10 @@ import {
   decodeRgba,
   DEFAULT_PRINT_FRACTIONS,
   describeWhiteSegment,
+  artworkForPrintifyPreview,
   garmentOutlineJpeg,
   maskFromPng,
+  measurePlacedInk,
   maskToPng,
   printRectForMask,
   renderArtworkOnPanel,
@@ -660,6 +662,26 @@ export async function renderCandidateOnPanel(args: {
   colorHex: string;
   artworkPath: string | null;
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {
+  const loaded = await loadCandidatePanel(args);
+  const png = await renderArtworkOnPanel({
+    photo: loaded.photo,
+    maskPng: loaded.maskPng,
+    artwork: loaded.artwork,
+    mode: loaded.resolved.kind,
+    hex: loaded.resolved.hex,
+    fractions: loaded.fractions,
+  });
+  return { png, source: loaded.resolved.kind };
+}
+
+async function loadCandidatePanel(args: {
+  productTypeId: number;
+  typeName: string;
+  panelId: string;
+  colorName: string;
+  colorHex: string;
+  artworkPath: string | null;
+}) {
   const rows = await sceneRows(args.productTypeId, args.panelId);
   if (!rows.length) {
     resolvePanelColour([], { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, args.panelId);
@@ -679,20 +701,52 @@ export async function renderCandidateOnPanel(args: {
     getObject(sourceRow.maskPath),
     getObject(args.artworkPath),
   ]);
-  const png = await renderArtworkOnPanel({
-    photo,
-    maskPng,
-    artwork,
-    mode: resolved.kind,
-    hex: resolved.hex,
-    fractions: {
-      widthOfH: Number(sourceRow.printWidthOfH),
-      heightOfH: Number(sourceRow.printHeightOfH),
-      topOfH: Number(sourceRow.printTopOfH),
-      rotationDeg: Number(sourceRow.printRotationDeg),
-    },
+  const fractions = {
+    widthOfH: Number(sourceRow.printWidthOfH),
+    heightOfH: Number(sourceRow.printHeightOfH),
+    topOfH: Number(sourceRow.printTopOfH),
+    rotationDeg: Number(sourceRow.printRotationDeg),
+  };
+  return { photo, maskPng, artwork, resolved, fractions, sourceRow };
+}
+
+export async function measureCandidateInk(args: {
+  productTypeId: number;
+  typeName: string;
+  panelId: string;
+  colorName: string;
+  colorHex: string;
+  artworkPath: string | null;
+}) {
+  const loaded = await loadCandidatePanel(args);
+  return measurePlacedInk({
+    photo: loaded.photo,
+    maskPng: loaded.maskPng,
+    artwork: loaded.artwork,
+    mode: loaded.resolved.kind,
+    hex: loaded.resolved.hex,
+    fractions: loaded.fractions,
   });
-  return { png, source: resolved.kind };
+}
+
+export async function candidatePrintifyArtwork(args: {
+  productTypeId: number;
+  typeName: string;
+  panelId: string;
+  colorName: string;
+  colorHex: string;
+  artworkPath: string | null;
+}) {
+  const loaded = await loadCandidatePanel(args);
+  const preview = await artworkForPrintifyPreview({
+    photo: loaded.photo,
+    maskPng: loaded.maskPng,
+    artwork: loaded.artwork,
+    mode: loaded.resolved.kind,
+    hex: loaded.resolved.hex,
+    fractions: loaded.fractions,
+  });
+  return preview;
 }
 
 export async function approveCandidateChoice(args: {

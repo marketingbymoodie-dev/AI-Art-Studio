@@ -4,6 +4,7 @@ import {
   backgroundAgrees,
   chooseSceneReference,
   describeWhiteSegment,
+  printifyPlacementForInk,
   missingPanelMessage,
   printRectForMask,
   resolvePanelColour,
@@ -142,5 +143,12 @@ describe("mockup library", () => {
     expect(chooseSceneReference([
       { hex: "819E87", rgba: paint([129, 158, 135], 30, 10, 36, 16), width: w, height: h },
     ])).toBeNull();
+  });
+
+  it("sends a centred print rect to Printify as centre with the ink width as the scale", () => {
+    const placed = printifyPlacementForInk({ left: 100, top: 200, width: 400, height: 500 }, 120, 250, 360, 400);
+    expect(placed.x).toBeCloseTo(0, 5);
+    expect(placed.y).toBeCloseTo(0, 5);
+    expect(placed.scale).toBeCloseTo(0.9, 5);
   });
 });
