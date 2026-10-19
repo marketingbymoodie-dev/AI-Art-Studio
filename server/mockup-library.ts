@@ -6,7 +6,6 @@
  * Do not raise it.
  */
 import sharp from "sharp";
-import { MASK_AREA_FAR, sceneMedian } from "@shared/mockupBundle";
 import { compositePlacedInk, medianShadingLuminance } from "./mockup-compositor";
 
 /** Mean per-channel absolute difference, on the 0–255 scale. Do not raise this. */
@@ -222,61 +221,64 @@ export function storedMaskReport(mask: Uint8Array, w: number, h: number): { area
   return { areaFraction: mask.length ? area / mask.length : 0, disconnected: secondRatio >= 0.12 };
 }
 
-export type SceneClipRow = { key: string; mask: Uint8Array; areaFraction: number; clipped: boolean };
-export type SceneClip =
-  | { ok: true; rows: SceneClipRow[] }
-  | { ok: false; reason: "size" | "no-reference" | "no-overlap" | "still-outside" };
+/** Sage, then pink, then blue. White, black and the greys are never the reference. */
+export const SCENE_REFERENCE_HEXES = ["819E87", "DD74A1", "0077B5"] as const;
 
-function maskArea(mask: Uint8Array, pixels: number): number {
-  let n = 0;
-  for (let i = 0; i < mask.length; i++) if (mask[i]) n++;
-  return pixels ? n / pixels : 0;
-}
+/** A leftover blob from the open. A second garment-sized region is not one of these. */
+const REFERENCE_SPECK_PIXELS = 64;
+
+export type SceneReference = {
+  hex: string;
+  mask: Uint8Array;
+  width: number;
+  height: number;
+  areaFraction: number;
+  printWidthOfH: number;
+  printHeightOfH: number;
+  printTopOfH: number;
+  heightOfImage: number;
+  topOfImage: number;
+  centreOfImage: number;
+};
 
 /**
- * Clip every mask that misses the scene median to the pixels a majority of
- * the passing masks agree on, then recheck. A plain OR of the passers keeps
- * props that only the largest passer included, so the clipped area stays
- * outside 0.12. A mask that only passed because an outlier pulled the median
- * fails the recheck and is clipped on the next pass. No passing mask, or a
- * clip that still misses after every mask has had a turn, stores nothing.
+ * One mask for the scene: the first chromatic file whose garment is a single
+ * region of shirt size. The eight colours are the same photograph recoloured,
+ * so they share this mask and its print rect.
  */
-export function clipSceneMasks(rows: Array<{ key: string; mask: Uint8Array }>, width: number, height: number): SceneClip {
-  const pixels = width * height;
-  if (!rows.length || rows.some((row) => row.mask.length !== pixels)) return { ok: false, reason: "size" };
-  let current: SceneClipRow[] = rows.map((row) => ({
-    key: row.key,
-    mask: row.mask,
-    areaFraction: maskArea(row.mask, pixels),
-    clipped: false,
-  }));
-  for (let round = 0; round < rows.length; round++) {
-    const median = sceneMedian(current.map((row) => row.areaFraction));
-    if (median == null) return { ok: false, reason: "no-reference" };
-    const passing = current.filter((row) => row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR);
-    if (!passing.length) return { ok: false, reason: "no-reference" };
-    const outside = current.filter((row) => !(row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR));
-    if (!outside.length) return { ok: true, rows: current };
-    const votes = new Uint16Array(pixels);
-    for (const row of passing) for (let i = 0; i < pixels; i++) if (row.mask[i]) votes[i]++;
-    const need = Math.floor(passing.length / 2) + 1;
-    const reference = new Uint8Array(pixels);
-    for (let i = 0; i < pixels; i++) if (votes[i] >= need) reference[i] = 1;
-    const next: SceneClipRow[] = [];
-    for (const row of current) {
-      if (row.areaFraction > 0 && Math.abs(row.areaFraction - median) <= MASK_AREA_FAR) {
-        next.push(row);
-        continue;
-      }
-      const clipped = new Uint8Array(pixels);
-      for (let i = 0; i < pixels; i++) if (row.mask[i] && reference[i]) clipped[i] = 1;
-      const area = maskArea(clipped, pixels);
-      if (area === 0) return { ok: false, reason: "no-overlap" };
-      next.push({ key: row.key, mask: clipped, areaFraction: area, clipped: true });
+export function chooseSceneReference(
+  candidates: Array<{ hex: string; rgba: Uint8Array; width: number; height: number }>,
+): SceneReference | null {
+  const byHex = new Map(candidates.map((row) => [row.hex.replace(/^#/, "").toUpperCase(), row]));
+  for (const hex of SCENE_REFERENCE_HEXES) {
+    const file = byHex.get(hex);
+    if (!file) continue;
+    const segment = segmentGarmentNearHex(file.rgba, file.width, file.height, hex);
+    const parts = components(segment.mask, file.width, file.height).filter((part) => part.length > REFERENCE_SPECK_PIXELS);
+    if (parts.length !== 1) continue;
+    if (!(segment.areaFraction > 0.2 && segment.areaFraction < 0.85)) continue;
+    let rect: { left: number; top: number; width: number; height: number };
+    try {
+      rect = printRectForMask(segment.mask, file.width, file.height);
+    } catch {
+      continue;
     }
-    current = next;
+    const bounds = maskBounds(segment.mask, file.width, file.height);
+    return {
+      hex,
+      mask: segment.mask,
+      width: file.width,
+      height: file.height,
+      areaFraction: segment.areaFraction,
+      printWidthOfH: DEFAULT_PRINT_FRACTIONS.widthOfH,
+      printHeightOfH: DEFAULT_PRINT_FRACTIONS.heightOfH,
+      printTopOfH: DEFAULT_PRINT_FRACTIONS.topOfH,
+      heightOfImage: bounds.H / file.height,
+      topOfImage: bounds.minY / file.height,
+      centreOfImage: (rect.left + rect.width / 2) / file.width,
+    };
   }
-  return { ok: false, reason: "still-outside" };
+  return null;
 }
 
 function maskQuality(mask: Uint8Array, w: number, h: number, secondRatio: number, touchesEdge: boolean): GarmentSegment {

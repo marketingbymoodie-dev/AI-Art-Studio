@@ -13,7 +13,7 @@ type SheetCell = {
   disconnected: boolean;
   outlineJpegBase64: string;
   error: string;
-  clipped?: boolean;
+  reference?: string;
 };
 
 async function postJson(url: string, body: unknown): Promise<{ res: Response; tries: number }> {
@@ -209,7 +209,7 @@ export function MockupBulkImport({
     try {
       for (let i = 0; i < held.length; i++) {
         const item = held[i];
-        setBusy(`Segmenting ${i + 1} of ${held.length}: ${item.row.panelId} ${item.row.garmentColor}`);
+        setBusy(`Uploading ${i + 1} of ${held.length}: ${item.row.panelId} ${item.row.garmentColor}`);
         const imageBase64 = await fileToDataUrl(item.file);
         const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/file", {
           label: item.row.panelId,
@@ -240,13 +240,13 @@ export function MockupBulkImport({
       }
       setRetried(retriedNames);
       if (stageIds.length) {
-        setBusy("Clipping each scene to the masks that passed");
+        setBusy("Segmenting one reference colour per scene");
         const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/commit", { stageIds });
         if (tries > 1) retriedNames.push("scene clip");
         setRetried([...retriedNames]);
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "The scenes were not stored.");
-        for (const scene of body.scenes as Array<{ panelId: string; rows: SheetCell[] }>) {
+        for (const scene of body.scenes as Array<{ panelId: string; referenceColor?: string; rows: SheetCell[] }>) {
           for (const row of scene.rows) {
             cells.push({
               panelId: scene.panelId,
@@ -257,7 +257,7 @@ export function MockupBulkImport({
               disconnected: row.disconnected === true,
               outlineJpegBase64: String(row.outlineJpegBase64 || ""),
               error: String(row.error || ""),
-              clipped: row.clipped === true,
+              reference: scene.referenceColor || "",
             });
           }
         }
@@ -459,7 +459,7 @@ function SheetFigures({ cells, onDraw }: { cells: SheetCell[]; onDraw?: (cell: S
       </p>
       {scenes.map((panelId) => (
         <div key={panelId}>
-          <h3 className="text-xs font-medium">{panelId}</h3>
+          <h3 className="text-xs font-medium">{panelId}{cells.find((cell) => cell.panelId === panelId)?.reference ? ` — ${cells.find((cell) => cell.panelId === panelId)?.reference}` : ""}</h3>
           <div className="grid grid-cols-4 gap-2 sm:grid-cols-8">
             {cells.filter((cell) => cell.panelId === panelId).map((cell) => {
               const reasons = mockupSheetMarks(cell, medians.get(panelId) ?? null);
@@ -471,7 +471,6 @@ function SheetFigures({ cells, onDraw }: { cells: SheetCell[]; onDraw?: (cell: S
                   <figcaption className="text-[10px] leading-tight">
                     {cell.garmentColor}
                     {reasons.length ? ` — ${reasons.join(", ")}` : ""}
-                    {cell.clipped && !cell.error ? " — clipped" : ""}
                   </figcaption>
                   {cell.error && onDraw ? (
                     <button type="button" className="text-[10px] underline" onClick={() => onDraw(cell)}>Draw this mask</button>
