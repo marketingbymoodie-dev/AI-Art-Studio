@@ -4,10 +4,36 @@
  * Customizer bake and toLosslessPrintMaster are not used here.
  */
 import sharp from "sharp";
+import { readPlatformReplicateToken } from "./generation-providers";
 import { vectorizeWithRecraft } from "./replicate-vectorizer";
 
-/** Gildan 64000 / blueprint 145 front print area, 300 DPI. */
-export const SOFTSTYLE_PRINT_PX = { width: 3852, height: 4398 } as const;
+export type PrintCanvas = { width: number; height: number };
+
+/**
+ * Front print area stored on the product type at import
+ * (`placeholder_positions` from the blueprint harvest). No pixel size is
+ * assumed here.
+ */
+export function printCanvasFromStoredPlaceholders(raw: unknown, productTypeName: string): PrintCanvas {
+  const name = String(productTypeName || "").trim();
+  if (!name) throw new Error("Reading the front print area needs the product type name");
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      list = null;
+    }
+  }
+  const rows = Array.isArray(list) ? list : [];
+  const front = rows.find((row) => String((row as { position?: string })?.position || "").toLowerCase() === "front");
+  const width = Math.round(Number((front as { width?: number })?.width));
+  const height = Math.round(Number((front as { height?: number })?.height));
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(`${name} has no stored front print area`);
+  }
+  return { width, height };
+}
 
 const PRINT_PATHS = {
   woodcut: "vectorize",
@@ -32,7 +58,7 @@ export function printFilePathForStyle(styleId: string): FlywheelPrintPath {
 export function fittedPrintPixels(
   srcWidth: number,
   srcHeight: number,
-  target: { width: number; height: number } = SOFTSTYLE_PRINT_PX,
+  target: PrintCanvas,
 ): { width: number; height: number } {
   if (!(srcWidth > 0) || !(srcHeight > 0)) throw new Error("Print source has no pixels");
   const scale = Math.min(target.width / srcWidth, target.height / srcHeight);
@@ -43,20 +69,23 @@ export function fittedPrintPixels(
 }
 
 /** Lanczos onto the print canvas. Artwork stays at its own aspect, centered. */
-export async function placeOnPrintCanvas(image: Buffer): Promise<Buffer> {
+export async function placeOnPrintCanvas(image: Buffer, canvas: PrintCanvas): Promise<Buffer> {
+  if (!(canvas.width > 0) || !(canvas.height > 0)) {
+    throw new Error("This product type has no stored front print area");
+  }
   const meta = await sharp(image).metadata();
-  const fitted = fittedPrintPixels(meta.width || 0, meta.height || 0);
+  const fitted = fittedPrintPixels(meta.width || 0, meta.height || 0, canvas);
   const resized = await sharp(image)
     .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3", withoutEnlargement: false })
     .png()
     .toBuffer();
   const placed = await sharp(resized).metadata();
-  const left = Math.max(0, Math.round((SOFTSTYLE_PRINT_PX.width - (placed.width || fitted.width)) / 2));
-  const top = Math.max(0, Math.round((SOFTSTYLE_PRINT_PX.height - (placed.height || fitted.height)) / 2));
+  const left = Math.max(0, Math.round((canvas.width - (placed.width || fitted.width)) / 2));
+  const top = Math.max(0, Math.round((canvas.height - (placed.height || fitted.height)) / 2));
   return sharp({
     create: {
-      width: SOFTSTYLE_PRINT_PX.width,
-      height: SOFTSTYLE_PRINT_PX.height,
+      width: canvas.width,
+      height: canvas.height,
       channels: 4,
       background: { r: 0, g: 0, b: 0, alpha: 0 },
     },
@@ -66,10 +95,37 @@ export async function placeOnPrintCanvas(image: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-async function rasterizeSvgToFit(svg: Buffer, srcWidth: number, srcHeight: number): Promise<Buffer> {
-  const fitted = fittedPrintPixels(srcWidth, srcHeight);
-  return sharp(svg, { density: 300 })
-    .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3" })
+/** Opaque bounds of the artwork after it has been placed. The canvas size is separate. */
+export async function placedArtworkBounds(image: Buffer): Promise<{ width: number; height: number }> {
+  const { data, info } = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const alpha = data[(y * info.width + x) * info.channels + 3];
+      if (alpha < 10) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return { width: 0, height: 0 };
+  return { width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+async function rasterizeSvgToFit(svg: Buffer, srcWidth: number, srcHeight: number, canvas: PrintCanvas): Promise<Buffer> {
+  const fitted = fittedPrintPixels(srcWidth, srcHeight, canvas);
+  // Sharp rasterizes the SVG at `density` before the resize. A fixed 300 on a
+  // large viewBox allocates the full bitmap first and stalls the machine.
+  // Pick a density that lands on the fitted size, and never above 300.
+  const probe = await sharp(svg, { density: 72 }).metadata();
+  const probeWidth = probe.width || fitted.width;
+  const density = Math.max(72, Math.min(300, Math.round((72 * fitted.width) / probeWidth)));
+  return sharp(svg, { density })
+    .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3", withoutEnlargement: false })
     .png()
     .toBuffer();
 }
@@ -93,9 +149,8 @@ async function replicateJson(url: string, token: string, init: RequestInit = {})
 }
 
 /** Real-ESRGAN x4plus, face enhancement off, then Lanczos to the print canvas. */
-async function upscaleForPrint(source: Buffer, styleId: string): Promise<Buffer> {
-  const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
-  if (!token) throw new Error(`${styleId} print file failed: REPLICATE_API_TOKEN is not set`);
+async function upscaleForPrint(source: Buffer, styleId: string, canvas: PrintCanvas): Promise<Buffer> {
+  const token = readPlatformReplicateToken();
   const prediction = await replicateJson("https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions", token, {
     method: "POST",
     body: JSON.stringify({
@@ -121,15 +176,22 @@ async function upscaleForPrint(source: Buffer, styleId: string): Promise<Buffer>
   if (!url) throw new Error(`${styleId} print file failed: upscaler returned no image`);
   const image = await fetch(url);
   if (!image.ok) throw new Error(`${styleId} print file failed: upscaler download HTTP ${image.status}`);
-  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()));
+  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas);
 }
 
 /**
  * Build the print file. A missing path throws with the style id and does not
  * return the source image.
  */
-export async function buildFlywheelPrintFile(styleId: string, source: Buffer): Promise<{ path: FlywheelPrintPath; buffer: Buffer }> {
+export async function buildFlywheelPrintFile(
+  styleId: string,
+  source: Buffer,
+  canvas: PrintCanvas,
+): Promise<{ path: FlywheelPrintPath; buffer: Buffer }> {
   const path = printFilePathForStyle(styleId);
+  if (!(canvas?.width > 0) || !(canvas?.height > 0)) {
+    throw new Error("This product type has no stored front print area");
+  }
   const meta = await sharp(source).metadata();
   const srcWidth = meta.width || 0;
   const srcHeight = meta.height || 0;
@@ -140,8 +202,8 @@ export async function buildFlywheelPrintFile(styleId: string, source: Buffer): P
     } catch (err) {
       throw new Error(`${styleId} print file failed: ${(err as Error).message}`);
     }
-    const raster = await rasterizeSvgToFit(svg, srcWidth, srcHeight);
-    return { path, buffer: await placeOnPrintCanvas(raster) };
+    const raster = await rasterizeSvgToFit(svg, srcWidth, srcHeight, canvas);
+    return { path, buffer: await placeOnPrintCanvas(raster, canvas) };
   }
-  return { path, buffer: await upscaleForPrint(source, styleId) };
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas) };
 }

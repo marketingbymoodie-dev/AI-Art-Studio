@@ -107,6 +107,9 @@ export default function CatalogueStudioPage() {
   const [verdict, setVerdict] = useState<"pending" | "approved" | "dropped">("pending");
   const [dropReason, setDropReason] = useState("");
   const [dropError, setDropError] = useState("");
+  const [publishNow, setPublishNow] = useState(true);
+  const [promoteError, setPromoteError] = useState("");
+  const [promoteBusy, setPromoteBusy] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [panelId, setPanelId] = useState("");
   const [ticked, setTicked] = useState<TickedColour[]>([]);
@@ -697,8 +700,36 @@ export default function CatalogueStudioPage() {
               <Textarea value={dropReason} onChange={(e) => setDropReason(e.target.value)} placeholder="Drop reason" />
               {dropError ? <p className="text-xs">{dropError}</p> : null}
               {verdict === "dropped" ? <p>Dropped: {dropReason}</p> : null}
-              {verdict === "approved" ? <p>Approved on this page. No Shopify product was created.</p> : null}
-              <p className="text-xs text-muted-foreground">Promote is the only step that creates a Shopify product. This page does not.</p>
+              {verdict === "approved" ? <p>Approved. The mockups are stored. Promote is the step that creates the product.</p> : null}
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={publishNow} onChange={(e) => setPublishNow(e.target.checked)} />
+                Publish now
+              </label>
+              <Button
+                type="button"
+                size="sm"
+                disabled={promoteBusy}
+                onClick={async () => {
+                  setPromoteBusy(true);
+                  setPromoteError("");
+                  const res = await fetch("/api/platform/catalogue-studio/promote", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ publishNow }),
+                  });
+                  const body = await res.json().catch(() => ({}));
+                  setPromoteBusy(false);
+                  if (!res.ok) {
+                    setPromoteError(body.error || "Promote stopped");
+                    return;
+                  }
+                  setPromoteError("");
+                }}
+              >
+                {promoteBusy ? "Promoting…" : publishNow ? "Promote and publish" : "Promote as draft"}
+              </Button>
+              {promoteError ? <p className="text-xs">{promoteError}</p> : null}
             </section>
 
             <section>

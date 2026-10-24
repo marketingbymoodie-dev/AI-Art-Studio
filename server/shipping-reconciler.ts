@@ -22,6 +22,7 @@
 import { and, eq, inArray, or, sql as dsql } from "drizzle-orm";
 import { db } from "./db";
 import {
+  designProducts,
   designSkuMappings,
   productTypes,
   publishedProducts,
@@ -46,6 +47,7 @@ import {
 import {
   buildShopDesiredState,
   classifyShippingCoverageGaps,
+  inheritCatalogueMemberships,
   maxRatesPerZone,
   type DesiredClassInput,
   type DesiredProfile,
@@ -391,6 +393,30 @@ async function loadShopMemberships(
     memberships.push(m);
   }
 
+  const catalogueRows = await db
+    .select({
+      productTypeId: designProducts.productTypeId,
+      variantMap: designProducts.variantMap,
+      shopifyVariantIdsJson: productTypes.shopifyVariantIds,
+    })
+    .from(designProducts)
+    .innerJoin(productTypes, eq(designProducts.productTypeId, productTypes.id))
+    .where(inArray(productTypes.shopifyShopDomain, [shop, bare]));
+  const catalogueAdditions: Array<{ shopifyVariantId: string; studioVariantId: string }> = [];
+  for (const row of catalogueRows) {
+    if (!row.productTypeId || !row.variantMap || typeof row.variantMap !== "object") continue;
+    const studioIds = shopifyIdsOf(row.productTypeId, row.shopifyVariantIdsJson);
+    for (const [variantId, meta] of Object.entries(row.variantMap as Record<string, { sizeId?: string; colorId?: string }>)) {
+      const sizeId = String(meta?.sizeId || "");
+      const colorId = String(meta?.colorId || "");
+      if (!sizeId || !colorId) continue;
+      const studioVid = studioIds.get(normalizeVariantKeyLoose(`${sizeId}:${colorId}`));
+      if (!studioVid) continue;
+      catalogueAdditions.push({ shopifyVariantId: variantId, studioVariantId: studioVid });
+    }
+  }
+  const withCatalogue = inheritCatalogueMemberships(memberships, catalogueAdditions);
+
   for (const { name, unresolved, total } of Array.from(statsByType.values())) {
     if (unresolved === 0) continue;
     // All rows unresolved = key-format drift between variantMap and
@@ -404,7 +430,7 @@ async function loadShopMemberships(
     warnings?.push(msg);
     console.warn(`[shipping-reconciler] ${shop} ${msg}`);
   }
-  return memberships;
+  return withCatalogue;
 }
 
 async function resolveFxRate(

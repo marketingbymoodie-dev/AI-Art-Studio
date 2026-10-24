@@ -300,6 +300,30 @@ export function classifyShippingCoverageGaps(
   return gaps;
 }
 
+/**
+ * Catalogue listings inherit the studio variant's class and group, so a later
+ * reconcile keeps them on that profile. A variant with no studio parent is
+ * left out — promote has already refused that case.
+ */
+export function inheritCatalogueMemberships(
+  base: MembershipVariant[],
+  additions: ReadonlyArray<{ shopifyVariantId: string; studioVariantId: string }>,
+): MembershipVariant[] {
+  const byId = new Map(base.map((row) => [row.shopifyVariantId, row]));
+  const out = [...base];
+  for (const add of additions) {
+    const vid = String(add.shopifyVariantId || "").replace(/\D/g, "");
+    const studioVid = String(add.studioVariantId || "").replace(/\D/g, "");
+    if (!vid || byId.has(vid)) continue;
+    const studio = byId.get(studioVid);
+    if (!studio) continue;
+    const row: MembershipVariant = { ...studio, shopifyVariantId: vid, source: "base" };
+    byId.set(vid, row);
+    out.push(row);
+  }
+  return out;
+}
+
 /** Max rates in any single zone of the desired state (pre-flight vs probed cap). */
 export function maxRatesPerZone(state: DesiredShopState): number {
   let max = 0;

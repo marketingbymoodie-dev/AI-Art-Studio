@@ -28,8 +28,8 @@ import {
   commitStagedImport,
 } from "../mockup-library-store";
 
-/** Front Shopify variant prices for the Softstyle page. Same read as list-as-product. */
-async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesBySize: Record<string, string> }> {
+/** Front Shopify variant prices for the Softstyle page. Same read promote uses. */
+export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesBySize: Record<string, string> }> {
   const { db } = await import("../db");
   const [row] = await db
     .select({
@@ -361,6 +361,25 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json({ ok: true });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/promote", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { promoteCatalogueCandidate } = await import("../flywheel-promote");
+      const garment = await softstyleType();
+      const prices = await shippingPricesBySize();
+      const result = await promoteCatalogueCandidate({
+        candidateId: PENDING_CANDIDATE.id,
+        publishNow: req.body?.publishNow !== false,
+        productTypeId: garment.id,
+        pricesBySize: prices.pricesBySize,
+      });
+      res.json(result);
+    } catch (e: any) {
+      const status = e?.status === 409 || e?.name === "PromoteRefusal" ? 409 : 400;
+      res.status(status).json({ error: String(e?.message || e) });
     }
   });
 }

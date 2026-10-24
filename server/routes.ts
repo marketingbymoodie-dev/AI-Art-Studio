@@ -1,3 +1,4 @@
+import { shopifyStatusForVisibility } from "@shared/productVisibility";
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import {
   applyRendererOverride,
@@ -102,7 +103,7 @@ import {
 import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, creators, creatorCustomizerPages } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, designCandidates, creators, creatorCustomizerPages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -4644,9 +4645,14 @@ ${orientationExtra}
     accessToken: string,
     productType: any,
     merchant: any,
-    selectedColorIds?: string[],
-    variantPrices?: Record<string, string>,
+    selectedColorIds: string[] | undefined,
+    variantPrices: Record<string, string> | undefined,
+    visibility: "published" | "unlisted" | "hidden",
   ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
+    if (visibility !== "published" && visibility !== "unlisted" && visibility !== "hidden") {
+      const caller = new Error().stack?.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("at "))[1]?.replace(/^at /, "") || "unknown call site";
+      throw new Error(`Visibility kind is required: published | unlisted | hidden. Omitted at ${caller}`);
+    }
     const allSizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes || [];
     const allColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors || [];
     const baseMockupImages = typeof productType.baseMockupImages === 'string' ? JSON.parse(productType.baseMockupImages) : productType.baseMockupImages || {};
@@ -4753,7 +4759,7 @@ ${orientationExtra}
         body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
         vendor: merchant.storeName || 'AI Art Studio',
         product_type: productType.name,
-        status: 'unlisted',
+        status: shopifyStatusForVisibility(visibility),
         published: false,
         tags: ['custom-design', 'ai-artwork', 'design-studio', 'ai-art-studio-enabled'],
         options: productOptions.length > 0 ? productOptions : undefined,
@@ -4831,7 +4837,7 @@ ${orientationExtra}
     variantPrices?: Record<string, string>,
   ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
     try {
-      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, [], variantPrices);
+      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, [], variantPrices, "unlisted");
     } catch (e: any) {
       if (!isShopifyAuthError(e)) throw e;
       const retried = await ensureValidOfflineAccessToken(installation, {
@@ -4844,7 +4850,7 @@ ${orientationExtra}
         throw err;
       }
       Object.assign(installation, retried.installation);
-      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, [], variantPrices);
+      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, [], variantPrices, "unlisted");
     }
   }
 
@@ -5152,7 +5158,7 @@ ${orientationExtra}
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
-          status: "unlisted",
+          status: shopifyStatusForVisibility("unlisted"),
           published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
@@ -5389,7 +5395,7 @@ ${orientationExtra}
               body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
               vendor: merchant.storeName || "AI Art Studio",
               product_type: productType.designerType,
-              status: "unlisted",
+              status: shopifyStatusForVisibility("unlisted"),
               published: false,
               tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
               options: productOptions.length > 0 ? productOptions : undefined,
@@ -5635,7 +5641,7 @@ ${orientationExtra}
           body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: freshProductType.designerType,
-          status: "unlisted",
+          status: shopifyStatusForVisibility("unlisted"),
           published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
@@ -12073,7 +12079,7 @@ ${orientationExtra}
         body: JSON.stringify({
           product: {
             title: shadowTitle,
-            status: 'unlisted',                   // accessible by direct link, hidden from browse/search
+            status: shopifyStatusForVisibility("hidden"),
             tags: 'appai-shadow',
             variants: [{
               price: overridePriceFormatted || baseVariant.price,
@@ -19672,40 +19678,46 @@ ${orientationExtra}
     }
     const product = await createResp.json();
     const tempProductId: string = product.id;
-    let costs = extractCostsFromPrintifyProduct(product);
-
-    // Some blueprints don't include v.cost in the creation response.
-    if (Object.keys(costs).length === 0) {
-      console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
-      try {
-        const fetchResp = await fetch(
-          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
-          { headers: { Authorization: `Bearer ${apiToken}` } },
-        );
-        if (fetchResp.ok) {
-          const fetchedProduct = await fetchResp.json();
-          costs = extractCostsFromPrintifyProduct(fetchedProduct);
-          console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
-        } else {
-          console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
-        }
-      } catch (fetchErr) {
-        console.warn(`[Printify Costs] Re-fetch error for product ${tempProductId}:`, fetchErr);
-      }
-    }
-
-    // Clean up immediately
+    let costs: Record<string, number> = {};
     try {
-      await fetch(
-        `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${apiToken}` },
-        },
-      );
-      console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
-    } catch (delErr) {
-      console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+      costs = extractCostsFromPrintifyProduct(product);
+
+      // Some blueprints don't include v.cost in the creation response.
+      if (Object.keys(costs).length === 0) {
+        console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
+        try {
+          const fetchResp = await fetch(
+            `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+            { headers: { Authorization: `Bearer ${apiToken}` } },
+          );
+          if (fetchResp.ok) {
+            const fetchedProduct = await fetchResp.json();
+            costs = extractCostsFromPrintifyProduct(fetchedProduct);
+            console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
+          } else {
+            console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
+          }
+        } catch (fetchErr) {
+          console.warn(`[Printify Costs] Re-fetch error for product ${tempProductId}:`, fetchErr);
+        }
+      }
+    } finally {
+      try {
+        const delResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+          {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${apiToken}` },
+          },
+        );
+        if (delResp.ok) {
+          console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
+        } else {
+          console.error(`[Printify Costs] Delete temp product ${tempProductId} failed: HTTP ${delResp.status}`);
+        }
+      } catch (delErr) {
+        console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+      }
     }
     return { success: true, costs, tempProductId, status };
   }
@@ -22349,9 +22361,28 @@ ${orientationExtra}
       .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
     if (!row) return res.status(404).json({ error: "Design product not found" });
 
+    if (row.printifyProductId) {
+      if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+        return res.status(409).json({
+          error: `${row.title} has Printify product ${row.printifyProductId}, and Printify is not connected, so it was not retired.`,
+        });
+      }
+      const { deletePrintifyProduct } = await import("./flywheel-promote");
+      try {
+        await deletePrintifyProduct(String(merchant.printifyShopId), String(row.printifyProductId), merchant.printifyApiToken);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(502).json({ error: `${message} The Shopify product was left in place.` });
+      }
+    }
     if (row.shopifyProductId) {
       await deleteShopifyProductBestEffort(shop, installation.accessToken, row.shopifyProductId);
     }
+    await db.update(designCandidates).set({
+      status: "retired",
+      printifyProductId: null,
+      updatedAt: new Date(),
+    }).where(eq(designCandidates.designProductId, row.id));
     await db.delete(designProductEvents).where(eq(designProductEvents.designProductId, row.id));
     await db.delete(designProducts).where(eq(designProducts.id, row.id));
     res.json({ success: true });

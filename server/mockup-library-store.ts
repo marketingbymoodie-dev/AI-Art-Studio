@@ -3,10 +3,11 @@
  * Panels are keyed by product type. A second tee blueprint re-uploads its own set.
  */
 import { randomUUID } from "crypto";
+import sharp from "sharp";
 import { and, desc, eq, isNotNull } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { catalogueCandidateChoices, designCandidates, mockupPanels, productTypes } from "@shared/schema";
-import { db } from "./db";
+import { db, pool } from "./db";
 import "./load-env";
 import {
   backgroundAgrees,
@@ -138,13 +139,55 @@ export async function recentSceneLabels(limit = 5): Promise<string[]> {
 
 type ChoiceColor = { name: string; hex: string };
 
-export async function readChoice(candidateId: string): Promise<{ panelId: string | null; selectedColors: ChoiceColor[]; artworkPath: string | null }> {
+export type StoredMockupImage = { name: string; hex: string; path: string };
+
+export async function readChoice(candidateId: string): Promise<{
+  panelId: string | null;
+  selectedColors: ChoiceColor[];
+  artworkPath: string | null;
+  mockupImages: StoredMockupImage[];
+  approvedAt: Date | null;
+}> {
+  await ensureCatalogueChoiceColumns();
   const [row] = await db.select().from(catalogueCandidateChoices).where(eq(catalogueCandidateChoices.candidateId, candidateId)).limit(1);
   return {
     panelId: row?.panelId ?? null,
     selectedColors: Array.isArray(row?.selectedColors) ? row.selectedColors : [],
     artworkPath: row?.artworkPath ?? null,
+    mockupImages: Array.isArray(row?.mockupImages) ? row.mockupImages : [],
+    approvedAt: row?.approvedAt ?? null,
   };
+}
+
+export async function readLibraryObject(path: string): Promise<Buffer> {
+  return getObject(path);
+}
+
+export async function writeLibraryObject(path: string, body: Buffer, contentType: string): Promise<void> {
+  await putObject(path, body, contentType);
+}
+
+export async function signedLibraryUrl(path: string): Promise<string> {
+  const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, 60 * 60);
+  if (error || !data?.signedUrl) throw new Error(error?.message || "Could not sign the stored mockup");
+  return data.signedUrl;
+}
+
+let catalogueColumnsReady: Promise<void> | null = null;
+
+async function ensureCatalogueChoiceColumns(): Promise<void> {
+  if (!catalogueColumnsReady) {
+    catalogueColumnsReady = (async () => {
+      await pool.query(`ALTER TABLE catalogue_candidate_choices ADD COLUMN IF NOT EXISTS mockup_images jsonb`);
+      await pool.query(`ALTER TABLE catalogue_candidate_choices ADD COLUMN IF NOT EXISTS shopify_product_id text`);
+      await pool.query(`ALTER TABLE catalogue_candidate_choices ADD COLUMN IF NOT EXISTS printify_product_id text`);
+      await pool.query(`ALTER TABLE design_candidates ADD COLUMN IF NOT EXISTS printify_product_id text`);
+    })().catch((err) => {
+      catalogueColumnsReady = null;
+      throw err;
+    });
+  }
+  await catalogueColumnsReady;
 }
 
 export async function saveChoice(candidateId: string, panelId: string | null, selectedColors: ChoiceColor[]): Promise<void> {
@@ -769,8 +812,25 @@ export async function approveCandidateChoice(args: {
   }
   const now = new Date();
   await saveChoice(args.candidateId, args.panelId, args.selectedColors);
+  const choice = await readChoice(args.candidateId);
+  if (!choice.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
+  const mockupImages: StoredMockupImage[] = [];
+  for (const color of args.selectedColors) {
+    const rendered = await renderCandidateOnPanel({
+      productTypeId: args.productTypeId,
+      typeName: args.typeName,
+      panelId: args.panelId,
+      colorName: color.name,
+      colorHex: color.hex,
+      artworkPath: choice.artworkPath,
+    });
+    const jpeg = await sharp(rendered.png).jpeg({ quality: 90 }).toBuffer();
+    const path = `candidates/${slug(args.candidateId)}/${Date.now()}-${slug(color.name)}-front.jpg`;
+    await putObject(path, jpeg, "image/jpeg");
+    mockupImages.push({ name: color.name, hex: color.hex.replace(/^#/, ""), path });
+  }
   await db
     .update(catalogueCandidateChoices)
-    .set({ approvedAt: now, updatedAt: now })
+    .set({ approvedAt: now, updatedAt: now, mockupImages })
     .where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
 }

@@ -1374,6 +1374,8 @@ export const designCandidates = pgTable("design_candidates", {
   dropReason: text("drop_reason"),
   designProductId: varchar("design_product_id"),
   shopifyProductId: text("shopify_product_id"),
+  /** Persistent Printify product. Retirement deletes this product. */
+  printifyProductId: text("printify_product_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -1412,6 +1414,10 @@ export const catalogueCandidateChoices = pgTable("catalogue_candidate_choices", 
   panelId: text("panel_id"),
   selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>().notNull().default(sql`'[]'::jsonb`),
   artworkPath: text("artwork_path"),
+  /** Composites stored at approval. Promote uploads these and does not render again. */
+  mockupImages: jsonb("mockup_images").$type<Array<{ name: string; hex: string; path: string }>>(),
+  shopifyProductId: text("shopify_product_id"),
+  printifyProductId: text("printify_product_id"),
   approvedAt: timestamp("approved_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

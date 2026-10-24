@@ -6,6 +6,8 @@
  */
 
 import sharp from "sharp";
+import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
+import { readPlatformReplicateToken } from "./generation-providers";
 
 const REPLICATE_API_BASE = "https://api.replicate.com/v1";
 const REPLICATE_RECRAFT_VECTORIZE_VERSION =
@@ -77,7 +79,50 @@ type ReplicatePrediction = {
   urls?: { get?: string };
   output?: unknown;
   error?: unknown;
+  metrics?: { predict_time?: number; [key: string]: unknown };
 };
+
+export type RecraftCallBilling = {
+  credentialRef: "replicate:shared";
+  predictionId: string | null;
+  predictTimeSec: number | null;
+  costUsd: number;
+  costSource: "replicate" | "model-rate";
+};
+
+let lastBilling: RecraftCallBilling | null = null;
+
+/** Billing from the most recent Recraft call in this process. */
+export function lastRecraftCallBilling(): RecraftCallBilling | null {
+  return lastBilling;
+}
+
+function dollarFromPrediction(prediction: ReplicatePrediction): number | null {
+  const raw = prediction as ReplicatePrediction & Record<string, unknown>;
+  for (const key of ["cost", "billed_amount", "total_cost"]) {
+    const n = Number(raw[key]);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  const metrics = prediction.metrics;
+  if (!metrics) return null;
+  for (const [key, value] of Object.entries(metrics)) {
+    if (!/cost|price|billed/i.test(key)) continue;
+    const n = Number(value);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+
+function rememberRecraftBilling(prediction: ReplicatePrediction): void {
+  const fromApi = dollarFromPrediction(prediction);
+  lastBilling = {
+    credentialRef: "replicate:shared",
+    predictionId: prediction.id || null,
+    predictTimeSec: typeof prediction.metrics?.predict_time === "number" ? prediction.metrics.predict_time : null,
+    costUsd: fromApi ?? VECTORIZE_COST_PER_GEN_USD,
+    costSource: fromApi != null ? "replicate" : "model-rate",
+  };
+}
 
 /** Prepare matted PNG for Recraft limits (5MB, 256–4096px). Returns API buffer + original output size. */
 export async function prepareBufferForRecraftVectorize(
@@ -130,10 +175,7 @@ export async function prepareBufferForRecraftVectorize(
 
 /** Call recraft-ai/recraft-vectorize; returns SVG bytes. */
 export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Promise<Buffer> {
-  const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
-  if (!token) {
-    throw new Error("REPLICATE_API_TOKEN environment variable is not set");
-  }
+  const token = readPlatformReplicateToken();
 
   const opaquePlate = await prepareOpaquePlateForVectorize(params.imageBuffer);
   const { apiBuffer } = await prepareBufferForRecraftVectorize(opaquePlate);
@@ -145,6 +187,7 @@ export async function vectorizeWithRecraft(params: RecraftVectorizeParams): Prom
   });
 
   const completed = await pollReplicatePrediction(token, prediction);
+  rememberRecraftBilling(completed);
   const svgUrl = getReplicateOutputUrl(completed.output);
   if (!svgUrl) {
     throw new Error("Recraft vectorize returned no SVG output");

@@ -56,6 +56,7 @@ import { composeArtStyleProbe } from "../art-style-probe";
 import { behaviourObject, generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 import { ART_STYLE_DEVICE_STRUCTURES, adminCandidateDraft, flywheelShopDomain, flywheelSpecies } from "@shared/flywheelRecipe";
 import { getDesignCandidate, insertAdminDesignCandidate, listDesignCandidates } from "../design-candidates";
+import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "../flywheel-print-file";
 import { petSwapRenderInput } from "../flywheel-pet-swap";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
@@ -155,6 +156,28 @@ type ProbeBody = {
 const str = (v: unknown, max: number, fallback = "") => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : fallback);
 
 export function registerStagingRenderProbeRoutes(app: Express): void {
+  app.post("/api/staging/flywheel-print-file", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    try {
+      const { runBedEtiquettePrint } = await import("../flywheel-staging-run");
+      return res.json(await runBedEtiquettePrint());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: message });
+    }
+  });
+
+  app.post("/api/staging/flywheel-promote", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    try {
+      const { runBedEtiquettePromote } = await import("../flywheel-staging-run");
+      return res.json(await runBedEtiquettePromote());
+    } catch (err) {
+      const status = (err as { status?: number })?.status === 409 ? 409 : 400;
+      return res.status(status).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   app.post("/api/staging/render-probe", async (req: Request, res: Response) => {
     if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
     const body = (req.body ?? {}) as ProbeBody;
@@ -773,10 +796,28 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         candidateSkipped = decision.skip;
       } else {
         try {
+          if (decision.draft.status === "approved") {
+            const { db } = await import("../db");
+            const { productTypes } = await import("@shared/schema");
+            const { eq } = await import("drizzle-orm");
+            const { softstyleType } = await import("../mockup-library-store");
+            const garment = await softstyleType();
+            const [typeRow] = await db
+              .select({ placeholderPositions: productTypes.placeholderPositions })
+              .from(productTypes)
+              .where(eq(productTypes.id, garment.id))
+              .limit(1);
+            const canvas = printCanvasFromStoredPlaceholders(typeRow?.placeholderPositions, garment.name);
+            const print = await buildFlywheelPrintFile(artStyle, buf, canvas);
+            const { writeLibraryObject } = await import("../mockup-library-store");
+            const printPath = `print-files/${row?.id ?? Date.now()}-${artStyle}.png`;
+            await writeLibraryObject(printPath, print.buffer, "image/png");
+            decision.draft.printFilePath = printPath;
+          }
           candidateId = await insertAdminDesignCandidate(decision.draft);
         } catch (insertErr) {
-          candidateSkipped = "insert";
-          console.warn("[design-candidates] insert failed:", String((insertErr as Error)?.message ?? insertErr).slice(0, 200));
+          candidateSkipped = String((insertErr as Error)?.message ?? insertErr).slice(0, 300);
+          console.warn("[design-candidates] insert failed:", candidateSkipped);
         }
       }
       return res.json({

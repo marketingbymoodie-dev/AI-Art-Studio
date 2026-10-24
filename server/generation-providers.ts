@@ -457,6 +457,17 @@ async function defaultDbLookup(refId: string): Promise<string | null> {
 export const credentialResolutionLog = new Map<string, { source: CredentialSource; at: Date }>();
 
 /**
+ * Platform Replicate token for replicate:shared. The process environment only.
+ * Does not open the operator credential store.
+ */
+export function readPlatformReplicateToken(env: Record<string, string | undefined> = process.env): string {
+  const ref = CREDENTIALS["replicate:shared"];
+  const value = String(env[ref.credentialKey] || env.REPLICATE_API_KEY || "").trim();
+  if (!value) throw new Error(`${ref.credentialKey} is not set for ${ref.id}`);
+  return value;
+}
+
+/**
  * Reads the secret for exactly this ref: operator-entered platform DB key (active),
  * then the env var. Missing in both → throws; never substitutes another credential.
  */

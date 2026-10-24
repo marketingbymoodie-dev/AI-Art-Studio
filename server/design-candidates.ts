@@ -8,6 +8,9 @@ import type { AdminCandidateDraft } from "@shared/flywheelRecipe";
 import { db } from "./db";
 
 export async function insertAdminDesignCandidate(draft: AdminCandidateDraft): Promise<string> {
+  if (draft.status === "approved" && !draft.printFilePath) {
+    throw new Error(`${draft.artStyle} has no print path`);
+  }
   const [row] = await db.insert(designCandidates).values({
     shopDomain: draft.shopDomain,
     status: draft.status,
@@ -24,6 +27,7 @@ export async function insertAdminDesignCandidate(draft: AdminCandidateDraft): Pr
     productFamily: draft.productFamily,
     credentialRef: draft.credentialRef,
     renderProbeResultId: draft.renderProbeResultId,
+    printFilePath: draft.printFilePath ?? null,
   }).returning({ id: designCandidates.id });
   if (!row?.id) throw new Error("design candidate insert returned no id");
   return row.id;

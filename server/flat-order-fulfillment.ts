@@ -194,15 +194,14 @@ export type ResolvedToteFoldedDesign = {
 };
 
 /**
- * A design product whose artwork already lives on a persistent Printify product
- * (server/design-product-publish.ts). No bake needed — the order line references
- * that product + variant directly. This is the ONLY fulfillment path for design
- * products outside the flat/mesh/tote_folded tiers (e.g. AOP, static/single-image).
+ * A design product whose artwork already lives on a persistent Printify product.
+ * Catalogue designs have no generation job; the stored Printify product is the
+ * order line. List-as-product rows outside the flat bake still use this path too.
  */
 export type ResolvedProductReferenceDesign = {
   designId: string;
   shop: string;
-  job: GenerationJob;
+  job: GenerationJob | null;
   productType: ProductType;
   merchant: Merchant;
   printifyProductId: string;
@@ -420,10 +419,10 @@ async function findPublishedProductByVariant(
 async function findDesignProductByVariant(
   shop: string,
   variantId: string,
-): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null> {
+): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null } | null> {
   const numeric = variantId.replace("gid://shopify/ProductVariant/", "");
-  const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null }>(
-    `SELECT job_id, variant_map, printify_product_id
+  const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null; product_type_id: number | null }>(
+    `SELECT job_id, variant_map, printify_product_id, product_type_id
        FROM design_products
       WHERE shop = $1 AND variant_map::jsonb ? $2
       ORDER BY created_at DESC
@@ -439,6 +438,7 @@ async function findDesignProductByVariant(
     sizeId: entry?.sizeId ?? null,
     colorId: entry?.colorId ?? null,
     printifyProductId: row.printify_product_id ?? null,
+    productTypeId: row.product_type_id ?? null,
   };
 }
 
@@ -476,7 +476,7 @@ async function resolveDesignForOrderLineInner(
   //    → designId (fallback to line properties for older/legacy carts)
   let designId: string | null = null;
   let resolvedShop = shop;
-  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
+  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null } | null = null;
   let publishedDesignId: string | null = null;
   let shadowShop: string | null = null;
   let designProductJobId: string | null = null;
@@ -491,7 +491,7 @@ async function resolveDesignForOrderLineInner(
       if (dp) {
         publishedDesignId = dp.jobId;
         designProductJobId = dp.jobId;
-        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
+        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId, productTypeId: dp.productTypeId };
       }
     }
   }
@@ -532,6 +532,36 @@ async function resolveDesignForOrderLineInner(
   // 2) designId → generation_jobs
   const job = await storage.getGenerationJob(designId);
   if (!job) {
+    if (designProductOverride?.printifyProductId && designProductOverride.productTypeId) {
+      const productType = await storage.getProductType(designProductOverride.productTypeId);
+      if (!productType) {
+        return { ok: false, skip: true, reason: `product type ${designProductOverride.productTypeId} not found` };
+      }
+      if (!productType.merchantId) {
+        return { ok: false, skip: false, reason: `product type ${productType.id} has no merchant` };
+      }
+      const merchant = await storage.getMerchant(productType.merchantId);
+      if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
+        return { ok: false, skip: false, reason: `merchant for product type ${productType.id} missing Printify credentials` };
+      }
+      if (!designProductOverride.sizeId || !designProductOverride.colorId) {
+        return { ok: false, skip: false, reason: `catalogue design ${designId} has no size and colour on this variant` };
+      }
+      return {
+        ok: true,
+        kind: "product_reference",
+        design: {
+          designId,
+          shop: resolvedShop,
+          job: null,
+          productType,
+          merchant,
+          printifyProductId: designProductOverride.printifyProductId,
+          sizeId: designProductOverride.sizeId,
+          colorId: designProductOverride.colorId,
+        },
+      };
+    }
     return { ok: false, skip: true, reason: `no generation job for design ${designId}` };
   }
 

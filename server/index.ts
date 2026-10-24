@@ -464,5 +464,8 @@ app.use((req, res, next) => {
     void import("./geoip")
       .then(({ startGeoLite2Refresh }) => startGeoLite2Refresh())
       .catch((e: any) => console.warn("[geoip] startup refresh failed:", e?.message || e));
+    void import("./flywheel-staging-run")
+      .then(({ runStagingFlywheelOnce }) => runStagingFlywheelOnce())
+      .catch((e: any) => console.warn("[flywheel] staging run failed:", e?.message || e));
   });
 })();
