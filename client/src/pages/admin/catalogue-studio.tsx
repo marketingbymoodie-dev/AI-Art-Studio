@@ -27,6 +27,7 @@ type PendingCandidate = {
   id: string;
   status: "pending";
   title: string;
+  description?: string;
   shopifyProductId: null;
   sizes: string[];
   pricesBySize: Record<string, string>;
@@ -294,6 +295,7 @@ export default function CatalogueStudioPage() {
             </div>
             <div className="space-y-4">
               <h1 className="text-2xl font-semibold">{candidate.data?.title || "Pending candidate"}</h1>
+              {candidate.data?.description ? <p className="text-sm text-muted-foreground">{candidate.data.description}</p> : null}
               <div className="flex items-center justify-between gap-3">
                 <div className="flex flex-wrap gap-2">
                   {sizes.map((s) => (
@@ -665,7 +667,20 @@ export default function CatalogueStudioPage() {
                     method: "POST",
                     credentials: "include",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ panelId, selectedColors: ticked }),
+                    body: JSON.stringify({
+                      panelId,
+                      selectedColors: ticked,
+                      artStyle: styleId,
+                      species,
+                      humourOperator: humour,
+                      punchline: wording,
+                      title: wording || candidate.data?.title || "",
+                      behaviour,
+                      funnyTruth: truth,
+                      deviceText: device,
+                      deviceStructure,
+                      darknessLevel: Number(darkness),
+                    }),
                   });
                   const body = await res.json().catch(() => ({}));
                   if (!res.ok) {

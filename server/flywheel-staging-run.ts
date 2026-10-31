@@ -130,7 +130,11 @@ export async function runBedEtiquettePromote(): Promise<Record<string, unknown>>
   const [done] = await db
     .select({ size: generationEvents.size, success: generationEvents.success })
     .from(generationEvents)
-    .where(and(eq(generationEvents.route, "flywheel-promote"), eq(generationEvents.jobId, CANDIDATE_ID)))
+    .where(and(
+      eq(generationEvents.route, "flywheel-promote"),
+      eq(generationEvents.jobId, CANDIDATE_ID),
+      eq(generationEvents.success, true),
+    ))
     .limit(1);
   if (done) return { already: true, success: done.success, size: done.size };
   try {
@@ -165,18 +169,79 @@ export async function runBedEtiquettePromote(): Promise<Record<string, unknown>>
   }
 }
 
+/** The artwork is a dog across the bed. Style is the woodcut that was vectorized. */
+async function approveBedEtiquette(): Promise<void> {
+  const [row] = await db
+    .select({
+      title: designCandidates.title,
+      description: designCandidates.description,
+      printFilePath: designCandidates.printFilePath,
+      artStyle: designCandidates.artStyle,
+      species: designCandidates.species,
+      humourOperator: designCandidates.humourOperator,
+    })
+    .from(designCandidates)
+    .where(eq(designCandidates.id, CANDIDATE_ID))
+    .limit(1);
+  const choice = await readChoice(CANDIDATE_ID);
+  const complete = !!row?.title && !!row.description && !!row.printFilePath && !!row.artStyle && !!row.species && !!row.humourOperator
+    && choice.selectedColors.length > 0
+    && choice.selectedColors.every((color) => choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()));
+  if (complete) return;
+  const { approveCatalogueCandidate } = await import("./flywheel-approve");
+  await approveCatalogueCandidate({
+    candidateId: CANDIDATE_ID,
+    panelId: String(choice.panelId || ""),
+    selectedColors: choice.selectedColors,
+    artStyle: "woodcut",
+    species: "dog",
+    humourOperator: "pp-sleep-warfare",
+    punchline: "Bed Etiquette",
+    title: "Bed Etiquette",
+    behaviour: "The dog takes the bed and leaves the person at the edge.",
+    funnyTruth: "The dog takes the bed and leaves the person at the edge.",
+    deviceText: "A dog sprawled across the bed, one hand and one foot at the edge.",
+    deviceStructure: "occupied_territory",
+    darknessLevel: 2,
+  });
+}
+
 /** Runs inside the staging server after listen. Production never enters. */
 export async function runStagingFlywheelOnce(): Promise<void> {
   if (!stagingProcess()) return;
   try {
-    await runBedEtiquettePrint();
+    const { ensureSoftstyleProductCategory } = await import("./flywheel-category");
+    const category = await ensureSoftstyleProductCategory();
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-category", jobId: CANDIDATE_ID },
+      {
+        success: true,
+        durationMs: 0,
+        meta: meta({ size: `${category.fullName} ${category.categoryId}`, durationMs: 0, estimatedCostUsd: null, providerRequestId: category.categoryId, model: "category" }),
+      },
+    );
   } catch (err) {
-    console.warn("[flywheel] print file:", err instanceof Error ? err.message : err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] category:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-category", jobId: CANDIDATE_ID },
+      { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "category" }) },
+    );
+  }
+  try {
+    await approveBedEtiquette();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] approve:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-approve", jobId: CANDIDATE_ID },
+      { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 800), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "approve" }) },
+    );
     return;
   }
   try {
     await runBedEtiquettePromote();
   } catch (err) {
-    console.warn("[flywheel] promote:", err instanceof Error ? err.message : err);
+    console.warn("[flywheel] promote:", err instanceof Error ? err.message : String(err));
   }
 }

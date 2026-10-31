@@ -3,7 +3,7 @@
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, eq } from "drizzle-orm";
-import { customizerPages, merchants, productTypes } from "@shared/schema";
+import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
@@ -12,7 +12,6 @@ import { PENDING_CANDIDATE } from "../catalogue-studio-preview";
 import { getProductRestCompat } from "../shopify-product-graphql";
 import { storage } from "../storage";
 import {
-  approveCandidateChoice,
   confirmPanelUpload,
   listScenes,
   preparePanelUpload,
@@ -70,6 +69,16 @@ export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesB
   return { sizes, pricesBySize };
 }
 
+async function dbSelectStoredCandidate(): Promise<{ status: string; title: string | null; description: string | null } | null> {
+  const { db } = await import("../db");
+  const [row] = await db
+    .select({ status: designCandidates.status, title: designCandidates.title, description: designCandidates.description })
+    .from(designCandidates)
+    .where(eq(designCandidates.id, PENDING_CANDIDATE.id))
+    .limit(1);
+  return row ?? null;
+}
+
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
   const { isAuthenticated } = deps;
 
@@ -86,18 +95,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/pending", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const [prices, eligibility, garment, scenes, choice, recentScenes] = await Promise.all([
+      const [prices, eligibility, garment, scenes, choice, recentScenes, stored] = await Promise.all([
         shippingPricesBySize(),
         import("../catalogue-studio-eligibility").then((m) => m.pendingColourEligibility()),
         softstyleType(),
         softstyleType().then((type) => listScenes(type.id)),
         readChoice(PENDING_CANDIDATE.id),
         recentSceneLabels(),
+        dbSelectStoredCandidate(),
       ]);
       res.json({
         id: PENDING_CANDIDATE.id,
-        status: PENDING_CANDIDATE.status,
-        title: PENDING_CANDIDATE.title,
+        status: stored?.status || PENDING_CANDIDATE.status,
+        title: stored?.title || PENDING_CANDIDATE.title,
+        description: stored?.description || "",
         shopifyProductId: PENDING_CANDIDATE.shopifyProductId,
         colors: PENDING_CANDIDATE.colors,
         selectedColor: PENDING_CANDIDATE.selectedColor,
@@ -349,16 +360,24 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/approve", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const garment = await softstyleType();
+      const { approveCatalogueCandidate } = await import("../flywheel-approve");
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
-      await approveCandidateChoice({
+      const result = await approveCatalogueCandidate({
         candidateId: PENDING_CANDIDATE.id,
-        productTypeId: garment.id,
-        typeName: garment.name,
         panelId: String(req.body?.panelId || ""),
         selectedColors: colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
+        artStyle: String(req.body?.artStyle || ""),
+        species: String(req.body?.species || ""),
+        humourOperator: String(req.body?.humourOperator || ""),
+        punchline: String(req.body?.punchline || req.body?.wording || ""),
+        behaviour: String(req.body?.behaviour || ""),
+        funnyTruth: String(req.body?.funnyTruth || ""),
+        deviceText: String(req.body?.deviceText || ""),
+        deviceStructure: String(req.body?.deviceStructure || ""),
+        darknessLevel: Number(req.body?.darknessLevel),
+        title: String(req.body?.title || PENDING_CANDIDATE.title || ""),
       });
-      res.json({ ok: true });
+      res.json({ ok: true, ...result });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
