@@ -189,7 +189,7 @@ async function approveBedEtiquette(): Promise<void> {
     && choice.selectedColors.every((color) => choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()));
   if (complete) return;
   const { approveCatalogueCandidate } = await import("./flywheel-approve");
-  await approveCatalogueCandidate({
+  const approved = await approveCatalogueCandidate({
     candidateId: CANDIDATE_ID,
     panelId: String(choice.panelId || ""),
     selectedColors: choice.selectedColors,
@@ -204,6 +204,22 @@ async function approveBedEtiquette(): Promise<void> {
     deviceStructure: "occupied_territory",
     darknessLevel: 2,
   });
+  await recordGenerationEvent(
+    { kind: "image", route: "flywheel-approve", jobId: CANDIDATE_ID },
+    {
+      success: true,
+      durationMs: 0,
+      meta: meta({
+        size: approved.writerError
+          ? `${approved.title} | ${approved.printFilePath} | ${approved.writerError}`
+          : `${approved.title} | ${approved.printFilePath}`,
+        durationMs: 0,
+        estimatedCostUsd: null,
+        providerRequestId: approved.printFilePath,
+        model: "approve",
+      }),
+    },
+  );
 }
 
 /** Runs inside the staging server after listen. Production never enters. */

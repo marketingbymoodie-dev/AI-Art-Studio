@@ -25,7 +25,9 @@ export async function writeCatalogueListing(input: {
 }): Promise<CatalogueListing> {
   const givenTitle = input.title.replace(/\s+/g, " ").trim();
   const framework = PETPOSTEROUS_CONCEPT_FRAMEWORKS[input.humourOperator] || input.humourOperator;
-  const [listing] = await runConceptEngine<CatalogueListing>(
+  let listing: CatalogueListing;
+  try {
+    [listing] = await runConceptEngine<CatalogueListing>(
     {
       id: "catalogue-listing",
       logTag: "[catalogue-listing]",
@@ -47,6 +49,11 @@ export async function writeCatalogueListing(input: {
       `Style: ${input.artStyle}`,
       `Humour: ${framework}`,
     ].join("\n"),
-  );
+    );
+  } catch (err) {
+    const extra = err as { quoteDetail?: string; anthropicMessage?: string; message?: string };
+    const detail = extra.quoteDetail || extra.anthropicMessage || extra.message || "unavailable";
+    throw new Error(`Listing writer failed: ${detail}`);
+  }
   return listing;
 }

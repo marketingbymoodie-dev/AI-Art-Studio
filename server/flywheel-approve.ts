@@ -94,6 +94,7 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   description: string;
   printFilePath: string;
   mockupCount: number;
+  writerError: string;
 }> {
   const checked = requireRecipe(recipe);
   const garment = await softstyleType();
@@ -110,14 +111,20 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   const shop = String(typeRow.shop || "");
   if (shop !== STAGING_SHOP) throw new Error("Approval of this candidate is staging only.");
 
-  await approveCandidateChoice({
-    candidateId: recipe.candidateId,
-    productTypeId: garment.id,
-    typeName: typeRow.name,
-    panelId: recipe.panelId,
-    selectedColors: recipe.selectedColors,
-  });
-  const choice = await readChoice(recipe.candidateId);
+  let choice = await readChoice(recipe.candidateId);
+  const covered = recipe.selectedColors.every((color) =>
+    choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()),
+  );
+  if (!covered) {
+    await approveCandidateChoice({
+      candidateId: recipe.candidateId,
+      productTypeId: garment.id,
+      typeName: typeRow.name,
+      panelId: recipe.panelId,
+      selectedColors: recipe.selectedColors,
+    });
+    choice = await readChoice(recipe.candidateId);
+  }
   if (!choice.artworkPath) throw new Error("Candidate artwork is not stored.");
   const missingMockup = recipe.selectedColors.find(
     (color) => !choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()),
@@ -133,16 +140,29 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     .from(designCandidates)
     .where(eq(designCandidates.id, recipe.candidateId))
     .limit(1);
-  const listing = existing?.title && existing.description
+  const givenTitle = clip(recipe.title, 120) || clip(recipe.punchline, 120);
+  let listing = existing?.title && existing.description
     ? { title: existing.title, description: existing.description }
-    : await writeCatalogueListing({
-      title: clip(recipe.title, 120),
-      species: checked.species,
-      artStyle: checked.artStyle,
-      humourOperator: checked.humourOperator,
-      punchline: clip(recipe.punchline, 120),
-    });
+    : null;
+  let writerError = "";
+  if (!listing) {
+    try {
+      listing = await writeCatalogueListing({
+        title: givenTitle,
+        species: checked.species,
+        artStyle: checked.artStyle,
+        humourOperator: checked.humourOperator,
+        punchline: clip(recipe.punchline, 120),
+      });
+    } catch (err) {
+      writerError = err instanceof Error ? err.message : String(err);
+      const description = clip(recipe.funnyTruth, 600);
+      if (!givenTitle || !description) throw err;
+      listing = { title: givenTitle, description };
+    }
+  }
 
+  if (!listing) throw new Error("Title and description were not stored.");
   const row = {
     shopDomain: shop,
     status: "approved" as const,
@@ -175,5 +195,6 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     description: listing.description,
     printFilePath,
     mockupCount: choice.mockupImages.length,
+    writerError,
   };
 }
