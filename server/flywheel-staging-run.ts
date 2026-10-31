@@ -148,7 +148,7 @@ export async function runBedEtiquettePromote(): Promise<Record<string, unknown>>
       productTypeId: garment.id,
       pricesBySize: prices.pricesBySize,
     });
-    const size = `shopify ${result.shopifyProductId}; printify ${result.printifyProductId}; status ${result.status}`;
+    const size = `shopify ${result.shopifyProductId}; printify ${result.printifyProductId}; status ${result.status}${result.swatchWarning ? `; swatches: ${result.swatchWarning}` : ""}`;
     await recordGenerationEvent(
       { kind: "image", route: "flywheel-promote", jobId: CANDIDATE_ID },
       { success: true, durationMs: Date.now() - started, meta: meta({ size, durationMs: Date.now() - started, estimatedCostUsd: null, providerRequestId: result.printifyProductId, model: "promote" }) },

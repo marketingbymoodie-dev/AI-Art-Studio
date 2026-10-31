@@ -207,7 +207,7 @@ export async function promoteCatalogueCandidate(args: {
   publishNow: boolean;
   productTypeId: number;
   pricesBySize: Record<string, string>;
-}): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
+}): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft"; swatchWarning: string }> {
   const choice = await readChoice(args.candidateId);
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
   const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, args.productTypeId)).limit(1);
@@ -500,6 +500,7 @@ export async function promoteCatalogueCandidate(args: {
   }));
 
   let shopifyProductId = "";
+  let swatchWarning = "";
   let createdVariants: Array<{ id: number; option1: string | null; option2: string | null }> = [];
   try {
     const data = await adminGql(
@@ -529,11 +530,17 @@ export async function promoteCatalogueCandidate(args: {
       option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
       option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
     }));
-    const swatches = [];
-    for (const color of choice.selectedColors) {
-      swatches.push({ name: color.name, metaobjectId: await colorMetaobjectId(shop, installation!.accessToken, color.name, color.hex) });
+    try {
+      const swatches = [];
+      for (const color of choice.selectedColors) {
+        swatches.push({ name: color.name, metaobjectId: await colorMetaobjectId(shop, installation!.accessToken, color.name, color.hex) });
+      }
+      await linkColourSwatches(shop, installation!.accessToken, data.productSet.product.id, swatches);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/Access denied for metaobjects/i.test(message)) throw err;
+      swatchWarning = message;
     }
-    await linkColourSwatches(shop, installation!.accessToken, data.productSet.product.id, swatches);
   } catch (err) {
     if (shopifyProductId) {
       await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
@@ -615,5 +622,5 @@ export async function promoteCatalogueCandidate(args: {
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
   }
 
-  return { shopifyProductId, printifyProductId, status };
+  return { shopifyProductId, printifyProductId, status, swatchWarning };
 }
