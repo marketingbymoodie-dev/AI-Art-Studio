@@ -8,7 +8,7 @@
  *
  * Printify is created first. If Shopify fails, the Printify product is deleted.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import {
   PRINTIFY_FULL_BLEED,
   capRefusal,
@@ -21,6 +21,8 @@ import {
 } from "@shared/flywheelPromote";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
+import { printifyColorIdForMockup } from "@shared/mockupBundle";
+import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import { normalizeVariantKeyLoose, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { getDesignProductLimit, getEffectivePlan } from "./customizer-plans";
 import { db } from "./db";
@@ -48,6 +50,44 @@ export class PromoteRefusal extends Error {
 }
 
 type SizeRow = { id: string; name: string };
+
+function parseFrameColors(raw: unknown): Array<{ id: string; name: string }> {
+  const list = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((row) => ({ id: String(row?.id || "").trim(), name: String(row?.name || "").trim() }))
+    .filter((row) => row.id && row.name);
+}
+
+function catalogColorIds(variantMap: VariantMap): Set<string> {
+  const ids = new Set<string>();
+  for (const [key, entry] of Object.entries(variantMap)) {
+    if (entry?.printifyVariantId == null || entry.printifyVariantId === "") continue;
+    const colorId = key.slice(key.indexOf(":") + 1);
+    if (colorId) ids.add(colorId);
+  }
+  return ids;
+}
+
+/** Mockup hex wins. A display name is only used when the hex is not one of the eight. */
+function resolvePromotedColorId(
+  color: { name: string; hex: string },
+  frameColors: Array<{ id: string; name: string }>,
+  catalogIds: Set<string>,
+): { colorId: string; title: string } | null {
+  const fromHex = printifyColorIdForMockup(color.hex);
+  const title = fromHex?.title || color.name;
+  const slug = fromHex?.colorId || slugPrintifyColorId(color.name);
+  if (catalogIds.has(slug)) return { colorId: slug, title };
+  const named = frameColors.find((row) =>
+    row.id === slug
+    || slugPrintifyColorId(row.id) === slug
+    || slugPrintifyColorId(row.name) === slug
+    || row.name.toLowerCase() === title.toLowerCase(),
+  );
+  if (named && catalogIds.has(named.id)) return { colorId: named.id, title: named.name };
+  return fromHex ? { colorId: "", title: fromHex.title } : null;
+}
 
 function parseSizes(raw: unknown): SizeRow[] {
   const list = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
@@ -290,7 +330,7 @@ export async function promoteCatalogueCandidate(args: {
   const variantMap: VariantMap = JSON.parse(typeRow.variantMap || "{}");
   const printifyVariants: Array<{ id: number; price: number; is_enabled: boolean }> = [];
   const shopifyVariants: Array<{ option1: string; option2: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
-  const variantMeta: Array<{ sizeId: string; colorId: string; printifyVariantId: number; studioVariantId: string }> = [];
+  const variantMeta: Array<{ sizeId: string; colorId: string; colorName: string; printifyVariantId: number; studioVariantId: string }> = [];
   const studioIds = typeof typeRow.shopifyVariantIds === "string"
     ? JSON.parse(typeRow.shopifyVariantIds || "{}")
     : (typeRow.shopifyVariantIds || {});
@@ -299,12 +339,54 @@ export async function promoteCatalogueCandidate(args: {
     const id = String(value || "").replace(/\D/g, "");
     if (id) studioByLoose.set(normalizeVariantKeyLoose(key), id);
   }
+  const studioIdList = [...new Set(studioByLoose.values())];
+  let sharedProfile = false;
+  if (shop && studioIdList.length) {
+    const profileRows = await db
+      .select({ profile: shippingStoreVariants.storeProfileId })
+      .from(shippingStoreVariants)
+      .where(and(
+        eq(shippingStoreVariants.shopDomain, normalizeMyshopifyShopDomain(shop)),
+        eq(shippingStoreVariants.source, "base"),
+        inArray(shippingStoreVariants.shopifyVariantId, studioIdList),
+      ));
+    const profiles = new Set(profileRows.map((row) => row.profile));
+    sharedProfile = profiles.size === 1 && profileRows.length === studioIdList.length;
+  }
+  const frameColors = parseFrameColors(typeRow.frameColors);
+  const catalogIds = catalogColorIds(variantMap);
+  const colorRefusals: string[] = [];
   for (const color of choice.selectedColors) {
-    const colorId = color.name.toLowerCase().replace(/\s+/g, "-");
+    const resolvedColor = resolvePromotedColorId(color, frameColors, catalogIds);
+    if (!resolvedColor?.colorId) {
+      const title = resolvedColor?.title || printifyColorIdForMockup(color.hex)?.title;
+      colorRefusals.push(
+        title
+          ? `${color.name} (${color.hex}) is ${title}, and ${typeRow.name} has no ${title} variant.`
+          : `${color.name} has no Printify colour on ${typeRow.name}.`,
+      );
+      continue;
+    }
+    const colorId = resolvedColor.colorId;
+    let included = 0;
     for (const size of offered) {
       const resolved = resolveVariantFromMap(variantMap, size.id, colorId, { allowSizeFallbackForColor: false });
-      if (!resolved?.entry.printifyVariantId) {
-        throw new PromoteRefusal([`${color.name} ${size.name} has no Printify variant on ${typeRow.name}.`]);
+      if (!resolved?.entry.printifyVariantId) continue;
+      const sizeToken = normalizeVariantKeyLoose(`${size.id}:default`).split(":")[0];
+      let studioVariantId = studioByLoose.get(normalizeVariantKeyLoose(`${size.id}:${colorId}`))
+        || studioByLoose.get(normalizeVariantKeyLoose(resolved.key))
+        || "";
+      if (!studioVariantId && sharedProfile) {
+        for (const [key, id] of studioByLoose) {
+          if (key.startsWith(`${sizeToken}:`)) {
+            studioVariantId = id;
+            break;
+          }
+        }
+      }
+      if (!studioVariantId) {
+        colorRefusals.push(`${color.name} ${size.name} has a Printify variant but no studio variant to copy a delivery profile from.`);
+        continue;
       }
       const price = args.pricesBySize[size.name];
       const printifyVariantId = Number(resolved.entry.printifyVariantId);
@@ -317,12 +399,14 @@ export async function promoteCatalogueCandidate(args: {
         inventory_management: null,
         inventory_policy: "continue",
       });
-      const studioVariantId = studioByLoose.get(normalizeVariantKeyLoose(`${size.id}:${colorId}`))
-        || studioByLoose.get(normalizeVariantKeyLoose(resolved.key))
-        || "";
-      variantMeta.push({ sizeId: size.id, colorId, printifyVariantId, studioVariantId });
+      variantMeta.push({ sizeId: size.id, colorId, colorName: color.name, printifyVariantId, studioVariantId });
+      included += 1;
+    }
+    if (!included) {
+      colorRefusals.push(`${color.name} has no Printify variant on ${typeRow.name} in the sizes this product offers.`);
     }
   }
+  if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
   if (shopifyVariants.length > 100) {
     throw new PromoteRefusal([`Too many variants (${shopifyVariants.length}). Shopify allows 100 on this create.`]);
   }
@@ -462,7 +546,7 @@ export async function promoteCatalogueCandidate(args: {
   const matched: Array<{ createdId: string; studioVariantId: string }> = [];
   for (const meta of variantMeta) {
     const sizeName = offered.find((size) => size.id === meta.sizeId)?.name;
-    const colourName = choice.selectedColors.find((color) => color.name.toLowerCase().replace(/\s+/g, "-") === meta.colorId)?.name;
+    const colourName = meta.colorName;
     const created = createdVariants.find((variant) => variant.option1 === sizeName && variant.option2 === colourName);
     if (!created || !meta.studioVariantId) {
       await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);

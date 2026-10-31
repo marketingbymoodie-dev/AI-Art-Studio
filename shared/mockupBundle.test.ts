@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mockupSheetMarks, parseMockupImport, sceneMedian } from "./mockupBundle";
+import { mockupSheetMarks, parseMockupImport, printifyColorIdForMockup, sceneMedian } from "./mockupBundle";
 
 describe("mockup folder import", () => {
   it("reads the scene from the folder and the colour from the hex", () => {
@@ -18,6 +18,18 @@ describe("mockup folder import", () => {
     ]);
     expect(plan.problems.map((problem) => problem.message)).toEqual(["Mockup_02 has no FFFFFF white master."]);
     expect(plan.notes[0]).toContain("left out");
+  });
+
+  it("maps each mockup hex to the Printify colour of that Gildan code", () => {
+    expect(printifyColorIdForMockup("DD74A1")).toEqual({ title: "Azalea", colorId: "azalea" });
+    expect(printifyColorIdForMockup("97999B")).toEqual({ title: "Sport Grey", colorId: "sport_grey" });
+    expect(printifyColorIdForMockup("66676C")).toEqual({ title: "Charcoal", colorId: "charcoal" });
+    expect(printifyColorIdForMockup("AC2B37")).toEqual({ title: "Cherry Red", colorId: "cherry_red" });
+    expect(printifyColorIdForMockup("0077B5")).toEqual({ title: "Sapphire", colorId: "sapphire" });
+    expect(printifyColorIdForMockup("FFFFFF")?.colorId).toBe("white");
+    expect(printifyColorIdForMockup("25282A")?.colorId).toBe("black");
+    expect(printifyColorIdForMockup("819E87")?.colorId).toBe("sage");
+    expect(printifyColorIdForMockup("FFB6C1")).toBeNull();
   });
 
   it("refuses a second file with the same hex in one scene", () => {

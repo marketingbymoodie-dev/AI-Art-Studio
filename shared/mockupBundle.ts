@@ -1,4 +1,5 @@
 /** Parse a Petposterous_Mockups folder. Nothing is stored here. */
+import { slugPrintifyColorId } from "./printifyColorSlug";
 
 export const MOCKUP_COLOUR_NAMES: Record<string, string> = {
   FFFFFF: "White",
@@ -10,6 +11,32 @@ export const MOCKUP_COLOUR_NAMES: Record<string, string> = {
   "0077B5": "Blue",
   DD74A1: "Pink",
 };
+
+/**
+ * Printify title for each mockup hex. The hex is the Gildan colour code.
+ * The display name above is shorter (Pink is Azalea, Light grey is Sport Grey).
+ */
+export const MOCKUP_PRINTIFY_TITLES: Record<string, string> = {
+  FFFFFF: "White",
+  "819E87": "Sage",
+  "25282A": "Black",
+  "97999B": "Sport Grey",
+  "66676C": "Charcoal",
+  AC2B37: "Cherry Red",
+  "0077B5": "Sapphire",
+  DD74A1: "Azalea",
+};
+
+export function mockupHexKey(hex: string): string {
+  return hex.replace(/^#/, "").trim().toUpperCase();
+}
+
+/** Printify colour id for a mockup swatch, or null when the hex is not one of the eight. */
+export function printifyColorIdForMockup(hex: string): { title: string; colorId: string } | null {
+  const title = MOCKUP_PRINTIFY_TITLES[mockupHexKey(hex)];
+  if (!title) return null;
+  return { title, colorId: slugPrintifyColorId(title) };
+}
 
 export type MockupPlanRow = {
   relativePath: string;
