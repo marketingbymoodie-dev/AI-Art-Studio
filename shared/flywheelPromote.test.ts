@@ -5,8 +5,11 @@ import {
   capRefusal,
   catalogueTags,
   catalogueVisibility,
+  formatSizeRange,
+  METAOBJECT_SCOPE_REFUSAL,
   mockupAlt,
   mockupFileName,
+  printableSizeNames,
   promoteRefusals,
 } from "./flywheelPromote";
 
@@ -23,6 +26,7 @@ const ready = {
   species: "pug",
   humourOperator: "pp-owner-vs-pet",
   shippingRefusal: null,
+  metaobjectRefusal: null,
   publishNow: true,
   capMessage: null,
   missingPrices: [] as string[],
@@ -79,6 +83,32 @@ describe("flywheel promote decisions", () => {
     expect(reasons.join(" ")).toContain("missing style");
     expect(reasons.join(" ")).toContain("No front price for 3XL");
     expect(reasons.join(" ")).toContain("Holding the slots");
+  });
+
+  it("refuses before create when colour swatches cannot be linked", () => {
+    const reasons = promoteRefusals({
+      ...ready,
+      metaobjectRefusal: METAOBJECT_SCOPE_REFUSAL,
+    });
+    expect(reasons).toEqual([METAOBJECT_SCOPE_REFUSAL]);
+  });
+
+  it("names the sizes a colour can print", () => {
+    const offered = [
+      { id: "xs", name: "XS" },
+      { id: "s", name: "S" },
+      { id: "m", name: "M" },
+      { id: "l", name: "L" },
+      { id: "xl", name: "XL" },
+      { id: "2xl", name: "2XL" },
+      { id: "3xl", name: "3XL" },
+    ];
+    const map = Object.fromEntries(offered.filter((size) => size.id !== "xs").map((size) => [`${size.id}:azalea`, { printifyVariantId: 1 }]));
+    map["xs:white"] = { printifyVariantId: 2 };
+    expect(formatSizeRange(offered.map((size) => size.name), ["S", "M", "L", "XL", "2XL", "3XL"])).toBe("S–3XL");
+    expect(formatSizeRange(offered.map((size) => size.name), offered.map((size) => size.name))).toBe("XS–3XL");
+    expect(printableSizeNames(map, { name: "Pink", hex: "DD74A1" }, offered)).toEqual(["S", "M", "L", "XL", "2XL", "3XL"]);
+    expect(printableSizeNames(map, { name: "White", hex: "FFFFFF" }, offered)).toEqual(["XS"]);
   });
 
   it("does not spend a cap slot when the product is held as a draft", () => {

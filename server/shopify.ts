@@ -25,6 +25,15 @@ import {
 // startup and in the shipping reconciler pre-flight — see shopify-scope-drift.ts.
 export const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping";
 
+/** Staging toml scopes. Used only when this process is the staging server, so a reinstall does not drop write_orders or write_validations. */
+const STAGING_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects";
+
+function oauthScopes(): string {
+  return String(process.env.RAILWAY_ENVIRONMENT_NAME || "").toLowerCase() === "staging"
+    ? STAGING_OAUTH_SCOPES
+    : SHOPIFY_SCOPES;
+}
+
 function primaryKey(): string {
   return getPrimaryShopifyCredentials()?.apiKey || "";
 }
@@ -299,7 +308,7 @@ export function registerShopifyRoutes(app: Express): void {
 
     const authUrl = `https://${shop}/admin/oauth/authorize?` +
       `client_id=${creds.apiKey}&` +
-      `scope=${SHOPIFY_SCOPES}&` +
+      `scope=${oauthScopes()}&` +
       `redirect_uri=${encodeURIComponent(redirectUri)}&` +
       `state=${state}`;
 
@@ -367,7 +376,7 @@ if (res.locals.shopify?.session?.shop) {
 
       console.log(`Shopify OAuth completed for ${shop}`);
       console.log(`Scopes granted: ${scope || "NONE"}`);
-      console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
+      console.log(`Requested scopes were: ${oauthScopes()}`);
       console.log(
         `Token mode: ${fields.refreshToken ? "expiring offline" : "non-expiring offline (unexpected)"}`,
       );

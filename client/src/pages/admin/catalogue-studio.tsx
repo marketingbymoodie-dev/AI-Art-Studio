@@ -35,6 +35,7 @@ type PendingCandidate = {
   selectedColor: string;
   selectedSize: string;
   eligibility: ColourReading[] | null;
+  colourSizes: Record<string, string>;
   scenes: SceneGroup[];
   choice: { panelId: string | null; selectedColors: TickedColour[]; artworkPath: string | null };
   recentScenes: string[];
@@ -481,8 +482,16 @@ export default function CatalogueStudioPage() {
                               });
                             }}
                           />
+                          <span
+                            aria-hidden
+                            className="mr-2 inline-block h-3 w-3 rounded-full border border-border align-middle"
+                            style={{ backgroundColor: `#${row.hex.replace(/^#/, "")}` }}
+                          />
                           {row.name}
-                          {reading ? ` ${(reading.minClear * 100).toFixed(1)}% ${reading.eligible ? "pass" : "fail"}` : ""}
+                          {reading
+                            ? ` ${(reading.minClear * 100).toFixed(1)}% ${reading.eligible ? "pass" : "fail"}`
+                            : " no reading"}
+                          <span className="ml-2 text-xs text-muted-foreground">{candidate.data?.colourSizes?.[row.name] || ""}</span>
                         </span>
                         <span className="text-xs text-muted-foreground">{row.path}</span>
                       </label>
@@ -605,7 +614,7 @@ export default function CatalogueStudioPage() {
             <section className="space-y-2" data-testid="catalogue-studio-eligibility">
               <h2 className="font-medium">Colour eligibility</h2>
               <p className="text-xs text-muted-foreground">
-                Weakest region. Share of its pixels with dE2000 over 32. Legible at 15% or more. Display only.
+                Weakest region of this artwork. Share of its pixels with dE2000 over 32. Legible at 15% or more. Guidance only — a fail can still be ticked. The size range is what that colour will carry.
               </p>
               {readings == null ? (
                 <p className="text-muted-foreground">No reading for this artwork.</p>

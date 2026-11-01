@@ -6,6 +6,8 @@
  * visibility of a customizer base product, and it does not use the hidden
  * visibility of a shadow SKU.
  */
+import { printifyColorIdForMockup } from "./mockupBundle";
+import { resolveVariantFromMap, type VariantMap } from "./variantMapResolve";
 
 export const PRINTIFY_FULL_BLEED = { x: 0.5, y: 0.5, scale: 1 } as const;
 
@@ -55,6 +57,8 @@ export function promoteRefusals(input: {
   species: string | null;
   humourOperator: string | null;
   shippingRefusal: string | null;
+  /** Set when the shop token cannot link colour swatches. Checked before any create. */
+  metaobjectRefusal: string | null;
   publishNow: boolean;
   capMessage: string | null;
   missingPrices: string[];
@@ -82,9 +86,37 @@ export function promoteRefusals(input: {
     missing.push(`The candidate is missing ${taxonomy.join(", ")}. Promote does not invent tags.`);
   }
   if (input.shippingRefusal) missing.push(input.shippingRefusal);
+  if (input.metaobjectRefusal) missing.push(input.metaobjectRefusal);
   if (input.missingPrices.length) {
     missing.push(`No front price for ${input.missingPrices.join(", ")}.`);
   }
   if (input.publishNow && input.capMessage) missing.push(input.capMessage);
   return missing;
+}
+
+export const METAOBJECT_SCOPE_REFUSAL =
+  "This shop's Shopify token has no metaobject scope, so colour swatches cannot be linked. Reinstall the app before promoting.";
+
+/** Sizes this colour can actually print. Names stay in the offered order. */
+export function printableSizeNames(
+  variantMap: VariantMap | null | undefined,
+  color: { name: string; hex: string },
+  offered: Array<{ id: string; name: string }>,
+): string[] {
+  const colorId = printifyColorIdForMockup(color.hex)?.colorId || "";
+  if (!colorId) return [];
+  return offered
+    .filter((size) => resolveVariantFromMap(variantMap, size.id, colorId, { allowSizeFallbackForColor: false })?.entry.printifyVariantId)
+    .map((size) => size.name);
+}
+
+/** "XS–3XL" when the printable sizes are a contiguous run of the offered list. */
+export function formatSizeRange(offeredNames: string[], printableNames: string[]): string {
+  if (!printableNames.length) return "no sizes";
+  const index = new Map(offeredNames.map((name, i) => [name, i]));
+  const at = printableNames.map((name) => index.get(name)).filter((n): n is number => n != null).sort((a, b) => a - b);
+  if (at.length !== printableNames.length) return printableNames.join(", ");
+  const contiguous = at.every((n, i) => i === 0 || n === at[i - 1] + 1);
+  if (contiguous && at.length > 1) return `${offeredNames[at[0]]}–${offeredNames[at[at.length - 1]]}`;
+  return printableNames.join(", ");
 }

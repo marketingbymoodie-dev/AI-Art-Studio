@@ -1,13 +1,10 @@
 /**
- * Display-only colour reading for the pending Studio candidate.
+ * Display-only colour reading for a catalogue artwork.
  * A region is legible when at least 15% of its pixels have dE2000 > 32
- * against the garment. The design is eligible when every region is.
- * Not wired to promote.
+ * against the garment. The design is eligible on that colour when every region is.
+ * Guidance at ticking time. It does not block a tick and it is not a promote gate.
  */
-import fs from "fs";
-import path from "path";
 import sharp from "sharp";
-import { PENDING_CANDIDATE } from "./catalogue-studio-preview";
 
 export type ColourEligibility = {
   name: string;
@@ -81,14 +78,11 @@ function dE(a: [number, number, number], b: [number, number, number]): number {
   return Math.sqrt(Math.max(0, dL * dL + dC * dC + dH * dH + Rt * dC * dH));
 }
 
-function artworkPath(): string | null {
-  const dir = path.join(process.env.USERPROFILE || process.env.HOME || "", "Downloads");
-  const name = fs.readdirSync(dir).find((n) => n.startsWith("Pug") && n.endsWith(".png") && !n.includes("(1)"));
-  return name ? path.join(dir, name) : null;
-}
-
-async function measure(file: string): Promise<ColourEligibility[]> {
-  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+export async function measureColourEligibility(
+  image: Buffer,
+  colors: Array<{ name: string; hex: string }>,
+): Promise<ColourEligibility[]> {
+  const { data, info } = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const w = info.width;
   const h = info.height;
   const bg = new Uint8Array(w * h);
@@ -153,8 +147,8 @@ async function measure(file: string): Promise<ColourEligibility[]> {
     const o = i * 4;
     return labOf(data[o], data[o + 1], data[o + 2]);
   }));
-  return PENDING_CANDIDATE.colors.map((color) => {
-    const n = parseInt(color.hex, 16);
+  return colors.map((color) => {
+    const n = parseInt(color.hex.replace(/^#/, ""), 16);
     const garment = labOf((n >> 16) & 255, (n >> 8) & 255, n & 255);
     let minClear = 1;
     for (const region of regions) {
@@ -169,20 +163,4 @@ async function measure(file: string): Promise<ColourEligibility[]> {
       eligible: regions.length > 0 && minClear >= 0.15,
     };
   });
-}
-
-let cached: Promise<ColourEligibility[] | null> | null = null;
-
-export function pendingColourEligibility(): Promise<ColourEligibility[] | null> {
-  if (!cached) {
-    cached = (async () => {
-      const file = artworkPath();
-      if (!file) return null;
-      return measure(file);
-    })().catch((err) => {
-      console.error("[catalogue-studio] eligibility:", (err as Error).message);
-      return null;
-    });
-  }
-  return cached;
 }

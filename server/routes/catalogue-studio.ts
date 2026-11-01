@@ -5,7 +5,7 @@ import type { Express, RequestHandler, Response } from "express";
 import { and, eq } from "drizzle-orm";
 import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
-import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
+import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
 import { PENDING_CANDIDATE } from "../catalogue-studio-preview";
@@ -17,6 +17,7 @@ import {
   preparePanelUpload,
   candidatePrintifyArtwork,
   readChoice,
+  readLibraryObject,
   recentSceneLabels,
   renderCandidateOnPanel,
   reviewStoredScene,
@@ -28,6 +29,23 @@ import {
 } from "../mockup-library-store";
 
 /** Front Shopify variant prices for the Softstyle page. Same read promote uses. */
+function parseSizes(raw: unknown): Array<{ id: string; name: string }> {
+  const list = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((row) => ({ id: String(row?.id || "").trim(), name: String(row?.name || "").trim() }))
+    .filter((row) => row.id && row.name);
+}
+
+function parseIdList(raw: string | null | undefined): string[] {
+  try {
+    const list = JSON.parse(raw || "[]");
+    return Array.isArray(list) ? list.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesBySize: Record<string, string> }> {
   const { db } = await import("../db");
   const [row] = await db
@@ -95,15 +113,53 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/pending", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const [prices, eligibility, garment, scenes, choice, recentScenes, stored] = await Promise.all([
+      const [prices, garment, scenes, choice, recentScenes, stored] = await Promise.all([
         shippingPricesBySize(),
-        import("../catalogue-studio-eligibility").then((m) => m.pendingColourEligibility()),
         softstyleType(),
         softstyleType().then((type) => listScenes(type.id)),
         readChoice(PENDING_CANDIDATE.id),
         recentSceneLabels(),
         dbSelectStoredCandidate(),
       ]);
+      const { db } = await import("../db");
+      const [typeRow] = await db
+        .select({
+          sizes: productTypes.sizes,
+          selectedSizeIds: productTypes.selectedSizeIds,
+          variantMap: productTypes.variantMap,
+        })
+        .from(productTypes)
+        .where(eq(productTypes.id, garment.id))
+        .limit(1);
+      const sizeRows = parseSizes(typeRow?.sizes);
+      const selectedIds = parseIdList(typeRow?.selectedSizeIds);
+      const offered = selectedIds.length ? sizeRows.filter((size) => selectedIds.includes(size.id)) : sizeRows;
+      let variantMap = {};
+      try {
+        variantMap = JSON.parse(typeRow?.variantMap || "{}");
+      } catch {
+        variantMap = {};
+      }
+      const colourByName = new Map<string, { name: string; hex: string }>();
+      for (const scene of scenes) {
+        for (const color of scene.colours) colourByName.set(color.name, { name: color.name, hex: color.hex });
+      }
+      const colours = [...colourByName.values()];
+      const colourSizes: Record<string, string> = {};
+      const offeredNames = offered.map((size) => size.name);
+      for (const color of colours) {
+        colourSizes[color.name] = formatSizeRange(offeredNames, printableSizeNames(variantMap, color, offered));
+      }
+      let eligibility = null;
+      if (choice.artworkPath && colours.length) {
+        try {
+          const artwork = await readLibraryObject(choice.artworkPath);
+          const { measureColourEligibility } = await import("../catalogue-studio-eligibility");
+          eligibility = await measureColourEligibility(artwork, colours);
+        } catch (err) {
+          console.error("[catalogue-studio] eligibility:", (err as Error).message);
+        }
+      }
       res.json({
         id: PENDING_CANDIDATE.id,
         status: stored?.status || PENDING_CANDIDATE.status,
@@ -115,6 +171,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         selectedSize: "L",
         ...prices,
         eligibility,
+        colourSizes,
         productTypeId: garment.id,
         productTypeName: garment.name,
         scenes,

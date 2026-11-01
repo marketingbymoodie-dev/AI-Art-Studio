@@ -148,7 +148,7 @@ export async function runBedEtiquettePromote(): Promise<Record<string, unknown>>
       productTypeId: garment.id,
       pricesBySize: prices.pricesBySize,
     });
-    const size = `shopify ${result.shopifyProductId}; printify ${result.printifyProductId}; status ${result.status}${result.swatchWarning ? `; swatches: ${result.swatchWarning}` : ""}`;
+    const size = `shopify ${result.shopifyProductId}; printify ${result.printifyProductId}; status ${result.status}`;
     await recordGenerationEvent(
       { kind: "image", route: "flywheel-promote", jobId: CANDIDATE_ID },
       { success: true, durationMs: Date.now() - started, meta: meta({ size, durationMs: Date.now() - started, estimatedCostUsd: null, providerRequestId: result.printifyProductId, model: "promote" }) },
@@ -222,6 +222,118 @@ async function approveBedEtiquette(): Promise<void> {
   );
 }
 
+/** Link swatches on the draft that already exists. Does not create another product. */
+async function linkBedEtiquetteSwatches(): Promise<void> {
+  const [done] = await db
+    .select({ success: generationEvents.success })
+    .from(generationEvents)
+    .where(and(eq(generationEvents.route, "flywheel-swatches"), eq(generationEvents.jobId, CANDIDATE_ID), eq(generationEvents.success, true)))
+    .limit(1);
+  if (done) return;
+  const [candidate] = await db
+    .select({
+      shopDomain: designCandidates.shopDomain,
+      shopifyProductId: designCandidates.shopifyProductId,
+    })
+    .from(designCandidates)
+    .where(eq(designCandidates.id, CANDIDATE_ID))
+    .limit(1);
+  if (!candidate?.shopifyProductId) return;
+  const choice = await readChoice(CANDIDATE_ID);
+  const { storage } = await import("./storage");
+  const { linkCatalogueProductSwatches } = await import("./flywheel-promote");
+  const installation = await storage.getShopifyInstallationByShop(candidate.shopDomain);
+  if (!installation?.accessToken) throw new Error("Shopify is not connected for this shop.");
+  await linkCatalogueProductSwatches({
+    shop: candidate.shopDomain,
+    token: installation.accessToken,
+    shopifyProductId: candidate.shopifyProductId,
+    colours: choice.selectedColors,
+  });
+  await recordGenerationEvent(
+    { kind: "image", route: "flywheel-swatches", jobId: CANDIDATE_ID },
+    {
+      success: true,
+      durationMs: 0,
+      meta: meta({ size: candidate.shopifyProductId, durationMs: 0, estimatedCostUsd: null, providerRequestId: candidate.shopifyProductId, model: "swatches" }),
+    },
+  );
+}
+
+/** Replace the fallback description once the listing writer can run. Does not create a product. */
+async function rewriteBedEtiquetteListing(): Promise<void> {
+  const [done] = await db
+    .select({ success: generationEvents.success })
+    .from(generationEvents)
+    .where(and(eq(generationEvents.route, "flywheel-listing"), eq(generationEvents.jobId, CANDIDATE_ID), eq(generationEvents.success, true)))
+    .limit(1);
+  if (done) return;
+  const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, CANDIDATE_ID)).limit(1);
+  if (!candidate?.title || !candidate.shopifyProductId || !candidate.printifyProductId) return;
+  const { writeCatalogueListing } = await import("./catalogue-listing");
+  const listing = await writeCatalogueListing({
+    title: candidate.title,
+    species: candidate.species,
+    artStyle: candidate.artStyle,
+    humourOperator: candidate.humourOperator,
+    punchline: candidate.punchline || candidate.title,
+  });
+  const garment = await softstyleType();
+  const [typeRow] = await db
+    .select({ merchantId: productTypes.merchantId, shop: productTypes.shopifyShopDomain })
+    .from(productTypes)
+    .where(eq(productTypes.id, garment.id))
+    .limit(1);
+  const { storage } = await import("./storage");
+  const shop = String(typeRow?.shop || candidate.shopDomain);
+  const installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
+  const merchant = typeRow?.merchantId ? await storage.getMerchant(typeRow.merchantId) : null;
+  if (!installation?.accessToken || !merchant?.printifyApiToken || !merchant.printifyShopId) {
+    throw new Error("Shopify or Printify is not connected.");
+  }
+  const shopify = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
+    body: JSON.stringify({
+      query: `mutation($product: ProductUpdateInput!) {
+        productUpdate(product: $product) { product { id } userErrors { message } }
+      }`,
+      variables: {
+        product: {
+          id: `gid://shopify/Product/${candidate.shopifyProductId}`,
+          descriptionHtml: listing.description,
+        },
+      },
+    }),
+  });
+  const shopifyBody = await shopify.json();
+  const shopifyErrors = shopifyBody?.data?.productUpdate?.userErrors || shopifyBody?.errors || [];
+  if (!shopify.ok || shopifyErrors.length) {
+    throw new Error(shopifyErrors.map((err: { message?: string }) => err.message).filter(Boolean).join("; ") || "Shopify description update failed");
+  }
+  const printify = await fetch(`https://api.printify.com/v1/shops/${merchant.printifyShopId}/products/${candidate.printifyProductId}.json`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${merchant.printifyApiToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ description: listing.description }),
+  });
+  if (!printify.ok) {
+    throw new Error(`Printify description update failed (${printify.status})`);
+  }
+  await db.update(designCandidates).set({
+    description: listing.description,
+    title: listing.title || candidate.title,
+    updatedAt: new Date(),
+  }).where(eq(designCandidates.id, CANDIDATE_ID));
+  await recordGenerationEvent(
+    { kind: "image", route: "flywheel-listing", jobId: CANDIDATE_ID },
+    {
+      success: true,
+      durationMs: 0,
+      meta: meta({ size: listing.description.slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: candidate.shopifyProductId, model: "listing" }),
+    },
+  );
+}
+
 /** Runs inside the staging server after listen. Production never enters. */
 export async function runStagingFlywheelOnce(): Promise<void> {
   if (!stagingProcess()) return;
@@ -254,6 +366,26 @@ export async function runStagingFlywheelOnce(): Promise<void> {
       { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 800), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "approve" }) },
     );
     return;
+  }
+  try {
+    await linkBedEtiquetteSwatches();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] swatches:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-swatches", jobId: CANDIDATE_ID },
+      { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "swatches" }) },
+    );
+  }
+  try {
+    await rewriteBedEtiquetteListing();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] listing:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-listing", jobId: CANDIDATE_ID },
+      { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "listing" }) },
+    );
   }
   try {
     await runBedEtiquettePromote();

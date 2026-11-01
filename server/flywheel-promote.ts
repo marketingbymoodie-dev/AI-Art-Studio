@@ -16,6 +16,7 @@ import {
   catalogueVisibility,
   mockupAlt,
   mockupFileName,
+  METAOBJECT_SCOPE_REFUSAL,
   promoteRefusals,
   type CapOccupant,
 } from "@shared/flywheelPromote";
@@ -202,12 +203,32 @@ async function linkColourSwatches(
   if (errors.length) throw new Error(errors.map((err: { message?: string }) => err.message).join("; "));
 }
 
+/** Link swatches on a product that already exists. Does not create or delete anything. */
+export async function linkCatalogueProductSwatches(args: {
+  shop: string;
+  token: string;
+  shopifyProductId: string;
+  colours: Array<{ name: string; hex: string }>;
+}): Promise<void> {
+  const productGid = args.shopifyProductId.startsWith("gid://")
+    ? args.shopifyProductId
+    : `gid://shopify/Product/${args.shopifyProductId.replace(/\D/g, "")}`;
+  const swatches = [];
+  for (const color of args.colours) {
+    swatches.push({
+      name: color.name,
+      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex),
+    });
+  }
+  await linkColourSwatches(args.shop, args.token, productGid, swatches);
+}
+
 export async function promoteCatalogueCandidate(args: {
   candidateId: string;
   publishNow: boolean;
   productTypeId: number;
   pricesBySize: Record<string, string>;
-}): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft"; swatchWarning: string }> {
+}): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
   const choice = await readChoice(args.candidateId);
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
   const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, args.productTypeId)).limit(1);
@@ -317,6 +338,7 @@ export async function promoteCatalogueCandidate(args: {
     species: candidate?.species ?? null,
     humourOperator: candidate?.humourOperator ?? null,
     shippingRefusal,
+    metaobjectRefusal: null,
     publishNow: args.publishNow,
     capMessage,
     missingPrices,
@@ -325,6 +347,18 @@ export async function promoteCatalogueCandidate(args: {
   if (!merchant?.printifyApiToken || !merchant.printifyShopId) reasons.push("Printify is not connected on this product type.");
   if (!installation?.accessToken) reasons.push("Shopify is not connected for this shop.");
   if (!typeRow.printifyBlueprintId || !typeRow.printifyProviderId) reasons.push("This product type has no Printify blueprint.");
+  if (installation?.accessToken && shop) {
+    try {
+      await adminGql(
+        shop,
+        installation.accessToken,
+        `query { metaobjects(type: "shopify--color-pattern", first: 1) { nodes { id } } }`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reasons.push(/metaobject|Access denied/i.test(message) ? METAOBJECT_SCOPE_REFUSAL : message);
+    }
+  }
   if (reasons.length) throw new PromoteRefusal(reasons);
 
   const variantMap: VariantMap = JSON.parse(typeRow.variantMap || "{}");
@@ -500,7 +534,6 @@ export async function promoteCatalogueCandidate(args: {
   }));
 
   let shopifyProductId = "";
-  let swatchWarning = "";
   let createdVariants: Array<{ id: number; option1: string | null; option2: string | null }> = [];
   try {
     const data = await adminGql(
@@ -530,17 +563,12 @@ export async function promoteCatalogueCandidate(args: {
       option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
       option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
     }));
-    try {
-      const swatches = [];
-      for (const color of choice.selectedColors) {
-        swatches.push({ name: color.name, metaobjectId: await colorMetaobjectId(shop, installation!.accessToken, color.name, color.hex) });
-      }
-      await linkColourSwatches(shop, installation!.accessToken, data.productSet.product.id, swatches);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!/Access denied for metaobjects/i.test(message)) throw err;
-      swatchWarning = message;
-    }
+    await linkCatalogueProductSwatches({
+      shop,
+      token: installation!.accessToken,
+      shopifyProductId: data.productSet.product.id,
+      colours: choice.selectedColors,
+    });
   } catch (err) {
     if (shopifyProductId) {
       await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
@@ -622,5 +650,5 @@ export async function promoteCatalogueCandidate(args: {
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
   }
 
-  return { shopifyProductId, printifyProductId, status, swatchWarning };
+  return { shopifyProductId, printifyProductId, status };
 }
