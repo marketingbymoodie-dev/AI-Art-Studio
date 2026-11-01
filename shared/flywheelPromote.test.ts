@@ -5,12 +5,14 @@ import {
   capRefusal,
   catalogueTags,
   catalogueVisibility,
+  colorPatternMetaobjectFields,
   formatSizeRange,
   METAOBJECT_SCOPE_REFUSAL,
   mockupAlt,
   mockupFileName,
   printableSizeNames,
   promoteRefusals,
+  swatchBaseColorName,
 } from "./flywheelPromote";
 
 const ready = {
@@ -126,5 +128,24 @@ describe("flywheel promote decisions", () => {
       [{ shopifyVariantId: "gid://shopify/ProductVariant/77", studioVariantId: "10" }],
     );
     expect(next).toContainEqual({ classKey: "145:99", group: "g1", shopifyVariantId: "77", source: "base" });
+  });
+
+  it("sends a base colour and a solid pattern with the swatch hex", () => {
+    expect(swatchBaseColorName("Light grey")).toBe("Gray");
+    expect(swatchBaseColorName("Sage")).toBe("Green");
+    expect(swatchBaseColorName("Dark grey")).toBe("Gray");
+    expect(swatchBaseColorName("Pink")).toBe("Pink");
+    expect(swatchBaseColorName("Maroon")).toBeNull();
+    expect(colorPatternMetaobjectFields({
+      label: "Pink",
+      hex: "DD74A1",
+      baseColorId: "gid://shopify/TaxonomyValue/11",
+      solidPatternId: "gid://shopify/TaxonomyValue/2874",
+    })).toEqual([
+      { key: "label", value: "Pink" },
+      { key: "color", value: "#DD74A1" },
+      { key: "color_taxonomy_reference", value: "[\"gid://shopify/TaxonomyValue/11\"]" },
+      { key: "pattern_taxonomy_reference", value: "gid://shopify/TaxonomyValue/2874" },
+    ]);
   });
 });

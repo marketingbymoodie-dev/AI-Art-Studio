@@ -16,8 +16,10 @@ import {
   catalogueVisibility,
   mockupAlt,
   mockupFileName,
+  colorPatternMetaobjectFields,
   METAOBJECT_SCOPE_REFUSAL,
   promoteRefusals,
+  swatchBaseColorName,
   type CapOccupant,
 } from "@shared/flywheelPromote";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
@@ -126,7 +128,53 @@ export async function deletePrintifyProduct(shopId: string, productId: string, t
   }
 }
 
-async function colorMetaobjectId(shop: string, token: string, name: string, hex: string): Promise<string> {
+type SwatchTaxonomy = { colors: Map<string, string>; solidId: string };
+
+async function loadSwatchTaxonomy(shop: string, token: string): Promise<SwatchTaxonomy> {
+  const data = await adminGql(
+    shop,
+    token,
+    `query {
+      taxonomy {
+        categories(first: 10, search: "T-Shirts") {
+          nodes {
+            id
+            attributes(first: 10) {
+              nodes {
+                ... on TaxonomyChoiceListAttribute {
+                  name
+                  values(first: 250) { nodes { id name } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`,
+  );
+  const category = (data?.taxonomy?.categories?.nodes || []).find(
+    (node: { id?: string }) => node.id === "gid://shopify/TaxonomyCategory/aa-1-13-8",
+  );
+  const attributes = category?.attributes?.nodes || [];
+  const colors = new Map<string, string>();
+  for (const value of attributes.find((row: { name?: string }) => row.name === "Color")?.values?.nodes || []) {
+    colors.set(String(value.name).toLowerCase(), String(value.id));
+  }
+  const solidId = (attributes.find((row: { name?: string }) => row.name === "Pattern")?.values?.nodes || [])
+    .find((value: { name?: string }) => value.name === "Solid")?.id;
+  if (!colors.size || !solidId) {
+    throw new Error("Shopify did not return the T-shirt colour and Solid pattern taxonomy.");
+  }
+  return { colors, solidId: String(solidId) };
+}
+
+async function colorMetaobjectId(
+  shop: string,
+  token: string,
+  name: string,
+  hex: string,
+  taxonomy: SwatchTaxonomy,
+): Promise<string> {
   const found = await adminGql(
     shop,
     token,
@@ -139,6 +187,9 @@ async function colorMetaobjectId(shop: string, token: string, name: string, hex:
     (node: { displayName?: string }) => String(node.displayName || "").toLowerCase() === name.toLowerCase(),
   );
   if (existing?.id) return String(existing.id);
+  const baseName = swatchBaseColorName(name);
+  const baseColorId = baseName ? taxonomy.colors.get(baseName.toLowerCase()) : undefined;
+  if (!baseColorId) throw new Error(`No Shopify base colour for ${name}.`);
   const created = await adminGql(
     shop,
     token,
@@ -148,10 +199,12 @@ async function colorMetaobjectId(shop: string, token: string, name: string, hex:
     {
       metaobject: {
         type: "shopify--color-pattern",
-        fields: [
-          { key: "label", value: name },
-          { key: "color", value: `#${hex.replace(/^#/, "")}` },
-        ],
+        fields: colorPatternMetaobjectFields({
+          label: name,
+          hex,
+          baseColorId,
+          solidPatternId: taxonomy.solidId,
+        }),
       },
     },
   );
@@ -213,11 +266,12 @@ export async function linkCatalogueProductSwatches(args: {
   const productGid = args.shopifyProductId.startsWith("gid://")
     ? args.shopifyProductId
     : `gid://shopify/Product/${args.shopifyProductId.replace(/\D/g, "")}`;
+  const taxonomy = await loadSwatchTaxonomy(args.shop, args.token);
   const swatches = [];
   for (const color of args.colours) {
     swatches.push({
       name: color.name,
-      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex),
+      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex, taxonomy),
     });
   }
   await linkColourSwatches(args.shop, args.token, productGid, swatches);

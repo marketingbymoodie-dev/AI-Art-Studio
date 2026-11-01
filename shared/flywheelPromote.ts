@@ -97,6 +97,49 @@ export function promoteRefusals(input: {
 export const METAOBJECT_SCOPE_REFUSAL =
   "This shop's Shopify token has no metaobject scope, so colour swatches cannot be linked. Reinstall the app before promoting.";
 
+/** Display names on the Softstyle ticks, and the Printify titles those hexes map to. */
+const SWATCH_BASE_COLOR: Record<string, string> = {
+  white: "White",
+  black: "Black",
+  blue: "Blue",
+  sapphire: "Blue",
+  pink: "Pink",
+  azalea: "Pink",
+  red: "Red",
+  "cherry red": "Red",
+  sage: "Green",
+  green: "Green",
+  "light grey": "Gray",
+  "light gray": "Gray",
+  "dark grey": "Gray",
+  "dark gray": "Gray",
+  "sport grey": "Gray",
+  "sport gray": "Gray",
+  charcoal: "Gray",
+  grey: "Gray",
+  gray: "Gray",
+};
+
+/** Shopify's Base color name for a garment colour. Null when we have no mapping. */
+export function swatchBaseColorName(colourName: string): string | null {
+  return SWATCH_BASE_COLOR[colourName.trim().toLowerCase()] ?? null;
+}
+
+/** Fields shopify--color-pattern requires. Base color is a taxonomy id list, not the hex. */
+export function colorPatternMetaobjectFields(args: {
+  label: string;
+  hex: string;
+  baseColorId: string;
+  solidPatternId: string;
+}): Array<{ key: string; value: string }> {
+  return [
+    { key: "label", value: args.label },
+    { key: "color", value: `#${args.hex.replace(/^#/, "")}` },
+    { key: "color_taxonomy_reference", value: JSON.stringify([args.baseColorId]) },
+    { key: "pattern_taxonomy_reference", value: args.solidPatternId },
+  ];
+}
+
 /** Sizes this colour can actually print. Names stay in the offered order. */
 export function printableSizeNames(
   variantMap: VariantMap | null | undefined,
