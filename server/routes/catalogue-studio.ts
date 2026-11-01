@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
+import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
 import { PENDING_CANDIDATE } from "../catalogue-studio-preview";

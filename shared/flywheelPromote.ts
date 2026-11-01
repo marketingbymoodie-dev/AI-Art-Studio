@@ -153,9 +153,21 @@ export function printableSizeNames(
     .map((size) => size.name);
 }
 
-/** "XS–3XL" when the printable sizes are a contiguous run of the offered list. */
+const APPAREL_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"];
+
+/** "XS–3XL" when the printable sizes are a contiguous run. Apparel sizes use size order, so XS last in the offered list still reads XS–3XL. */
 export function formatSizeRange(offeredNames: string[], printableNames: string[]): string {
   if (!printableNames.length) return "no sizes";
+  const ranks = printableNames.map((name) => APPAREL_SIZE_ORDER.indexOf(name.toUpperCase()));
+  if (ranks.every((rank) => rank >= 0)) {
+    const ordered = printableNames
+      .map((name, i) => ({ name, rank: ranks[i] }))
+      .sort((a, b) => a.rank - b.rank);
+    if (ordered.length === 1) return ordered[0].name;
+    const contiguous = ordered.every((row, i) => i === 0 || row.rank === ordered[i - 1].rank + 1);
+    if (contiguous) return `${ordered[0].name}–${ordered[ordered.length - 1].name}`;
+    return ordered.map((row) => row.name).join(", ");
+  }
   const index = new Map(offeredNames.map((name, i) => [name, i]));
   const at = printableNames.map((name) => index.get(name)).filter((n): n is number => n != null).sort((a, b) => a - b);
   if (at.length !== printableNames.length) return printableNames.join(", ");
