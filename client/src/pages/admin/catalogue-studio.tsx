@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import AdminLayout from "@/components/admin-layout";
@@ -28,7 +29,7 @@ type PendingCandidate = {
   status: "pending";
   title: string;
   description?: string;
-  shopifyProductId: null;
+  shopifyProductId: string | null;
   sizes: string[];
   pricesBySize: Record<string, string>;
   colors: Array<{ name: string; hex: string }>;
@@ -41,6 +42,20 @@ type PendingCandidate = {
   recentScenes: string[];
   productTypeId: number;
   productTypeName: string;
+  pendingCount?: number;
+  nextCandidateId?: string;
+  recipe?: {
+    artStyle: string;
+    species: string;
+    humourOperator: string;
+    funnyTruth: string;
+    deviceText: string;
+    punchline: string;
+    behaviour: string;
+    deviceStructure: string;
+    darknessLevel: number;
+    filename: string;
+  } | null;
 };
 
 function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>) {
@@ -81,8 +96,13 @@ function Field({ label, children, id }: { label: string; children: ReactNode; id
 }
 
 export default function CatalogueStudioPage() {
+  const search = useSearch();
+  const requested = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get("candidate") || "";
+  const pendingKey = requested
+    ? `/api/platform/catalogue-studio/pending?candidate=${encodeURIComponent(requested)}`
+    : "/api/platform/catalogue-studio/pending";
   const candidate = useQuery<PendingCandidate>({
-    queryKey: ["/api/platform/catalogue-studio/pending"],
+    queryKey: [pendingKey],
   });
   const panels = useQuery<{ scenes: SceneGroup[] }>({
     queryKey: ["/api/platform/catalogue-studio/panels"],
@@ -136,6 +156,24 @@ export default function CatalogueStudioPage() {
   }, [candidate.data, size]);
 
   useEffect(() => {
+    const recipe = candidate.data?.recipe;
+    if (!candidate.data?.id || !recipe) return;
+    setBehaviour(recipe.behaviour || "");
+    setTruth(recipe.funnyTruth || "");
+    setWording(recipe.punchline || "");
+    setDevice(recipe.deviceText || "");
+    setDeviceStructure(recipe.deviceStructure || "");
+    setHumour(recipe.humourOperator || "");
+    setDarkness(recipe.darknessLevel ? String(recipe.darknessLevel) : "");
+    setSpecies(recipe.species || "");
+    setStyleId(recipe.artStyle || "");
+    setPanelId("");
+    setTicked([]);
+    setVerdict(candidate.data.status === "pending" ? "pending" : "approved");
+    setDropError("");
+  }, [candidate.data?.id]);
+
+  useEffect(() => {
     const scenes = candidate.data?.scenes;
     if (!scenes?.length || panelId) return;
     const stored = candidate.data?.choice.panelId;
@@ -150,7 +188,7 @@ export default function CatalogueStudioPage() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ panelId: next, selectedColors: colours }),
+        body: JSON.stringify({ candidateId: candidate.data?.id, panelId: next, selectedColors: colours }),
       });
     }
   }, [candidate.data, panelId]);
@@ -160,8 +198,9 @@ export default function CatalogueStudioPage() {
     let url: string | null = null;
     let cancelled = false;
     (async () => {
+      const idQuery = candidate.data?.id ? `&candidate=${encodeURIComponent(candidate.data.id)}` : "";
       const res = await fetch(
-        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}`,
+        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}${idQuery}`,
         { credentials: "include" },
       );
       if (!res.ok) {
@@ -185,7 +224,7 @@ export default function CatalogueStudioPage() {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [color, panelId, previewNonce]);
+  }, [color, panelId, previewNonce, candidate.data?.id]);
 
   useEffect(() => {
     if (!showAdmin) return;
@@ -231,7 +270,10 @@ export default function CatalogueStudioPage() {
   return (
     <AdminLayout>
       <div className="mb-4 flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">Pending candidate. No Shopify product.</p>
+        <p className="text-sm text-muted-foreground">
+          {candidate.data?.recipe?.filename || "Pending candidate"}. No Shopify product.
+          {candidate.data?.pendingCount ? ` ${candidate.data.pendingCount} pending.` : ""}
+        </p>
         <Button type="button" size="sm" variant="outline" onClick={() => setShowAdmin((v) => !v)}>
           {showAdmin ? "Simulate customer" : "Show operator panel"}
         </Button>
@@ -274,7 +316,7 @@ export default function CatalogueStudioPage() {
                     setPrintifyError("");
                     void apiFetch("/api/platform/catalogue-studio/printify-preview", {
                       method: "POST",
-                      body: JSON.stringify({ panelId, color, size }),
+                      body: JSON.stringify({ candidateId: candidate.data?.id, panelId, color, size }),
                     }).then(async (res) => {
                       const body = await res.json().catch(() => ({}));
                       if (!res.ok) throw new Error(body.error || "Printify did not return a mockup.");
@@ -350,7 +392,17 @@ export default function CatalogueStudioPage() {
           </div>
           <section className="mt-10">
             <h2 className="mb-3 text-lg font-medium">Related products</h2>
-            <p className="text-sm text-muted-foreground">No other pending candidates on this garment.</p>
+            <p className="text-sm text-muted-foreground">
+              {(candidate.data?.pendingCount || 0) > 1
+                ? `${(candidate.data?.pendingCount || 1) - 1} other pending candidates.`
+                : "No other pending candidates on this garment."}
+              {candidate.data?.nextCandidateId ? (
+                <>
+                  {" "}
+                  <Link href={`/admin/catalogue-studio?candidate=${candidate.data.nextCandidateId}`}>Next pending</Link>
+                </>
+              ) : null}
+            </p>
           </section>
         </div>
         {showAdmin ? (
@@ -447,7 +499,7 @@ export default function CatalogueStudioPage() {
                     method: "POST",
                     credentials: "include",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ panelId: next, selectedColors: kept }),
+                    body: JSON.stringify({ candidateId: candidate.data?.id, panelId: next, selectedColors: kept }),
                   });
                 }}
               >
@@ -478,7 +530,7 @@ export default function CatalogueStudioPage() {
                                 method: "POST",
                                 credentials: "include",
                                 headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ panelId, selectedColors: next }),
+                                body: JSON.stringify({ candidateId: candidate.data?.id, panelId, selectedColors: next }),
                               });
                             }}
                           />
@@ -572,7 +624,7 @@ export default function CatalogueStudioPage() {
                       method: "POST",
                       credentials: "include",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ imageBase64 }),
+                      body: JSON.stringify({ candidateId: candidate.data?.id, imageBase64 }),
                     });
                     if (!res.ok) {
                       const body = await res.json().catch(() => ({}));
@@ -677,6 +729,7 @@ export default function CatalogueStudioPage() {
                     credentials: "include",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
+                      candidateId: candidate.data?.id,
                       panelId,
                       selectedColors: ticked,
                       artStyle: styleId,
@@ -740,7 +793,7 @@ export default function CatalogueStudioPage() {
                     method: "POST",
                     credentials: "include",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ publishNow }),
+                    body: JSON.stringify({ candidateId: candidate.data?.id, publishNow }),
                   });
                   const body = await res.json().catch(() => ({}));
                   setPromoteBusy(false);

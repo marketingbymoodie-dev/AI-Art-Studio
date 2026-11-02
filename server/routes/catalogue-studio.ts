@@ -2,7 +2,9 @@
  * Operator Design Studio. Preview only — no Shopify product is created.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
+import { abortCatalogueImport, commitCatalogueImport, stageCataloguePng } from "../catalogue-bulk-import";
+import { planCatalogueImport } from "@shared/catalogueBulkImport";
 import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
@@ -88,14 +90,49 @@ export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesB
   return { sizes, pricesBySize };
 }
 
-async function dbSelectStoredCandidate(): Promise<{ status: string; title: string | null; description: string | null } | null> {
+const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
+
+function parseCandidateId(value: unknown): { id: string } | { error: string } {
+  const id = typeof value === "string" ? value.trim() : "";
+  if (!id) return { id: "" };
+  if (id === PENDING_CANDIDATE.id) return { id };
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return { id };
+  return { error: "Unknown candidate." };
+}
+
+async function readCandidateRow(id: string) {
   const { db } = await import("../db");
-  const [row] = await db
-    .select({ status: designCandidates.status, title: designCandidates.title, description: designCandidates.description })
-    .from(designCandidates)
-    .where(eq(designCandidates.id, PENDING_CANDIDATE.id))
-    .limit(1);
+  const [row] = await db.select().from(designCandidates).where(eq(designCandidates.id, id)).limit(1);
   return row ?? null;
+}
+
+async function pendingQueue(): Promise<Array<{ id: string }>> {
+  const { db } = await import("../db");
+  return db
+    .select({ id: designCandidates.id })
+    .from(designCandidates)
+    .where(and(eq(designCandidates.status, "pending"), eq(designCandidates.shopDomain, STAGING_SHOP)))
+    .orderBy(asc(designCandidates.createdAt));
+}
+
+async function resolveStudioCandidateId(value: unknown): Promise<{ id: string } | { error: string }> {
+  const parsed = parseCandidateId(value);
+  if ("error" in parsed || parsed.id) return parsed;
+  const queue = await pendingQueue();
+  return { id: queue[0]?.id || PENDING_CANDIDATE.id };
+}
+
+async function candidateIdFor(res: Response, value: unknown): Promise<string | null> {
+  const resolved = await resolveStudioCandidateId(value);
+  if ("error" in resolved) {
+    res.status(400).json({ error: resolved.error });
+    return null;
+  }
+  if (resolved.id !== PENDING_CANDIDATE.id && !(await readCandidateRow(resolved.id))) {
+    res.status(404).json({ error: "That candidate is not stored." });
+    return null;
+  }
+  return resolved.id;
 }
 
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
@@ -114,14 +151,28 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/pending", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const [prices, garment, scenes, choice, recentScenes, stored] = await Promise.all([
+      const resolved = await resolveStudioCandidateId(req.query.candidate);
+      if ("error" in resolved) {
+        res.status(400).json({ error: resolved.error });
+        return;
+      }
+      const id = resolved.id;
+      const [prices, garment, scenes, choice, recentScenes, stored, queue] = await Promise.all([
         shippingPricesBySize(),
         softstyleType(),
         softstyleType().then((type) => listScenes(type.id)),
-        readChoice(PENDING_CANDIDATE.id),
+        readChoice(id),
         recentSceneLabels(),
-        dbSelectStoredCandidate(),
+        readCandidateRow(id),
+        pendingQueue(),
       ]);
+      if (id !== PENDING_CANDIDATE.id && !stored) {
+        res.status(404).json({ error: "That candidate is not stored." });
+        return;
+      }
+      const queueIndex = queue.findIndex((row) => row.id === id);
+      const nextCandidateId = queueIndex >= 0 ? queue[queueIndex + 1]?.id || "" : queue[0]?.id || "";
+      const fixture = id === PENDING_CANDIDATE.id;
       const { db } = await import("../db");
       const [typeRow] = await db
         .select({
@@ -161,14 +212,15 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           console.error("[catalogue-studio] eligibility:", (err as Error).message);
         }
       }
+      const filename = (stored?.artworkPath || choice.artworkPath || "").split("/").pop() || "";
       res.json({
-        id: PENDING_CANDIDATE.id,
+        id,
         status: stored?.status || PENDING_CANDIDATE.status,
-        title: stored?.title || PENDING_CANDIDATE.title,
+        title: fixture ? stored?.title || PENDING_CANDIDATE.title : stored?.title || "",
         description: stored?.description || "",
-        shopifyProductId: PENDING_CANDIDATE.shopifyProductId,
-        colors: PENDING_CANDIDATE.colors,
-        selectedColor: PENDING_CANDIDATE.selectedColor,
+        shopifyProductId: stored?.shopifyProductId || null,
+        colors: fixture ? PENDING_CANDIDATE.colors : colours,
+        selectedColor: fixture ? PENDING_CANDIDATE.selectedColor : colours[0]?.name || "White",
         selectedSize: "L",
         ...prices,
         eligibility,
@@ -178,6 +230,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         scenes,
         choice,
         recentScenes,
+        pendingCount: queue.length,
+        nextCandidateId,
+        recipe: fixture || !stored ? null : {
+          artStyle: stored.artStyle,
+          species: stored.species,
+          humourOperator: stored.humourOperator,
+          funnyTruth: stored.funnyTruth,
+          deviceText: stored.deviceText,
+          punchline: stored.punchline || "",
+          behaviour: stored.behaviour,
+          deviceStructure: stored.deviceStructure,
+          darknessLevel: stored.darknessLevel,
+          filename,
+        },
       });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -193,8 +259,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Choose a scene." });
         return;
       }
+      const id = await candidateIdFor(res, req.query.candidate);
+      if (!id) return;
       const known = PENDING_CANDIDATE.colors.find((c) => c.name === requested) ?? { name: requested, hex: "FFFFFF" };
-      const [garment, choice] = await Promise.all([softstyleType(), readChoice(PENDING_CANDIDATE.id)]);
+      const [garment, choice] = await Promise.all([softstyleType(), readChoice(id)]);
       const { png, source } = await renderCandidateOnPanel({
         productTypeId: garment.id,
         typeName: garment.name,
@@ -234,8 +302,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Printify is not connected on this product type." });
         return;
       }
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
       const known = PENDING_CANDIDATE.colors.find((c) => c.name === colorName) ?? { name: colorName, hex: "FFFFFF" };
-      const choice = await readChoice(PENDING_CANDIDATE.id);
+      const choice = await readChoice(id);
       const artwork = await candidatePrintifyArtwork({
         productTypeId: garment.id,
         typeName: garment.name,
@@ -393,9 +463,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/choice", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       await saveChoice(
-        PENDING_CANDIDATE.id,
+        id,
         req.body?.panelId ? String(req.body.panelId) : null,
         colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
       );
@@ -408,7 +480,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/artwork", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      await saveArtwork(PENDING_CANDIDATE.id, String(req.body?.imageBase64 || ""));
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
+      await saveArtwork(id, String(req.body?.imageBase64 || ""));
       res.json({ ok: true });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -419,9 +493,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { approveCatalogueCandidate } = await import("../flywheel-approve");
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       const result = await approveCatalogueCandidate({
-        candidateId: PENDING_CANDIDATE.id,
+        candidateId: id,
         panelId: String(req.body?.panelId || ""),
         selectedColors: colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
         artStyle: String(req.body?.artStyle || ""),
@@ -433,7 +509,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         deviceText: String(req.body?.deviceText || ""),
         deviceStructure: String(req.body?.deviceStructure || ""),
         darknessLevel: Number(req.body?.darknessLevel),
-        title: String(req.body?.title || PENDING_CANDIDATE.title || ""),
+        title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
       });
       res.json({ ok: true, ...result });
     } catch (e: any) {
@@ -447,8 +523,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const { promoteCatalogueCandidate } = await import("../flywheel-promote");
       const garment = await softstyleType();
       const prices = await shippingPricesBySize();
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
       const result = await promoteCatalogueCandidate({
-        candidateId: PENDING_CANDIDATE.id,
+        candidateId: id,
         publishNow: req.body?.publishNow !== false,
         productTypeId: garment.id,
         pricesBySize: prices.pricesBySize,
@@ -458,5 +536,48 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const status = e?.status === 409 || e?.name === "PromoteRefusal" ? 409 : 400;
       res.status(status).json({ error: String(e?.message || e) });
     }
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/plan", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const csv = typeof req.body?.csv === "string" ? req.body.csv : "";
+    const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
+    res.json(planCatalogueImport({ csv, filenames }));
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/file", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""));
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/commit", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
+      const result = await commitCatalogueImport({
+        batchId: String(req.body?.batchId || ""),
+        csv: typeof req.body?.csv === "string" ? req.body.csv : "",
+        filenames,
+      });
+      if (result.failures.length) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ created: 0, firstId: "", studioPath: "", failures: [String(e?.message || e)] });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/abort", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
+    await abortCatalogueImport(String(req.body?.batchId || ""), filenames);
+    res.json({ ok: true });
   });
 }

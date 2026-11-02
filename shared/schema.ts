@@ -1363,6 +1363,8 @@ export const designCandidates = pgTable("design_candidates", {
   productFamily: text("product_family").notNull(),
   credentialRef: text("credential_ref").notNull(),
   renderProbeResultId: integer("render_probe_result_id"),
+  /** Source artwork in the mockup library. Set when the design is imported or uploaded. */
+  artworkPath: text("artwork_path"),
   /** Stored print file. Set at approval. Null while the design is still pending. */
   printFilePath: text("print_file_path"),
   /** Scene chosen for this design. Re-approval reads this and does not pick another. */

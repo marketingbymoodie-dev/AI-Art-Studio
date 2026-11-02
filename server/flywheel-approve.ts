@@ -6,7 +6,6 @@ import { eq } from "drizzle-orm";
 import {
   darknessLevel,
   deviceStructureId,
-  flywheelSpecies,
   humourOperatorId,
   type ArtStyleDeviceStructure,
 } from "@shared/flywheelRecipe";
@@ -49,7 +48,7 @@ function clip(value: string, max: number): string {
 
 function requireRecipe(recipe: ApprovalRecipe): {
   artStyle: string;
-  species: "dog" | "cat" | "other";
+  species: string;
   humourOperator: string;
   structure: ArtStyleDeviceStructure;
   darkness: number;
@@ -61,8 +60,8 @@ function requireRecipe(recipe: ApprovalRecipe): {
   } catch {
     throw new Error("Style is not stored. Approval needs a launch style.");
   }
-  const species = flywheelSpecies(recipe.species);
-  if (!species) throw new Error("Species is not stored. Approval needs dog, cat, or other.");
+  const species = clip(recipe.species, 80);
+  if (!species) throw new Error("Species is not stored.");
   const humourOperator = humourOperatorId(recipe.humourOperator);
   if (!humourOperator) throw new Error("Humour operator is not stored.");
   const structure = deviceStructureId(recipe.deviceStructure);

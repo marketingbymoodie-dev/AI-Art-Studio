@@ -67,6 +67,12 @@ async function putObject(path: string, body: Buffer, contentType: string): Promi
   if (error) throw new Error(error.message);
 }
 
+export async function removeLibraryObject(path: string): Promise<void> {
+  await ensureBucket();
+  const { error } = await supabase().storage.from(BUCKET).remove([path]);
+  if (error && !/not found/i.test(error.message)) throw new Error(error.message);
+}
+
 async function getObject(path: string): Promise<Buffer> {
   const { data, error } = await supabase().storage.from(BUCKET).download(path);
   if (error || !data) throw new Error(error?.message || `Missing ${path}`);
@@ -217,6 +223,10 @@ export async function saveArtwork(candidateId: string, imageBase64: string): Pro
       target: catalogueCandidateChoices.candidateId,
       set: { artworkPath: path, updatedAt: now },
     });
+  await db
+    .update(designCandidates)
+    .set({ artworkPath: path, updatedAt: now })
+    .where(eq(designCandidates.id, candidateId));
 }
 
 async function sceneRows(productTypeId: number, panelId: string) {

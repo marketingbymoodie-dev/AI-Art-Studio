@@ -160,6 +160,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
   { table: "design_candidates", column: "print_file_path", type: "TEXT" },
+  { table: "design_candidates", column: "artwork_path", type: "TEXT" },
   { table: "design_candidates", column: "panel_id", type: "TEXT" },
   { table: "design_candidates", column: "selected_colors", type: "JSONB" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },

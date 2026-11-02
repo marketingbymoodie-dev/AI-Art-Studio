@@ -50,6 +50,7 @@ import {
   Mail,
   Truck,
   KeyRound,
+  Upload,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -80,6 +81,7 @@ const platformMenuItems = [
   { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
   { title: "Shipping Coverage", url: "/admin/platform/shipping", icon: Truck },
   { title: "Design Studio", url: "/admin/catalogue-studio", icon: Shirt },
+  { title: "Catalogue import", url: "/admin/catalogue-import", icon: Upload },
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
