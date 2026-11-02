@@ -16,6 +16,7 @@ import {
   catalogueVisibility,
   mockupAlt,
   mockupFileName,
+  variantMediaAssignments,
   colorPatternMetaobjectFields,
   METAOBJECT_SCOPE_REFUSAL,
   promoteRefusals,
@@ -275,6 +276,113 @@ export async function linkCatalogueProductSwatches(args: {
     });
   }
   await linkColourSwatches(args.shop, args.token, productGid, swatches);
+}
+
+function productGidOf(id: string): string {
+  return id.startsWith("gid://") ? id : `gid://shopify/Product/${id.replace(/\D/g, "")}`;
+}
+
+function fileNameFromMediaUrl(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Point each variant at the mockup for its colour. The gallery swaps only
+ * when the variant carries that media. Product media alone does not.
+ */
+export async function linkCatalogueVariantMockups(args: {
+  shop: string;
+  token: string;
+  shopifyProductId: string;
+}): Promise<{ colours: number; variants: number }> {
+  const productGid = productGidOf(args.shopifyProductId);
+  const query = `query($id: ID!) {
+    product(id: $id) {
+      title
+      handle
+      media(first: 50) {
+        nodes {
+          id
+          alt
+          ... on MediaImage { image { url } }
+        }
+      }
+      variants(first: 100) {
+        nodes {
+          id
+          selectedOptions { name value }
+          media(first: 1) { nodes { id } }
+        }
+      }
+    }
+  }`;
+  let assigned: { updates: Array<{ id: string; mediaId: string }>; missing: string[] } = { updates: [], missing: [] };
+  let seenMedia = "";
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const data = await adminGql(args.shop, args.token, query, { id: productGid });
+    const product = data?.product;
+    if (!product) throw new Error("Shopify returned no product to attach mockups to.");
+    const media = (product.media?.nodes || []).map((node: { id?: string; alt?: string | null; image?: { url?: string | null } | null }) => ({
+      id: String(node.id || ""),
+      alt: String(node.alt || ""),
+      filename: fileNameFromMediaUrl(String(node.image?.url || "")),
+    })).filter((item: { id: string }) => item.id);
+    const variants = (product.variants?.nodes || []).map((node: { id?: string; selectedOptions?: Array<{ name?: string; value?: string }> }) => ({
+      id: String(node.id || ""),
+      colour: String(node.selectedOptions?.find((option) => /^colou?r$/i.test(String(option.name || "")))?.value || ""),
+    })).filter((variant: { id: string; colour: string }) => variant.id && variant.colour);
+    assigned = variantMediaAssignments({
+      title: String(product.title || ""),
+      handle: String(product.handle || ""),
+      variants,
+      media,
+    });
+    seenMedia = media.map((item: { alt: string; filename: string }) => `${item.alt || "(no alt)"} | ${item.filename || "(no file)"}`).join("; ");
+    const colourCount = new Set(variants.map((variant: { colour: string }) => variant.colour.toLowerCase())).size;
+    if (!assigned.missing.length && assigned.updates.length) break;
+    if (media.length >= colourCount) break;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (assigned.missing.length || !assigned.updates.length) {
+    throw new Error(`No mockup media for ${assigned.missing.join(", ") || "the ticked colours"}. Media on the product: ${seenMedia || "none"}.`);
+  }
+  for (let i = 0; i < assigned.updates.length; i += 50) {
+    const chunk = assigned.updates.slice(i, i + 50);
+    const updated = await adminGql(
+      args.shop,
+      args.token,
+      `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants { id media(first: 1) { nodes { id } } }
+          userErrors { field message }
+        }
+      }`,
+      { productId: productGid, variants: chunk.map((row) => ({ id: row.id, mediaId: row.mediaId })) },
+    );
+    const errors = updated?.productVariantsBulkUpdate?.userErrors || [];
+    if (errors.length) {
+      throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; ") || "Variant media update failed");
+    }
+    const written = new Map<string, string>(
+      (updated?.productVariantsBulkUpdate?.productVariants || []).map((node: { id?: string; media?: { nodes?: Array<{ id?: string }> } }) => [
+        String(node.id || ""),
+        String(node.media?.nodes?.[0]?.id || ""),
+      ]),
+    );
+    for (const row of chunk) {
+      if (written.get(row.id) !== row.mediaId) {
+        throw new Error(`Variant ${row.id} did not keep mockup ${row.mediaId}.`);
+      }
+    }
+  }
+  return {
+    colours: new Set(assigned.updates.map((row) => row.mediaId)).size,
+    variants: assigned.updates.length,
+  };
 }
 
 export async function promoteCatalogueCandidate(args: {
@@ -617,6 +725,11 @@ export async function promoteCatalogueCandidate(args: {
       option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
       option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
     }));
+    await linkCatalogueVariantMockups({
+      shop,
+      token: installation!.accessToken,
+      shopifyProductId: data.productSet.product.id,
+    });
     await linkCatalogueProductSwatches({
       shop,
       token: installation!.accessToken,

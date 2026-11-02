@@ -10,6 +10,7 @@ import {
   METAOBJECT_SCOPE_REFUSAL,
   mockupAlt,
   mockupFileName,
+  variantMediaAssignments,
   printableSizeNames,
   promoteRefusals,
   swatchBaseColorName,
@@ -52,6 +53,28 @@ describe("flywheel promote decisions", () => {
   it("names the design and the colour in the image file", () => {
     expect(mockupFileName("bed-etiquette", "Light grey")).toBe("bed-etiquette-light-grey-front.jpg");
     expect(mockupAlt("Bed Etiquette", "Sage")).toBe("Bed Etiquette on Sage");
+  });
+
+  it("points every size of a colour at that colour's mockup, and no other", () => {
+    const media = [
+      { id: "gid://shopify/MediaImage/blue", alt: "Bed Etiquette on Blue", filename: "bed-etiquette-blue-front.jpg" },
+      { id: "gid://shopify/MediaImage/light", alt: "", filename: "bed-etiquette-light-grey-front_9f3a.jpg" },
+      { id: "gid://shopify/MediaImage/grey", alt: "Bed Etiquette on Grey", filename: "bed-etiquette-grey-front.jpg" },
+    ];
+    const variants = [
+      { id: "gid://shopify/ProductVariant/1", colour: "Blue" },
+      { id: "gid://shopify/ProductVariant/2", colour: "Blue" },
+      { id: "gid://shopify/ProductVariant/3", colour: "Light grey" },
+      { id: "gid://shopify/ProductVariant/4", colour: "Red" },
+    ];
+    const assigned = variantMediaAssignments({ title: "Bed Etiquette", handle: "bed-etiquette", variants, media });
+    expect(assigned.updates).toEqual([
+      { id: "gid://shopify/ProductVariant/1", mediaId: "gid://shopify/MediaImage/blue" },
+      { id: "gid://shopify/ProductVariant/2", mediaId: "gid://shopify/MediaImage/blue" },
+      { id: "gid://shopify/ProductVariant/3", mediaId: "gid://shopify/MediaImage/light" },
+    ]);
+    expect(assigned.missing).toEqual(["Red"]);
+    expect(assigned.updates.map((row) => row.mediaId)).not.toContain("gid://shopify/MediaImage/grey");
   });
 
   it("lays the print file on full bleed", () => {

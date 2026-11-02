@@ -222,6 +222,51 @@ async function approveBedEtiquette(): Promise<void> {
   );
 }
 
+/** Attach each existing variant to its colour mockup. Does not create a product. */
+async function linkBedEtiquetteVariantMedia(): Promise<void> {
+  const [done] = await db
+    .select({ success: generationEvents.success })
+    .from(generationEvents)
+    .where(and(eq(generationEvents.route, "flywheel-variant-media"), eq(generationEvents.jobId, CANDIDATE_ID), eq(generationEvents.success, true)))
+    .limit(1);
+  if (done) return;
+  const [candidate] = await db
+    .select({
+      shopDomain: designCandidates.shopDomain,
+      shopifyProductId: designCandidates.shopifyProductId,
+    })
+    .from(designCandidates)
+    .where(eq(designCandidates.id, CANDIDATE_ID))
+    .limit(1);
+  if (!candidate?.shopifyProductId) return;
+  const { storage } = await import("./storage");
+  const { ensureValidOfflineAccessToken } = await import("./shopify-offline-token");
+  const { linkCatalogueVariantMockups } = await import("./flywheel-promote");
+  const installation = await storage.getShopifyInstallationByShop(candidate.shopDomain);
+  if (!installation?.accessToken) throw new Error("Shopify is not connected for this shop.");
+  const ready = await ensureValidOfflineAccessToken(installation);
+  if (!ready.ok) throw new Error(ready.error);
+  const linked = await linkCatalogueVariantMockups({
+    shop: candidate.shopDomain,
+    token: ready.accessToken,
+    shopifyProductId: candidate.shopifyProductId,
+  });
+  await recordGenerationEvent(
+    { kind: "image", route: "flywheel-variant-media", jobId: CANDIDATE_ID },
+    {
+      success: true,
+      durationMs: 0,
+      meta: meta({
+        size: `${linked.colours} colours, ${linked.variants} variants`,
+        durationMs: 0,
+        estimatedCostUsd: null,
+        providerRequestId: candidate.shopifyProductId,
+        model: "variant-media",
+      }),
+    },
+  );
+}
+
 /** Link swatches on the draft that already exists. Does not create another product. */
 async function linkBedEtiquetteSwatches(): Promise<void> {
   const [done] = await db
@@ -366,6 +411,16 @@ export async function runStagingFlywheelOnce(): Promise<void> {
       { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 800), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "approve" }) },
     );
     return;
+  }
+  try {
+    await linkBedEtiquetteVariantMedia();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] variant media:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "flywheel-variant-media", jobId: CANDIDATE_ID },
+      { success: false, durationMs: 0, error: err, meta: meta({ size: message.slice(0, 1500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "variant-media" }) },
+    );
   }
   try {
     await linkBedEtiquetteSwatches();

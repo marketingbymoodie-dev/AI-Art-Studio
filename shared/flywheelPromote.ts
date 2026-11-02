@@ -37,6 +37,40 @@ export function mockupAlt(title: string, colour: string): string {
   return `${title.trim()} on ${colour.trim()}`;
 }
 
+export type VariantMediaUpdate = { id: string; mediaId: string };
+
+/**
+ * One mockup image per colour, applied to every size of that colour.
+ * Matches the alt text and filename promote stores, so "light grey" cannot
+ * take the file that belongs to "grey".
+ */
+export function variantMediaAssignments(input: {
+  title: string;
+  handle: string;
+  variants: Array<{ id: string; colour: string }>;
+  media: Array<{ id: string; alt: string; filename: string }>;
+}): { updates: VariantMediaUpdate[]; missing: string[] } {
+  const colours = [...new Set(input.variants.map((variant) => variant.colour.trim()).filter(Boolean))];
+  const mediaForColour = new Map<string, string>();
+  for (const colour of colours) {
+    const expectedAlt = mockupAlt(input.title, colour).toLowerCase();
+    const stem = mockupFileName(input.handle, colour).replace(/\.jpg$/i, "").toLowerCase();
+    const hit = input.media.find((item) => {
+      const alt = item.alt.trim().toLowerCase();
+      const filename = item.filename.trim().toLowerCase();
+      return alt === expectedAlt || filename.startsWith(stem);
+    });
+    if (hit) mediaForColour.set(colour.toLowerCase(), hit.id);
+  }
+  const updates: VariantMediaUpdate[] = [];
+  for (const variant of input.variants) {
+    const mediaId = mediaForColour.get(variant.colour.trim().toLowerCase());
+    if (mediaId) updates.push({ id: variant.id, mediaId });
+  }
+  const missing = colours.filter((colour) => !mediaForColour.has(colour.toLowerCase()));
+  return { updates, missing };
+}
+
 /** Refuse, name the cap, and list who is holding the slots. */
 export function capRefusal(limit: number, occupants: CapOccupant[]): string | null {
   if (occupants.length < limit) return null;
