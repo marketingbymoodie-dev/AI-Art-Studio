@@ -1,9 +1,12 @@
 /**
  * Parse a catalogue folder before anything is stored.
- * A failure anywhere refuses the whole batch.
+ * A CSV is optional. Images with no row are drafted, not refused.
+ * Field problems stay on the row so the review table can fix them.
+ * A structural problem refuses the batch before anything is created.
  */
 import { humourOperatorId } from "./flywheelRecipe";
 import { PETPOSTEROUS_ART_STYLE_LAUNCH } from "./petposterousArtStyles";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "./petposterousCreative";
 
 export const CATALOGUE_IMPORT_COLUMNS = [
   "filename",
@@ -17,6 +20,16 @@ export const CATALOGUE_IMPORT_COLUMNS = [
 
 const LIMITS = { species: 80, truth: 400, device: 400, exactWording: 120 } as const;
 
+/** Sonnet 4.6 list price, USD per million tokens. The listing writer uses this model. */
+const SONNET_46 = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 };
+
+const MODEL_RATES: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  "claude-sonnet-4-6": SONNET_46,
+  "claude-sonnet-4-5": SONNET_46,
+};
+
+export type CatalogueConfidence = { style: boolean; humourOperator: boolean };
+
 export type CatalogueImportRow = {
   rowNumber: number;
   filename: string;
@@ -26,6 +39,9 @@ export type CatalogueImportRow = {
   truth: string;
   device: string;
   exactWording: string;
+  /** csv rows are not sent to the vision model. */
+  source: "csv" | "draft";
+  lowConfidence: CatalogueConfidence;
 };
 
 export type CatalogueImportPlan = {
@@ -33,8 +49,19 @@ export type CatalogueImportPlan = {
   failures: string[];
 };
 
+export type CatalogueDraftUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
 function clip(value: string, max: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function trimEdges(value: string): string {
+  return value.replace(/^\s+|\s+$/g, "");
 }
 
 /** Basename safe to use as a storage key. Comparison is case-insensitive. */
@@ -97,15 +124,25 @@ function blank(rowNumber: number, filename: string, field: string): string {
   return `${where}: ${field} is blank.`;
 }
 
-/**
- * Match one CSV to the PNGs dropped with it.
- * Rows are returned even when the batch is dirty, so the page can show them.
- * `failures` is every reason the batch cannot be created.
- */
-export function planCatalogueImport(input: { csv: string; filenames: string[] }): CatalogueImportPlan {
+export function emptyCatalogueRow(filename: string, rowNumber: number, source: "csv" | "draft"): CatalogueImportRow {
+  return {
+    rowNumber,
+    filename,
+    style: "",
+    species: "",
+    humourOperator: "",
+    truth: "",
+    device: "",
+    exactWording: "",
+    source,
+    lowConfidence: { style: false, humourOperator: false },
+  };
+}
+
+function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failures: string[] } {
   const failures: string[] = [];
   const uploaded = new Map<string, string>();
-  for (const filename of input.filenames) {
+  for (const filename of filenames) {
     const objectName = catalogueImportObjectName(filename);
     const label = filename.split(/[/\\]/).pop()?.trim() || filename;
     if (!objectName) {
@@ -119,8 +156,95 @@ export function planCatalogueImport(input: { csv: string; filenames: string[] })
     }
     uploaded.set(objectName, label);
   }
+  return { uploaded, failures };
+}
 
-  const table = parseCatalogueCsv(input.csv);
+/**
+ * Why this row cannot be created yet. Empty when the operator can confirm it.
+ * Low confidence does not add an issue once the field holds a valid value.
+ */
+export function catalogueRowIssues(row: Pick<CatalogueImportRow, "filename" | "style" | "species" | "humourOperator" | "truth" | "device" | "exactWording">): string[] {
+  const issues: string[] = [];
+  const where = row.filename || "This row";
+  if (!(PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(row.style)) {
+    issues.push(row.style
+      ? `${where}: style "${row.style}" is not one of ${PETPOSTEROUS_ART_STYLE_LAUNCH.join(", ")}.`
+      : `${where}: style is blank.`);
+  }
+  const species = clip(row.species || "", LIMITS.species + 1);
+  if (!species) issues.push(`${where}: species is blank.`);
+  else if (species.length > LIMITS.species) issues.push(`${where}: species is longer than ${LIMITS.species} characters.`);
+  if (!humourOperatorId(row.humourOperator)) {
+    issues.push(row.humourOperator
+      ? `${where}: humour_operator "${row.humourOperator}" is not one of the sixteen frameworks.`
+      : `${where}: humour_operator is blank.`);
+  }
+  const truth = clip(row.truth || "", LIMITS.truth + 1);
+  if (!truth) issues.push(`${where}: truth is blank.`);
+  else if (truth.length > LIMITS.truth) issues.push(`${where}: truth is longer than ${LIMITS.truth} characters.`);
+  const device = clip(row.device || "", LIMITS.device + 1);
+  if (!device) issues.push(`${where}: device is blank.`);
+  else if (device.length > LIMITS.device) issues.push(`${where}: device is longer than ${LIMITS.device} characters.`);
+  if (trimEdges(row.exactWording || "").length > LIMITS.exactWording) {
+    issues.push(`${where}: exact_wording is longer than ${LIMITS.exactWording} characters.`);
+  }
+  return issues;
+}
+
+/**
+ * Accept a vision draft. An unsure style or humour operator is left blank
+ * and marked low-confidence. exact_wording is trimmed, never rewritten.
+ */
+export function normaliseCatalogueDraft(raw: unknown): Omit<CatalogueImportRow, "rowNumber" | "filename" | "source"> | null {
+  const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
+  if (!record) return null;
+  const text = (key: string) => typeof record[key] === "string" ? record[key] : "";
+  const high = (key: string) => String(record[key] || "").trim().toLowerCase() === "high";
+  const styleRaw = text("style").trim();
+  const styleValid = (PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(styleRaw);
+  const styleSure = high("style_confidence") && styleValid;
+  const humourRaw = text("humour_operator").trim();
+  const humourSure = high("humour_confidence") && !!humourOperatorId(humourRaw);
+  const species = clip(text("species"), LIMITS.species);
+  const truth = clip(text("truth"), LIMITS.truth);
+  const device = clip(text("device"), LIMITS.device);
+  return {
+    style: styleSure ? styleRaw : "",
+    species,
+    humourOperator: humourSure ? humourOperatorId(humourRaw) || "" : "",
+    truth,
+    device,
+    exactWording: trimEdges(text("exact_wording")),
+    lowConfidence: { style: !styleSure, humourOperator: !humourSure },
+  };
+}
+
+/** USD from Anthropic usage. Null when this model has no published rate here. */
+export function catalogueDraftCostUsd(usage: CatalogueDraftUsage, model: string): number | null {
+  const rate = MODEL_RATES[model];
+  if (!rate) return null;
+  const input = Math.max(0, Number(usage.input_tokens) || 0);
+  const output = Math.max(0, Number(usage.output_tokens) || 0);
+  const cacheWrite = Math.max(0, Number(usage.cache_creation_input_tokens) || 0);
+  const cacheRead = Math.max(0, Number(usage.cache_read_input_tokens) || 0);
+  return (input * rate.input + output * rate.output + cacheWrite * rate.cacheWrite + cacheRead * rate.cacheRead) / 1_000_000;
+}
+
+/**
+ * Match an optional CSV to the PNGs dropped with it.
+ * No CSV: every PNG is a draft row. A CSV row wins and is not drafted.
+ * A PNG with no CSV row is a draft row, not a failure.
+ */
+export function planCatalogueImport(input: { csv?: string; filenames: string[] }): CatalogueImportPlan {
+  const { uploaded, failures } = uploadMap(input.filenames);
+  const csv = String(input.csv || "");
+  if (!csv.trim()) {
+    if (!uploaded.size && !failures.length) failures.push("The folder has no PNGs.");
+    const rows = [...uploaded.values()].map((filename, index) => emptyCatalogueRow(filename, index + 1, "draft"));
+    return { rows, failures };
+  }
+
+  const table = parseCatalogueCsv(csv);
   const header = (table[0] || []).map((cell) => cell.trim());
   const headerOk = CATALOGUE_IMPORT_COLUMNS.every((column, index) => header[index] === column) && header.length === CATALOGUE_IMPORT_COLUMNS.length;
   if (!headerOk) {
@@ -142,8 +266,13 @@ export function planCatalogueImport(input: { csv: string; filenames: string[] })
     const humourRaw = (cells[3] || "").trim();
     const truthRaw = (cells[4] || "").trim();
     const deviceRaw = (cells[5] || "").trim();
-    const wordingRaw = (cells[6] || "").trim();
+    const wordingRaw = trimEdges(cells[6] || "");
     const objectName = catalogueImportObjectName(filename);
+    const style = (PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(styleRaw) ? styleRaw : "";
+    const speciesClipped = clip(speciesRaw, LIMITS.species + 1);
+    const humourOperator = humourOperatorId(humourRaw) || "";
+    const truthClipped = clip(truthRaw, LIMITS.truth + 1);
+    const deviceClipped = clip(deviceRaw, LIMITS.device + 1);
 
     if (!filename) failures.push(blank(rowNumber, "", "filename"));
     else if (!objectName) failures.push(`Row ${rowNumber} (${filename}): filename must be a PNG name using letters, numbers, spaces, dots, underscores, or hyphens.`);
@@ -154,46 +283,56 @@ export function planCatalogueImport(input: { csv: string; filenames: string[] })
       if (!uploaded.has(objectName)) failures.push(`${filename} is in the CSV and was not uploaded.`);
     }
 
-    const style = (PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(styleRaw) ? styleRaw : "";
-    if (!styleRaw) failures.push(blank(rowNumber, filename, "style"));
-    else if (!style) failures.push(`Row ${rowNumber} (${filename}): style "${styleRaw}" is not one of ${PETPOSTEROUS_ART_STYLE_LAUNCH.join(", ")}.`);
-
-    const species = clip(speciesRaw, LIMITS.species + 1);
-    if (!species) failures.push(blank(rowNumber, filename, "species"));
-    else if (species.length > LIMITS.species) failures.push(`Row ${rowNumber} (${filename}): species is longer than ${LIMITS.species} characters.`);
-
-    const humourOperator = humourOperatorId(humourRaw) || "";
-    if (!humourRaw) failures.push(blank(rowNumber, filename, "humour_operator"));
-    else if (!humourOperator) failures.push(`Row ${rowNumber} (${filename}): humour_operator "${humourRaw}" is not one of the sixteen frameworks.`);
-
-    const truth = clip(truthRaw, LIMITS.truth + 1);
-    if (!truth) failures.push(blank(rowNumber, filename, "truth"));
-    else if (truth.length > LIMITS.truth) failures.push(`Row ${rowNumber} (${filename}): truth is longer than ${LIMITS.truth} characters.`);
-
-    const device = clip(deviceRaw, LIMITS.device + 1);
-    if (!device) failures.push(blank(rowNumber, filename, "device"));
-    else if (device.length > LIMITS.device) failures.push(`Row ${rowNumber} (${filename}): device is longer than ${LIMITS.device} characters.`);
-
-    const exactWording = clip(wordingRaw, LIMITS.exactWording + 1);
-    if (exactWording.length > LIMITS.exactWording) failures.push(`Row ${rowNumber} (${filename}): exact_wording is longer than ${LIMITS.exactWording} characters.`);
-
     rows.push({
       rowNumber,
       filename: objectName ? uploaded.get(objectName) || filename : filename,
       style: style || styleRaw,
-      species: species.length > LIMITS.species ? speciesRaw : species,
+      species: speciesClipped.length > LIMITS.species ? speciesRaw : speciesClipped,
       humourOperator: humourOperator || humourRaw,
-      truth: truth.length > LIMITS.truth ? truthRaw : truth,
-      device: device.length > LIMITS.device ? deviceRaw : device,
-      exactWording: exactWording.length > LIMITS.exactWording ? wordingRaw : exactWording,
+      truth: truthClipped.length > LIMITS.truth ? truthRaw : truthClipped,
+      device: deviceClipped.length > LIMITS.device ? deviceRaw : deviceClipped,
+      exactWording: wordingRaw,
+      source: "csv",
+      lowConfidence: { style: false, humourOperator: false },
     });
   }
 
-  if (!rows.length) failures.push("The CSV has no design rows.");
-
+  let nextNumber = (rows[rows.length - 1]?.rowNumber || 1) + 1;
   for (const [objectName, label] of uploaded) {
-    if (!seen.has(objectName)) failures.push(`${label} was uploaded and has no CSV row.`);
+    if (seen.has(objectName)) continue;
+    rows.push(emptyCatalogueRow(label, nextNumber, "draft"));
+    nextNumber += 1;
   }
-
+  if (!rows.length && !failures.length) failures.push("The folder has no PNGs.");
   return { rows, failures };
+}
+
+/** The review table, checked again at create. Field edits are included. Drafts are not re-run. */
+export function reviewCatalogueImport(input: { filenames: string[]; rows: CatalogueImportRow[] }): { failures: string[] } {
+  const { uploaded, failures } = uploadMap(input.filenames);
+  const seen = new Map<string, number>();
+  for (const row of input.rows) {
+    const objectName = catalogueImportObjectName(row.filename);
+    if (!objectName) {
+      failures.push(`${row.filename || "A row"} is not a PNG named with letters, numbers, spaces, dots, underscores, or hyphens.`);
+      continue;
+    }
+    const prior = seen.get(objectName);
+    if (prior) {
+      failures.push(`${row.filename} is on more than one row (${prior} and ${row.rowNumber}).`);
+      continue;
+    }
+    seen.set(objectName, row.rowNumber);
+    if (!uploaded.has(objectName)) failures.push(`${row.filename} was not uploaded.`);
+    failures.push(...catalogueRowIssues(row));
+  }
+  for (const [objectName, label] of uploaded) {
+    if (!seen.has(objectName)) failures.push(`${label} was uploaded and has no row.`);
+  }
+  if (!input.rows.length && !failures.length) failures.push("The folder has no PNGs.");
+  return { failures };
+}
+
+export function catalogueFrameworkGuide(): string {
+  return Object.entries(PETPOSTEROUS_CONCEPT_FRAMEWORKS).map(([id, line]) => `${id}: ${line}`).join("\n");
 }

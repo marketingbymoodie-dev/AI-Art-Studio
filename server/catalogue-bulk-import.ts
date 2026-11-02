@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
-import { planCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueCandidateChoices, designCandidates, productTypes } from "@shared/schema";
 import { db } from "./db";
 import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
@@ -78,23 +78,23 @@ export async function abortCatalogueImport(batchId: string, filenames: string[])
 
 export async function commitCatalogueImport(args: {
   batchId: string;
-  csv: string;
   filenames: string[];
+  rows: CatalogueImportRow[];
 }): Promise<CatalogueImportResult> {
   await assertStagingCatalogue();
   const empty = { created: 0, firstId: "", studioPath: "", failures: [] as string[] };
   if (!batchIdOk(args.batchId)) {
     return { ...empty, failures: ["That upload is not a catalogue batch."] };
   }
-  const plan = planCatalogueImport({ csv: args.csv, filenames: args.filenames });
-  if (plan.failures.length || !plan.rows.length) {
+  const review = reviewCatalogueImport({ filenames: args.filenames, rows: args.rows });
+  if (review.failures.length || !args.rows.length) {
     await removeStaged(args.batchId, args.filenames);
-    return { ...empty, failures: plan.failures.length ? plan.failures : ["The CSV has no design rows."] };
+    return { ...empty, failures: review.failures.length ? review.failures : ["The folder has no PNGs."] };
   }
 
   const staged: Array<{ row: CatalogueImportRow; path: string }> = [];
   const failures: string[] = [];
-  for (const row of plan.rows) {
+  for (const row of args.rows) {
     const path = catalogueImportStagePath(args.batchId, row.filename);
     try {
       const buf = await readLibraryObject(path);

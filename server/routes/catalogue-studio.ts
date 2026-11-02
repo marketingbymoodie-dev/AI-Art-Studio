@@ -3,8 +3,9 @@
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, asc, eq } from "drizzle-orm";
-import { abortCatalogueImport, commitCatalogueImport, stageCataloguePng } from "../catalogue-bulk-import";
-import { planCatalogueImport } from "@shared/catalogueBulkImport";
+import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
+import { draftCatalogueImage } from "../catalogue-draft";
+import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
@@ -545,6 +546,28 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     res.json(planCatalogueImport({ csv, filenames }));
   });
 
+  app.post("/api/platform/catalogue-studio/candidates/import/draft", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue import is staging only." });
+      return;
+    }
+    try {
+      const filename = String(req.body?.filename || "image.png");
+      const png = decodeCataloguePng(filename, String(req.body?.imageBase64 || ""));
+      const draft = await draftCatalogueImage(png);
+      res.json(draft);
+    } catch (e: any) {
+      res.status(e?.status || 400).json({
+        error: String(e?.message || e),
+        costUsd: typeof e?.costUsd === "number" ? e.costUsd : null,
+        inputTokens: Number(e?.inputTokens) || 0,
+        outputTokens: Number(e?.outputTokens) || 0,
+        model: String(e?.model || ""),
+      });
+    }
+  });
+
   app.post("/api/platform/catalogue-studio/candidates/import/file", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
@@ -559,10 +582,24 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
+      const rows = Array.isArray(req.body?.rows)
+        ? req.body.rows.map((row: Partial<CatalogueImportRow>, index: number): CatalogueImportRow => ({
+          rowNumber: Number(row?.rowNumber) || index + 1,
+          filename: String(row?.filename || ""),
+          style: String(row?.style || ""),
+          species: String(row?.species || ""),
+          humourOperator: String(row?.humourOperator || ""),
+          truth: String(row?.truth || ""),
+          device: String(row?.device || ""),
+          exactWording: String(row?.exactWording || ""),
+          source: row?.source === "csv" ? "csv" : "draft",
+          lowConfidence: { style: false, humourOperator: false },
+        }))
+        : [];
       const result = await commitCatalogueImport({
         batchId: String(req.body?.batchId || ""),
-        csv: typeof req.body?.csv === "string" ? req.body.csv : "",
         filenames,
+        rows,
       });
       if (result.failures.length) {
         res.status(400).json(result);
