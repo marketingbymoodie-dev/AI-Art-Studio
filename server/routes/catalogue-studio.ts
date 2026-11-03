@@ -3,14 +3,14 @@
  * Preview is free. Publish is the button that builds the print file and lists the product.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueCandidateChoices, customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
 import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
-import { candidateCanBeDeleted, nextQueueId } from "../catalogue-queue";
+import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
@@ -111,24 +111,31 @@ async function readCandidateRow(id: string) {
   return row ?? null;
 }
 
-async function pendingQueue(): Promise<Array<{ id: string }>> {
+async function operatorQueue(): Promise<Array<{ id: string }>> {
   const { db } = await import("../db");
-  return db
-    .select({ id: designCandidates.id })
+  const rows = await db
+    .select({
+      id: designCandidates.id,
+      status: designCandidates.status,
+      createdAt: designCandidates.createdAt,
+    })
     .from(designCandidates)
     .where(and(
-      eq(designCandidates.status, "pending"),
       eq(designCandidates.shopDomain, STAGING_SHOP),
       isNotNull(designCandidates.artworkPath),
       ne(designCandidates.artworkPath, ""),
-    ))
-    .orderBy(desc(designCandidates.createdAt));
+      or(
+        eq(designCandidates.status, "pending"),
+        and(eq(designCandidates.status, "approved"), isNull(designCandidates.shopifyProductId)),
+      ),
+    ));
+  return sortOperatorQueue(rows).map((row) => ({ id: row.id }));
 }
 
 async function resolveStudioCandidateId(value: unknown): Promise<{ id: string } | { error: string }> {
   const parsed = parseCandidateId(value);
   if ("error" in parsed || parsed.id) return parsed;
-  const queue = await pendingQueue();
+  const queue = await operatorQueue();
   return { id: queue[0]?.id || PENDING_CANDIDATE.id };
 }
 
@@ -174,7 +181,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         readChoice(id),
         recentSceneLabels(),
         readCandidateRow(id),
-        pendingQueue(),
+        operatorQueue(),
       ]);
       if (id !== PENDING_CANDIDATE.id && !stored) {
         res.status(404).json({ error: "That candidate is not stored." });
@@ -546,7 +553,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Only a pending candidate can be dropped." });
         return;
       }
-      const queue = await pendingQueue();
+      const queue = await operatorQueue();
       const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
       if (row.status !== "dropped") {
         const { db } = await import("../db");
@@ -590,7 +597,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Only a pending candidate with no artwork can be deleted." });
         return;
       }
-      const queue = await pendingQueue();
+      const queue = await operatorQueue();
       const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
       const { db } = await import("../db");
       await db.transaction(async (tx) => {

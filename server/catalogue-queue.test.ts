@@ -1,12 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { candidateCanBeDeleted, isOpenPending, nextQueueId } from "./catalogue-queue";
+import { candidateCanBeDeleted, isOpenPending, needsOperatorAction, nextQueueId, sortOperatorQueue } from "./catalogue-queue";
 
 describe("catalogue studio queue", () => {
-  it("keeps only pending candidates in the decision queue", () => {
+  it("limits drop and delete to pending", () => {
     expect(isOpenPending("pending")).toBe(true);
     expect(isOpenPending("dropped")).toBe(false);
     expect(isOpenPending("approved")).toBe(false);
     expect(isOpenPending("promoted")).toBe(false);
+  });
+
+  it("keeps pending and approved-without-a-product for the operator", () => {
+    expect(needsOperatorAction({ status: "pending", shopifyProductId: null })).toBe(true);
+    expect(needsOperatorAction({ status: "approved", shopifyProductId: null })).toBe(true);
+    expect(needsOperatorAction({ status: "approved", shopifyProductId: "8790832120042" })).toBe(false);
+    expect(needsOperatorAction({ status: "promoted", shopifyProductId: "8790832120042" })).toBe(false);
+    expect(needsOperatorAction({ status: "dropped", shopifyProductId: null })).toBe(false);
+  });
+
+  it("walks pending first, then approved, newest first in each group", () => {
+    const ids = sortOperatorQueue([
+      { id: "old-pending", status: "pending", createdAt: "2026-11-01T00:00:00Z" },
+      { id: "new-approved", status: "approved", createdAt: "2026-11-03T00:00:00Z" },
+      { id: "new-pending", status: "pending", createdAt: "2026-11-02T00:00:00Z" },
+      { id: "old-approved", status: "approved", createdAt: "2026-10-01T00:00:00Z" },
+    ]).map((row) => row.id);
+    expect(ids).toEqual(["new-pending", "old-pending", "new-approved", "old-approved"]);
+    expect(nextQueueId(ids, "old-pending")).toBe("new-approved");
   });
 
   it("walks to the next id and stops at the end", () => {

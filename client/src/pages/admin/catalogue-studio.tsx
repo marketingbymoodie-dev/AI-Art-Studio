@@ -400,8 +400,8 @@ export default function CatalogueStudioPage() {
     <AdminLayout>
       <div className="mb-4 flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          {candidate.data?.recipe?.filename || "Pending candidate"}. No Shopify product.
-          {candidate.data?.pendingCount ? ` ${candidate.data.pendingCount} pending.` : ""}
+          {candidate.data?.recipe?.filename || (candidate.data?.status === "approved" ? "Approved candidate" : "Pending candidate")}. No Shopify product.
+          {candidate.data?.pendingCount ? ` ${candidate.data.pendingCount} in the queue.` : ""}
         </p>
         <Button type="button" size="sm" variant="outline" onClick={() => setShowAdmin((v) => !v)}>
           {showAdmin ? "Simulate customer" : "Show operator panel"}
@@ -523,12 +523,12 @@ export default function CatalogueStudioPage() {
             <h2 className="mb-3 text-lg font-medium">Related products</h2>
             <p className="text-sm text-muted-foreground">
               {(candidate.data?.pendingCount || 0) > 1
-                ? `${(candidate.data?.pendingCount || 1) - 1} other pending candidates.`
-                : "No other pending candidates on this garment."}
+                ? `${(candidate.data?.pendingCount || 1) - 1} other designs in the queue.`
+                : "No other designs in the queue."}
               {candidate.data?.nextCandidateId ? (
                 <>
                   {" "}
-                  <Link href={`/admin/catalogue-studio?candidate=${candidate.data.nextCandidateId}`}>Next pending</Link>
+                  <Link href={`/admin/catalogue-studio?candidate=${candidate.data.nextCandidateId}`}>Next</Link>
                 </>
               ) : null}
             </p>
