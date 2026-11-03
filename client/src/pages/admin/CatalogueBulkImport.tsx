@@ -5,7 +5,7 @@ import {
   planCatalogueImport,
   type CatalogueImportRow,
 } from "@shared/catalogueBulkImport";
-import { launchArtStyles } from "@shared/petposterousArtStyles";
+import { PETPOSTEROUS_ART_STYLE_LAUNCH, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import { apiFetch } from "@/lib/queryClient";
 import AdminLayout from "@/components/admin-layout";
@@ -21,7 +21,11 @@ type ReviewRow = CatalogueImportRow & {
 };
 
 const DRAFTS_AT_ONCE = 4;
-const STYLES = launchArtStyles();
+const STYLES = PETPOSTEROUS_ART_STYLE_LAUNCH.map((id) => {
+  const style = petposterousArtStyle(id);
+  if (!style?.launch) throw new Error(`${id} is listed as launch but is not a launch style`);
+  return style;
+});
 const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
 
 function basename(path: string): string {
