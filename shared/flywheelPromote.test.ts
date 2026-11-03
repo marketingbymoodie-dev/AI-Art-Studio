@@ -6,12 +6,14 @@ import {
   catalogueTags,
   catalogueVisibility,
   colorPatternMetaobjectFields,
+  compareColourThenSize,
   formatSizeRange,
   METAOBJECT_SCOPE_REFUSAL,
   mockupAlt,
   mockupFileName,
   variantMediaAssignments,
   printableSizeNames,
+  sortApparelSizeNames,
   promoteRefusals,
   swatchBaseColorName,
 } from "./flywheelPromote";
@@ -135,6 +137,28 @@ describe("flywheel promote decisions", () => {
     expect(formatSizeRange(["S", "M", "L", "XL", "2XL", "3XL", "XS"], ["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toBe("XS–3XL");
     expect(printableSizeNames(map, { name: "Pink", hex: "DD74A1" }, offered)).toEqual(["S", "M", "L", "XL", "2XL", "3XL"]);
     expect(printableSizeNames(map, { name: "White", hex: "FFFFFF" }, offered)).toEqual(["XS"]);
+  });
+
+  it("puts XS before S, and keeps colour groups in the given order", () => {
+    const colours = ["Black", "White"];
+    const rows = [
+      { colour: "Black", size: "S" },
+      { colour: "Black", size: "M" },
+      { colour: "White", size: "S" },
+      { colour: "Black", size: "XS" },
+      { colour: "White", size: "XS" },
+    ];
+    const ordered = [...rows].sort((a, b) => compareColourThenSize(a, b, colours));
+    expect(ordered.map((row) => `${row.colour} ${row.size}`)).toEqual([
+      "Black XS",
+      "Black S",
+      "Black M",
+      "White XS",
+      "White S",
+    ]);
+    expect(sortApparelSizeNames(["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toEqual([
+      "XS", "S", "M", "L", "XL", "2XL", "3XL",
+    ]);
   });
 
   it("does not spend a cap slot when the product is held as a draft", () => {

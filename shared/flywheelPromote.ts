@@ -193,13 +193,41 @@ export function printableSizeNames(
     .map((size) => size.name);
 }
 
-const APPAREL_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"];
+export const APPAREL_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"] as const;
+
+/** Unknown labels sort after the canonical run, and keep their own relative order. */
+export function apparelSizeRank(name: string): number {
+  const index = APPAREL_SIZE_ORDER.indexOf(name.trim().toUpperCase() as typeof APPAREL_SIZE_ORDER[number]);
+  return index === -1 ? APPAREL_SIZE_ORDER.length : index;
+}
+
+/** Unique size labels in canonical order. */
+export function sortApparelSizeNames(names: string[]): string[] {
+  return [...new Set(names)].sort((a, b) => apparelSizeRank(a) - apparelSizeRank(b) || a.localeCompare(b));
+}
+
+/** Colour position first, then canonical size. */
+export function compareColourThenSize(
+  a: { colour: string; size: string },
+  b: { colour: string; size: string },
+  colourOrder: readonly string[],
+): number {
+  const colourRank = (name: string) => {
+    const index = colourOrder.findIndex((colour) => colour.toLowerCase() === name.toLowerCase());
+    return index === -1 ? colourOrder.length : index;
+  };
+  const byColour = colourRank(a.colour) - colourRank(b.colour);
+  if (byColour) return byColour;
+  const bySize = apparelSizeRank(a.size) - apparelSizeRank(b.size);
+  if (bySize) return bySize;
+  return a.size.localeCompare(b.size);
+}
 
 /** "XS–3XL" when the printable sizes are a contiguous run. Apparel sizes use size order, so XS last in the offered list still reads XS–3XL. */
 export function formatSizeRange(offeredNames: string[], printableNames: string[]): string {
   if (!printableNames.length) return "no sizes";
-  const ranks = printableNames.map((name) => APPAREL_SIZE_ORDER.indexOf(name.toUpperCase()));
-  if (ranks.every((rank) => rank >= 0)) {
+  const ranks = printableNames.map((name) => apparelSizeRank(name));
+  if (ranks.every((rank) => rank < APPAREL_SIZE_ORDER.length)) {
     const ordered = printableNames
       .map((name, i) => ({ name, rank: ranks[i] }))
       .sort((a, b) => a.rank - b.rank);

@@ -14,6 +14,8 @@ import {
   capRefusal,
   catalogueTags,
   catalogueVisibility,
+  compareColourThenSize,
+  sortApparelSizeNames,
   mockupAlt,
   mockupFileName,
   variantMediaAssignments,
@@ -611,7 +613,18 @@ export async function promoteCatalogueCandidate(args: {
     }
   }
   if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
-  if (shopifyVariants.length > 100) {
+  const colourOrder = choice.selectedColors.map((color) => color.name);
+  const variantOrder = shopifyVariants
+    .map((_, index) => index)
+    .sort((left, right) => compareColourThenSize(
+      { colour: shopifyVariants[left].option2, size: shopifyVariants[left].option1 },
+      { colour: shopifyVariants[right].option2, size: shopifyVariants[right].option1 },
+      colourOrder,
+    ));
+  const orderedShopifyVariants = variantOrder.map((index) => shopifyVariants[index]);
+  const orderedPrintifyVariants = variantOrder.map((index) => printifyVariants[index]);
+  const orderedVariantMeta = variantOrder.map((index) => variantMeta[index]);
+  if (orderedShopifyVariants.length > 100) {
     throw new PromoteRefusal([`Too many variants (${shopifyVariants.length}). Shopify allows 100 on this create.`]);
   }
   if (args.checkOnly) {
@@ -641,9 +654,9 @@ export async function promoteCatalogueCandidate(args: {
         description,
         blueprint_id: Number(typeRow.printifyBlueprintId),
         print_provider_id: Number(typeRow.printifyProviderId),
-        variants: printifyVariants,
+        variants: orderedPrintifyVariants,
         print_areas: [{
-          variant_ids: printifyVariants.map((variant) => variant.id),
+          variant_ids: orderedPrintifyVariants.map((variant) => variant.id),
           placeholders: [{
             position: "front",
             images: [{ id: imageId, ...PRINTIFY_FULL_BLEED, angle: 0 }],
@@ -686,10 +699,10 @@ export async function promoteCatalogueCandidate(args: {
     status: shopifyStatus,
     tags,
     options: [
-      { name: "Size", values: [...new Set(shopifyVariants.map((variant) => variant.option1))] },
+      { name: "Size", values: sortApparelSizeNames(orderedShopifyVariants.map((variant) => variant.option1)) },
       { name: "Color", values: choice.selectedColors.map((color) => color.name) },
     ],
-    variants: shopifyVariants,
+    variants: orderedShopifyVariants,
     metafields: [{
       namespace: "ai_art_studio",
       key: "design_candidate_id",
@@ -757,7 +770,7 @@ export async function promoteCatalogueCandidate(args: {
 
   const variantMapOut: Record<string, { sizeId: string; colorId: string; printifyVariantId: number }> = {};
   const matched: Array<{ createdId: string; studioVariantId: string }> = [];
-  for (const meta of variantMeta) {
+  for (const meta of orderedVariantMeta) {
     const sizeName = offered.find((size) => size.id === meta.sizeId)?.name;
     const colourName = meta.colorName;
     const created = createdVariants.find((variant) => variant.option1 === sizeName && variant.option2 === colourName);

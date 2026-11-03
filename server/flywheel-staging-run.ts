@@ -3,7 +3,7 @@
  * Staging only. A successful print is not repeated. Promote runs once.
  */
 import sharp from "sharp";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { designCandidates, generationEvents, productTypes } from "@shared/schema";
 import { db } from "./db";
 import { recordGenerationEvent } from "./generation-events";
@@ -384,9 +384,128 @@ async function rewriteBedEtiquetteListing(): Promise<void> {
   );
 }
 
+const SIZE_ORDER_IDS = [
+  "pending-bed-etiquette",
+  "a53d9964-a554-4f08-80a4-5d3b92c502a9",
+  "aa1b262b-68ad-4762-82dc-e539cf6b08bf",
+];
+
+type SizeVariantNode = {
+  id: string;
+  position: number;
+  selectedOptions: Array<{ name: string; value: string }>;
+};
+
+/** One reorder of the three live staging products. Removed after it has run. */
+async function reorderLiveCatalogueSizesOnce(): Promise<void> {
+  const [done] = await db
+    .select({ success: generationEvents.success })
+    .from(generationEvents)
+    .where(and(eq(generationEvents.route, "catalogue-size-order"), eq(generationEvents.success, true)))
+    .limit(1);
+  if (done) return;
+  const rows = await db
+    .select({
+      id: designCandidates.id,
+      shopDomain: designCandidates.shopDomain,
+      shopifyProductId: designCandidates.shopifyProductId,
+    })
+    .from(designCandidates)
+    .where(inArray(designCandidates.id, SIZE_ORDER_IDS));
+  if (rows.length !== SIZE_ORDER_IDS.length || rows.some((row) => !row.shopifyProductId)) {
+    throw new Error("A live catalogue product is missing its Shopify id.");
+  }
+  if (rows.some((row) => row.shopDomain !== "ai-art-studio-staging.myshopify.com")) {
+    throw new Error("Size reorder refused outside the staging shop.");
+  }
+  const { storage } = await import("./storage");
+  const { ensureValidOfflineAccessToken } = await import("./shopify-offline-token");
+  const { compareColourThenSize, sortApparelSizeNames } = await import("@shared/flywheelPromote");
+  const installation = await storage.getShopifyInstallationByShop(rows[0].shopDomain);
+  if (!installation?.accessToken) throw new Error("Shopify is not connected for this shop.");
+  const ready = await ensureValidOfflineAccessToken(installation);
+  if (!ready.ok) throw new Error(ready.error);
+  const shop = rows[0].shopDomain;
+  const gql = async (query: string, variables: Record<string, unknown>) => {
+    const res = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": ready.accessToken },
+      body: JSON.stringify({ query, variables }),
+    });
+    const json = await res.json();
+    if (!res.ok || json.errors?.length) {
+      throw new Error(JSON.stringify(json.errors || res.status).slice(0, 400));
+    }
+    return json.data;
+  };
+  const lines: string[] = [];
+  for (const row of rows) {
+    const productId = `gid://shopify/Product/${String(row.shopifyProductId).replace(/\D/g, "")}`;
+    const data = await gql(
+      `query($id: ID!) {
+        product(id: $id) {
+          options { id name optionValues { name } }
+          variants(first: 100) { pageInfo { hasNextPage } nodes { id position selectedOptions { name value } } }
+        }
+      }`,
+      { id: productId },
+    );
+    if (data.product.variants.pageInfo.hasNextPage) throw new Error(`${row.id} has more than 100 variants.`);
+    const sizeOption = (data.product.options || []).find((option: { name: string }) => option.name === "Size");
+    const colourOption = (data.product.options || []).find((option: { name: string }) => option.name === "Color" || option.name === "Colour");
+    const colourOrder = (colourOption?.optionValues || []).map((value: { name: string }) => value.name);
+    const nodes = data.product.variants.nodes as SizeVariantNode[];
+    const sizeOf = (node: SizeVariantNode) => node.selectedOptions.find((option) => option.name === "Size")?.value || "";
+    const colourOf = (node: SizeVariantNode) => node.selectedOptions.find((option) => option.name === "Color" || option.name === "Colour")?.value || "";
+    const sorted = [...nodes].sort((a, b) => compareColourThenSize(
+      { colour: colourOf(a), size: sizeOf(a) },
+      { colour: colourOf(b), size: sizeOf(b) },
+      colourOrder,
+    ));
+    const reordered = await gql(
+      `mutation($productId: ID!, $positions: [ProductVariantPositionInput!]!) {
+        productVariantsBulkReorder(productId: $productId, positions: $positions) {
+          userErrors { field message }
+        }
+      }`,
+      { productId, positions: sorted.map((node, index) => ({ id: node.id, position: index + 1 })) },
+    );
+    const variantErrors = reordered.productVariantsBulkReorder?.userErrors || [];
+    if (variantErrors.length) throw new Error(variantErrors.map((err: { message?: string }) => err.message).join("; "));
+    const beforeSizes = (sizeOption?.optionValues || []).map((value: { name: string }) => value.name);
+    const wanted = sortApparelSizeNames(beforeSizes);
+    if (sizeOption && beforeSizes.join("|") !== wanted.join("|")) {
+      const optionResult = await gql(
+        `mutation($productId: ID!, $options: [OptionReorderInput!]!) {
+          productOptionsReorder(productId: $productId, options: $options) {
+            userErrors { field message }
+          }
+        }`,
+        { productId, options: [{ id: sizeOption.id, values: wanted.map((name) => ({ name })) }] },
+      );
+      const optionErrors = optionResult.productOptionsReorder?.userErrors || [];
+      if (optionErrors.length) throw new Error(optionErrors.map((err: { message?: string }) => err.message).join("; "));
+    }
+    lines.push(`${row.id} ${wanted.join(",")}`);
+  }
+  await recordGenerationEvent(
+    { kind: "image", route: "catalogue-size-order", jobId: "catalogue-size-order" },
+    {
+      success: true,
+      durationMs: 0,
+      meta: meta({ size: lines.join(" | ").slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "size-order" }),
+    },
+  );
+}
+
 /** Runs inside the staging server after listen. Production never enters. */
 export async function runStagingFlywheelOnce(): Promise<void> {
   if (!stagingProcess()) return;
+  try {
+    await reorderLiveCatalogueSizesOnce();
+  } catch (err) {
+    console.warn("[flywheel] size order:", err instanceof Error ? err.message : String(err));
+  }
   try {
     const { ensureSoftstyleProductCategory } = await import("./flywheel-category");
     const category = await ensureSoftstyleProductCategory();
