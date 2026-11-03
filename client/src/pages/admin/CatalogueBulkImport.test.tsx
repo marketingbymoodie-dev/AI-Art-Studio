@@ -6,6 +6,7 @@ import sharp from "sharp";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: { url: string; body: { filenames?: string[]; filename?: string } }[] = [];
+const commitFailures = vi.hoisted(() => ({ current: [] as string[] }));
 
 vi.mock("@/components/admin-layout", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -29,6 +30,9 @@ vi.mock("@/lib/queryClient", () => ({
         lowConfidence: { style: false, humourOperator: false },
       }));
       return { ok: true, json: async () => ({ rows, failures: [] }) };
+    }
+    if (String(url).endsWith("/commit") && commitFailures.current.length) {
+      return { ok: false, status: 400, json: async () => ({ created: 0, firstId: "", studioPath: "", failures: commitFailures.current }) };
     }
     if (String(url).endsWith("/draft")) {
       return {
@@ -89,6 +93,7 @@ describe("catalogue import file inputs", () => {
 
   beforeEach(() => {
     calls.length = 0;
+    commitFailures.current = [];
   });
 
   it("replaces the batch from a folder, appends new files, and drops a row", async () => {
@@ -124,5 +129,18 @@ describe("catalogue import file inputs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove extra.png" }));
     expect(screen.queryByText("extra.png")).toBeNull();
     expect(screen.getByText("boxer-a.png")).toBeTruthy();
+  });
+
+  it("shows a commit failure beside Create and leaves the drafted row in place", async () => {
+    commitFailures.current = ["plan is not defined"];
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png")]);
+    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(create);
+    expect((await screen.findByTestId("catalogue-bulk-import-error")).textContent).toContain("plan is not defined");
+    expect(screen.getByText("boxer-a.png")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Create 1 pending candidate/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

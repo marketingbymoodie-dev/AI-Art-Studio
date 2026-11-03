@@ -104,7 +104,10 @@ export async function commitCatalogueImport(args: {
       failures.push(`${row.filename} is in the CSV and was not uploaded.`);
     }
   }
-  if (failures.length || staged.length !== plan.rows.length) {
+  if (staged.length !== args.rows.length) {
+    failures.push("A staged image did not match the review table.");
+  }
+  if (failures.length) {
     await removeStaged(args.batchId, args.filenames);
     return { ...empty, failures };
   }

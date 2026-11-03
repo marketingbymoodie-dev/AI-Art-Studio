@@ -301,7 +301,9 @@ export default function CatalogueBulkImportPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body.failures?.length) {
-        setFailures(Array.isArray(body.failures) && body.failures.length ? body.failures : [body.error || "Nothing was created."]);
+        const messages = Array.isArray(body.failures) && body.failures.length ? body.failures : [body.error || "Nothing was created."];
+        console.error("[catalogue-import] commit failed", messages);
+        setError(messages.join(" "));
         setCreated(null);
         return;
       }
@@ -311,6 +313,7 @@ export default function CatalogueBulkImportPage() {
         method: "POST",
         body: JSON.stringify({ batchId, filenames }),
       }).catch(() => undefined);
+      console.error("[catalogue-import] create failed", e);
       setError(String(e?.message || e));
     } finally {
       setBusy("");
@@ -377,7 +380,6 @@ export default function CatalogueBulkImportPage() {
             Drafted {drafted} of {draftRows.length}. Vision cost {drafting ? "so far " : ""}{money(spent)}.
           </p>
         ) : null}
-        {error ? <p className="text-xs">{error}</p> : null}
         {failures.length ? (
           <ul className="space-y-1" data-testid="catalogue-bulk-import-failures">
             {failures.map((failure, index) => (
@@ -474,6 +476,7 @@ export default function CatalogueBulkImportPage() {
             </table>
           </div>
         ) : null}
+        {error ? <p className="text-xs" data-testid="catalogue-bulk-import-error">{error}</p> : null}
         {rows.length && !created ? (
           <Button type="button" size="sm" disabled={!!busy || !ready} onClick={() => void createBatch()}>
             Create {rows.length} pending {rows.length === 1 ? "candidate" : "candidates"}{draftRows.length ? ` · vision ${money(spent)}` : ""}
