@@ -151,8 +151,13 @@ export default function CatalogueBulkImportPage() {
     setFailures((prev) => prev.filter((failure) => !failure.toLowerCase().includes(key)));
   }
 
-  async function takeFiles(list: FileList | null, mode: "replace" | "append") {
-    if (!list?.length) return;
+  async function takeFiles(list: File[] | FileList | null, mode: "replace" | "append") {
+    const entriesIn = list ? Array.from(list) : [];
+    console.info("[catalogue-import] takeFiles", mode, entriesIn.length, entriesIn.map((file) => file.name));
+    if (!entriesIn.length) {
+      console.info("[catalogue-import] takeFiles stopped: no files");
+      return;
+    }
     const gen = mode === "replace" ? (generation.current += 1) : generation.current;
     if (mode === "replace") {
       draftQueue.current = [];
@@ -166,7 +171,7 @@ export default function CatalogueBulkImportPage() {
     setBusy("Reading the folder");
     setError("");
     try {
-      const entries = [...list];
+      const entries = entriesIn;
       const nameOf = (file: File) => basename((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
       const held = new Set(filesRef.current.map((file) => file.name.toLowerCase()));
       const already = mode === "append" ? entries.filter((file) => /\.png$/i.test(nameOf(file)) && held.has(nameOf(file).toLowerCase())) : [];
@@ -238,7 +243,9 @@ export default function CatalogueBulkImportPage() {
       setBusy("");
       enqueueDrafts(next);
     } catch (e: any) {
+      console.error("[catalogue-import] takeFiles failed", e);
       if (generation.current === gen) setError(String(e?.message || e));
+      throw e;
     } finally {
       if (generation.current === gen) setBusy("");
     }
@@ -334,34 +341,35 @@ export default function CatalogueBulkImportPage() {
               multiple
               // @ts-expect-error directory upload is non-standard and is the folder the operator has
               webkitdirectory=""
+              onClick={() => console.info("[catalogue-import] folder click")}
               onChange={(e) => {
-                const picked = e.target.files;
+                const picked = e.target.files ? Array.from(e.target.files) : [];
+                console.info("[catalogue-import] folder change", picked.length, picked.map((file) => file.name));
                 e.target.value = "";
                 void takeFiles(picked, "replace");
               }}
             />
           </label>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!!busy || !!created}
-            onClick={() => addInput.current?.click()}
-          >
-            Add more files
+          <Button asChild variant="outline" size="sm" disabled={!!busy || !!created}>
+            <label>
+              Add more files
+              <input
+                ref={addInput}
+                className="sr-only"
+                type="file"
+                multiple
+                accept=".png,.csv,image/png,text/csv"
+                disabled={!!busy || !!created}
+                onClick={() => console.info("[catalogue-import] add-more click")}
+                onChange={(e) => {
+                  const picked = e.target.files ? Array.from(e.target.files) : [];
+                  console.info("[catalogue-import] add-more change", picked.length, picked.map((file) => file.name));
+                  e.target.value = "";
+                  void takeFiles(picked, "append");
+                }}
+              />
+            </label>
           </Button>
-          <input
-            ref={addInput}
-            className="hidden"
-            type="file"
-            multiple
-            accept=".png,.csv,image/png,text/csv"
-            onChange={(e) => {
-              const picked = e.target.files;
-              e.target.value = "";
-              void takeFiles(picked, "append");
-            }}
-          />
         </div>
         {busy ? <p className="text-xs">{busy}</p> : null}
         {draftRows.length ? (
