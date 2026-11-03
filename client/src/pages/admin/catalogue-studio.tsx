@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import AdminLayout from "@/components/admin-layout";
@@ -26,7 +26,9 @@ type TickedColour = { name: string; hex: string };
 
 type PendingCandidate = {
   id: string;
-  status: "pending";
+  status: string;
+  dropReason?: string;
+  canDelete?: boolean;
   title: string;
   description?: string;
   shopifyProductId: string | null;
@@ -96,6 +98,7 @@ function Field({ label, children, id }: { label: string; children: ReactNode; id
 }
 
 export default function CatalogueStudioPage() {
+  const [, setLocation] = useLocation();
   const search = useSearch();
   const requested = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get("candidate") || "";
   const pendingKey = requested
@@ -169,9 +172,10 @@ export default function CatalogueStudioPage() {
     setStyleId(recipe.artStyle || "");
     setPanelId("");
     setTicked([]);
-    setVerdict(candidate.data.status === "pending" ? "pending" : "approved");
+    setVerdict(candidate.data.status === "dropped" ? "dropped" : candidate.data.status === "pending" ? "pending" : "approved");
+    setDropReason(candidate.data.dropReason || "");
     setDropError("");
-  }, [candidate.data?.id]);
+  }, [candidate.data?.id, candidate.data?.status]);
 
   useEffect(() => {
     const scenes = candidate.data?.scenes;
@@ -762,17 +766,55 @@ export default function CatalogueStudioPage() {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => {
+                  onClick={async () => {
                     if (!dropReason.trim()) {
                       setDropError("Write a reason.");
                       return;
                     }
+                    const res = await fetch("/api/platform/catalogue-studio/drop", {
+                      method: "POST",
+                      credentials: "include",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ candidateId: candidate.data?.id, dropReason }),
+                    });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      setDropError(body.error || "Drop stopped");
+                      return;
+                    }
                     setDropError("");
                     setVerdict("dropped");
+                    const next = String(body.nextCandidateId || "");
+                    setLocation(next ? `/admin/catalogue-studio?candidate=${encodeURIComponent(next)}` : "/admin/catalogue-studio");
                   }}
                 >
                   Drop
                 </Button>
+                {candidate.data?.canDelete ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={async () => {
+                      if (!window.confirm("Delete this candidate? It has no artwork.")) return;
+                      const res = await fetch("/api/platform/catalogue-studio/delete", {
+                        method: "POST",
+                        credentials: "include",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ candidateId: candidate.data?.id }),
+                      });
+                      const body = await res.json().catch(() => ({}));
+                      if (!res.ok) {
+                        setDropError(body.error || "Delete stopped");
+                        return;
+                      }
+                      const next = String(body.nextCandidateId || "");
+                      setLocation(next ? `/admin/catalogue-studio?candidate=${encodeURIComponent(next)}` : "/admin/catalogue-studio");
+                    }}
+                  >
+                    Delete
+                  </Button>
+                ) : null}
               </div>
               <Textarea value={dropReason} onChange={(e) => setDropReason(e.target.value)} placeholder="Drop reason" />
               {dropError ? <p className="text-xs">{dropError}</p> : null}

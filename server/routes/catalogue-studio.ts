@@ -2,11 +2,12 @@
  * Operator Design Studio. Preview only — no Shopify product is created.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, asc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
+import { candidateCanBeDeleted, nextQueueId } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
@@ -113,7 +114,7 @@ async function pendingQueue(): Promise<Array<{ id: string }>> {
     .select({ id: designCandidates.id })
     .from(designCandidates)
     .where(and(eq(designCandidates.status, "pending"), eq(designCandidates.shopDomain, STAGING_SHOP)))
-    .orderBy(asc(designCandidates.createdAt));
+    .orderBy(desc(designCandidates.createdAt));
 }
 
 async function resolveStudioCandidateId(value: unknown): Promise<{ id: string } | { error: string }> {
@@ -171,8 +172,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
-      const queueIndex = queue.findIndex((row) => row.id === id);
-      const nextCandidateId = queueIndex >= 0 ? queue[queueIndex + 1]?.id || "" : queue[0]?.id || "";
+      const nextCandidateId = nextQueueId(queue.map((row) => row.id), id);
       const fixture = id === PENDING_CANDIDATE.id;
       const { db } = await import("../db");
       const [typeRow] = await db
@@ -217,6 +217,15 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json({
         id,
         status: stored?.status || PENDING_CANDIDATE.status,
+        dropReason: stored?.dropReason || "",
+        canDelete: candidateCanBeDeleted({
+          status: stored?.status,
+          artworkPath: stored?.artworkPath,
+          choiceArtworkPath: choice.artworkPath,
+          printFilePath: stored?.printFilePath,
+          shopifyProductId: stored?.shopifyProductId,
+          printifyProductId: stored?.printifyProductId,
+        }),
         title: fixture ? stored?.title || PENDING_CANDIDATE.title : stored?.title || "",
         description: stored?.description || "",
         shopifyProductId: stored?.shopifyProductId || null,
@@ -485,6 +494,86 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       if (!id) return;
       await saveArtwork(id, String(req.body?.imageBase64 || ""));
       res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/drop", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue studio changes are staging only." });
+      return;
+    }
+    try {
+      const reason = String(req.body?.dropReason || "").trim();
+      if (!reason) {
+        res.status(400).json({ error: "Write a reason." });
+        return;
+      }
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
+      const row = await readCandidateRow(id);
+      if (!row || row.shopDomain !== STAGING_SHOP) {
+        res.status(404).json({ error: "That candidate is not stored." });
+        return;
+      }
+      if (row.status !== "pending" && row.status !== "dropped") {
+        res.status(400).json({ error: "Only a pending candidate can be dropped." });
+        return;
+      }
+      const queue = await pendingQueue();
+      const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
+      if (row.status !== "dropped") {
+        const { db } = await import("../db");
+        await db
+          .update(designCandidates)
+          .set({ status: "dropped", dropReason: reason, updatedAt: new Date() })
+          .where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, STAGING_SHOP)));
+      }
+      res.json({ ok: true, status: "dropped", nextCandidateId });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/delete", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue studio changes are staging only." });
+      return;
+    }
+    try {
+      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (!id) return;
+      if (id === PENDING_CANDIDATE.id) {
+        res.status(400).json({ error: "This candidate is not deleted from the studio." });
+        return;
+      }
+      const [row, choice] = await Promise.all([readCandidateRow(id), readChoice(id)]);
+      if (!row || row.shopDomain !== STAGING_SHOP) {
+        res.status(404).json({ error: "That candidate is not stored." });
+        return;
+      }
+      if (!candidateCanBeDeleted({
+        status: row.status,
+        artworkPath: row.artworkPath,
+        choiceArtworkPath: choice.artworkPath,
+        printFilePath: row.printFilePath,
+        shopifyProductId: row.shopifyProductId,
+        printifyProductId: row.printifyProductId,
+      })) {
+        res.status(400).json({ error: "Only a pending candidate with no artwork can be deleted." });
+        return;
+      }
+      const queue = await pendingQueue();
+      const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
+      const { db } = await import("../db");
+      await db.transaction(async (tx) => {
+        await tx.delete(catalogueCandidateChoices).where(eq(catalogueCandidateChoices.candidateId, id));
+        await tx.delete(designCandidates).where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, STAGING_SHOP)));
+      });
+      res.json({ ok: true, nextCandidateId });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

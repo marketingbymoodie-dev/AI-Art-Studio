@@ -154,7 +154,8 @@ export async function commitCatalogueImport(args: {
     throw err;
   }
 
-  const firstId = ids[0] || "";
+  // Newest row is the head of the studio queue, so this link starts the batch there.
+  const firstId = ids[ids.length - 1] || "";
   return {
     created: ids.length,
     firstId,
