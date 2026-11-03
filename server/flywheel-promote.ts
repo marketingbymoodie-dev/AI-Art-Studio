@@ -823,6 +823,10 @@ export async function promoteCatalogueCandidate(args: {
         throw new Error(`Variant ${row.createdId} was left on the General delivery profile.`);
       }
     }
+    if (args.publishNow) {
+      const { publishCatalogueProductToOnlineStore } = await import("./shopify-publications");
+      await publishCatalogueProductToOnlineStore(shop, installation!.accessToken, shopifyProductId);
+    }
     const now = new Date();
     await db.update(designCandidates).set({
       status: status === "active" ? "promoted" : "draft",

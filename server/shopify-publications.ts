@@ -246,6 +246,36 @@ async function readOnlineStorePublication(
   return onlineStore;
 }
 
+/** Active catalogue products must be on the Online Store channel, not only status=ACTIVE. */
+export async function publishCatalogueProductToOnlineStore(
+  shop: string,
+  accessToken: string,
+  productId: string | number,
+): Promise<void> {
+  const numeric = String(productId || "").replace(/\D/g, "");
+  if (!numeric) throw new Error("Online Store publish needs a Shopify product id.");
+  const onlineStore = await readOnlineStorePublication(shop, accessToken);
+  const result = await adminGraphql<{
+    publishablePublish: { userErrors: Array<{ message: string }> };
+  }>(
+    shop,
+    accessToken,
+    `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        userErrors { message }
+      }
+    }`,
+    {
+      id: `gid://shopify/Product/${numeric}`,
+      input: [{ publicationId: onlineStore.id }],
+    },
+  );
+  const errors = (result.publishablePublish?.userErrors || []).filter((err) => !/already/i.test(err.message));
+  if (errors.length) {
+    throw new Error(errors.map((err) => err.message).join("; ") || "Online Store publish failed");
+  }
+}
+
 export async function readProductOnlineStoreState(opts: {
   shop: string;
   accessToken: string;
