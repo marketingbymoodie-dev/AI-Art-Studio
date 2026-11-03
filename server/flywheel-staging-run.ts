@@ -404,6 +404,14 @@ async function reorderLiveCatalogueSizesOnce(): Promise<void> {
     .where(and(eq(generationEvents.route, "catalogue-size-order"), eq(generationEvents.success, true)))
     .limit(1);
   if (done) return;
+  await recordGenerationEvent(
+    { kind: "image", route: "catalogue-size-order", jobId: "catalogue-size-order" },
+    {
+      success: false,
+      durationMs: 0,
+      meta: meta({ size: "started", durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "size-order" }),
+    },
+  );
   const rows = await db
     .select({
       id: designCandidates.id,
@@ -504,7 +512,17 @@ export async function runStagingFlywheelOnce(): Promise<void> {
   try {
     await reorderLiveCatalogueSizesOnce();
   } catch (err) {
-    console.warn("[flywheel] size order:", err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[flywheel] size order:", message);
+    await recordGenerationEvent(
+      { kind: "image", route: "catalogue-size-order", jobId: "catalogue-size-order" },
+      {
+        success: false,
+        durationMs: 0,
+        error: err,
+        meta: meta({ size: message.slice(0, 500), durationMs: 0, estimatedCostUsd: null, providerRequestId: null, model: "size-order" }),
+      },
+    );
   }
   try {
     const { ensureSoftstyleProductCategory } = await import("./flywheel-category");
