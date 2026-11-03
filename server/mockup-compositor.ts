@@ -91,18 +91,31 @@ export function medianShadingLuminance(
   return 255;
 }
 
+/**
+ * Row stride is the buffer's own width. Sharp's fit can land one pixel off
+ * the size that was requested, and reading the requested width shears the art.
+ */
+export function inkRasterSize(ink: Buffer, requestedWidth: number, requestedHeight: number): { width: number; height: number } {
+  if (requestedHeight > 0 && ink.length % (requestedHeight * 4) === 0) {
+    const width = ink.length / (requestedHeight * 4);
+    if (width >= 1) return { width, height: requestedHeight };
+  }
+  return { width: requestedWidth, height: requestedHeight };
+}
+
 /** Copy `garment` and composite `ink` at left/top. Does not choose placement. */
 export function compositePlacedInk(args: PlacedInk): Buffer {
   const { garment, shading, width, height, ink, inkWidth, inkHeight, left, top, mask } = args;
+  const raster = inkRasterSize(ink, inkWidth, inkHeight);
   const shadingMedianL = medianShadingLuminance(shading, width, height, mask);
   const out = Buffer.from(garment);
-  for (let y = 0; y < inkHeight; y++) {
+  for (let y = 0; y < raster.height; y++) {
     const dy = top + y;
     if (dy < 0 || dy >= height) continue;
-    for (let x = 0; x < inkWidth; x++) {
+    for (let x = 0; x < raster.width; x++) {
       const dx = left + x;
       if (dx < 0 || dx >= width) continue;
-      const s = (y * inkWidth + x) * 4;
+      const s = (y * raster.width + x) * 4;
       const a = ink[s + 3];
       if (a < ALPHA_CLAMP) continue;
       const di = dy * width + dx;

@@ -1,4 +1,6 @@
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { renderArtworkOnPanel } from "./mockup-library";
 import {
   compositePlacedInk,
   inkRegionPercentile92,
@@ -185,6 +187,82 @@ describe("mockup compositor ink", () => {
     const o = (1 * width + 1) * 4;
     expect([dropped[o], dropped[o + 1], dropped[o + 2]]).toEqual([0x25, 0x28, 0x2a]);
     expect(kept[o]).not.toBe(0x25);
+  });
+
+  it("does not shear when the fitted artwork is one pixel narrower than requested", async () => {
+    const artW = 868;
+    const artH = 1425;
+    const rgba = Buffer.alloc(artW * artH * 4);
+    const paint = (x: number, y: number) => {
+      const o = (y * artW + x) * 4;
+      rgba[o] = 255;
+      rgba[o + 1] = 255;
+      rgba[o + 2] = 255;
+      rgba[o + 3] = 255;
+    };
+    for (let y = 0; y < artH; y++) {
+      for (let x = 430; x < 438; x++) paint(x, y);
+    }
+    for (let x = 0; x < artW; x++) {
+      paint(x, 0);
+      paint(x, artH - 1);
+    }
+    for (let y = 0; y < artH; y++) {
+      paint(0, y);
+      paint(artW - 1, y);
+    }
+    const artwork = await sharp(rgba, { raw: { width: artW, height: artH, channels: 4 } }).png().toBuffer();
+    const requestedWidth = 324;
+    const requestedHeight = 531;
+    const fittedBuf = await sharp(artwork).resize(requestedWidth, requestedHeight, { fit: "inside" }).png().toBuffer();
+    const fitted = await sharp(fittedBuf).metadata();
+    expect(fitted.width).toBe(requestedWidth - 1);
+    expect(fitted.height).toBe(requestedHeight);
+
+    const photoW = 1400;
+    const photoH = 1240;
+    const photo = await sharp({
+      create: { width: photoW, height: photoH, channels: 3, background: { r: 0x97, g: 0x99, b: 0x9b } },
+    }).png().toBuffer();
+    const mask = await sharp({
+      create: { width: photoW, height: photoH, channels: 3, background: { r: 255, g: 255, b: 255 } },
+    }).png().toBuffer();
+    const png = await renderArtworkOnPanel({
+      photo,
+      maskPng: mask,
+      artwork,
+      mode: "produced",
+      hex: "97999B",
+    });
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const white: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        const o = (y * info.width + x) * 4;
+        if (data[o] > 220 && data[o + 1] > 220 && data[o + 2] > 220) white.push({ x, y });
+      }
+    }
+    expect(white.length).toBeGreaterThan(100);
+    const minY = Math.min(...white.map((p) => p.y));
+    const maxY = Math.max(...white.map((p) => p.y));
+    const body = white.filter((point) => point.y > minY + 2 && point.y < maxY - 2);
+    const medianX = body.map((point) => point.x).sort((a, b) => a - b)[Math.floor(body.length / 2)];
+    const byY = new Map<number, number[]>();
+    for (const point of body) {
+      if (Math.abs(point.x - medianX) > 8) continue;
+      const row = byY.get(point.y) || [];
+      row.push(point.x);
+      byY.set(point.y, row);
+    }
+    const rows = [...byY.entries()].sort((a, b) => a[0] - b[0]);
+    expect(rows.length).toBeGreaterThan(40);
+    const centers: number[] = [];
+    for (const [, xs] of rows) {
+      xs.sort((a, b) => a - b);
+      for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeLessThanOrEqual(2);
+      centers.push(xs[Math.floor(xs.length / 2)]);
+    }
+    expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
   });
 
   it("uses fold variation around the shading median, not a garment scale", () => {

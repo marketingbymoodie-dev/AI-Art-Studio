@@ -663,14 +663,20 @@ async function placeArtwork(args: {
   const iw = meta.width || 1;
   const ih = meta.height || 1;
   const fit = Math.min(rect.width / iw, rect.height / ih) * 0.85;
-  const inkWidth = Math.max(1, Math.round(iw * fit));
-  const inkHeight = Math.max(1, Math.round(ih * fit));
-  const ink = await sharp(trimmed).resize(inkWidth, inkHeight, { fit: "inside" }).ensureAlpha().raw().toBuffer();
+  const requestedWidth = Math.max(1, Math.round(iw * fit));
+  const requestedHeight = Math.max(1, Math.round(ih * fit));
+  const resized = await sharp(trimmed)
+    .resize(requestedWidth, requestedHeight, { fit: "inside" })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const inkWidth = resized.info.width;
+  const inkHeight = resized.info.height;
   return {
     width: photoRaw.width,
     height: photoRaw.height,
     rect,
-    ink,
+    ink: Buffer.from(resized.data),
     inkWidth,
     inkHeight,
     inkLeft: Math.round(rect.left + (rect.width - inkWidth) / 2),
