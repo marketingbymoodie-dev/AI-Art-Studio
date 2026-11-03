@@ -2,7 +2,7 @@
  * Operator Design Studio. Preview only — no Shopify product is created.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
@@ -113,7 +113,12 @@ async function pendingQueue(): Promise<Array<{ id: string }>> {
   return db
     .select({ id: designCandidates.id })
     .from(designCandidates)
-    .where(and(eq(designCandidates.status, "pending"), eq(designCandidates.shopDomain, STAGING_SHOP)))
+    .where(and(
+      eq(designCandidates.status, "pending"),
+      eq(designCandidates.shopDomain, STAGING_SHOP),
+      isNotNull(designCandidates.artworkPath),
+      ne(designCandidates.artworkPath, ""),
+    ))
     .orderBy(desc(designCandidates.createdAt));
 }
 
@@ -273,6 +278,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       if (!id) return;
       const known = PENDING_CANDIDATE.colors.find((c) => c.name === requested) ?? { name: requested, hex: "FFFFFF" };
       const [garment, choice] = await Promise.all([softstyleType(), readChoice(id)]);
+      if (!String(choice.artworkPath || "").trim()) {
+        res.status(204).end();
+        return;
+      }
       const { png, source } = await renderCandidateOnPanel({
         productTypeId: garment.id,
         typeName: garment.name,
@@ -286,7 +295,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.setHeader("X-Mockup-Source", source);
       res.send(png);
     } catch (e: any) {
-      res.status(500).json({ error: String(e?.message || e) });
+      const message = String(e?.message || e);
+      if (/artwork is not stored/i.test(message)) {
+        res.status(204).end();
+        return;
+      }
+      res.status(500).json({ error: message });
     }
   });
 
@@ -624,7 +638,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json(result);
     } catch (e: any) {
       const status = e?.status === 409 || e?.name === "PromoteRefusal" ? 409 : 400;
-      res.status(status).json({ error: String(e?.message || e) });
+      const reasons = Array.isArray(e?.reasons) && e.reasons.length
+        ? e.reasons.map((reason: unknown) => String(reason || "").trim()).filter(Boolean)
+        : [String(e?.message || e)];
+      res.status(status).json({ error: reasons.join("\n"), reasons });
     }
   });
 

@@ -47,9 +47,12 @@ const SHOPIFY_API = "2025-10";
 
 export class PromoteRefusal extends Error {
   readonly status = 409;
+  readonly reasons: string[];
   constructor(reasons: string[]) {
-    super(reasons.join(" "));
+    const list = reasons.map((reason) => String(reason || "").trim()).filter(Boolean);
+    super(list.join("\n"));
     this.name = "PromoteRefusal";
+    this.reasons = list;
   }
 }
 

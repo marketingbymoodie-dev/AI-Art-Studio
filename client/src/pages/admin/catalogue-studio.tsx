@@ -88,6 +88,16 @@ const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
 
 type Override = "rule" | "eligible" | "ineligible";
 
+function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: string): string {
+  const reasons = Array.isArray(body?.reasons)
+    ? body.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
+    : [];
+  if (reasons.length) return reasons.join("\n");
+  if (Array.isArray(body?.error)) return body.error.map((reason) => String(reason || "").trim()).filter(Boolean).join("\n") || fallback;
+  const error = String(body?.error || "").trim();
+  return error || fallback;
+}
+
 function Field({ label, children, id }: { label: string; children: ReactNode; id?: string }) {
   return (
     <label className="block space-y-1" id={id}>
@@ -132,6 +142,7 @@ export default function CatalogueStudioPage() {
   const [verdict, setVerdict] = useState<"pending" | "approved" | "dropped">("pending");
   const [dropReason, setDropReason] = useState("");
   const [dropError, setDropError] = useState("");
+  const [approveError, setApproveError] = useState("");
   const [publishNow, setPublishNow] = useState(true);
   const [promoteError, setPromoteError] = useState("");
   const [promoteBusy, setPromoteBusy] = useState(false);
@@ -207,6 +218,14 @@ export default function CatalogueStudioPage() {
         `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}${idQuery}`,
         { credentials: "include" },
       );
+      if (res.status === 204) {
+        if (!cancelled) {
+          setCellSource("");
+          setPreviewError(null);
+          setPreviewUrl(null);
+        }
+        return;
+      }
       if (!res.ok) {
         if (!cancelled) {
           setCellSource("");
@@ -728,6 +747,7 @@ export default function CatalogueStudioPage() {
               <h2 className="font-medium">Verdict</h2>
               <div className="flex flex-wrap gap-2">
                 <Button type="button" size="sm" onClick={async () => {
+                  setApproveError("");
                   const res = await fetch("/api/platform/catalogue-studio/approve", {
                     method: "POST",
                     credentials: "include",
@@ -750,15 +770,18 @@ export default function CatalogueStudioPage() {
                   });
                   const body = await res.json().catch(() => ({}));
                   if (!res.ok) {
-                    setDropError(body.error || "Approval stopped");
+                    const message = refusalMessage(body, "Approval stopped");
+                    console.error("[catalogue-studio] approve failed", res.status, message);
+                    setApproveError(message);
                     return;
                   }
-                  setDropError("");
+                  setApproveError("");
                   setVerdict("approved");
                   await candidate.refetch();
                 }}>
                   Approve
                 </Button>
+                {approveError ? <p className="basis-full whitespace-pre-wrap text-xs" data-testid="catalogue-studio-approve-error">{approveError}</p> : null}
                 <Button type="button" size="sm" variant="outline" onClick={() => document.querySelector<HTMLTextAreaElement>("#studio-recipe-behaviour textarea")?.focus()}>
                   Edit
                 </Button>
@@ -840,7 +863,9 @@ export default function CatalogueStudioPage() {
                   const body = await res.json().catch(() => ({}));
                   setPromoteBusy(false);
                   if (!res.ok) {
-                    setPromoteError(body.error || "Promote stopped");
+                    const message = refusalMessage(body, "Promote stopped");
+                    console.error("[catalogue-studio] promote failed", res.status, message);
+                    setPromoteError(message);
                     return;
                   }
                   setPromoteError("");
@@ -848,7 +873,7 @@ export default function CatalogueStudioPage() {
               >
                 {promoteBusy ? "Promoting…" : publishNow ? "Promote and publish" : "Promote as draft"}
               </Button>
-              {promoteError ? <p className="text-xs">{promoteError}</p> : null}
+              {promoteError ? <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-promote-error">{promoteError}</p> : null}
             </section>
 
             <section>

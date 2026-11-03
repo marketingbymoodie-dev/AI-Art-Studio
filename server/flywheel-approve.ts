@@ -3,16 +3,12 @@
  * Promote does not render, vectorize, or write the title.
  */
 import { eq } from "drizzle-orm";
-import {
-  darknessLevel,
-  deviceStructureId,
-  humourOperatorId,
-  type ArtStyleDeviceStructure,
-} from "@shared/flywheelRecipe";
+import { requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
+export type { ApprovalRecipe };
 import { designCandidates, productTypes } from "@shared/schema";
 import { writeCatalogueListing } from "./catalogue-listing";
 import { db } from "./db";
-import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders, printFilePathForStyle } from "./flywheel-print-file";
+import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import {
   approveCandidateChoice,
   readChoice,
@@ -21,59 +17,10 @@ import {
   writeLibraryObject,
 } from "./mockup-library-store";
 
-type ChoiceColor = { name: string; hex: string };
-
 const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
-
-export type ApprovalRecipe = {
-  candidateId: string;
-  panelId: string;
-  selectedColors: ChoiceColor[];
-  artStyle: string;
-  species: string;
-  humourOperator: string;
-  punchline: string;
-  behaviour: string;
-  funnyTruth: string;
-  deviceText: string;
-  deviceStructure: string;
-  darknessLevel: number;
-  /** Name already on the design. The listing writer keeps it. */
-  title: string;
-};
 
 function clip(value: string, max: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
-}
-
-function requireRecipe(recipe: ApprovalRecipe): {
-  artStyle: string;
-  species: string;
-  humourOperator: string;
-  structure: ArtStyleDeviceStructure;
-  darkness: number;
-} {
-  let artStyle = "";
-  try {
-    artStyle = recipe.artStyle;
-    printFilePathForStyle(artStyle);
-  } catch {
-    throw new Error("Style is not stored. Approval needs a launch style.");
-  }
-  const species = clip(recipe.species, 80);
-  if (!species) throw new Error("Species is not stored.");
-  const humourOperator = humourOperatorId(recipe.humourOperator);
-  if (!humourOperator) throw new Error("Humour operator is not stored.");
-  const structure = deviceStructureId(recipe.deviceStructure);
-  if (!structure) throw new Error("Device structure is not stored.");
-  const darkness = darknessLevel(recipe.darknessLevel);
-  if (darkness == null) throw new Error("Darkness is not stored.");
-  if (!clip(recipe.funnyTruth, 400)) throw new Error("Truth is not stored.");
-  if (!clip(recipe.deviceText, 400)) throw new Error("Device is not stored.");
-  if (!clip(recipe.behaviour, 400)) throw new Error("Behaviour is not stored.");
-  if (!recipe.panelId) throw new Error("Scene is not stored.");
-  if (!recipe.selectedColors.length) throw new Error("No colours selected.");
-  return { artStyle, species, humourOperator, structure, darkness };
 }
 
 async function printFilePathFor(candidateId: string, artStyle: string, source: Buffer, canvas: { width: number; height: number }): Promise<string> {
@@ -95,7 +42,8 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   mockupCount: number;
   writerError: string;
 }> {
-  const checked = requireRecipe(recipe);
+  const [stored] = await db.select().from(designCandidates).where(eq(designCandidates.id, recipe.candidateId)).limit(1);
+  const checked = requireRecipe(recipe, stored?.source);
   const garment = await softstyleType();
   const [typeRow] = await db
     .select({
@@ -134,14 +82,9 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   const source = await readLibraryObject(choice.artworkPath);
   const printFilePath = await printFilePathFor(recipe.candidateId, checked.artStyle, source, canvas);
 
-  const [existing] = await db
-    .select({ title: designCandidates.title, description: designCandidates.description })
-    .from(designCandidates)
-    .where(eq(designCandidates.id, recipe.candidateId))
-    .limit(1);
   const givenTitle = clip(recipe.title, 120) || clip(recipe.punchline, 120);
-  let listing = existing?.title && existing.description
-    ? { title: existing.title, description: existing.description }
+  let listing = stored?.title && stored.description
+    ? { title: stored.title, description: stored.description }
     : null;
   let writerError = "";
   if (!listing) {
@@ -165,16 +108,16 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   const row = {
     shopDomain: shop,
     status: "approved" as const,
-    source: "manual" as const,
+    source: stored?.source === "generated" ? "generated" as const : "manual" as const,
     humourOperator: checked.humourOperator,
-    darknessLevel: checked.darkness,
+    darknessLevel: checked.darkness || stored?.darknessLevel || 0,
     species: checked.species,
-    deviceStructure: checked.structure,
+    deviceStructure: checked.structure || stored?.deviceStructure || "",
     deviceText: clip(recipe.deviceText, 400),
     funnyTruth: clip(recipe.funnyTruth, 400),
     punchline: clip(recipe.punchline, 120),
     artStyle: checked.artStyle,
-    behaviour: clip(recipe.behaviour, 400),
+    behaviour: checked.behaviour || stored?.behaviour || "",
     productFamily: "apparel",
     credentialRef: "replicate:shared",
     printFilePath,
@@ -184,7 +127,7 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     description: listing.description,
     updatedAt: new Date(),
   };
-  if (existing) {
+  if (stored) {
     await db.update(designCandidates).set(row).where(eq(designCandidates.id, recipe.candidateId));
   } else {
     await db.insert(designCandidates).values({ id: recipe.candidateId, ...row });
