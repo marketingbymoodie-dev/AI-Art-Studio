@@ -38,12 +38,19 @@ export type CatalogueDraftResult = {
   model: string;
 };
 
-async function visionPng(buf: Buffer): Promise<Buffer> {
-  const meta = await sharp(buf).metadata();
+const VISION_GREY = { r: 0x80, g: 0x80, b: 0x80 };
+
+/**
+ * Image sent to the vision model. Transparent pixels are flattened onto
+ * middle grey so white ink stays visible. The stored PNG is never this buffer.
+ */
+export async function catalogueVisionImage(buf: Buffer): Promise<Buffer> {
+  const flattened = await sharp(buf).flatten({ background: VISION_GREY }).png().toBuffer();
+  const meta = await sharp(flattened).metadata();
   const wide = (meta.width || 0) > 1568 || (meta.height || 0) > 1568;
   const resized = wide
-    ? await sharp(buf).resize({ width: 1568, height: 1568, fit: "inside", withoutEnlargement: true }).png().toBuffer()
-    : buf;
+    ? await sharp(flattened).resize({ width: 1568, height: 1568, fit: "inside", withoutEnlargement: true }).png().toBuffer()
+    : flattened;
   if (resized.length <= 4_000_000) return resized;
   return sharp(resized).jpeg({ quality: 90 }).toBuffer();
 }
@@ -52,7 +59,7 @@ export async function draftCatalogueImage(png: Buffer): Promise<CatalogueDraftRe
   const key = anthropicApiKey();
   if (!key) throw Object.assign(new Error("ANTHROPIC_API_KEY is not configured"), { status: 503 });
   const model = anthropicQuotesModel();
-  const image = await visionPng(png);
+  const image = await catalogueVisionImage(png);
   const mediaType = image[0] === 0xff && image[1] === 0xd8 ? "image/jpeg" : "image/png";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);

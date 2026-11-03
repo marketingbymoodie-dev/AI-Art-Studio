@@ -10,6 +10,7 @@ import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import { apiFetch } from "@/lib/queryClient";
 import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
+import { X } from "lucide-react";
 
 type Created = { created: number; studioPath: string };
 type DraftState = "skipped" | "waiting" | "drafting" | "done" | "failed";
@@ -55,6 +56,9 @@ export default function CatalogueBulkImportPage() {
   const filesRef = useRef<File[]>([]);
   const urlsRef = useRef<string[]>([]);
   const generation = useRef(0);
+  const draftQueue = useRef<ReviewRow[]>([]);
+  const draftWorkers = useRef(0);
+  const addInput = useRef<HTMLInputElement>(null);
 
   function forgetPreviews() {
     for (const url of urlsRef.current) URL.revokeObjectURL(url);
@@ -62,8 +66,10 @@ export default function CatalogueBulkImportPage() {
   }
 
   async function draftOne(row: ReviewRow, gen: number) {
+    if (generation.current !== gen) return;
     const file = filesRef.current.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
     if (!file) {
+      if (generation.current !== gen) return;
       setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "failed", draftError: `${row.filename} is not in the folder.` } : item));
       return;
     }
@@ -111,68 +117,126 @@ export default function CatalogueBulkImportPage() {
     }
   }
 
-  async function runDrafts(list: ReviewRow[], gen: number) {
-    const pending = list.filter((row) => row.source === "draft");
-    let cursor = 0;
-    async function worker() {
-      while (cursor < pending.length) {
-        if (generation.current !== gen) return;
-        const row = pending[cursor];
-        cursor += 1;
-        await draftOne(row, gen);
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(DRAFTS_AT_ONCE, pending.length) }, () => worker()));
+  function enqueueDrafts(list: ReviewRow[]) {
+    draftQueue.current.push(...list.filter((row) => row.source === "draft"));
+    pumpDrafts();
   }
 
-  async function onFolder(list: FileList | null) {
+  function pumpDrafts() {
+    while (draftWorkers.current < DRAFTS_AT_ONCE && draftQueue.current.length) {
+      const row = draftQueue.current.shift();
+      if (!row) break;
+      const gen = generation.current;
+      draftWorkers.current += 1;
+      void draftOne(row, gen).finally(() => {
+        draftWorkers.current -= 1;
+        pumpDrafts();
+      });
+    }
+  }
+
+  function removeRow(filename: string) {
+    const key = filename.toLowerCase();
+    draftQueue.current = draftQueue.current.filter((row) => row.filename.toLowerCase() !== key);
+    setRows((prev) => {
+      const row = prev.find((item) => item.filename.toLowerCase() === key);
+      if (row?.previewUrl) {
+        URL.revokeObjectURL(row.previewUrl);
+        urlsRef.current = urlsRef.current.filter((url) => url !== row.previewUrl);
+      }
+      return prev.filter((item) => item.filename.toLowerCase() !== key);
+    });
+    filesRef.current = filesRef.current.filter((file) => file.name.toLowerCase() !== key);
+    setFiles(filesRef.current);
+    setFailures((prev) => prev.filter((failure) => !failure.toLowerCase().includes(key)));
+  }
+
+  async function takeFiles(list: FileList | null, mode: "replace" | "append") {
     if (!list?.length) return;
-    generation.current += 1;
-    const gen = generation.current;
-    forgetPreviews();
+    const gen = mode === "replace" ? (generation.current += 1) : generation.current;
+    if (mode === "replace") {
+      draftQueue.current = [];
+      forgetPreviews();
+      setRows([]);
+      setFailures([]);
+      setCreated(null);
+      filesRef.current = [];
+      setFiles([]);
+    }
     setBusy("Reading the folder");
     setError("");
-    setCreated(null);
-    setRows([]);
-    setFailures([]);
     try {
       const entries = [...list];
       const nameOf = (file: File) => basename((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
+      const held = new Set(filesRef.current.map((file) => file.name.toLowerCase()));
+      const already = mode === "append" ? entries.filter((file) => /\.png$/i.test(nameOf(file)) && held.has(nameOf(file).toLowerCase())) : [];
+      const pngs = entries.filter((file) => /\.png$/i.test(nameOf(file)) && (mode === "replace" || !held.has(nameOf(file).toLowerCase())));
       const csvs = entries.filter((file) => /\.csv$/i.test(nameOf(file)));
-      const pngs = entries.filter((file) => /\.png$/i.test(nameOf(file)));
       const otherImages = entries.filter((file) => /\.(jpe?g|webp|gif)$/i.test(nameOf(file)));
-      const local = otherImages.map((file) => `${file.name} is not a PNG.`);
+      const local = otherImages.map((file) => `${nameOf(file)} is not a PNG.`);
+      const notes = [
+        ...local,
+        ...(already.length ? [`${already.map((file) => nameOf(file)).join(", ")} ${already.length === 1 ? "is" : "are"} already in the table and not redrafted.`] : []),
+      ];
       if (csvs.length > 1) {
-        setFiles([]);
-        filesRef.current = [];
-        setFailures([`Drop one CSV. Found ${csvs.map((file) => file.name).join(", ")}.`, ...local]);
+        const message = `Drop one CSV. Found ${csvs.map((file) => nameOf(file)).join(", ")}.`;
+        if (mode === "replace") setFailures([message, ...notes]);
+        else setError([message, ...notes].join(" "));
+        return;
+      }
+      if (!pngs.length) {
+        if (notes.length) setError(notes.join(" "));
         return;
       }
       const text = csvs.length === 1 ? await csvs[0].text() : "";
       const planRes = await apiFetch("/api/platform/catalogue-studio/candidates/import/plan", {
         method: "POST",
-        body: JSON.stringify({ csv: text, filenames: pngs.map((file) => file.name) }),
+        body: JSON.stringify({ csv: text, filenames: pngs.map((file) => nameOf(file)) }),
       });
       const plan = await planRes.json();
       if (!planRes.ok) throw new Error(plan.error || "The folder could not be read.");
       if (generation.current !== gen) return;
+      const wanted = new Set(pngs.map((file) => nameOf(file).toLowerCase()));
+      const planFailures = (Array.isArray(plan.failures) ? plan.failures : []).filter((failure: string) => (
+        mode === "replace" || !failure.endsWith("is in the CSV and was not uploaded.")
+      ));
+      const planRows = (Array.isArray(plan.rows) ? plan.rows : []).filter((row: CatalogueImportRow) => wanted.has(row.filename.toLowerCase()));
+      if (mode === "append" && planFailures.some((failure: string) => failure.startsWith("CSV header must be"))) {
+        setError([planFailures[0], ...notes].filter(Boolean).join(" "));
+        return;
+      }
       const urls = pngs.map((file) => URL.createObjectURL(file));
-      urlsRef.current = urls;
-      const byName = new Map(pngs.map((file, index) => [file.name.toLowerCase(), urls[index]]));
-      const next: ReviewRow[] = (Array.isArray(plan.rows) ? plan.rows : []).map((row: CatalogueImportRow) => ({
+      const byName = new Map(pngs.map((file, index) => [nameOf(file).toLowerCase(), urls[index]]));
+      const start = mode === "append" ? filesRef.current.length : 0;
+      const next: ReviewRow[] = planRows.map((row: CatalogueImportRow, index: number) => ({
         ...row,
+        rowNumber: start + index + 1,
         lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
         previewUrl: byName.get(row.filename.toLowerCase()) || "",
-        draftState: row.source === "draft" ? "waiting" : "skipped",
+        draftState: row.source === "draft" ? "waiting" as const : "skipped" as const,
         draftError: "",
         costUsd: row.source === "draft" ? null : 0,
       }));
-      filesRef.current = pngs;
-      setFiles(pngs);
-      setRows(next);
-      setFailures([...(Array.isArray(plan.failures) ? plan.failures : []), ...local]);
+      const keptNames = new Set(next.map((row) => row.filename.toLowerCase()));
+      const keptFiles = pngs.filter((file) => keptNames.has(nameOf(file).toLowerCase()));
+      for (const [name, url] of byName) {
+        if (!keptNames.has(name)) URL.revokeObjectURL(url);
+      }
+      const keptUrls = keptFiles.map((file) => byName.get(nameOf(file).toLowerCase()) || "").filter(Boolean);
+      urlsRef.current = mode === "replace" ? keptUrls : [...urlsRef.current, ...keptUrls];
+      filesRef.current = mode === "replace" ? keptFiles : [...filesRef.current, ...keptFiles];
+      setFiles(filesRef.current);
+      setRows((prev) => (mode === "replace" ? next : [...prev, ...next]));
+      if (mode === "replace") {
+        setFailures([...planFailures, ...notes]);
+      } else {
+        const attached = planFailures.filter((failure: string) => next.some((row) => failure.toLowerCase().includes(row.filename.toLowerCase())));
+        const loose = planFailures.filter((failure: string) => !attached.includes(failure));
+        setFailures((prev) => [...prev, ...attached]);
+        if (notes.length || loose.length) setError([...loose, ...notes].join(" "));
+      }
       setBusy("");
-      void runDrafts(next, gen);
+      enqueueDrafts(next);
     } catch (e: any) {
       if (generation.current === gen) setError(String(e?.message || e));
     } finally {
@@ -261,17 +325,44 @@ export default function CatalogueBulkImportPage() {
           Drop a folder of PNGs. A CSV is optional. Where a CSV row exists, those values are kept and the image is not redrafted.
           Everything else is read by the vision model. Nothing is created until this table is clean, and approval stays on the Studio page.
         </p>
-        <label className="block text-xs">
-          Folder
+        <div className="flex flex-wrap items-end gap-4">
+          <label className="block text-xs">
+            Folder
+            <input
+              className="mt-1 block w-full text-xs"
+              type="file"
+              multiple
+              // @ts-expect-error directory upload is non-standard and is the folder the operator has
+              webkitdirectory=""
+              onChange={(e) => {
+                const picked = e.target.files;
+                e.target.value = "";
+                void takeFiles(picked, "replace");
+              }}
+            />
+          </label>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!!busy || !!created}
+            onClick={() => addInput.current?.click()}
+          >
+            Add more files
+          </Button>
           <input
-            className="mt-1 block w-full text-xs"
+            ref={addInput}
+            className="hidden"
             type="file"
             multiple
-            // @ts-expect-error directory upload is non-standard and is the folder the operator has
-            webkitdirectory=""
-            onChange={(e) => void onFolder(e.target.files)}
+            accept=".png,.csv,image/png,text/csv"
+            onChange={(e) => {
+              const picked = e.target.files;
+              e.target.value = "";
+              void takeFiles(picked, "append");
+            }}
           />
-        </label>
+        </div>
         {busy ? <p className="text-xs">{busy}</p> : null}
         {draftRows.length ? (
           <p className="text-xs" data-testid="catalogue-bulk-import-progress">
@@ -299,6 +390,7 @@ export default function CatalogueBulkImportPage() {
                   <th>Device</th>
                   <th>Wording</th>
                   <th>Cost</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -310,7 +402,7 @@ export default function CatalogueBulkImportPage() {
                   return (
                     <tr key={`${row.rowNumber}-${row.filename}`} className="align-top">
                       <td className="py-2 pr-2">
-                        {row.previewUrl ? <img src={row.previewUrl} alt="" className="h-16 w-16 object-contain" /> : null}
+                        {row.previewUrl ? <img src={row.previewUrl} alt="" className="h-16 w-16 bg-[#808080] object-contain" /> : null}
                         <div>{row.filename}</div>
                         <div className="text-muted-foreground">{row.source === "csv" ? "From the CSV" : row.draftState === "drafting" || row.draftState === "waiting" ? "Drafting" : row.draftState === "failed" ? "Draft failed" : "Drafted"}</div>
                         {row.draftError ? <div>{row.draftError}</div> : null}
@@ -356,6 +448,17 @@ export default function CatalogueBulkImportPage() {
                         <textarea aria-label={`${row.filename} wording`} className="w-full rounded border bg-background px-1" rows={2} value={row.exactWording} disabled={locked} onChange={(e) => edit(row.filename, { exactWording: e.target.value })} />
                       </td>
                       <td className="py-2">{typeof row.costUsd === "number" ? money(row.costUsd) : "—"}</td>
+                      <td className="py-2 pl-2 text-right">
+                        <button
+                          type="button"
+                          aria-label={`Remove ${row.filename}`}
+                          className="rounded p-1 text-muted-foreground hover:text-foreground"
+                          disabled={!!busy || !!created}
+                          onClick={() => removeRow(row.filename)}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
