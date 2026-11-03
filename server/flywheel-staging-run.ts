@@ -493,7 +493,6 @@ async function reorderLiveCatalogueSizesOnce(): Promise<void> {
           productId,
           options: (data.product.options || []).map((option: { id: string; name: string; optionValues: Array<{ name: string }> }) => ({
             id: option.id,
-            name: option.name,
             values: (option.name === "Size" ? wanted : option.optionValues.map((value) => value.name)).map((name) => ({ name })),
           })),
         },
