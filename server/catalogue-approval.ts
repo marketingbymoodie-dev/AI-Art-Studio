@@ -34,6 +34,28 @@ export function generationFieldsRequired(source: string | null | undefined): boo
   return source !== "manual";
 }
 
+/** Every missing input, not just the first. Publish shows the whole list before it spends. */
+export function recipeGaps(recipe: ApprovalRecipe, source: string | null | undefined): string[] {
+  const gaps: string[] = [];
+  try {
+    printFilePathForStyle(recipe.artStyle);
+  } catch {
+    gaps.push("Style is not stored. Approval needs a launch style.");
+  }
+  if (!clip(recipe.species, 80)) gaps.push("Species is not stored.");
+  if (!humourOperatorId(recipe.humourOperator)) gaps.push("Humour operator is not stored.");
+  const generated = generationFieldsRequired(source);
+  const structure = deviceStructureId(recipe.deviceStructure);
+  if (generated && !structure) gaps.push("Device structure is not stored.");
+  if (generated && darknessLevel(recipe.darknessLevel) == null) gaps.push("Darkness is not stored.");
+  if (generated && !clip(recipe.behaviour, 400)) gaps.push("Behaviour is not stored.");
+  if (!clip(recipe.funnyTruth, 400)) gaps.push("Truth is not stored.");
+  if (!clip(recipe.deviceText, 400)) gaps.push("Device is not stored.");
+  if (!recipe.panelId) gaps.push("Scene is not stored.");
+  if (!recipe.selectedColors.length) gaps.push("No colours selected.");
+  return gaps;
+}
+
 export function requireRecipe(recipe: ApprovalRecipe, source: string | null | undefined): {
   artStyle: string;
   species: string;
@@ -42,27 +64,14 @@ export function requireRecipe(recipe: ApprovalRecipe, source: string | null | un
   darkness: number;
   behaviour: string;
 } {
-  let artStyle = "";
-  try {
-    artStyle = recipe.artStyle;
-    printFilePathForStyle(artStyle);
-  } catch {
-    throw new Error("Style is not stored. Approval needs a launch style.");
-  }
-  const species = clip(recipe.species, 80);
-  if (!species) throw new Error("Species is not stored.");
-  const humourOperator = humourOperatorId(recipe.humourOperator);
-  if (!humourOperator) throw new Error("Humour operator is not stored.");
-  const generated = generationFieldsRequired(source);
-  const structure = deviceStructureId(recipe.deviceStructure);
-  if (generated && !structure) throw new Error("Device structure is not stored.");
-  const darkness = darknessLevel(recipe.darknessLevel);
-  if (generated && darkness == null) throw new Error("Darkness is not stored.");
-  const behaviour = clip(recipe.behaviour, 400);
-  if (generated && !behaviour) throw new Error("Behaviour is not stored.");
-  if (!clip(recipe.funnyTruth, 400)) throw new Error("Truth is not stored.");
-  if (!clip(recipe.deviceText, 400)) throw new Error("Device is not stored.");
-  if (!recipe.panelId) throw new Error("Scene is not stored.");
-  if (!recipe.selectedColors.length) throw new Error("No colours selected.");
-  return { artStyle, species, humourOperator, structure: structure || "", darkness: darkness ?? 0, behaviour };
+  const gaps = recipeGaps(recipe, source);
+  if (gaps.length) throw new Error(gaps[0]);
+  return {
+    artStyle: recipe.artStyle,
+    species: clip(recipe.species, 80),
+    humourOperator: humourOperatorId(recipe.humourOperator) || "",
+    structure: deviceStructureId(recipe.deviceStructure) || "",
+    darkness: darknessLevel(recipe.darknessLevel) ?? 0,
+    behaviour: clip(recipe.behaviour, 400),
+  };
 }

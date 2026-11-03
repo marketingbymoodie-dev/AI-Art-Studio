@@ -393,6 +393,10 @@ export async function promoteCatalogueCandidate(args: {
   publishNow: boolean;
   productTypeId: number;
   pricesBySize: Record<string, string>;
+  /** Stop once the refusals are known. Nothing is created. */
+  checkOnly?: boolean;
+  /** Print file, listing, and mockups are about to be built by the publish button. */
+  deferApprovalArtifacts?: boolean;
 }): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
   const choice = await readChoice(args.candidateId);
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
@@ -507,6 +511,7 @@ export async function promoteCatalogueCandidate(args: {
     publishNow: args.publishNow,
     capMessage,
     missingPrices,
+    deferApprovalArtifacts: args.deferApprovalArtifacts === true,
   });
   if (!categoryId) reasons.push("This product type has no product category on its studio product.");
   if (!merchant?.printifyApiToken || !merchant.printifyShopId) reasons.push("Printify is not connected on this product type.");
@@ -608,6 +613,9 @@ export async function promoteCatalogueCandidate(args: {
   if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
   if (shopifyVariants.length > 100) {
     throw new PromoteRefusal([`Too many variants (${shopifyVariants.length}). Shopify allows 100 on this create.`]);
+  }
+  if (args.checkOnly) {
+    return { shopifyProductId: "", printifyProductId: "", status: catalogueVisibility(args.publishNow) };
   }
 
   const title = String(candidate!.title);

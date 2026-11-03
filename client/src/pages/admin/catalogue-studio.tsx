@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
+import { formatCatalogueSpend, PUBLISH_PHASE_LABEL } from "@shared/cataloguePublish";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import AdminLayout from "@/components/admin-layout";
 import { ProductMockup } from "@/components/designer/ProductMockup";
@@ -32,6 +33,9 @@ type PendingCandidate = {
   title: string;
   description?: string;
   shopifyProductId: string | null;
+  productUrl?: string | null;
+  spendUsd?: number;
+  spendLines?: Array<{ label: string; usd: number; estimated: boolean }>;
   sizes: string[];
   pricesBySize: Record<string, string>;
   colors: Array<{ name: string; hex: string }>;
@@ -88,6 +92,37 @@ const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
 
 type Override = "rule" | "eligible" | "ineligible";
 
+type PublishEvent = {
+  phase?: string;
+  spendUsd?: number;
+  lines?: Array<{ label: string; usd: number; estimated: boolean }>;
+  reasons?: unknown;
+  error?: unknown;
+  productUrl?: string;
+};
+
+async function readPublishEvents(res: Response, onEvent: (event: PublishEvent) => void) {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    onEvent(await res.json().catch(() => ({})));
+    return;
+  }
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    pending += decoder.decode(chunk.value, { stream: true });
+    const lines = pending.split("\n");
+    pending = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      onEvent(JSON.parse(line) as PublishEvent);
+    }
+  }
+  if (pending.trim()) onEvent(JSON.parse(pending) as PublishEvent);
+}
+
 function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: string): string {
   const reasons = Array.isArray(body?.reasons)
     ? body.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
@@ -142,10 +177,11 @@ export default function CatalogueStudioPage() {
   const [verdict, setVerdict] = useState<"pending" | "approved" | "dropped">("pending");
   const [dropReason, setDropReason] = useState("");
   const [dropError, setDropError] = useState("");
-  const [approveError, setApproveError] = useState("");
-  const [publishNow, setPublishNow] = useState(true);
-  const [promoteError, setPromoteError] = useState("");
-  const [promoteBusy, setPromoteBusy] = useState(false);
+  const [publishError, setPublishError] = useState("");
+  const [publishPhase, setPublishPhase] = useState<"" | "check" | "print" | "listing" | "mockups" | "shopify" | "done">("");
+  const [productUrl, setProductUrl] = useState<string | null>(null);
+  const [spendUsd, setSpendUsd] = useState(0);
+  const [spendLines, setSpendLines] = useState<Array<{ label: string; usd: number; estimated: boolean }>>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [panelId, setPanelId] = useState("");
   const [ticked, setTicked] = useState<TickedColour[]>([]);
@@ -186,7 +222,15 @@ export default function CatalogueStudioPage() {
     setVerdict(candidate.data.status === "dropped" ? "dropped" : candidate.data.status === "pending" ? "pending" : "approved");
     setDropReason(candidate.data.dropReason || "");
     setDropError("");
+    setPublishError("");
+    setPublishPhase("");
   }, [candidate.data?.id, candidate.data?.status]);
+
+  useEffect(() => {
+    setProductUrl(candidate.data?.productUrl || null);
+    setSpendUsd(candidate.data?.spendUsd || 0);
+    setSpendLines(candidate.data?.spendLines || []);
+  }, [candidate.data?.id, candidate.data?.productUrl, candidate.data?.spendUsd, candidate.data?.spendLines]);
 
   useEffect(() => {
     const scenes = candidate.data?.scenes;
@@ -289,6 +333,68 @@ export default function CatalogueStudioPage() {
       {candidate.isLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : !panelId ? "No panel is stored yet." : previewError ? previewError : <Loader2 className="h-5 w-5 animate-spin" />}
     </div>
   );
+
+  const publishing = publishPhase === "check" || publishPhase === "print" || publishPhase === "listing" || publishPhase === "mockups" || publishPhase === "shopify";
+  const publishLabel = publishPhase === "check"
+    ? "Checking..."
+    : publishPhase === "print" || publishPhase === "listing" || publishPhase === "mockups" || publishPhase === "shopify" || publishPhase === "done"
+      ? PUBLISH_PHASE_LABEL[publishPhase]
+      : "Promote and publish";
+
+  async function publishCandidate() {
+    setPublishError("");
+    setDropError("");
+    setPublishPhase("check");
+    const res = await fetch("/api/platform/catalogue-studio/publish", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        candidateId: candidate.data?.id,
+        panelId,
+        selectedColors: ticked,
+        artStyle: styleId,
+        species,
+        humourOperator: humour,
+        punchline: wording,
+        title: wording || candidate.data?.title || "",
+        behaviour,
+        funnyTruth: truth,
+        deviceText: device,
+        deviceStructure,
+        darknessLevel: Number(darkness),
+      }),
+    });
+    let failed = false;
+    const apply = (event: PublishEvent) => {
+      if (typeof event.spendUsd === "number") setSpendUsd(event.spendUsd);
+      if (Array.isArray(event.lines)) setSpendLines(event.lines);
+      if (event.productUrl) setProductUrl(event.productUrl);
+      if (event.phase === "error") {
+        failed = true;
+        const message = refusalMessage(event, "Publish stopped");
+        console.error("[catalogue-studio] publish failed", message);
+        setPublishPhase("");
+        setPublishError(message);
+        return;
+      }
+      if (event.phase === "print" || event.phase === "listing" || event.phase === "mockups" || event.phase === "shopify" || event.phase === "done") {
+        setPublishPhase(event.phase);
+      }
+    };
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      apply({ ...body, phase: "error" });
+      return;
+    }
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("ndjson")) {
+      apply(await res.json().catch(() => ({ phase: "done" })));
+    } else {
+      await readPublishEvents(res, apply);
+    }
+    if (!failed) await candidate.refetch();
+  }
 
   return (
     <AdminLayout>
@@ -746,43 +852,11 @@ export default function CatalogueStudioPage() {
             <section className="space-y-2">
               <h2 className="font-medium">Verdict</h2>
               <div className="flex flex-wrap gap-2">
-                <Button type="button" size="sm" onClick={async () => {
-                  setApproveError("");
-                  const res = await fetch("/api/platform/catalogue-studio/approve", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      candidateId: candidate.data?.id,
-                      panelId,
-                      selectedColors: ticked,
-                      artStyle: styleId,
-                      species,
-                      humourOperator: humour,
-                      punchline: wording,
-                      title: wording || candidate.data?.title || "",
-                      behaviour,
-                      funnyTruth: truth,
-                      deviceText: device,
-                      deviceStructure,
-                      darknessLevel: Number(darkness),
-                    }),
-                  });
-                  const body = await res.json().catch(() => ({}));
-                  if (!res.ok) {
-                    const message = refusalMessage(body, "Approval stopped");
-                    console.error("[catalogue-studio] approve failed", res.status, message);
-                    setApproveError(message);
-                    return;
-                  }
-                  setApproveError("");
-                  setVerdict("approved");
-                  await candidate.refetch();
+                <Button type="button" size="sm" variant="outline" onClick={() => {
+                  setPublishError("");
+                  setDropError("");
+                  document.querySelector<HTMLTextAreaElement>("#studio-recipe-behaviour textarea")?.focus();
                 }}>
-                  Approve
-                </Button>
-                {approveError ? <p className="basis-full whitespace-pre-wrap text-xs" data-testid="catalogue-studio-approve-error">{approveError}</p> : null}
-                <Button type="button" size="sm" variant="outline" onClick={() => document.querySelector<HTMLTextAreaElement>("#studio-recipe-behaviour textarea")?.focus()}>
                   Edit
                 </Button>
                 <Button
@@ -790,6 +864,7 @@ export default function CatalogueStudioPage() {
                   size="sm"
                   variant="outline"
                   onClick={async () => {
+                    setPublishError("");
                     if (!dropReason.trim()) {
                       setDropError("Write a reason.");
                       return;
@@ -806,6 +881,7 @@ export default function CatalogueStudioPage() {
                       return;
                     }
                     setDropError("");
+                    setPublishError("");
                     setVerdict("dropped");
                     const next = String(body.nextCandidateId || "");
                     setLocation(next ? `/admin/catalogue-studio?candidate=${encodeURIComponent(next)}` : "/admin/catalogue-studio");
@@ -820,6 +896,8 @@ export default function CatalogueStudioPage() {
                     variant="outline"
                     onClick={async () => {
                       if (!window.confirm("Delete this candidate? It has no artwork.")) return;
+                      setPublishError("");
+                      setDropError("");
                       const res = await fetch("/api/platform/catalogue-studio/delete", {
                         method: "POST",
                         credentials: "include",
@@ -842,44 +920,27 @@ export default function CatalogueStudioPage() {
               <Textarea value={dropReason} onChange={(e) => setDropReason(e.target.value)} placeholder="Drop reason" />
               {dropError ? <p className="text-xs">{dropError}</p> : null}
               {verdict === "dropped" ? <p>Dropped: {dropReason}</p> : null}
-              {verdict === "approved" ? <p>Approved. The mockups are stored. Promote is the step that creates the product.</p> : null}
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={publishNow} onChange={(e) => setPublishNow(e.target.checked)} />
-                Publish now
-              </label>
-              <Button
-                type="button"
-                size="sm"
-                disabled={promoteBusy}
-                onClick={async () => {
-                  setPromoteBusy(true);
-                  setPromoteError("");
-                  const res = await fetch("/api/platform/catalogue-studio/promote", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ candidateId: candidate.data?.id, publishNow }),
-                  });
-                  const body = await res.json().catch(() => ({}));
-                  setPromoteBusy(false);
-                  if (!res.ok) {
-                    const message = refusalMessage(body, "Promote stopped");
-                    console.error("[catalogue-studio] promote failed", res.status, message);
-                    setPromoteError(message);
-                    return;
-                  }
-                  setPromoteError("");
-                }}
-              >
-                {promoteBusy ? "Promoting…" : publishNow ? "Promote and publish" : "Promote as draft"}
-              </Button>
-              {promoteError ? <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-promote-error">{promoteError}</p> : null}
+              {publishPhase === "done" ? <p>Done</p> : null}
+              {productUrl ? (
+                <a className="text-sm underline" href={productUrl} target="_blank" rel="noreferrer" data-testid="catalogue-studio-product-link">
+                  Open the Shopify product
+                </a>
+              ) : verdict === "dropped" ? null : (
+                <Button type="button" size="sm" disabled={publishing} onClick={() => void publishCandidate()}>
+                  {publishLabel}
+                </Button>
+              )}
+              {publishError ? <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError}</p> : null}
             </section>
 
-            <section>
+            <section className="space-y-1">
               <h2 className="font-medium">Costs</h2>
-              <p>Per render: none recorded</p>
-              <p>Cumulative: none recorded</p>
+              <p data-testid="catalogue-studio-spend">{formatCatalogueSpend(spendUsd)} spent on this one so far</p>
+              {spendLines.map((line) => (
+                <p key={line.label} className="text-xs text-muted-foreground">
+                  {line.label} {formatCatalogueSpend(line.usd)}{line.estimated ? " estimated" : ""}
+                </p>
+              ))}
             </section>
           </aside>
         ) : null}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
+import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 
 const imported: ApprovalRecipe = {
   candidateId: "aa1b262b-68ad-4762-82dc-e539cf6b08bf",
@@ -23,6 +23,28 @@ describe("catalogue approval fields", () => {
     expect(checked.structure).toBe("");
     expect(checked.behaviour).toBe("");
     expect(checked.darkness).toBe(0);
+  });
+
+  it("lists every missing import field before any of them is spent on", () => {
+    const gaps = recipeGaps({
+      ...imported,
+      artStyle: "",
+      species: "",
+      humourOperator: "",
+      funnyTruth: "",
+      deviceText: "",
+      panelId: "",
+      selectedColors: [],
+    }, "manual");
+    expect(gaps).toEqual([
+      "Style is not stored. Approval needs a launch style.",
+      "Species is not stored.",
+      "Humour operator is not stored.",
+      "Truth is not stored.",
+      "Device is not stored.",
+      "Scene is not stored.",
+      "No colours selected.",
+    ]);
   });
 
   it("still requires device structure, behaviour, and darkness on a generated candidate", () => {

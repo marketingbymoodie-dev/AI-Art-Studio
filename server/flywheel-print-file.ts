@@ -4,8 +4,21 @@
  * Customizer bake and toLosslessPrintMaster are not used here.
  */
 import sharp from "sharp";
+import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
 import { readPlatformReplicateToken } from "./generation-providers";
-import { vectorizeWithRecraft } from "./replicate-vectorizer";
+import { lastRecraftCallBilling, vectorizeWithRecraft } from "./replicate-vectorizer";
+
+/** Replicate list price when a Real-ESRGAN prediction does not include a billed amount. */
+export const REAL_ESRGAN_LIST_USD = 0.0023;
+
+export type PrintFileBilling = { costUsd: number; estimated: boolean };
+
+let lastPrintBilling: PrintFileBilling | null = null;
+
+/** Cost of the print file just built in this process. Null when that build did not call a model. */
+export function lastPrintFileBilling(): PrintFileBilling | null {
+  return lastPrintBilling;
+}
 
 export type PrintCanvas = { width: number; height: number };
 
@@ -135,6 +148,7 @@ type ReplicatePrediction = {
   error?: unknown;
   output?: unknown;
   urls?: { get?: string };
+  metrics?: Record<string, unknown>;
 };
 
 async function replicateJson(url: string, token: string, init: RequestInit = {}): Promise<ReplicatePrediction> {
@@ -171,6 +185,10 @@ async function upscaleForPrint(source: Buffer, styleId: string, canvas: PrintCan
     latest = await replicateJson(getUrl, token);
   }
   if (latest.status !== "succeeded") throw new Error(`${styleId} print file failed: upscaler ${latest.status}`);
+  const billed = dollarsFromPrediction(latest);
+  lastPrintBilling = billed == null
+    ? { costUsd: REAL_ESRGAN_LIST_USD, estimated: true }
+    : { costUsd: billed, estimated: false };
   const output = latest.output;
   const url = typeof output === "string" ? output : Array.isArray(output) ? String(output[0] || "") : "";
   if (!url) throw new Error(`${styleId} print file failed: upscaler returned no image`);
@@ -183,11 +201,28 @@ async function upscaleForPrint(source: Buffer, styleId: string, canvas: PrintCan
  * Build the print file. A missing path throws with the style id and does not
  * return the source image.
  */
+function dollarsFromPrediction(prediction: ReplicatePrediction): number | null {
+  const raw = prediction as ReplicatePrediction & Record<string, unknown>;
+  for (const key of ["cost", "billed_amount", "total_cost"]) {
+    const amount = Number(raw[key]);
+    if (Number.isFinite(amount) && amount >= 0) return amount;
+  }
+  const metrics = prediction.metrics;
+  if (!metrics) return null;
+  for (const [key, value] of Object.entries(metrics)) {
+    if (!/cost|price|billed/i.test(key)) continue;
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount >= 0) return amount;
+  }
+  return null;
+}
+
 export async function buildFlywheelPrintFile(
   styleId: string,
   source: Buffer,
   canvas: PrintCanvas,
 ): Promise<{ path: FlywheelPrintPath; buffer: Buffer }> {
+  lastPrintBilling = null;
   const path = printFilePathForStyle(styleId);
   if (!(canvas?.width > 0) || !(canvas?.height > 0)) {
     throw new Error("This product type has no stored front print area");
@@ -203,6 +238,11 @@ export async function buildFlywheelPrintFile(
       throw new Error(`${styleId} print file failed: ${(err as Error).message}`);
     }
     const raster = await rasterizeSvgToFit(svg, srcWidth, srcHeight, canvas);
+    const billing = lastRecraftCallBilling();
+    lastPrintBilling = {
+      costUsd: billing?.costUsd ?? VECTORIZE_COST_PER_GEN_USD,
+      estimated: billing?.costSource !== "replicate",
+    };
     return { path, buffer: await placeOnPrintCanvas(raster, canvas) };
   }
   return { path, buffer: await upscaleForPrint(source, styleId, canvas) };

@@ -96,21 +96,27 @@ export function promoteRefusals(input: {
   publishNow: boolean;
   capMessage: string | null;
   missingPrices: string[];
+  /**
+   * The combined publish button builds the print file, listing, and mockups
+   * after this check. Those gaps are not refusals yet.
+   */
+  deferApprovalArtifacts?: boolean;
 }): string[] {
   const missing: string[] = [];
-  if (!input.printFilePath) missing.push("No print file for this candidate.");
+  const defer = input.deferApprovalArtifacts === true;
+  if (!defer && !input.printFilePath) missing.push("No print file for this candidate.");
   if (!input.panelId) missing.push("No mockup panel is chosen for this candidate.");
   for (const colour of input.tickedColours) {
     if (!input.panelColours.includes(colour)) {
       missing.push(`No mockup panel for ${colour} on ${input.productTypeName}.`);
     }
-    if (!input.storedMockupColours.includes(colour)) {
+    if (!defer && !input.storedMockupColours.includes(colour)) {
       missing.push(`No stored mockup for ${colour}. Approve stores the images; promote does not render them again.`);
     }
   }
   if (!input.tickedColours.length) missing.push("No colours are ticked.");
-  if (!String(input.title || "").trim()) missing.push("Title is not stored on the candidate.");
-  if (!String(input.description || "").trim()) missing.push("Description is not stored on the candidate.");
+  if (!defer && !String(input.title || "").trim()) missing.push("Title is not stored on the candidate.");
+  if (!defer && !String(input.description || "").trim()) missing.push("Description is not stored on the candidate.");
   const taxonomy = [
     ["style", input.artStyle],
     ["species", input.species],

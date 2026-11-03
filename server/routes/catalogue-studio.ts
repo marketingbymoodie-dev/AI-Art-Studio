@@ -1,5 +1,6 @@
 /**
- * Operator Design Studio. Preview only — no Shopify product is created.
+ * Operator Design Studio.
+ * Preview is free. Publish is the button that builds the print file and lists the product.
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
@@ -7,6 +8,8 @@ import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageC
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueCandidateChoices, customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
+import { catalogueSpend } from "../catalogue-publish";
+import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
@@ -219,6 +222,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         }
       }
       const filename = (stored?.artworkPath || choice.artworkPath || "").split("/").pop() || "";
+      const spend = await catalogueSpend(id);
+      const productUrl = stored?.shopifyProductId
+        ? shopifyAdminProductUrl(stored.shopDomain || STAGING_SHOP, stored.shopifyProductId)
+        : null;
       res.json({
         id,
         status: stored?.status || PENDING_CANDIDATE.status,
@@ -234,6 +241,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         title: fixture ? stored?.title || PENDING_CANDIDATE.title : stored?.title || "",
         description: stored?.description || "",
         shopifyProductId: stored?.shopifyProductId || null,
+        productUrl,
+        spendUsd: spend.totalUsd,
+        spendLines: spend.lines,
         colors: fixture ? PENDING_CANDIDATE.colors : colours,
         selectedColor: fixture ? PENDING_CANDIDATE.selectedColor : colours[0]?.name || "White",
         selectedSize: "L",
@@ -618,6 +628,79 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json({ ok: true, ...result });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/publish", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue publish is staging only.", reasons: ["Catalogue publish is staging only."] });
+      return;
+    }
+    const id = await candidateIdFor(res, req.body?.candidateId);
+    if (!id) return;
+    let streamed = false;
+    const writeEvent = (event: unknown) => {
+      if (!streamed) {
+        res.status(200);
+        res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("X-Accel-Buffering", "no");
+        if (typeof res.flushHeaders === "function") res.flushHeaders();
+        streamed = true;
+      }
+      res.write(`${JSON.stringify(event)}\n`);
+      const flush = (res as Response & { flush?: () => void }).flush;
+      if (typeof flush === "function") flush.call(res);
+    };
+    try {
+      const { publishCatalogueCandidate } = await import("../catalogue-publish");
+      const prices = await shippingPricesBySize();
+      const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
+      const result = await publishCatalogueCandidate({
+        pricesBySize: prices.pricesBySize,
+        onPhase: writeEvent,
+        recipe: {
+          candidateId: id,
+          panelId: String(req.body?.panelId || ""),
+          selectedColors: colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
+          artStyle: String(req.body?.artStyle || ""),
+          species: String(req.body?.species || ""),
+          humourOperator: String(req.body?.humourOperator || ""),
+          punchline: String(req.body?.punchline || req.body?.wording || ""),
+          behaviour: String(req.body?.behaviour || ""),
+          funnyTruth: String(req.body?.funnyTruth || ""),
+          deviceText: String(req.body?.deviceText || ""),
+          deviceStructure: String(req.body?.deviceStructure || ""),
+          darknessLevel: Number(req.body?.darknessLevel),
+          title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
+        },
+      });
+      if (!streamed) {
+        res.json({ phase: "done", ...result });
+        return;
+      }
+      res.end();
+    } catch (e: any) {
+      const { PublishRefusal } = await import("../catalogue-publish");
+      const reasons = e instanceof PublishRefusal && e.reasons.length
+        ? e.reasons
+        : [String(e?.message || e)];
+      if (!streamed) {
+        res.status(400).json({ error: reasons.join("\n"), reasons });
+        return;
+      }
+      let spendUsd = 0;
+      let lines: Array<{ label: string; usd: number; estimated: boolean }> = [];
+      try {
+        const spend = await catalogueSpend(id);
+        spendUsd = spend.totalUsd;
+        lines = spend.lines;
+      } catch {
+        spendUsd = 0;
+      }
+      writeEvent({ phase: "error", reasons, spendUsd, lines });
+      res.end();
     }
   });
 

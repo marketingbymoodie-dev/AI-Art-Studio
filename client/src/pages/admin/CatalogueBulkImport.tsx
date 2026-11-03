@@ -92,6 +92,7 @@ export default function CatalogueBulkImportPage() {
         } : item));
         return;
       }
+      setError("");
       setRows((prev) => prev.map((item) => {
         if (item.filename !== row.filename) return item;
         return {
@@ -252,6 +253,7 @@ export default function CatalogueBulkImportPage() {
   }
 
   function edit(filename: string, patch: Partial<CatalogueImportRow>) {
+    setError("");
     setRows((prev) => prev.map((row) => {
       if (row.filename !== filename) return row;
       const next = { ...row, ...patch };

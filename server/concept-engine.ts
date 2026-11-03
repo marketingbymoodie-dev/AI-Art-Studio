@@ -11,6 +11,22 @@ const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 const TIMEOUT_MS = 12_000;
 
+export type ConceptEngineUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
+let lastConceptEngineUsage: { model: string; usage: ConceptEngineUsage } | null = null;
+
+/** Usage from the last Messages call in this process. Cleared when the next call starts. */
+export function takeConceptEngineUsage(): { model: string; usage: ConceptEngineUsage } | null {
+  const value = lastConceptEngineUsage;
+  lastConceptEngineUsage = null;
+  return value;
+}
+
 export function anthropicApiKey(): string {
   return String(process.env.ANTHROPIC_API_KEY || "").trim();
 }
@@ -86,6 +102,7 @@ export async function runConceptEngine<TOption>(
   if (!key) {
     throw Object.assign(new Error("ANTHROPIC_API_KEY is not configured"), { status: 503 });
   }
+  lastConceptEngineUsage = null;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -117,9 +134,10 @@ export async function runConceptEngine<TOption>(
       });
     }
     quoteStage = "json-parse";
-    let json: { content?: Array<{ type?: string; text?: string } | null> };
+    let json: { content?: Array<{ type?: string; text?: string } | null>; usage?: ConceptEngineUsage };
     try {
       json = (await res.json()) as typeof json;
+      lastConceptEngineUsage = { model: anthropicQuotesModel(), usage: json.usage || {} };
     } catch (parseErr: any) {
       console.warn(`${engine.logTag} json-parse`, parseErr?.message || parseErr);
       throw Object.assign(new Error("Anthropic response was not JSON"), {
