@@ -357,7 +357,7 @@ export default function CatalogueStudioPage() {
         species,
         humourOperator: humour,
         punchline: wording,
-        title: wording || candidate.data?.title || "",
+        title: wording,
         behaviour,
         funnyTruth: truth,
         deviceText: device,

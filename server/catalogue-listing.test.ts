@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCatalogueListing } from "./catalogue-listing";
+import { catalogueTruthIsSentence, parseCatalogueListing } from "@shared/catalogueListing";
 
 describe("parseCatalogueListing", () => {
   it("keeps a supplied title and the written description", () => {
@@ -11,5 +11,14 @@ describe("parseCatalogueListing", () => {
 
   it("rejects an empty description", () => {
     expect(parseCatalogueListing({ title: "Bed Etiquette", description: "  " }, "Bed Etiquette")).toBeNull();
+  });
+
+  it("keeps a sentence about the picture and rejects a vision stutter", () => {
+    expect(catalogueTruthIsSentence(
+      "A tabby cat sits on a crescent moon and fishes with a rod into a goldfish bowl below.",
+    )).toBe(true);
+    expect(catalogueTruthIsSentence("fishes with a rod into a rod into")).toBe(false);
+    expect(catalogueTruthIsSentence("Fishes with a rod into a rod into.")).toBe(false);
+    expect(catalogueTruthIsSentence("")).toBe(false);
   });
 });

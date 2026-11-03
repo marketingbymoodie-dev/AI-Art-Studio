@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 export type { ApprovalRecipe };
 import { designCandidates, productTypes } from "@shared/schema";
-import { writeCatalogueListing } from "./catalogue-listing";
+import { catalogueListingIsFresh, catalogueTruthIsSentence, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { db } from "./db";
 import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import {
@@ -82,25 +82,31 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   const source = await readLibraryObject(choice.artworkPath);
   const printFilePath = await printFilePathFor(recipe.candidateId, checked.artStyle, source, canvas);
 
-  const givenTitle = clip(recipe.title, 120) || clip(recipe.punchline, 120);
-  let listing = stored?.title && stored.description
+  const lettering = clip(recipe.punchline, 120);
+  const truth = clip(recipe.funnyTruth, 600);
+  let listing = stored?.title && stored.description && await catalogueListingIsFresh(recipe.candidateId)
     ? { title: stored.title, description: stored.description }
     : null;
   let writerError = "";
   if (!listing) {
+    const started = Date.now();
     try {
       listing = await writeCatalogueListing({
-        title: givenTitle,
+        title: lettering,
         species: checked.species,
         artStyle: checked.artStyle,
         humourOperator: checked.humourOperator,
-        punchline: clip(recipe.punchline, 120),
+        punchline: lettering,
+        funnyTruth: clip(recipe.funnyTruth, 400),
+        deviceText: clip(recipe.deviceText, 400),
+        artwork: source,
       });
+      await rememberCatalogueListingSpend(recipe.candidateId, shop, true, Date.now() - started);
     } catch (err) {
+      await rememberCatalogueListingSpend(recipe.candidateId, shop, false, Date.now() - started);
       writerError = err instanceof Error ? err.message : String(err);
-      const description = clip(recipe.funnyTruth, 600);
-      if (!givenTitle || !description) throw err;
-      listing = { title: givenTitle, description };
+      if (!lettering || !catalogueTruthIsSentence(truth)) throw err;
+      listing = { title: lettering, description: truth };
     }
   }
 

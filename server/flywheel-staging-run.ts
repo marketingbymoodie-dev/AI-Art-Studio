@@ -316,12 +316,17 @@ async function rewriteBedEtiquetteListing(): Promise<void> {
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, CANDIDATE_ID)).limit(1);
   if (!candidate?.title || !candidate.shopifyProductId || !candidate.printifyProductId) return;
   const { writeCatalogueListing } = await import("./catalogue-listing");
+  const choice = await readChoice(CANDIDATE_ID);
+  if (!choice.artworkPath) throw new Error("Candidate artwork is not stored");
   const listing = await writeCatalogueListing({
-    title: candidate.title,
+    title: candidate.punchline || candidate.title,
     species: candidate.species,
     artStyle: candidate.artStyle,
     humourOperator: candidate.humourOperator,
-    punchline: candidate.punchline || candidate.title,
+    punchline: candidate.punchline || "",
+    funnyTruth: candidate.funnyTruth || "",
+    deviceText: candidate.deviceText || "",
+    artwork: await readLibraryObject(choice.artworkPath),
   });
   const garment = await softstyleType();
   const [typeRow] = await db
@@ -447,4 +452,50 @@ export async function runStagingFlywheelOnce(): Promise<void> {
   } catch (err) {
     console.warn("[flywheel] promote:", err instanceof Error ? err.message : String(err));
   }
+  try {
+    await rewriteCatAnglerListingOnce();
+  } catch (err) {
+    console.warn("[catalogue-listing] cat:", err instanceof Error ? err.message : String(err));
+  }
+}
+
+const CAT_ANGLER_ID = "a53d9964-a554-4f08-80a4-5d3b92c502a9";
+
+/** One staging rewrite of the imported cat listing. Does not publish or rebuild files. */
+async function rewriteCatAnglerListingOnce(): Promise<void> {
+  const { catalogueListingIsFresh } = await import("./catalogue-listing");
+  if (await catalogueListingIsFresh(CAT_ANGLER_ID)) return;
+  const [row] = await db.select().from(designCandidates).where(eq(designCandidates.id, CAT_ANGLER_ID)).limit(1);
+  if (!row || row.shopifyProductId) return;
+  const choice = await readChoice(CAT_ANGLER_ID);
+  const printBefore = row.printFilePath || "";
+  const mockupsBefore = choice.mockupImages.map((image) => image.path).join("\n");
+  const { approveCatalogueCandidate } = await import("./flywheel-approve");
+  const colours = (row.selectedColors?.length ? row.selectedColors : choice.selectedColors) || [];
+  const approved = await approveCatalogueCandidate({
+    candidateId: CAT_ANGLER_ID,
+    panelId: String(row.panelId || choice.panelId || ""),
+    selectedColors: colours,
+    artStyle: row.artStyle,
+    species: row.species,
+    humourOperator: row.humourOperator,
+    punchline: row.punchline || "",
+    title: "",
+    behaviour: row.behaviour || "",
+    funnyTruth: row.funnyTruth || "",
+    deviceText: row.deviceText || "",
+    deviceStructure: row.deviceStructure || "",
+    darknessLevel: row.darknessLevel || 0,
+  });
+  const [after] = await db
+    .select({ printFilePath: designCandidates.printFilePath })
+    .from(designCandidates)
+    .where(eq(designCandidates.id, CAT_ANGLER_ID))
+    .limit(1);
+  const choiceAfter = await readChoice(CAT_ANGLER_ID);
+  const mockupsAfter = choiceAfter.mockupImages.map((image) => image.path).join("\n");
+  if ((after?.printFilePath || "") !== printBefore || mockupsAfter !== mockupsBefore) {
+    console.warn("[catalogue-listing] cat print file or mockups changed");
+  }
+  console.log("[catalogue-listing] cat", approved.title);
 }

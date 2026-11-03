@@ -4,12 +4,10 @@
  * Shopify and Printify are rolled back inside promote when the product create fails.
  */
 import { eq } from "drizzle-orm";
-import { catalogueDraftCostUsd } from "@shared/catalogueBulkImport";
+import { catalogueTruthIsSentence, catalogueListingIsFresh, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { publishPreflightMessages, shopifyAdminProductUrl, type PublishWorkPhase } from "@shared/cataloguePublish";
 import { designCandidates, generationEvents, productTypes } from "@shared/schema";
 import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
-import { writeCatalogueListing } from "./catalogue-listing";
-import { takeConceptEngineUsage } from "./concept-engine";
 import { db } from "./db";
 import { buildFlywheelPrintFile, lastPrintFileBilling, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { promoteCatalogueCandidate, PromoteRefusal } from "./flywheel-promote";
@@ -158,7 +156,11 @@ export async function publishCatalogueCandidate(args: {
   }
   let blockers: string[] = [];
   const hasPrint = await readable(stored.printFilePath);
-  const hasListing = Boolean(String(stored.title || "").trim() && String(stored.description || "").trim());
+  const hasListing = Boolean(
+    String(stored.title || "").trim()
+    && String(stored.description || "").trim()
+    && await catalogueListingIsFresh(recipe.candidateId),
+  );
   const hasMockups = recipe.selectedColors.length > 0 && recipe.selectedColors.every((color) =>
     choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()),
   );
@@ -230,29 +232,33 @@ export async function publishCatalogueCandidate(args: {
 
   let title = String(stored.title || "").trim();
   let description = String(stored.description || "").trim();
-  if (!title || !description) {
+  if (!hasListing) {
     await emit("listing");
     const started = Date.now();
-    const givenTitle = clip(recipe.title, 120) || clip(recipe.punchline, 120);
+    const lettering = clip(recipe.punchline, 120);
+    const truth = clip(recipe.funnyTruth, 600);
     try {
+      const artwork = await readLibraryObject(String(choice.artworkPath || stored.artworkPath));
       const written = await writeCatalogueListing({
-        title: givenTitle,
+        title: lettering,
         species: checked.species,
         artStyle: checked.artStyle,
         humourOperator: checked.humourOperator,
-        punchline: clip(recipe.punchline, 120),
+        punchline: lettering,
+        funnyTruth: clip(recipe.funnyTruth, 400),
+        deviceText: clip(recipe.deviceText, 400),
+        artwork,
       });
       title = written.title;
       description = written.description;
-      await rememberListingCost(recipe.candidateId, shop, true, Date.now() - started);
+      await rememberCatalogueListingSpend(recipe.candidateId, shop, true, Date.now() - started);
     } catch (err) {
-      await rememberListingCost(recipe.candidateId, shop, false, Date.now() - started);
-      const fallback = clip(recipe.funnyTruth, 600);
-      if (!givenTitle || !fallback) {
+      await rememberCatalogueListingSpend(recipe.candidateId, shop, false, Date.now() - started);
+      if (!lettering || !catalogueTruthIsSentence(truth)) {
         throw err instanceof PublishRefusal ? err : new PublishRefusal([err instanceof Error ? err.message : String(err)]);
       }
-      title = givenTitle;
-      description = fallback;
+      title = lettering;
+      description = truth;
     }
     await db.update(designCandidates).set({ title, description, updatedAt: new Date() }).where(eq(designCandidates.id, recipe.candidateId));
     await emit("listing");
@@ -334,21 +340,4 @@ async function readable(path: string | null | undefined): Promise<boolean> {
   }
 }
 
-async function rememberListingCost(candidateId: string, shop: string, success: boolean, durationMs: number) {
-  const usage = takeConceptEngineUsage();
-  if (!usage) return;
-  const costUsd = catalogueDraftCostUsd(usage.usage, usage.model);
-  if (!(costUsd && costUsd > 0)) return;
-  await recordSpend({
-    candidateId,
-    shop,
-    route: "catalogue-listing",
-    provider: "anthropic",
-    model: usage.model,
-    costUsd,
-    estimated: false,
-    success,
-    durationMs,
-  });
-}
 

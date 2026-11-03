@@ -94,9 +94,17 @@ export type ConceptEngine<TOption> = {
 
 export type ConceptStage = "fetch" | "json-parse" | "validation";
 
+export type ConceptUserContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image"; source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string } }
+    >;
+
 export async function runConceptEngine<TOption>(
   engine: ConceptEngine<TOption>,
-  userMessage: string,
+  userMessage: ConceptUserContent,
+  timeoutMs = TIMEOUT_MS,
 ): Promise<TOption[]> {
   const key = anthropicApiKey();
   if (!key) {
@@ -105,7 +113,7 @@ export async function runConceptEngine<TOption>(
   lastConceptEngineUsage = null;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let quoteStage: ConceptStage = "fetch";
   try {
     const res = await fetch(ANTHROPIC_MESSAGES_URL, {
