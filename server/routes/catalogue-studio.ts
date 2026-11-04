@@ -13,6 +13,7 @@ import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
+import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
@@ -54,7 +55,12 @@ function parseIdList(raw: string | null | undefined): string[] {
   }
 }
 
-export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesBySize: Record<string, string> }> {
+export async function shippingPricesBySize(): Promise<{
+  sizes: string[];
+  pricesBySize: Record<string, string>;
+  compareAtBySize: Record<string, string>;
+}> {
+  const empty = { sizes: [], pricesBySize: {}, compareAtBySize: {} };
   const { db } = await import("../db");
   const [row] = await db
     .select({
@@ -66,9 +72,9 @@ export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesB
     .innerJoin(productTypes, eq(customizerPages.productTypeId, productTypes.id))
     .where(and(eq(customizerPages.handle, "softstyle-t-shirt"), eq(customizerPages.status, "active")))
     .limit(1);
-  if (!row?.shop || !row.baseProductId) return { sizes: [], pricesBySize: {} };
+  if (!row?.shop || !row.baseProductId) return empty;
   const installation = await storage.getShopifyInstallationByShop(row.shop);
-  if (!installation?.accessToken) return { sizes: [], pricesBySize: {} };
+  if (!installation?.accessToken) return empty;
   let parsed: Array<{ name?: string }> = [];
   try {
     const raw = JSON.parse(row.sizes || "[]");
@@ -92,7 +98,8 @@ export async function shippingPricesBySize(): Promise<{ sizes: string[]; pricesB
     pricesBySize[name] = prices[0];
     sizes.push(name);
   }
-  return { sizes, pricesBySize };
+  const applied = applySoftstyleCataloguePrices(pricesBySize);
+  return { sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize };
 }
 
 const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
@@ -666,6 +673,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       const result = await publishCatalogueCandidate({
         pricesBySize: prices.pricesBySize,
+        compareAtBySize: prices.compareAtBySize,
         onPhase: writeEvent,
         recipe: {
           candidateId: id,
@@ -724,6 +732,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         publishNow: req.body?.publishNow !== false,
         productTypeId: garment.id,
         pricesBySize: prices.pricesBySize,
+        compareAtBySize: prices.compareAtBySize,
       });
       res.json(result);
     } catch (e: any) {

@@ -113,6 +113,7 @@ async function snapshot(candidateId: string): Promise<{ totalUsd: number; lines:
 export async function publishCatalogueCandidate(args: {
   recipe: ApprovalRecipe;
   pricesBySize: Record<string, string>;
+  compareAtBySize?: Record<string, string>;
   onPhase?: (event: PublishPhaseEvent) => void;
 }): Promise<{ shopifyProductId: string; productUrl: string; status: string; spendUsd: number; lines: SpendLine[] }> {
   if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
@@ -170,6 +171,7 @@ export async function publishCatalogueCandidate(args: {
       publishNow: true,
       productTypeId: garment.id,
       pricesBySize: args.pricesBySize,
+      compareAtBySize: args.compareAtBySize,
       checkOnly: true,
       deferApprovalArtifacts: !hasPrint || !hasListing || !hasMockups,
     });
@@ -307,6 +309,7 @@ export async function publishCatalogueCandidate(args: {
       publishNow: true,
       productTypeId: garment.id,
       pricesBySize: args.pricesBySize,
+      compareAtBySize: args.compareAtBySize,
     });
     const spend = await snapshot(recipe.candidateId);
     const productUrl = shopifyAdminProductUrl(shop, created.shopifyProductId);

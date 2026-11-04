@@ -38,6 +38,7 @@ type PendingCandidate = {
   spendLines?: Array<{ label: string; usd: number; estimated: boolean }>;
   sizes: string[];
   pricesBySize: Record<string, string>;
+  compareAtBySize?: Record<string, string>;
   colors: Array<{ name: string; hex: string }>;
   selectedColor: string;
   selectedSize: string;
@@ -313,7 +314,8 @@ export default function CatalogueStudioPage() {
   }, [showAdmin, drawCount]);
 
   const sizes = candidate.data?.sizes ?? [];
-  const price = candidate.data?.pricesBySize?.[size] ? `$${candidate.data.pricesBySize[size]}` : "";
+  const salePrice = candidate.data?.pricesBySize?.[size] || "";
+  const compareAtPrice = candidate.data?.compareAtBySize?.[size] || "";
   const scene = candidate.data?.scenes.find((row) => row.panelId === panelId);
   const offered = sceneColours(scene, candidate.data?.colors ?? []);
   const active = offered.find((c) => c.name === color) ?? candidate.data?.colors.find((c) => c.name === color);
@@ -499,7 +501,10 @@ export default function CatalogueStudioPage() {
                   />
                 ))}
               </div>
-              <p className="text-lg" data-testid="catalogue-studio-price">{price}</p>
+              <p className="text-lg" data-testid="catalogue-studio-price">
+                {compareAtPrice ? <span className="mr-2 text-muted-foreground line-through">${compareAtPrice}</span> : null}
+                {salePrice ? `$${salePrice}` : ""}
+              </p>
               <p className="text-sm text-muted-foreground">Shipping calculated at checkout</p>
               <Button type="button" className="w-full" disabled>Add to cart</Button>
               <p className="text-xs text-muted-foreground">Guarantee · rating · returns · shipping</p>

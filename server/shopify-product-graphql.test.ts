@@ -51,6 +51,16 @@ describe("buildProductSetInput", () => {
     expect(input.variants).toHaveLength(180);
   });
 
+  it("sends compareAtPrice when the variant has one", () => {
+    const input: any = buildProductSetInput({
+      title: "Softstyle",
+      options: [{ name: "Size", values: ["3XL"] }, { name: "Color", values: ["White"] }],
+      variants: [{ option1: "3XL", option2: "White", price: "33.95", compare_at_price: "39.50", inventory_policy: "continue" }],
+    });
+    expect(input.variants[0].price).toBe("33.95");
+    expect(input.variants[0].compareAtPrice).toBe("39.50");
+  });
+
   it("uses Default Title when the REST body has no options", () => {
     const input: any = buildProductSetInput({ title: "Solo", variants: [{ price: "5.00" }] });
     expect(input.productOptions).toEqual([{ name: "Title", position: 1, values: [{ name: "Default Title" }] }]);

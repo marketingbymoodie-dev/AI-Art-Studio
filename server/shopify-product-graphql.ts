@@ -17,6 +17,7 @@ export type RestVariantInput = {
   option2?: string | null;
   option3?: string | null;
   price?: string | number | null;
+  compare_at_price?: string | number | null;
   sku?: string | null;
   inventory_management?: string | null;
   inventory_policy?: string | null;
@@ -93,6 +94,7 @@ export function buildProductSetInput(p: RestProductInput): Record<string, unknow
     return {
       optionValues,
       price: v.price != null && v.price !== "" ? String(v.price) : "0.00",
+      ...(v.compare_at_price != null && v.compare_at_price !== "" ? { compareAtPrice: String(v.compare_at_price) } : {}),
       ...(v.sku ? { sku: v.sku } : {}),
       inventoryPolicy: String(v.inventory_policy || "").toLowerCase() === "continue" ? "CONTINUE" : "DENY",
       inventoryItem: { tracked: String(v.inventory_management || "").toLowerCase() === "shopify" },

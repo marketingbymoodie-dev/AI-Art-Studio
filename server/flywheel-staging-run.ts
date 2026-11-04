@@ -147,6 +147,7 @@ export async function runBedEtiquettePromote(): Promise<Record<string, unknown>>
       publishNow: false,
       productTypeId: garment.id,
       pricesBySize: prices.pricesBySize,
+      compareAtBySize: prices.compareAtBySize,
     });
     const size = `shopify ${result.shopifyProductId}; printify ${result.printifyProductId}; status ${result.status}`;
     await recordGenerationEvent(

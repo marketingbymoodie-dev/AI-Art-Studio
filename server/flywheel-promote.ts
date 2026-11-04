@@ -395,6 +395,7 @@ export async function promoteCatalogueCandidate(args: {
   publishNow: boolean;
   productTypeId: number;
   pricesBySize: Record<string, string>;
+  compareAtBySize?: Record<string, string>;
   /** Stop once the refusals are known. Nothing is created. */
   checkOnly?: boolean;
   /** Print file, listing, and mockups are about to be built by the publish button. */
@@ -535,7 +536,7 @@ export async function promoteCatalogueCandidate(args: {
 
   const variantMap: VariantMap = JSON.parse(typeRow.variantMap || "{}");
   const printifyVariants: Array<{ id: number; price: number; is_enabled: boolean }> = [];
-  const shopifyVariants: Array<{ option1: string; option2: string; price: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+  const shopifyVariants: Array<{ option1: string; option2: string; price: string; compare_at_price?: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
   const variantMeta: Array<{ sizeId: string; colorId: string; colorName: string; printifyVariantId: number; studioVariantId: string }> = [];
   const studioIds = typeof typeRow.shopifyVariantIds === "string"
     ? JSON.parse(typeRow.shopifyVariantIds || "{}")
@@ -595,12 +596,14 @@ export async function promoteCatalogueCandidate(args: {
         continue;
       }
       const price = args.pricesBySize[size.name];
+      const compareAt = args.compareAtBySize?.[size.name];
       const printifyVariantId = Number(resolved.entry.printifyVariantId);
       printifyVariants.push({ id: printifyVariantId, price: Math.round(parseFloat(price) * 100), is_enabled: true });
       shopifyVariants.push({
         option1: size.name,
         option2: color.name,
         price,
+        ...(compareAt ? { compare_at_price: compareAt } : {}),
         sku: `FW-${typeRow.id}-${size.id}-${colorId}`,
         inventory_management: null,
         inventory_policy: "continue",
