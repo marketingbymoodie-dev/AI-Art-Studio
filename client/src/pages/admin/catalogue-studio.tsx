@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { formatCatalogueSpend, PUBLISH_PHASE_LABEL } from "@shared/cataloguePublish";
+import { formatCatalogueSpend } from "@shared/cataloguePublish";
+import { initialTickedColours, sortCatalogueColours } from "@shared/flywheelPromote";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
 import AdminLayout from "@/components/admin-layout";
 import { ProductMockup } from "@/components/designer/ProductMockup";
@@ -75,7 +76,7 @@ function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: str
       }
     }
   }
-  return rows;
+  return sortCatalogueColours(rows);
 }
 
 const TRANSFORM = { scale: 1, x: 0, y: 0 };
@@ -93,36 +94,9 @@ const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
 
 type Override = "rule" | "eligible" | "ineligible";
 
-type PublishEvent = {
-  phase?: string;
-  spendUsd?: number;
-  lines?: Array<{ label: string; usd: number; estimated: boolean }>;
-  reasons?: unknown;
-  error?: unknown;
-  productUrl?: string;
-};
+type QueueRow = { id: string; title: string; phase: string; label: string; error: string };
 
-async function readPublishEvents(res: Response, onEvent: (event: PublishEvent) => void) {
-  const reader = res.body?.getReader();
-  if (!reader) {
-    onEvent(await res.json().catch(() => ({})));
-    return;
-  }
-  const decoder = new TextDecoder();
-  let pending = "";
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    pending += decoder.decode(chunk.value, { stream: true });
-    const lines = pending.split("\n");
-    pending = lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      onEvent(JSON.parse(line) as PublishEvent);
-    }
-  }
-  if (pending.trim()) onEvent(JSON.parse(pending) as PublishEvent);
-}
+const ACTIVE_JOB = new Set(["queued", "print", "listing", "mockups", "shopify"]);
 
 function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: string): string {
   const reasons = Array.isArray(body?.reasons)
@@ -156,6 +130,15 @@ export default function CatalogueStudioPage() {
   const panels = useQuery<{ scenes: SceneGroup[] }>({
     queryKey: ["/api/platform/catalogue-studio/panels"],
   });
+  const jobs = useQuery<{ queue: QueueRow[] }>({
+    queryKey: ["/api/platform/catalogue-studio/jobs"],
+    queryFn: async () => {
+      const res = await fetch("/api/platform/catalogue-studio/jobs", { credentials: "include" });
+      if (!res.ok) throw new Error("Could not load the queue");
+      return res.json();
+    },
+    refetchInterval: 2500,
+  });
   const [size, setSize] = useState("L");
   const [color, setColor] = useState("White");
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -179,7 +162,7 @@ export default function CatalogueStudioPage() {
   const [dropReason, setDropReason] = useState("");
   const [dropError, setDropError] = useState("");
   const [publishError, setPublishError] = useState("");
-  const [publishPhase, setPublishPhase] = useState<"" | "check" | "print" | "listing" | "mockups" | "shopify" | "done">("");
+  const [publishBusy, setPublishBusy] = useState(false);
   const [productUrl, setProductUrl] = useState<string | null>(null);
   const [spendUsd, setSpendUsd] = useState(0);
   const [spendLines, setSpendLines] = useState<Array<{ label: string; usd: number; estimated: boolean }>>([]);
@@ -224,7 +207,7 @@ export default function CatalogueStudioPage() {
     setDropReason(candidate.data.dropReason || "");
     setDropError("");
     setPublishError("");
-    setPublishPhase("");
+    setPublishBusy(false);
   }, [candidate.data?.id, candidate.data?.status]);
 
   useEffect(() => {
@@ -240,15 +223,18 @@ export default function CatalogueStudioPage() {
     const next = stored && scenes.some((scene) => scene.panelId === stored)
       ? stored
       : scenes.find((scene) => scene.isDefault)?.panelId || scenes[0].panelId;
-    const colours = candidate.data?.choice.selectedColors ?? [];
+    const scene = scenes.find((row) => row.panelId === next);
+    const available = sceneColours(scene, candidate.data?.colors ?? []);
+    const storedColours = candidate.data?.choice.selectedColors ?? [];
+    const ticks = initialTickedColours(storedColours, available).map(({ name, hex }) => ({ name, hex }));
     setPanelId(next);
-    setTicked(colours);
-    if (!stored) {
+    setTicked(ticks);
+    if (!stored || storedColours.length === 0) {
       void fetch("/api/platform/catalogue-studio/choice", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidateId: candidate.data?.id, panelId: next, selectedColors: colours }),
+        body: JSON.stringify({ candidateId: candidate.data?.id, panelId: next, selectedColors: ticks }),
       });
     }
   }, [candidate.data, panelId]);
@@ -336,66 +322,47 @@ export default function CatalogueStudioPage() {
     </div>
   );
 
-  const publishing = publishPhase === "check" || publishPhase === "print" || publishPhase === "listing" || publishPhase === "mockups" || publishPhase === "shopify";
-  const publishLabel = publishPhase === "check"
-    ? "Checking..."
-    : publishPhase === "print" || publishPhase === "listing" || publishPhase === "mockups" || publishPhase === "shopify" || publishPhase === "done"
-      ? PUBLISH_PHASE_LABEL[publishPhase]
-      : "Promote and publish";
+  const queue = jobs.data?.queue ?? [];
+  const job = queue.find((row) => row.id === candidate.data?.id);
+  const jobActive = ACTIVE_JOB.has(job?.phase || "");
+  const publishLabel = jobActive ? job?.label || "Queued" : "Promote and publish";
 
   async function publishCandidate() {
     setPublishError("");
     setDropError("");
-    setPublishPhase("check");
-    const res = await fetch("/api/platform/catalogue-studio/publish", {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        candidateId: candidate.data?.id,
-        panelId,
-        selectedColors: ticked,
-        artStyle: styleId,
-        species,
-        humourOperator: humour,
-        punchline: wording,
-        title: wording,
-        behaviour,
-        funnyTruth: truth,
-        deviceText: device,
-        deviceStructure,
-        darknessLevel: Number(darkness),
-      }),
-    });
-    let failed = false;
-    const apply = (event: PublishEvent) => {
-      if (typeof event.spendUsd === "number") setSpendUsd(event.spendUsd);
-      if (Array.isArray(event.lines)) setSpendLines(event.lines);
-      if (event.productUrl) setProductUrl(event.productUrl);
-      if (event.phase === "error") {
-        failed = true;
-        const message = refusalMessage(event, "Publish stopped");
+    setPublishBusy(true);
+    try {
+      const res = await fetch("/api/platform/catalogue-studio/publish", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId: candidate.data?.id,
+          panelId,
+          selectedColors: ticked,
+          artStyle: styleId,
+          species,
+          humourOperator: humour,
+          punchline: wording,
+          title: wording,
+          behaviour,
+          funnyTruth: truth,
+          deviceText: device,
+          deviceStructure,
+          darknessLevel: Number(darkness),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = refusalMessage(body, "Publish stopped");
         console.error("[catalogue-studio] publish failed", message);
-        setPublishPhase("");
         setPublishError(message);
         return;
       }
-      if (event.phase === "print" || event.phase === "listing" || event.phase === "mockups" || event.phase === "shopify" || event.phase === "done") {
-        setPublishPhase(event.phase);
-      }
-    };
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      apply({ ...body, phase: "error" });
-      return;
+      await jobs.refetch();
+    } finally {
+      setPublishBusy(false);
     }
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("ndjson")) {
-      apply(await res.json().catch(() => ({ phase: "done" })));
-    } else {
-      await readPublishEvents(res, apply);
-    }
-    if (!failed) await candidate.refetch();
   }
 
   return (
@@ -545,6 +512,23 @@ export default function CatalogueStudioPage() {
               <p className="font-medium">Candidate {candidate.data?.id || "pending-bed-etiquette"}</p>
               <p>Status: {verdict}</p>
             </div>
+            <section className="space-y-1" data-testid="catalogue-studio-queue">
+              <h2 className="font-medium">Queue</h2>
+              {queue.length ? (
+                <ul className="space-y-1">
+                  {queue.map((row) => (
+                    <li key={row.id}>
+                      <Link href={`/admin/catalogue-studio?candidate=${encodeURIComponent(row.id)}`} className="underline">
+                        {row.title || row.id}
+                      </Link>
+                      {row.label ? <span className="text-muted-foreground"> · {row.label}</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground">No designs in the queue.</p>
+              )}
+            </section>
 
             <section className="space-y-2">
               <h2 className="font-medium">Recipe</h2>
@@ -925,17 +909,19 @@ export default function CatalogueStudioPage() {
               <Textarea value={dropReason} onChange={(e) => setDropReason(e.target.value)} placeholder="Drop reason" />
               {dropError ? <p className="text-xs">{dropError}</p> : null}
               {verdict === "dropped" ? <p>Dropped: {dropReason}</p> : null}
-              {publishPhase === "done" ? <p>Done</p> : null}
+              {job?.phase === "done" ? <p>Done</p> : null}
               {productUrl ? (
                 <a className="text-sm underline" href={productUrl} target="_blank" rel="noreferrer" data-testid="catalogue-studio-product-link">
                   Open the Shopify product
                 </a>
               ) : verdict === "dropped" ? null : (
-                <Button type="button" size="sm" disabled={publishing} onClick={() => void publishCandidate()}>
+                <Button type="button" size="sm" disabled={publishBusy || jobActive} onClick={() => void publishCandidate()}>
                   {publishLabel}
                 </Button>
               )}
-              {publishError ? <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError}</p> : null}
+              {publishError || job?.phase === "failed" ? (
+                <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError || job?.label}</p>
+              ) : null}
             </section>
 
             <section className="space-y-1">

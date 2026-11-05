@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { promoteRefusals } from "./flywheelPromote";
-import { formatCatalogueSpend, publishPreflightMessages, publishWork } from "./cataloguePublish";
+import { catalogueJobLabel, formatCatalogueSpend, publishPreflightMessages, publishWork } from "./cataloguePublish";
 
 const ready = {
   printFilePath: "print.png",
@@ -20,6 +20,18 @@ const ready = {
   capMessage: null,
   missingPrices: [] as string[],
 };
+
+describe("catalogue job labels", () => {
+  it("names each queue state, and keeps the failure reason", () => {
+    expect(catalogueJobLabel("queued")).toBe("Queued");
+    expect(catalogueJobLabel("print")).toBe("Preparing print file");
+    expect(catalogueJobLabel("listing")).toBe("Writing listing");
+    expect(catalogueJobLabel("mockups")).toBe("Compositing mockups");
+    expect(catalogueJobLabel("shopify")).toBe("Creating Shopify product");
+    expect(catalogueJobLabel("done")).toBe("Done");
+    expect(catalogueJobLabel("failed", "Printify rejected the product")).toBe("Failed: Printify rejected the product");
+  });
+});
 
 describe("catalogue publish phases", () => {
   it("runs the full chain for a pending import", () => {

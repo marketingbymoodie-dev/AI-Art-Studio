@@ -7,12 +7,34 @@
 export type PublishWorkPhase = "print" | "listing" | "mockups" | "shopify";
 
 export const PUBLISH_PHASE_LABEL: Record<PublishWorkPhase | "done", string> = {
-  print: "Preparing print file...",
-  listing: "Writing listing...",
-  mockups: "Compositing mockups...",
-  shopify: "Creating Shopify product...",
+  print: "Preparing print file",
+  listing: "Writing listing",
+  mockups: "Compositing mockups",
+  shopify: "Creating Shopify product",
   done: "Done",
 };
+
+export type CatalogueJobPhase = "queued" | PublishWorkPhase | "done" | "failed";
+
+const JOB_LABEL: Record<CatalogueJobPhase, string> = {
+  queued: "Queued",
+  print: "Preparing print file",
+  listing: "Writing listing",
+  mockups: "Compositing mockups",
+  shopify: "Creating Shopify product",
+  done: "Done",
+  failed: "Failed",
+};
+
+/** Queue text. A failure includes the reason. */
+export function catalogueJobLabel(phase: string, error = ""): string {
+  const label = JOB_LABEL[phase as CatalogueJobPhase] || "";
+  if (phase === "failed") {
+    const reason = error.replace(/\s+/g, " ").trim();
+    return reason ? `Failed: ${reason}` : "Failed";
+  }
+  return label;
+}
 
 export function publishWork(input: {
   hasPrint: boolean;

@@ -442,6 +442,9 @@ app.use((req, res, next) => {
   }
 
   const PORT = process.env.PORT || 5000;
+  await import("./catalogue-publish-jobs")
+    .then(({ startCataloguePublishJobs }) => startCataloguePublishJobs())
+    .catch((e: any) => console.warn("[catalogue-publish-jobs] startup failed:", e?.message || e));
   httpServer.listen(PORT, () => {
     log(`serving on port ${PORT}`);
     void import("./creator-checkout-webhooks")

@@ -193,6 +193,62 @@ export function printableSizeNames(
     .map((size) => size.name);
 }
 
+/** Storefront and Studio colour order. Missing names are skipped, not filled in. */
+export const CATALOGUE_COLOUR_ORDER = [
+  "White",
+  "Black",
+  "Sage",
+  "Dark grey",
+  "Red",
+  "Light grey",
+  "Blue",
+  "Pink",
+] as const;
+
+export function catalogueColourRank(name: string): number {
+  const index = CATALOGUE_COLOUR_ORDER.findIndex((colour) => colour.toLowerCase() === name.trim().toLowerCase());
+  return index === -1 ? CATALOGUE_COLOUR_ORDER.length : index;
+}
+
+/** Stable sort. Unknown colours stay after the eight, in their original order. */
+export function sortCatalogueColours<T extends { name: string }>(colours: readonly T[]): T[] {
+  return colours
+    .map((colour, index) => ({ colour, index }))
+    .sort((a, b) => catalogueColourRank(a.colour.name) - catalogueColourRank(b.colour.name) || a.index - b.index)
+    .map((row) => row.colour);
+}
+
+/**
+ * An empty stored list has not been chosen yet, so every available colour starts ticked.
+ * A stored subset stays ticked, in catalogue order. Legibility is not an input.
+ */
+export function initialTickedColours<T extends { name: string; hex: string }>(
+  stored: readonly T[],
+  available: readonly T[],
+): T[] {
+  const ordered = sortCatalogueColours(available);
+  if (!stored.length) return ordered.map((colour) => ({ ...colour }));
+  const wanted = new Set(stored.map((colour) => colour.name.toLowerCase()));
+  return ordered.filter((colour) => wanted.has(colour.name.toLowerCase()));
+}
+
+/** Shopify variant positions: catalogue colour order, then XS–3XL inside each colour. */
+export function catalogueVariantPositions(
+  variants: Array<{ id: string; colour: string; size: string }>,
+): Array<{ id: string; position: number }> {
+  const colourOrder: string[] = [];
+  for (const variant of sortCatalogueColours(variants.map((row) => ({ name: row.colour })))) {
+    if (colourOrder.some((name) => name.toLowerCase() === variant.name.toLowerCase())) continue;
+    colourOrder.push(variant.name);
+  }
+  const sorted = [...variants].sort((a, b) => compareColourThenSize(
+    { colour: a.colour, size: a.size },
+    { colour: b.colour, size: b.size },
+    colourOrder,
+  ));
+  return sorted.map((variant, index) => ({ id: variant.id, position: index + 1 }));
+}
+
 export const APPAREL_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"] as const;
 
 /** Unknown labels sort after the canonical run, and keep their own relative order. */

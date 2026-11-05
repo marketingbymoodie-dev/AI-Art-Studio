@@ -281,14 +281,24 @@ export async function uploadPrintFileToPrintify(
   fileName: string,
   buffer: Buffer,
 ): Promise<string> {
-  const res = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ file_name: fileName, contents: buffer.toString("base64") }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Printify upload ${res.status}: ${text.slice(0, 300)}`);
-  const json = text ? JSON.parse(text) : {};
-  if (!json.id) throw new Error("Printify upload returned no image id");
-  return String(json.id);
+  const { paceVendor, vendorRetryDelayMs } = await import("./vendor-backoff");
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor("printify");
+    const res = await fetch(`${PRINTIFY_API_BASE}/uploads/images.json`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ file_name: fileName, contents: buffer.toString("base64") }),
+    });
+    const text = await res.text();
+    const delay = vendorRetryDelayMs(res.status, res.headers.get("retry-after"), attempt);
+    if (delay != null) {
+      console.warn(`[flat-print-file] Printify upload ${res.status} — retry in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Printify upload ${res.status}: ${text.slice(0, 300)}`);
+    const json = text ? JSON.parse(text) : {};
+    if (!json.id) throw new Error("Printify upload returned no image id");
+    return String(json.id);
+  }
 }

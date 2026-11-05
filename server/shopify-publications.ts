@@ -111,24 +111,35 @@ async function adminGraphql<T>(
   query: string,
   variables?: Record<string, unknown>,
 ): Promise<T> {
-  const res = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
-    method: "POST",
-    headers: adminHeaders(accessToken),
-    body: JSON.stringify({ query, variables }),
-    signal: AbortSignal.timeout(ADMIN_FETCH_TIMEOUT_MS),
-  });
-  const json = (await res.json().catch(() => ({}))) as {
-    data?: T;
-    errors?: Array<{ message: string }>;
-  };
-  if (!res.ok) {
-    throw new Error(`Admin GraphQL HTTP ${res.status}`);
+  const { paceVendor, shopifyThrottled, vendorRetryDelayMs } = await import("./vendor-backoff");
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor("shopify");
+    const res = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+      method: "POST",
+      headers: adminHeaders(accessToken),
+      body: JSON.stringify({ query, variables }),
+      signal: AbortSignal.timeout(ADMIN_FETCH_TIMEOUT_MS),
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      data?: T;
+      errors?: Array<{ message: string; extensions?: { code?: string } }>;
+    };
+    const throttled = shopifyThrottled(json);
+    const delay = vendorRetryDelayMs(throttled ? 429 : res.status, res.headers.get("retry-after"), attempt, throttled);
+    if (delay != null) {
+      console.warn(`[shopify-publications] Shopify ${res.status} — retry in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    if (!res.ok) {
+      throw new Error(`Admin GraphQL HTTP ${res.status}`);
+    }
+    if (json.errors?.length) {
+      throw new Error(json.errors.map((e) => e.message).join("; "));
+    }
+    if (!json.data) throw new Error("Admin GraphQL returned no data");
+    return json.data;
   }
-  if (json.errors?.length) {
-    throw new Error(json.errors.map((e) => e.message).join("; "));
-  }
-  if (!json.data) throw new Error("Admin GraphQL returned no data");
-  return json.data;
 }
 
 /**

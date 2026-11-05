@@ -6,8 +6,11 @@ import {
   catalogueTags,
   catalogueVisibility,
   colorPatternMetaobjectFields,
+  catalogueVariantPositions,
   compareColourThenSize,
   formatSizeRange,
+  initialTickedColours,
+  sortCatalogueColours,
   METAOBJECT_SCOPE_REFUSAL,
   mockupAlt,
   mockupFileName,
@@ -137,6 +140,42 @@ describe("flywheel promote decisions", () => {
     expect(formatSizeRange(["S", "M", "L", "XL", "2XL", "3XL", "XS"], ["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toBe("XS–3XL");
     expect(printableSizeNames(map, { name: "Pink", hex: "DD74A1" }, offered)).toEqual(["S", "M", "L", "XL", "2XL", "3XL"]);
     expect(printableSizeNames(map, { name: "White", hex: "FFFFFF" }, offered)).toEqual(["XS"]);
+  });
+
+  it("orders colours White, Black, Sage, Dark grey, Red, Light grey, Blue, Pink", () => {
+    expect(sortCatalogueColours([
+      { name: "Pink" },
+      { name: "White" },
+      { name: "Red" },
+      { name: "Black" },
+      { name: "Blue" },
+      { name: "Sage" },
+      { name: "Light grey" },
+      { name: "Dark grey" },
+    ]).map((row) => row.name)).toEqual([
+      "White", "Black", "Sage", "Dark grey", "Red", "Light grey", "Blue", "Pink",
+    ]);
+  });
+
+  it("starts with every colour ticked, and keeps an operator's subset", () => {
+    const eight = [
+      { name: "Pink", hex: "DD74A1" },
+      { name: "White", hex: "FFFFFF" },
+      { name: "Black", hex: "25282A" },
+    ];
+    expect(initialTickedColours([], eight).map((row) => row.name)).toEqual(["White", "Black", "Pink"]);
+    expect(initialTickedColours([{ name: "Pink", hex: "DD74A1" }], eight).map((row) => row.name)).toEqual(["Pink"]);
+  });
+
+  it("puts Black first when White is absent, with sizes inside each colour", () => {
+    const positions = catalogueVariantPositions([
+      { id: "p", colour: "Pink", size: "S" },
+      { id: "bxs", colour: "Black", size: "XS" },
+      { id: "bs", colour: "Black", size: "S" },
+      { id: "sage", colour: "Sage", size: "M" },
+    ]);
+    expect(positions.map((row) => row.id)).toEqual(["bxs", "bs", "sage", "p"]);
+    expect(positions.map((row) => row.position)).toEqual([1, 2, 3, 4]);
   });
 
   it("puts XS before S, and keeps colour groups in the given order", () => {

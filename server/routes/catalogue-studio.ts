@@ -12,7 +12,7 @@ import { catalogueSpend } from "../catalogue-publish";
 import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
-import { formatSizeRange, printableSizeNames } from "@shared/flywheelPromote";
+import { formatSizeRange, printableSizeNames, sortCatalogueColours } from "@shared/flywheelPromote";
 import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
@@ -118,13 +118,15 @@ async function readCandidateRow(id: string) {
   return row ?? null;
 }
 
-async function operatorQueue(): Promise<Array<{ id: string }>> {
+async function operatorQueue(): Promise<Array<{ id: string; title: string }>> {
   const { db } = await import("../db");
   const rows = await db
     .select({
       id: designCandidates.id,
       status: designCandidates.status,
       createdAt: designCandidates.createdAt,
+      title: designCandidates.title,
+      punchline: designCandidates.punchline,
     })
     .from(designCandidates)
     .where(and(
@@ -136,7 +138,10 @@ async function operatorQueue(): Promise<Array<{ id: string }>> {
         and(eq(designCandidates.status, "approved"), isNull(designCandidates.shopifyProductId)),
       ),
     ));
-  return sortOperatorQueue(rows).map((row) => ({ id: row.id }));
+  return sortOperatorQueue(rows).map((row) => ({
+    id: row.id,
+    title: String(row.title || row.punchline || "").trim(),
+  }));
 }
 
 async function resolveStudioCandidateId(value: unknown): Promise<{ id: string } | { error: string }> {
@@ -219,7 +224,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       for (const scene of scenes) {
         for (const color of scene.colours) colourByName.set(color.name, { name: color.name, hex: color.hex });
       }
-      const colours = [...colourByName.values()];
+      const colours = sortCatalogueColours([...colourByName.values()]);
       const colourSizes: Record<string, string> = {};
       const offeredNames = offered.map((size) => size.name);
       for (const color of colours) {
@@ -645,6 +650,17 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
   });
 
+  app.get("/api/platform/catalogue-studio/jobs", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { listCatalogueJobQueue } = await import("../catalogue-publish-jobs");
+      const queue = await listCatalogueJobQueue(await operatorQueue());
+      res.json({ queue });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
   app.post("/api/platform/catalogue-studio/publish", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
@@ -653,69 +669,54 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
     const id = await candidateIdFor(res, req.body?.candidateId);
     if (!id) return;
-    let streamed = false;
-    const writeEvent = (event: unknown) => {
-      if (!streamed) {
-        res.status(200);
-        res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-        res.setHeader("Cache-Control", "no-store");
-        res.setHeader("X-Accel-Buffering", "no");
-        if (typeof res.flushHeaders === "function") res.flushHeaders();
-        streamed = true;
-      }
-      res.write(`${JSON.stringify(event)}\n`);
-      const flush = (res as Response & { flush?: () => void }).flush;
-      if (typeof flush === "function") flush.call(res);
-    };
     try {
-      const { publishCatalogueCandidate } = await import("../catalogue-publish");
-      const prices = await shippingPricesBySize();
-      const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
-      const result = await publishCatalogueCandidate({
-        pricesBySize: prices.pricesBySize,
-        compareAtBySize: prices.compareAtBySize,
-        onPhase: writeEvent,
-        recipe: {
-          candidateId: id,
-          panelId: String(req.body?.panelId || ""),
-          selectedColors: colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
-          artStyle: String(req.body?.artStyle || ""),
-          species: String(req.body?.species || ""),
-          humourOperator: String(req.body?.humourOperator || ""),
-          punchline: String(req.body?.punchline || req.body?.wording || ""),
-          behaviour: String(req.body?.behaviour || ""),
-          funnyTruth: String(req.body?.funnyTruth || ""),
-          deviceText: String(req.body?.deviceText || ""),
-          deviceStructure: String(req.body?.deviceStructure || ""),
-          darknessLevel: Number(req.body?.darknessLevel),
-          title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
-        },
-      });
-      if (!streamed) {
-        res.json({ phase: "done", ...result });
+      const stored = await readCandidateRow(id);
+      if (stored?.shopifyProductId) {
+        res.json({ id, phase: "done", label: "Done", error: "" });
         return;
       }
-      res.end();
+      const { enqueueCataloguePublish } = await import("../catalogue-publish-jobs");
+      const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
+      const job = await enqueueCataloguePublish({
+        candidateId: id,
+        panelId: String(req.body?.panelId || ""),
+        selectedColors: sortCatalogueColours(colors.map((c: { name?: string; hex?: string }) => ({
+          name: String(c?.name || ""),
+          hex: String(c?.hex || "").replace(/^#/, ""),
+        }))).filter((color) => color.name),
+        artStyle: String(req.body?.artStyle || ""),
+        species: String(req.body?.species || ""),
+        humourOperator: String(req.body?.humourOperator || ""),
+        punchline: String(req.body?.punchline || req.body?.wording || ""),
+        behaviour: String(req.body?.behaviour || ""),
+        funnyTruth: String(req.body?.funnyTruth || ""),
+        deviceText: String(req.body?.deviceText || ""),
+        deviceStructure: String(req.body?.deviceStructure || ""),
+        darknessLevel: Number(req.body?.darknessLevel),
+        title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
+      });
+      res.json(job);
     } catch (e: any) {
       const { PublishRefusal } = await import("../catalogue-publish");
       const reasons = e instanceof PublishRefusal && e.reasons.length
         ? e.reasons
         : [String(e?.message || e)];
-      if (!streamed) {
-        res.status(400).json({ error: reasons.join("\n"), reasons });
-        return;
-      }
-      let spendUsd = 0;
-      let lines: Array<{ label: string; usd: number; estimated: boolean }> = [];
-      try {
-        const spend = await catalogueSpend(id);
-        spendUsd = spend.totalUsd;
-        lines = spend.lines;
-      } catch {
-        spendUsd = 0;
-      }
-      writeEvent({ phase: "error", reasons, spendUsd, lines });
-      res.end();
+      res.status(400).json({ error: reasons.join("\n"), reasons });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/reorder-colours", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue colour order is staging only." });
+      return;
+    }
+    try {
+      const { reorderStagingCatalogueColours } = await import("../catalogue-colour-order");
+      const products = await reorderStagingCatalogueColours();
+      res.json({ products });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
     }
   });
 

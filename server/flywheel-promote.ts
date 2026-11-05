@@ -16,6 +16,7 @@ import {
   catalogueVisibility,
   compareColourThenSize,
   sortApparelSizeNames,
+  sortCatalogueColours,
   mockupAlt,
   mockupFileName,
   variantMediaAssignments,
@@ -43,6 +44,7 @@ import {
   deleteProductRestCompat,
 } from "./shopify-product-graphql";
 import { storage } from "./storage";
+import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
 const PRINTIFY_API = "https://api.printify.com/v1";
 const SHOPIFY_API = "2025-10";
@@ -111,24 +113,50 @@ function slug(value: string): string {
 }
 
 async function adminGql(shop: string, token: string, query: string, variables: Record<string, unknown> = {}) {
-  const res = await fetch(`https://${shop}/admin/api/${SHOPIFY_API}/graphql.json`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.errors?.length) {
-    const message = json?.errors?.map((err: { message?: string }) => err.message).filter(Boolean).join("; ");
-    throw new Error(message || `Shopify HTTP ${res.status}`);
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor("shopify");
+    const res = await fetch(`https://${shop}/admin/api/${SHOPIFY_API}/graphql.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
+      body: JSON.stringify({ query, variables }),
+    });
+    const json = await res.json().catch(() => ({}));
+    const throttled = shopifyThrottled(json);
+    const delay = vendorRetryDelayMs(throttled ? 429 : res.status, res.headers.get("retry-after"), attempt, throttled);
+    if (delay != null) {
+      console.warn(`[flywheel-promote] Shopify ${res.status} — retry in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    if (!res.ok || json?.errors?.length) {
+      const message = json?.errors?.map((err: { message?: string }) => err.message).filter(Boolean).join("; ");
+      throw new Error(message || `Shopify HTTP ${res.status}`);
+    }
+    return json.data;
   }
-  return json.data;
+}
+
+async function printifyRequest(token: string, path: string, init: RequestInit, lane: "printify" | "printify-product"): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor(lane);
+    const res = await fetch(`${PRINTIFY_API}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+    });
+    const delay = vendorRetryDelayMs(res.status, res.headers.get("retry-after"), attempt);
+    if (delay == null) return res;
+    await res.arrayBuffer().catch(() => undefined);
+    console.warn(`[flywheel-promote] Printify ${res.status} ${path} — retry in ${delay}ms`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
 }
 
 export async function deletePrintifyProduct(shopId: string, productId: string, token: string): Promise<void> {
-  const res = await fetch(`${PRINTIFY_API}/shops/${shopId}/products/${productId}.json`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await printifyRequest(token, `/shops/${shopId}/products/${productId}.json`, { method: "DELETE" }, "printify");
   if (!res.ok && res.status !== 404) {
     throw new Error(`Printify product ${productId} was left behind. Delete returned HTTP ${res.status}.`);
   }
@@ -616,7 +644,10 @@ export async function promoteCatalogueCandidate(args: {
     }
   }
   if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
-  const colourOrder = choice.selectedColors.map((color) => color.name);
+  const orderedColours = sortCatalogueColours(choice.selectedColors).filter((color, index, list) =>
+    list.findIndex((row) => row.name.toLowerCase() === color.name.toLowerCase()) === index,
+  );
+  const colourOrder = orderedColours.map((color) => color.name);
   const variantOrder = shopifyVariants
     .map((_, index) => index)
     .sort((left, right) => compareColourThenSize(
@@ -649,9 +680,8 @@ export async function promoteCatalogueCandidate(args: {
   const imageId = await uploadPrintFileToPrintify(merchant!.printifyApiToken!, `${handle}-front.png`, printBuffer);
   let printifyProductId = "";
   try {
-    const created = await fetch(`${PRINTIFY_API}/shops/${merchant!.printifyShopId}/products.json`, {
+    const created = await printifyRequest(merchant!.printifyApiToken!, `/shops/${merchant!.printifyShopId}/products.json`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${merchant!.printifyApiToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         title: title.slice(0, 250),
         description,
@@ -667,7 +697,7 @@ export async function promoteCatalogueCandidate(args: {
         }],
         tags,
       }),
-    });
+    }, "printify-product");
     const text = await created.text();
     const body = text ? JSON.parse(text) : {};
     if (!created.ok || !body?.id) {
@@ -680,7 +710,7 @@ export async function promoteCatalogueCandidate(args: {
 
   const images = [];
   try {
-    for (const color of choice.selectedColors) {
+    for (const color of orderedColours) {
       const stored = choice.mockupImages.find((image) => image.name === color.name);
       if (!stored) throw new PromoteRefusal([`No stored mockup for ${color.name}.`]);
       images.push({
@@ -703,7 +733,7 @@ export async function promoteCatalogueCandidate(args: {
     tags,
     options: [
       { name: "Size", values: sortApparelSizeNames(orderedShopifyVariants.map((variant) => variant.option1)) },
-      { name: "Color", values: choice.selectedColors.map((color) => color.name) },
+      { name: "Color", values: colourOrder },
     ],
     variants: orderedShopifyVariants,
     metafields: [{
@@ -761,7 +791,7 @@ export async function promoteCatalogueCandidate(args: {
       shop,
       token: installation!.accessToken,
       shopifyProductId: data.productSet.product.id,
-      colours: choice.selectedColors,
+      colours: orderedColours,
     });
   } catch (err) {
     if (shopifyProductId) {
