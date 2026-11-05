@@ -4,6 +4,7 @@
  */
 import { eq, and, isNotNull, ne } from "drizzle-orm";
 import {
+  apparelSizeRank,
   catalogueVariantPositions,
   sortCatalogueColours,
 } from "@shared/flywheelPromote";
@@ -43,9 +44,13 @@ async function adminGql(shop: string, token: string, query: string, variables: R
   }
 }
 
-function optionValueOrder(option: ProductOption): Array<{ id: string }> {
-  const ranked = sortCatalogueColours(option.optionValues.map((value) => ({ name: value.name, id: value.id })));
-  return ranked.map((value) => ({ id: value.id }));
+function optionReorderInput(option: ProductOption): { id: string; values: Array<{ id: string }> } {
+  const values = /^colou?r$/i.test(option.name)
+    ? sortCatalogueColours(option.optionValues)
+    : option.name.toLowerCase() === "size"
+      ? [...option.optionValues].sort((a, b) => apparelSizeRank(a.name) - apparelSizeRank(b.name) || a.name.localeCompare(b.name))
+      : option.optionValues;
+  return { id: option.id, values: values.map((value) => ({ id: value.id })) };
 }
 
 export async function reorderStagingCatalogueColours(): Promise<Array<{
@@ -90,7 +95,6 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
       const options = (product.options || []) as ProductOption[];
       const colour = options.find((option) => /^colou?r$/i.test(option.name));
       if (!colour) throw new Error("No Color option");
-      const orderedValues = optionValueOrder(colour);
       const reordered = await adminGql(STAGING_SHOP, installation.accessToken, `
         mutation($productId: ID!, $options: [OptionReorderInput!]!) {
           productOptionsReorder(productId: $productId, options: $options) {
@@ -99,7 +103,7 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
         }
       `, {
         productId: productGid,
-        options: [{ id: colour.id, values: orderedValues }],
+        options: options.map(optionReorderInput),
       });
       const optionErrors = reordered?.productOptionsReorder?.userErrors || [];
       if (optionErrors.length) {
