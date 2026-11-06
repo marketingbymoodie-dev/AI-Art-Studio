@@ -1,0 +1,63 @@
+/**
+ * My Pet's own Supabase bucket — shopper-uploaded pet photos and generated
+ * (non-print-ready) previews. Kept separate from the operator's curated
+ * `mockup-library` bucket so the 7-day/30-day sweeps only ever touch
+ * shopper-submitted content, never catalogue artwork.
+ */
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+
+const BUCKET = "my-pet";
+
+let clientMemo: SupabaseClient | null | undefined;
+
+function supabase(): SupabaseClient {
+  if (clientMemo !== undefined && clientMemo) return clientMemo;
+  const url = process.env.SUPABASE_URL ?? "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  if (!url || !key) throw new Error("Supabase is not configured");
+  clientMemo = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return clientMemo;
+}
+
+async function ensureBucket(): Promise<void> {
+  const c = supabase();
+  const { data } = await c.storage.getBucket(BUCKET);
+  if (data) return;
+  const { error } = await c.storage.createBucket(BUCKET, { public: false, fileSizeLimit: "25MB" });
+  if (error && !/already exists/i.test(error.message)) throw new Error(error.message);
+}
+
+export async function putMyPetObject(path: string, body: Buffer, contentType = "image/png"): Promise<void> {
+  await ensureBucket();
+  const { error } = await supabase().storage.from(BUCKET).upload(path, body, { contentType, upsert: true });
+  if (error) throw new Error(error.message);
+}
+
+export async function getMyPetObject(path: string): Promise<Buffer> {
+  const { data, error } = await supabase().storage.from(BUCKET).download(path);
+  if (error || !data) throw new Error(error?.message || `Missing ${path}`);
+  return Buffer.from(await data.arrayBuffer());
+}
+
+export async function removeMyPetObjects(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  await ensureBucket();
+  const { error } = await supabase().storage.from(BUCKET).remove(paths);
+  if (error && !/not found/i.test(error.message)) throw new Error(error.message);
+}
+
+/** Short-lived signed URL — re-signed on demand, never persisted. */
+export async function signedMyPetUrl(path: string, expiresInSec = 60 * 60): Promise<string> {
+  const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, expiresInSec);
+  if (error || !data?.signedUrl) throw new Error(error?.message || "Could not sign the stored file");
+  return data.signedUrl;
+}
+
+export function decodeDataUrlOrBase64Image(raw: string): Buffer {
+  const str = String(raw || "");
+  const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(str);
+  const b64 = match ? match[3] : str;
+  const buf = Buffer.from(b64, "base64");
+  if (buf.length < 32) throw new Error("The uploaded photo is empty");
+  return buf;
+}

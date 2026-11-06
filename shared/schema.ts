@@ -1424,6 +1424,83 @@ export const catalogueCandidateChoices = pgTable("catalogue_candidate_choices", 
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// My Pet — storefront pet-swap on a published Petposterous catalogue design. See
+// shared/myPetSettings.ts for the prompt/caps logic that reads/writes these rows.
+
+/** One row per shop. Seeded lazily with defaults on first read (see server/my-pet.ts). */
+export const myPetSettings = pgTable("my_pet_settings", {
+  shopDomain: text("shop_domain").primaryKey(),
+  basePrompt: text("base_prompt").notNull(),
+  /** { [artStyleId]: "tweak line" } — only non-blank styles are stored. */
+  styleTweaks: jsonb("style_tweaks").$type<Record<string, string>>().notNull().default(sql`'{}'::jsonb`),
+  capPerListing: integer("cap_per_listing").notNull().default(2),
+  capPerDay: integer("cap_per_day").notNull().default(20),
+  capEmailBonus: integer("cap_email_bonus").notNull().default(2),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type MyPetSettingsRow = typeof myPetSettings.$inferSelect;
+
+/** One uploaded shopper photo, keyed to their device cookie. Deleted after 7 days unless `orderId` is set. */
+export const myPetPetPhotos = pgTable("my_pet_pet_photos", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  /** Value of the signed device cookie — not a login identity. */
+  deviceKey: text("device_key").notNull(),
+  storagePath: text("storage_path").notNull(),
+  /** Set once the design carrying this photo is purchased — exempts the row from the 7-day sweep. */
+  orderId: text("order_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_pet_photos_device_idx").on(table.shopDomain, table.deviceKey),
+]);
+export type MyPetPetPhoto = typeof myPetPetPhotos.$inferSelect;
+
+/** One generated pet-swap render. Backs per-listing/per-day caps and the 30-day email-link preview. */
+export const myPetRenders = pgTable("my_pet_renders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  deviceKey: text("device_key").notNull(),
+  /** Caps combine cookie + IP (plan: "no login, cookie + IP") — this backs the IP-scoped half. */
+  clientIp: text("client_ip"),
+  shopifyProductId: text("shopify_product_id").notNull(),
+  candidateId: text("candidate_id").notNull(),
+  petPhotoId: varchar("pet_photo_id").notNull(),
+  /** Edited (non-print-ready) preview artwork — storage path, not a public URL. */
+  previewPath: text("preview_path").notNull(),
+  /** generationJobs.id for the lightweight job created for this render (shadow mint + fulfillment hook). */
+  jobId: varchar("job_id"),
+  colorId: text("color_id"),
+  sizeId: text("size_id"),
+  durationMs: integer("duration_ms"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 4 }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_renders_device_product_idx").on(table.shopDomain, table.deviceKey, table.shopifyProductId),
+  index("my_pet_renders_device_day_idx").on(table.shopDomain, table.deviceKey, table.createdAt),
+  index("my_pet_renders_ip_product_idx").on(table.shopDomain, table.clientIp, table.shopifyProductId),
+  index("my_pet_renders_ip_day_idx").on(table.shopDomain, table.clientIp, table.createdAt),
+]);
+export type MyPetRender = typeof myPetRenders.$inferSelect;
+
+/** One email-save token. Grants the per-product email bonus and resolves the save-by-email link for 30 days. */
+export const myPetEmailCaptures = pgTable("my_pet_email_captures", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  deviceKey: text("device_key").notNull(),
+  shopifyProductId: text("shopify_product_id").notNull(),
+  renderId: varchar("render_id").notNull(),
+  email: text("email").notNull(),
+  marketingConsent: boolean("marketing_consent").notNull().default(false),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_email_captures_device_product_idx").on(table.shopDomain, table.deviceKey, table.shopifyProductId),
+]);
+export type MyPetEmailCapture = typeof myPetEmailCaptures.$inferSelect;
+
 // Design Products — permanent, browsable Shopify products merchants publish from a saved
 // My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns
 // (ephemeral shadow SKUs for a single anonymous customer's cart), these are real catalog

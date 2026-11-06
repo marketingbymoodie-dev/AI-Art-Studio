@@ -86,6 +86,9 @@ import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { getCreatorPlatformShopCandidates } from "./creator-config";
 import { flagOrderNeedsAttention, type AttentionLine } from "./fulfillment-attention";
+import { PRINTIFY_FULL_BLEED } from "@shared/flywheelPromote";
+import { buildMyPetPrintArea } from "./my-pet-print-file";
+import { markMyPetPhotoPurchased } from "./my-pet";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
@@ -229,11 +232,31 @@ export type ResolvedAopDesign = {
   colorId: string;
 };
 
+/**
+ * A My Pet design — a pet-swap image edit of a flywheel catalogue design,
+ * never baked through flat-calibration (the catalogue's single product type
+ * has none). Its own print file is built fresh from the stored edited
+ * artwork (server/my-pet-print-file.ts) at order time.
+ */
+export type ResolvedPetDesign = {
+  designId: string;
+  shop: string;
+  job: GenerationJob;
+  productType: ProductType;
+  merchant: Merchant;
+  artStyle: string;
+  editedArtworkPath: string;
+  petPhotoId: string | null;
+  sizeId: string;
+  colorId: string;
+};
+
 export type ResolveResult =
   | { ok: true; kind: "flat"; design: ResolvedFlatDesign }
   | { ok: true; kind: "tote_folded"; design: ResolvedToteFoldedDesign }
   | { ok: true; kind: "product_reference"; design: ResolvedProductReferenceDesign }
   | { ok: true; kind: "aop"; design: ResolvedAopDesign }
+  | { ok: true; kind: "pet_design"; design: ResolvedPetDesign }
   | { ok: false; skip: true; reason: string; attention?: boolean; unidentified?: boolean }
   | { ok: false; skip: false; reason: string; attention?: boolean; unidentified?: boolean };
 
@@ -579,6 +602,57 @@ async function resolveDesignForOrderLineInner(
   }
 
   const designState = parseJson<Record<string, any>>(job.designState, {});
+
+  // My Pet designs never go through flat-calibration (the flywheel catalogue's
+  // product type has none) — resolve and return before any of that logic runs.
+  if (designState?.source === "my-pet") {
+    const petProductTypeId = Number(job.productTypeId);
+    if (!Number.isFinite(petProductTypeId)) {
+      return { ok: false, skip: false, reason: `my-pet design ${designId} has no productTypeId` };
+    }
+    const petProductType = await storage.getProductType(petProductTypeId);
+    if (!petProductType) {
+      return { ok: false, skip: true, reason: `product type ${petProductTypeId} not found` };
+    }
+    if (!petProductType.merchantId) {
+      return { ok: false, skip: false, reason: `product type ${petProductTypeId} has no merchant` };
+    }
+    const petMerchant = await storage.getMerchant(petProductType.merchantId);
+    if (!petMerchant || !petMerchant.printifyApiToken || !petMerchant.printifyShopId) {
+      return { ok: false, skip: false, reason: `merchant for product type ${petProductTypeId} missing Printify credentials` };
+    }
+    const editedArtworkPath = String(designState.editedArtworkPath || "");
+    if (!editedArtworkPath) {
+      return { ok: false, skip: false, reason: `my-pet design ${designId} has no stored edited artwork` };
+    }
+    const { sizeId, colorId } = pickFlatOrderSizeColor({
+      designProductSizeId: designProductOverride?.sizeId,
+      designProductColorId: designProductOverride?.colorId,
+      designStateSize: designState?.sizeId,
+      designStateColor: designState?.colorName,
+      lineSize: line.properties["_size"] || line.properties["Size"],
+      lineColor: line.properties["_color"] || line.properties["Color"],
+      jobSize: job.size,
+      jobColor: job.frameColor,
+    });
+    return {
+      ok: true,
+      kind: "pet_design",
+      design: {
+        designId,
+        shop: resolvedShop,
+        job,
+        productType: petProductType,
+        merchant: petMerchant,
+        artStyle: String(designState.artStyle || ""),
+        editedArtworkPath,
+        petPhotoId: designState.petPhotoId ? String(designState.petPhotoId) : null,
+        sizeId,
+        colorId,
+      },
+    };
+  }
+
   const flatPlacerState = designState?.flatPlacerState as
     | {
         placements?: Partial<Record<ViewName, FlatPlacement>>;
@@ -1330,6 +1404,39 @@ export async function submitFlatOrderToPrintify(
         external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
         print_areas: printAreas,
       });
+      continue;
+    }
+
+    // My Pet: build the print file fresh from the stored pet-edited artwork
+    // (built only now, on purchase — never at preview time) and submit it
+    // full-bleed, same as a catalogue promote image.
+    if (resolved.kind === "pet_design") {
+      let printArea: { url: string; path: string };
+      try {
+        printArea = await buildMyPetPrintArea({
+          renderId: designId,
+          editedArtworkPath: resolved.design.editedArtworkPath,
+          artStyle: resolved.design.artStyle,
+          productTypePlaceholderPositions: productType.placeholderPositions,
+          productTypeName: productType.name,
+        });
+      } catch (e: any) {
+        holdLine(line, `my-pet print file failed: ${e?.message || e}`);
+        continue;
+      }
+      queuedLines.push(lineQueued);
+      allUrls[`${designId}:front`] = printArea.url;
+      lineItems.push({
+        print_provider_id: target.providerId,
+        blueprint_id: target.blueprintId,
+        variant_id: target.printifyVariantId,
+        quantity: line.quantity,
+        external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
+        print_areas: { front: [{ src: printArea.url, ...PRINTIFY_FULL_BLEED, angle: 0 }] },
+      });
+      if (resolved.design.petPhotoId) {
+        void markMyPetPhotoPurchased(resolved.design.petPhotoId, String(shopifyOrderId || line.lineId));
+      }
       continue;
     }
 

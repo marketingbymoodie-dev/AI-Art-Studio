@@ -1,0 +1,85 @@
+{% comment %}
+  My Pet — storefront pet-swap on a published Petposterous catalogue design.
+  Shows only when ai_art_studio.my_pet_enabled is true AND the product carries
+  ai_art_studio.design_candidate_id (set by the flywheel catalogue promote step).
+  Default placement: below colour swatches, above Add to cart, full width.
+{% endcomment %}
+
+{% assign candidate_id = product.metafields.ai_art_studio.design_candidate_id.value %}
+{% assign my_pet_enabled = product.metafields.ai_art_studio.my_pet_enabled.value %}
+
+{% if candidate_id != blank and my_pet_enabled != false %}
+  {% assign button_label = block.settings.button_label | default: "My Pet" %}
+  {% assign caption_text = block.settings.caption_text | default: "See your pet on this design" %}
+
+  <div
+    class="appai-my-pet"
+    id="appai-my-pet-{{ block.id }}"
+    data-candidate-id="{{ candidate_id | escape }}"
+    data-product-id="{{ product.id }}"
+    data-shop-domain="{{ shop.permanent_domain }}"
+    data-variants="{{ product.variants | json | escape }}"
+    data-option-names="{{ product.options_with_values | map: 'name' | join: '::' | escape }}"
+    data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
+    data-page-url="{{ shop.url }}{{ product.url }}"
+  >
+    <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
+      {{ button_label | escape }}
+    </button>
+    {% if caption_text != blank %}
+      <p class="appai-my-pet__caption">{{ caption_text | escape }}</p>
+    {% endif %}
+  </div>
+  <script src="{{ 'appai-my-pet.js' | asset_url }}" defer></script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "My Pet",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Button label",
+      "default": "My Pet"
+    },
+    {
+      "type": "text",
+      "id": "caption_text",
+      "label": "Caption",
+      "default": "See your pet on this design"
+    }
+  ]
+}
+{% endschema %}
+
+<style>
+  .appai-my-pet {
+    width: 100%;
+    margin: 0.75rem 0;
+  }
+  .appai-my-pet__button {
+    display: block;
+    width: 100%;
+    padding: 0.85em 1.5em;
+    font-size: 1em;
+    font-weight: 600;
+    border-radius: var(--appai-my-pet-radius, 4px);
+    cursor: pointer;
+    /* Matches the theme's secondary button via CSS vars set by appai-my-pet.js
+       (extractStoreTheme-style sampling); safe neutral fallback below. */
+    background: var(--appai-my-pet-bg, #ffffff);
+    color: var(--appai-my-pet-fg, #111111);
+    border: 1px solid var(--appai-my-pet-border, #111111);
+  }
+  .appai-my-pet__button:hover {
+    opacity: 0.85;
+  }
+  .appai-my-pet__caption {
+    margin: 0.4em 0 0;
+    font-size: 0.8em;
+    text-align: center;
+    color: var(--appai-my-pet-caption-fg, #666666);
+  }
+</style>

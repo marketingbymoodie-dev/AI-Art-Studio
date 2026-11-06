@@ -26579,6 +26579,8 @@ ${orientationExtra}
   registerShippingRoutes(app, { isAuthenticated });
   const { registerCatalogueStudioRoutes } = await import("./routes/catalogue-studio");
   registerCatalogueStudioRoutes(app, { isAuthenticated });
+  const { registerMyPetRoutes } = await import("./routes/my-pet");
+  registerMyPetRoutes(app, { isAuthenticated });
   // Shipping Coverage Service: boot catch-up (lastRunAt-guarded) + nightly diff sync.
   const { scheduleShippingTablesSync } = await import("./shipping-tables");
   scheduleShippingTablesSync();

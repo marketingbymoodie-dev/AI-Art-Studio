@@ -39,6 +39,7 @@ import { readChoice, readLibraryObject, signedLibraryUrl } from "./mockup-librar
 import { assertProductTypeReadyToPromote } from "./promote-shipping";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { attachVariantToShipping } from "./shipping-reconciler";
+import { ensureMyPetMetafieldDefinition } from "./my-pet-metafields";
 import {
   buildProductSetInput,
   deleteProductRestCompat,
@@ -724,6 +725,10 @@ export async function promoteCatalogueCandidate(args: {
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
   }
 
+  // Idempotent — ensures the admin checkbox exists. Best-effort; a missing pinned
+  // definition only affects the admin UI, not the metafield write below.
+  await ensureMyPetMetafieldDefinition(shop, installation!.accessToken);
+
   const input = buildProductSetInput({
     title,
     body_html: description,
@@ -736,12 +741,22 @@ export async function promoteCatalogueCandidate(args: {
       { name: "Color", values: colourOrder },
     ],
     variants: orderedShopifyVariants,
-    metafields: [{
-      namespace: "ai_art_studio",
-      key: "design_candidate_id",
-      type: "single_line_text_field",
-      value: args.candidateId,
-    }],
+    metafields: [
+      {
+        namespace: "ai_art_studio",
+        key: "design_candidate_id",
+        type: "single_line_text_field",
+        value: args.candidateId,
+      },
+      // Per-product on/off switch for the storefront "My Pet" button. Default on;
+      // the pinned definition (ensured below) makes this a checkbox in admin.
+      {
+        namespace: "ai_art_studio",
+        key: "my_pet_enabled",
+        type: "boolean",
+        value: "true",
+      },
+    ],
   }) as Record<string, unknown>;
   input.handle = handle;
   input.category = categoryId;
