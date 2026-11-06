@@ -2273,6 +2273,77 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  // My Pet — storefront pet-swap on a published Petposterous catalogue design.
+  // SQL matches shared/schema.ts's myPetSettings/myPetPetPhotos/myPetRenders/
+  // myPetEmailCaptures exactly (see shared/myPetSettings.ts for the logic that
+  // reads/writes these rows).
+  {
+    name: "my_pet_settings",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_settings" (
+        "shop_domain" text PRIMARY KEY,
+        "base_prompt" text NOT NULL,
+        "style_tweaks" jsonb NOT NULL DEFAULT '{}'::jsonb,
+        "cap_per_listing" integer NOT NULL DEFAULT 2,
+        "cap_per_day" integer NOT NULL DEFAULT 20,
+        "cap_email_bonus" integer NOT NULL DEFAULT 2,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_pet_photos",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_pet_photos" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "storage_path" text NOT NULL,
+        "order_id" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_renders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_renders" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "client_ip" text,
+        "shopify_product_id" text NOT NULL,
+        "candidate_id" text NOT NULL,
+        "pet_photo_id" varchar NOT NULL,
+        "preview_path" text NOT NULL,
+        "job_id" varchar,
+        "color_id" text,
+        "size_id" text,
+        "duration_ms" integer,
+        "estimated_cost_usd" numeric(10,4),
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_email_captures",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_email_captures" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "shopify_product_id" text NOT NULL,
+        "render_id" varchar NOT NULL,
+        "email" text NOT NULL,
+        "marketing_consent" boolean NOT NULL DEFAULT false,
+        "token" text NOT NULL UNIQUE,
+        "expires_at" timestamp NOT NULL,
+        "resolved_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
   {
     name: "design_candidates",
     sql: `
@@ -2318,6 +2389,36 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "mockup_panels_type_view_idx",
     sql: `CREATE INDEX IF NOT EXISTS "mockup_panels_type_view_idx"
       ON "mockup_panels" ("product_type_id", "view", "panel_id")`,
+  },
+  {
+    name: "my_pet_pet_photos_device_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_pet_photos_device_idx"
+      ON "my_pet_pet_photos" ("shop_domain", "device_key")`,
+  },
+  {
+    name: "my_pet_renders_device_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_device_product_idx"
+      ON "my_pet_renders" ("shop_domain", "device_key", "shopify_product_id")`,
+  },
+  {
+    name: "my_pet_renders_device_day_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_device_day_idx"
+      ON "my_pet_renders" ("shop_domain", "device_key", "created_at")`,
+  },
+  {
+    name: "my_pet_renders_ip_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_ip_product_idx"
+      ON "my_pet_renders" ("shop_domain", "client_ip", "shopify_product_id")`,
+  },
+  {
+    name: "my_pet_renders_ip_day_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_ip_day_idx"
+      ON "my_pet_renders" ("shop_domain", "client_ip", "created_at")`,
+  },
+  {
+    name: "my_pet_email_captures_device_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_email_captures_device_product_idx"
+      ON "my_pet_email_captures" ("shop_domain", "device_key", "shopify_product_id")`,
   },
   {
     name: "design_candidates_shop_status_idx",
