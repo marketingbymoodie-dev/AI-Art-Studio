@@ -5,7 +5,7 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import { isMyPetSettingsShop } from "@shared/myPetSettings";
 import { clientIpFromReq } from "../creator-rate-limit";
-import { ensureMyPetDeviceKey } from "../my-pet-device";
+import { ensureMyPetDeviceKeyFromProxy } from "../my-pet-device";
 import {
   MyPetCandidateIneligibleError,
   checkMyPetCap,
@@ -72,26 +72,35 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
   });
 
   // ── Storefront (App Proxy) ──────────────────────────────────────────────
+  //
+  // IMPORTANT: Shopify App Proxy strips the Cookie header before forwarding
+  // storefront requests to the backend. The signed device key must flow in the
+  // request body/query (sent by appai-my-pet.js from localStorage) and be
+  // echoed back in every success response as `deviceKey` so the client can
+  // persist/refresh it. The HMAC in the signed blob prevents a shopper from
+  // hand-crafting someone else's uuid to pool caps.
   app.get("/api/proxy/my-pet/cap-status", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
     const shopifyProductId = String(req.query.productId || "");
     if (!shop || !shopifyProductId) return res.status(400).json({ error: "productId is required" });
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     const clientIp = clientIpFromReq(req);
     const result = await checkMyPetCap({ shop, shopifyProductId, deviceKey, clientIp });
-    res.json(result);
+    res.json({ ...result, deviceKey: signed });
   });
 
   app.post("/api/proxy/my-pet/upload-photo", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
     const imageData = String(req.body?.imageData || "");
     if (!shop || !imageData) return res.status(400).json({ error: "imageData is required" });
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
       const { photoId } = await uploadMyPetPhoto(shop, deviceKey, imageData);
-      res.json({ ok: true, photoId });
+      res.json({ ok: true, photoId, deviceKey: signed });
     } catch (err: any) {
-      res.status(400).json({ error: err?.message || "Could not upload photo" });
+      // User-facing (photo too large / bad data) — surface at 200 so Shopify's
+      // App Proxy doesn't wrap it in HTML. Server crashes keep their 4xx/5xx.
+      res.json({ ok: false, code: "upload_failed", error: err?.message || "Could not upload photo", deviceKey: signed });
     }
   });
 
@@ -101,13 +110,13 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     if (!shop || !candidateId || !shopifyProductId || !photoId) {
       return res.status(400).json({ error: "candidateId, shopifyProductId and photoId are required" });
     }
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     const clientIp = clientIpFromReq(req);
     try {
       const candidate = await getEligibleCandidateForMyPet(shop, String(candidateId));
       const cap = await checkMyPetCap({ shop, shopifyProductId: String(shopifyProductId), deviceKey, clientIp });
       if (!cap.allowed) {
-        return res.json({ ok: false, code: cap.reason, message: cap.message });
+        return res.json({ ok: false, code: cap.reason, message: cap.message, deviceKey: signed });
       }
       const result = await generateMyPetRender({
         shop,
@@ -119,13 +128,27 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         colorName: colorName ? String(colorName) : null,
         sizeId: sizeId ? String(sizeId) : null,
       });
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, ...result, deviceKey: signed });
     } catch (err: any) {
       if (err instanceof MyPetCandidateIneligibleError) {
-        return res.status(404).json({ ok: false, error: err.message });
+        // Catalogue removed this candidate (unpromoted/missing artwork) — user-
+        // facing, not a server crash. 200 so Shopify doesn't HTML-wrap it.
+        return res.json({ ok: false, code: "candidate_ineligible", error: err.message, deviceKey: signed });
       }
-      console.error("[my-pet] generate failed:", err?.message || err);
-      res.status(502).json({ ok: false, error: friendlyGenerateError(err) });
+      const msg = String(err?.message || err);
+      const userFacing =
+        msg.startsWith("Pet photo not found") ||
+        msg.startsWith("Photo is too large") ||
+        msg === "Original edit is missing — please generate again";
+      if (userFacing) {
+        console.warn("[my-pet] generate user-facing error:", msg);
+        return res.json({ ok: false, code: "photo_not_found", error: msg, deviceKey: signed });
+      }
+      // Genuine server crash: Replicate crash, DB down, OOM. 500 is appropriate;
+      // Shopify will wrap it in HTML but by the time we get here the shopper
+      // already has a 5xx-worthy problem that warrants retry.
+      console.error("[my-pet] generate failed:", msg);
+      res.status(500).json({ ok: false, code: "server_error", error: friendlyGenerateError(err), deviceKey: signed });
     }
   });
 
@@ -135,12 +158,12 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     if (!shop || !renderId || !colorName) {
       return res.status(400).json({ error: "renderId and colorName are required" });
     }
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
       const result = await recompositeMyPetRender({ shop, deviceKey, renderId: String(renderId), colorName: String(colorName) });
-      res.json({ ok: true, ...result });
+      res.json({ ok: true, ...result, deviceKey: signed });
     } catch (err: any) {
-      res.status(400).json({ ok: false, error: err?.message || "Could not update colour" });
+      res.json({ ok: false, code: "recomposite_failed", error: err?.message || "Could not update colour", deviceKey: signed });
     }
   });
 
@@ -150,7 +173,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     if (!shop || !renderId || !email || !pageUrl) {
       return res.status(400).json({ error: "renderId, email and pageUrl are required" });
     }
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
       await sendMyPetEmailSave({
         shop,
@@ -160,9 +183,9 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         marketingConsent: !!marketingConsent,
         pageUrl: String(pageUrl),
       });
-      res.json({ ok: true });
+      res.json({ ok: true, deviceKey: signed });
     } catch (err: any) {
-      res.status(400).json({ ok: false, error: err?.message || "Could not send email" });
+      res.json({ ok: false, code: "email_save_failed", error: err?.message || "Could not send email", deviceKey: signed });
     }
   });
 
@@ -175,7 +198,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     if (!shop || !renderId || !variantId) {
       return res.status(400).json({ success: false, error: "renderId and variantId are required" });
     }
-    const deviceKey = ensureMyPetDeviceKey(req, res);
+    const { deviceKey } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
       const { jobId, previewUrl } = await getMyPetRenderForAddToCart({ shop, deviceKey, renderId: String(renderId) });
       const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");

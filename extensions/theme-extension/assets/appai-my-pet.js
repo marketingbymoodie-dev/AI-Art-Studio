@@ -8,24 +8,57 @@
   'use strict';
   var TAG = '[My Pet]';
 
+  // Shopify App Proxy strips the Cookie header before forwarding storefront
+  // requests to the backend, so a cookie set by our handler (the back-compat
+  // Set-Cookie still goes out) never makes it back to us on the next call —
+  // every request would see a fresh deviceKey. Instead we store the
+  // signed device key in localStorage and attach it to every request body/query.
+  // The server echoes `deviceKey` in success responses so the first mint is
+  // persisted here. Same cross-device-pooling mitigation as the old cookie
+  // (signed <uuid>.<hmac>; forging a key needs the server's secret).
+  var DEVICE_KEY_STORAGE = 'appai_my_pet_device_v1';
+
+  function readStoredDeviceKey() {
+    try { return String(window.localStorage.getItem(DEVICE_KEY_STORAGE) || ''); } catch (e) { return ''; }
+  }
+  function writeStoredDeviceKey(value) {
+    if (!value || typeof value !== 'string') return;
+    try { window.localStorage.setItem(DEVICE_KEY_STORAGE, value); } catch (e) { /* localStorage disabled */ }
+  }
+  function captureDeviceKeyFromResponse(json) {
+    if (json && typeof json === 'object' && typeof json.deviceKey === 'string' && json.deviceKey) {
+      writeStoredDeviceKey(json.deviceKey);
+    }
+    return json;
+  }
+
   function proxyPath(path) {
     return '/apps/appai/' + path.replace(/^\//, '');
   }
 
   function postJson(path, body) {
+    var payload = Object.assign({}, body || {});
+    var key = readStoredDeviceKey();
+    if (key && !payload.deviceKey) payload.deviceKey = key;
     return fetch(proxyPath(path), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify(body || {}),
-    }).then(function (r) { return r.json(); });
+      body: JSON.stringify(payload),
+    }).then(function (r) { return r.json(); }).then(captureDeviceKeyFromResponse);
   }
 
   function getJson(path, params) {
-    var qs = params
-      ? '?' + Object.keys(params).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&')
+    var query = Object.assign({}, params || {});
+    var key = readStoredDeviceKey();
+    if (key && !query.deviceKey) query.deviceKey = key;
+    var keys = Object.keys(query);
+    var qs = keys.length
+      ? '?' + keys.map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(query[k]); }).join('&')
       : '';
-    return fetch(proxyPath(path) + qs, { credentials: 'same-origin' }).then(function (r) { return r.json(); });
+    return fetch(proxyPath(path) + qs, { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(captureDeviceKeyFromResponse);
   }
 
   function fileToDataUrl(file) {

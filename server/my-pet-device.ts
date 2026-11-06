@@ -29,23 +29,72 @@ function cookieOptions(req: Request): CookieOptions {
   };
 }
 
-/** Reads a valid signed device id from the request cookie, or null if absent/tampered. */
-export function readMyPetDeviceKey(req: Request): string | null {
-  const raw = String(req.cookies?.[MY_PET_DEVICE_COOKIE] || "");
-  const dot = raw.lastIndexOf(".");
+/** Verify a signed `<deviceId>.<hmac>` blob. Returns the deviceId if valid, else null. */
+function verifySignedDeviceKey(raw: string): string | null {
+  const s = String(raw || "");
+  const dot = s.lastIndexOf(".");
   if (dot <= 0) return null;
-  const deviceId = raw.slice(0, dot);
-  const mac = raw.slice(dot + 1);
+  const deviceId = s.slice(0, dot);
+  const mac = s.slice(dot + 1);
   if (!deviceId || !mac || sign(deviceId) !== mac) return null;
   return deviceId;
 }
 
-/** Reads the existing device key, or mints and sets a new one. Always returns a usable key. */
+/** Produce the full signed value (`<deviceId>.<hmac>`) from a deviceId. */
+export function signMyPetDeviceKey(deviceId: string): string {
+  return `${deviceId}.${sign(deviceId)}`;
+}
+
+/** Reads a valid signed device id from the request cookie, or null if absent/tampered. */
+export function readMyPetDeviceKey(req: Request): string | null {
+  return verifySignedDeviceKey(String(req.cookies?.[MY_PET_DEVICE_COOKIE] || ""));
+}
+
+/**
+ * Preferred reader for App-Proxy storefront routes. Shopify strips the Cookie
+ * header before forwarding to the backend, so the storefront JS sends the
+ * signed device key as a `deviceKey` field on body (POST) or query (GET).
+ * Falls back to the cookie only for legacy / non-proxy callers.
+ *
+ * Accepts the full signed `<deviceId>.<hmac>` blob — tampered or malformed
+ * values are rejected (returns null) and the caller mints a fresh key.
+ */
+export function readMyPetDeviceKeyFromProxy(req: Request): string | null {
+  const body = (req as any).body;
+  const bodyKey = body && typeof body === "object" && typeof body.deviceKey === "string" ? body.deviceKey : "";
+  const queryKey = typeof (req.query as any)?.deviceKey === "string" ? String((req.query as any).deviceKey) : "";
+  return (
+    verifySignedDeviceKey(bodyKey) ||
+    verifySignedDeviceKey(queryKey) ||
+    readMyPetDeviceKey(req)
+  );
+}
+
+export type EnsuredMyPetDeviceKey = {
+  /** Unsigned deviceId for DB lookups and composition with other keys. */
+  deviceKey: string;
+  /** Full signed `<deviceId>.<hmac>` blob to echo back for the client to persist. */
+  signed: string;
+};
+
+/**
+ * Reads the existing device key or mints and sets a new one. Returns both the
+ * unsigned id (for DB scoping) and the signed blob (for the client to persist
+ * in localStorage). Also sets the back-compat cookie — it still reaches the
+ * browser via Set-Cookie through the proxy, even though the browser can't
+ * send it back to us on subsequent App-Proxy calls.
+ */
+export function ensureMyPetDeviceKeyFromProxy(req: Request, res: Response): EnsuredMyPetDeviceKey {
+  const existing = readMyPetDeviceKeyFromProxy(req);
+  const deviceId = existing || randomUUID();
+  const signed = signMyPetDeviceKey(deviceId);
+  if (!existing) {
+    res.cookie(MY_PET_DEVICE_COOKIE, signed, cookieOptions(req));
+  }
+  return { deviceKey: deviceId, signed };
+}
+
+/** @deprecated Prefer `ensureMyPetDeviceKeyFromProxy` for App-Proxy routes. */
 export function ensureMyPetDeviceKey(req: Request, res: Response): string {
-  const existing = readMyPetDeviceKey(req);
-  if (existing) return existing;
-  const deviceId = randomUUID();
-  const value = `${deviceId}.${sign(deviceId)}`;
-  res.cookie(MY_PET_DEVICE_COOKIE, value, cookieOptions(req));
-  return deviceId;
+  return ensureMyPetDeviceKeyFromProxy(req, res).deviceKey;
 }
