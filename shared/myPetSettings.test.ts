@@ -13,7 +13,7 @@ import {
 
 describe("buildMyPetPrompt", () => {
   it("assembles base, details, then the locked print rules last", () => {
-    const settings = defaultMyPetSettings("ai-art-studio-staging.myshopify.com");
+    const settings = defaultMyPetSettings("aiartstudio-gizsmzs2.myshopify.com");
     const prompt = buildMyPetPrompt(settings, {
       species: "dog",
       artStyle: "woodcut",
@@ -85,7 +85,7 @@ describe("sanitizeMyPetStyleTweaks", () => {
 
 describe("isMyPetSettingsShop", () => {
   it("is on for the built-in Petposterous staging domain", () => {
-    expect(isMyPetSettingsShop("ai-art-studio-staging.myshopify.com")).toBe(true);
+    expect(isMyPetSettingsShop("aiartstudio-gizsmzs2.myshopify.com")).toBe(true);
   });
 
   it("is off for any other shop by default", () => {
@@ -98,7 +98,7 @@ describe("isMyPetSettingsShop", () => {
     expect(isMyPetSettingsShop("new-merchant.myshopify.com", env)).toBe(true);
     const domains = collectMyPetSettingsShopDomains(env);
     expect(domains.has("other.myshopify.com")).toBe(true);
-    expect(domains.has("ai-art-studio-staging.myshopify.com")).toBe(true);
+    expect(domains.has("aiartstudio-gizsmzs2.myshopify.com")).toBe(true);
   });
 });
 
