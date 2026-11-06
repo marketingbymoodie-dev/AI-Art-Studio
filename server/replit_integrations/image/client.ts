@@ -33,6 +33,8 @@ type ReplicatePrediction = {
   status: "starting" | "processing" | "succeeded" | "failed" | "canceled";
   output?: any;
   error?: any;
+  /** Replicate includes `urls.get` on prediction create / poll — use for support-ticket audit links. */
+  urls?: { get?: string; cancel?: string; stream?: string };
 };
 
 /** Operator DB key for the plan's Replicate ref first, then REPLICATE_API_TOKEN / REPLICATE_API_KEY. */
@@ -508,6 +510,18 @@ export async function renderReplicateImageEdit(opts: {
   const created = await createGptImage2Prediction(opts.token, input, opts.modelSlug);
   const result = await pollAndDownload(opts.token, created);
   const durationMs = Date.now() - started;
+  // Audit link for support tickets: click from Railway logs → exact Replicate prediction.
+  // Replicate's public prediction URL is p.replicate.com/<id> regardless of which account
+  // the token points at (the dashboard page resolves owner server-side).
+  const predictionUrl =
+    created.urls?.get ||
+    (created.id ? `https://replicate.com/p/${created.id}` : null);
+  if (predictionUrl) {
+    console.log(
+      `[Replicate] ${opts.modelSlug} prediction ok id=${created.id ?? "unknown"} ` +
+        `durationMs=${durationMs} url=${predictionUrl}`,
+    );
+  }
   let transparent: boolean | null = null;
   let transparentFraction: number | null = null;
   if (opts.background === "transparent") {
