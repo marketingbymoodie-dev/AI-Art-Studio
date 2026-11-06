@@ -10,7 +10,7 @@
 
 {% if candidate_id != blank and my_pet_enabled != false %}
   {% assign button_label = block.settings.button_label | default: "My Pet" %}
-  {% assign caption_text = block.settings.caption_text | default: "See your pet on this design" %}
+  {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
 
   <div
     class="appai-my-pet"
@@ -26,8 +26,8 @@
     <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
       {{ button_label | escape }}
     </button>
-    {% if caption_text != blank %}
-      <p class="appai-my-pet__caption">{{ caption_text | escape }}</p>
+    {% if button_subtitle != blank %}
+      <p class="appai-my-pet__caption">{{ button_subtitle | escape }}</p>
     {% endif %}
   </div>
   <script src="{{ 'appai-my-pet.js' | asset_url }}" defer></script>
@@ -42,13 +42,15 @@
       "type": "text",
       "id": "button_label",
       "label": "Button label",
-      "default": "My Pet"
+      "default": "My Pet",
+      "info": "Text shown on the button itself."
     },
     {
       "type": "text",
-      "id": "caption_text",
-      "label": "Caption",
-      "default": "See your pet on this design"
+      "id": "button_subtitle",
+      "label": "Button subtitle",
+      "default": "See your pet on this design",
+      "info": "Small caption shown below the button. Leave blank to hide."
     }
   ]
 }
