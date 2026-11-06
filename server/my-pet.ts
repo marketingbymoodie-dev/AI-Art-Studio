@@ -235,13 +235,52 @@ async function hasEmailBonus(shop: string, deviceKey: string, shopifyProductId: 
   return !!row;
 }
 
-export async function checkMyPetCap(args: { shop: string; shopifyProductId: string; deviceKey: string; clientIp: string }): Promise<MyPetCapResult> {
+export type MyPetCapStatus = MyPetCapResult & {
+  perListingCount: number;
+  perListingLimit: number;
+  perListingRemaining: number;
+  dailyCount: number;
+  dailyLimit: number;
+  dailyRemaining: number;
+  /** True when this shopper has email-saved on this product, so emailBonus is already in perListingLimit. */
+  emailBonusApplied: boolean;
+  /** True when the shopper can earn +emailBonus more attempts by saving their email on this product. */
+  emailBonusAvailable: boolean;
+};
+
+export async function checkMyPetCap(args: {
+  shop: string;
+  shopifyProductId: string;
+  deviceKey: string;
+  clientIp: string;
+}): Promise<MyPetCapStatus> {
   const settings = await getMyPetSettings(args.shop);
   const [{ perListingCount, dailyCount }, emailBonus] = await Promise.all([
     countRenders(args.shop, args.shopifyProductId, args.deviceKey, args.clientIp, false),
     hasEmailBonus(args.shop, args.deviceKey, args.shopifyProductId),
   ]);
-  return evaluateMyPetCap({ perListingCount, dailyCount, hasEmailBonus: emailBonus, caps: settings.caps });
+  const base = evaluateMyPetCap({ perListingCount, dailyCount, hasEmailBonus: emailBonus, caps: settings.caps });
+  const perListingLimit = settings.caps.perListing + (emailBonus ? settings.caps.emailBonus : 0);
+  const dailyLimit = settings.caps.perDay;
+  const status: MyPetCapStatus = {
+    ...base,
+    perListingCount,
+    perListingLimit,
+    perListingRemaining: Math.max(0, perListingLimit - perListingCount),
+    dailyCount,
+    dailyLimit,
+    dailyRemaining: Math.max(0, dailyLimit - dailyCount),
+    emailBonusApplied: emailBonus,
+    emailBonusAvailable: !emailBonus && settings.caps.emailBonus > 0,
+  };
+  console.log(
+    `[my-pet] cap check shop=${args.shop} product=${args.shopifyProductId} ` +
+      `device=${args.deviceKey.slice(0, 8)} ip=${args.clientIp || "-"} ` +
+      `perListing=${perListingCount}/${perListingLimit} daily=${dailyCount}/${dailyLimit} ` +
+      `emailBonus=${emailBonus ? "applied" : "none"} allowed=${base.allowed}` +
+      (base.allowed ? "" : ` reason=${base.reason}`),
+  );
+  return status;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
