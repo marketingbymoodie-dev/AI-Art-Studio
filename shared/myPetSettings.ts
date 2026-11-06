@@ -131,8 +131,10 @@ export function buildMyPetPrompt(
  * opening it to a merchant later is adding a domain here (or
  * MY_PET_SETTINGS_SHOP_DOMAINS), not a rewrite.
  */
-// Current staging demo store (matches server/platformAdmin.ts's built-in list).
-const BUILTIN_MY_PET_SETTINGS_SHOPS = ["aiartstudio-gizsmzs2.myshopify.com"] as const;
+// Staging store that Petposterous catalogue products publish into (matches
+// STAGING_SHOP in server/catalogue-{bulk-import,publish,colour-order}.ts and
+// STAGING_STORE_HANDLE in shared/themeEditorUrl.ts).
+const BUILTIN_MY_PET_SETTINGS_SHOPS = ["ai-art-studio-staging.myshopify.com"] as const;
 
 export function collectMyPetSettingsShopDomains(env: Record<string, string | undefined> = process.env): Set<string> {
   const domains = new Set<string>(BUILTIN_MY_PET_SETTINGS_SHOPS);
