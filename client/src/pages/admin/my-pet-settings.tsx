@@ -12,10 +12,20 @@ import { Save, Loader2 } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import {
   MY_PET_ART_STYLES,
+  MY_PET_DEFAULT_RENDER_PARAMS,
   MY_PET_LOCKED_PRINT_RULES,
+  MY_PET_SUNBURST_ESTIMATED_COST_USD,
   type MyPetArtStyle,
+  type MyPetRenderParams,
   type MyPetSettings,
 } from "@shared/myPetSettings";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const STYLE_LABELS: Record<MyPetArtStyle, string> = {
   woodcut: "Woodcut",
@@ -37,6 +47,7 @@ export default function MyPetSettingsPage() {
   const [capPerListing, setCapPerListing] = useState("2");
   const [capPerDay, setCapPerDay] = useState("20");
   const [capEmailBonus, setCapEmailBonus] = useState("2");
+  const [renderParams, setRenderParams] = useState<MyPetRenderParams>({ ...MY_PET_DEFAULT_RENDER_PARAMS });
 
   useEffect(() => {
     if (!data?.settings) return;
@@ -45,6 +56,7 @@ export default function MyPetSettingsPage() {
     setCapPerListing(String(data.settings.caps.perListing));
     setCapPerDay(String(data.settings.caps.perDay));
     setCapEmailBonus(String(data.settings.caps.emailBonus));
+    if (data.settings.renderParams) setRenderParams({ ...data.settings.renderParams });
   }, [data]);
 
   const saveMutation = useMutation({
@@ -57,6 +69,7 @@ export default function MyPetSettingsPage() {
           perDay: Number(capPerDay) || 0,
           emailBonus: Number(capEmailBonus) || 0,
         },
+        renderParams,
       });
       return res.json();
     },
@@ -181,6 +194,104 @@ export default function MyPetSettingsPage() {
                     onChange={(e) => setCapEmailBonus(e.target.value)}
                     data-testid="input-my-pet-cap-email-bonus"
                   />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Render parameters (Sunburst)</CardTitle>
+                <CardDescription>
+                  Per-call Replicate parameters for the pet-swap image edit. Measured defaults run roughly{" "}
+                  <strong>${MY_PET_SUNBURST_ESTIMATED_COST_USD.toFixed(2)}</strong> and 20–25s per generation. Changing
+                  size or quality changes both numbers — re-measure after tuning.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label>Quality</Label>
+                  <Select
+                    value={renderParams.quality}
+                    onValueChange={(v) => setRenderParams((prev) => ({ ...prev, quality: v as MyPetRenderParams["quality"] }))}
+                  >
+                    <SelectTrigger data-testid="select-my-pet-render-quality"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">low</SelectItem>
+                      <SelectItem value="medium">medium (default)</SelectItem>
+                      <SelectItem value="high">high</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Background</Label>
+                  <Select
+                    value={renderParams.background}
+                    onValueChange={(v) => setRenderParams((prev) => ({ ...prev, background: v as MyPetRenderParams["background"] }))}
+                  >
+                    <SelectTrigger data-testid="select-my-pet-render-background"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="transparent">transparent (default)</SelectItem>
+                      <SelectItem value="opaque">opaque</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Size</Label>
+                  <Select
+                    value={renderParams.size}
+                    onValueChange={(v) => setRenderParams((prev) => ({ ...prev, size: v }))}
+                  >
+                    <SelectTrigger data-testid="select-my-pet-render-size"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1024x1024">1024x1024 (square)</SelectItem>
+                      <SelectItem value="1024x1536">1024x1536 (portrait, default)</SelectItem>
+                      <SelectItem value="1536x1024">1536x1024 (landscape)</SelectItem>
+                      <SelectItem value="auto">auto</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Output format</Label>
+                  <Select
+                    value={renderParams.outputFormat}
+                    onValueChange={(v) => setRenderParams((prev) => ({ ...prev, outputFormat: v as MyPetRenderParams["outputFormat"] }))}
+                  >
+                    <SelectTrigger data-testid="select-my-pet-render-format"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="png">png (default — keeps alpha)</SelectItem>
+                      <SelectItem value="webp">webp</SelectItem>
+                      <SelectItem value="jpeg">jpeg (no alpha)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Output compression (0–100)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={String(renderParams.outputCompression)}
+                    onChange={(e) =>
+                      setRenderParams((prev) => ({
+                        ...prev,
+                        outputCompression: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    data-testid="input-my-pet-render-compression"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Moderation</Label>
+                  <Select
+                    value={renderParams.moderation}
+                    onValueChange={(v) => setRenderParams((prev) => ({ ...prev, moderation: v as MyPetRenderParams["moderation"] }))}
+                  >
+                    <SelectTrigger data-testid="select-my-pet-render-moderation"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">low (default)</SelectItem>
+                      <SelectItem value="auto">auto</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </CardContent>
             </Card>

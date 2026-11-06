@@ -198,9 +198,13 @@ const DEFAULT_CREDENTIALS: Partial<Record<ProviderId, string>> = {
 };
 
 /** Replicate model slugs behind the Replicate style routes (model-slug predictions endpoint). */
-export const REPLICATE_ROUTE_MODELS: Record<"replicate-flare" | "replicate-nb2", string> = {
+export const REPLICATE_ROUTE_MODELS: Record<"replicate-flare" | "replicate-nb2" | "replicate-sunburst", string> = {
   "replicate-flare": "openai/gpt-image-2.5-flare",
   "replicate-nb2": "google/nano-banana-2",
+  // Sunburst = gpt-image-2.5 premium tier. Used by My Pet (server/my-pet.ts) for
+  // pet-swap image edits — higher fidelity than Flare for character/animal work,
+  // billed through the shared REPLICATE_API_TOKEN (CREDENTIALS["replicate:shared"]).
+  "replicate-sunburst": "openai/gpt-image-2.5-sunburst",
 };
 
 /** Full-bleed wall-art families when no assignment lists its own. */

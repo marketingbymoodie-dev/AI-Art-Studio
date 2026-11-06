@@ -65,6 +65,14 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shipping_classes",      column: "group_delta_split_threshold_cents", type: "INTEGER" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
+  // My Pet Sunburst render params — added after the four my_pet_* tables shipped.
+  // Must stay idempotent; the default matches MY_PET_DEFAULT_RENDER_PARAMS in
+  // shared/myPetSettings.ts.
+  {
+    table: "my_pet_settings",
+    column: "render_params",
+    type: `JSONB NOT NULL DEFAULT '{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb`,
+  },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "creator_session_id",          type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
@@ -2287,6 +2295,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "cap_per_listing" integer NOT NULL DEFAULT 2,
         "cap_per_day" integer NOT NULL DEFAULT 20,
         "cap_email_bonus" integer NOT NULL DEFAULT 2,
+        "render_params" jsonb NOT NULL DEFAULT '{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb,
         "created_at" timestamp DEFAULT NOW() NOT NULL,
         "updated_at" timestamp DEFAULT NOW() NOT NULL
       )

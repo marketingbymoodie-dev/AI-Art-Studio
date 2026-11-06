@@ -51,11 +51,49 @@ export const MY_PET_DEFAULT_CAPS: MyPetCaps = {
 
 export type MyPetStyleTweaks = Partial<Record<MyPetArtStyle, string>>;
 
+/**
+ * Per-call Replicate parameters for the pet-swap image edit, surfaced on the
+ * admin settings page so we can tune cost/quality without a redeploy.
+ *
+ * Defaults are the measured ones for Sunburst via Replicate: medium quality,
+ * 1024×1536 PNG transparent at compression 90, moderation low — roughly $0.05
+ * and 20–25s per call. Changing size/quality moves both numbers. See
+ * server/my-pet.ts for the model-slug binding and provider plumbing.
+ */
+export type MyPetRenderParams = {
+  quality: "low" | "medium" | "high";
+  background: "transparent" | "opaque";
+  /** Supported size strings: "1024x1024" | "1024x1536" | "1536x1024" | "auto". */
+  size: string;
+  outputFormat: "png" | "jpeg" | "webp";
+  /** 0–100. Only meaningful for png/webp. */
+  outputCompression: number;
+  moderation: "low" | "auto";
+};
+
+export const MY_PET_DEFAULT_RENDER_PARAMS: MyPetRenderParams = {
+  quality: "medium",
+  background: "transparent",
+  size: "1024x1536",
+  outputFormat: "png",
+  outputCompression: 90,
+  moderation: "low",
+};
+
+/**
+ * Flat per-call cost used to populate `my_pet_renders.estimated_cost_usd` and
+ * `generation_events.estimated_cost_usd` for Sunburst via Replicate. Replicate's
+ * API does not return per-prediction token usage, so we record the measured
+ * number. Update if you change `MY_PET_DEFAULT_RENDER_PARAMS` and re-measure.
+ */
+export const MY_PET_SUNBURST_ESTIMATED_COST_USD = 0.05;
+
 export type MyPetSettings = {
   shopDomain: string;
   basePrompt: string;
   styleTweaks: MyPetStyleTweaks;
   caps: MyPetCaps;
+  renderParams: MyPetRenderParams;
 };
 
 export function defaultMyPetSettings(shopDomain: string): MyPetSettings {
@@ -64,6 +102,7 @@ export function defaultMyPetSettings(shopDomain: string): MyPetSettings {
     basePrompt: MY_PET_DEFAULT_BASE_PROMPT,
     styleTweaks: {},
     caps: { ...MY_PET_DEFAULT_CAPS },
+    renderParams: { ...MY_PET_DEFAULT_RENDER_PARAMS },
   };
 }
 
@@ -91,6 +130,33 @@ export function sanitizeMyPetStyleTweaks(raw: unknown): MyPetStyleTweaks {
     if (typeof v === "string" && v.trim()) out[style] = v.trim().slice(0, 600);
   }
   return out;
+}
+
+const RENDER_QUALITIES: MyPetRenderParams["quality"][] = ["low", "medium", "high"];
+const RENDER_BACKGROUNDS: MyPetRenderParams["background"][] = ["transparent", "opaque"];
+const RENDER_FORMATS: MyPetRenderParams["outputFormat"][] = ["png", "jpeg", "webp"];
+const RENDER_MODERATIONS: MyPetRenderParams["moderation"][] = ["low", "auto"];
+const RENDER_SIZES_ALLOWED = new Set(["1024x1024", "1024x1536", "1536x1024", "auto"]);
+
+/** Clamp/sanitize a renderParams payload. Unknown/invalid fields fall back to current values. */
+export function sanitizeMyPetRenderParams(raw: unknown, fallback: MyPetRenderParams): MyPetRenderParams {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const pickEnum = <T extends string>(value: unknown, allowed: readonly T[], current: T): T =>
+    typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : current;
+  const sizeRaw = typeof r.size === "string" ? r.size.trim() : "";
+  const size = RENDER_SIZES_ALLOWED.has(sizeRaw) ? sizeRaw : fallback.size;
+  const compressionNum = Math.round(Number(r.outputCompression));
+  const outputCompression = Number.isFinite(compressionNum)
+    ? Math.min(100, Math.max(0, compressionNum))
+    : fallback.outputCompression;
+  return {
+    quality: pickEnum(r.quality, RENDER_QUALITIES, fallback.quality),
+    background: pickEnum(r.background, RENDER_BACKGROUNDS, fallback.background),
+    size,
+    outputFormat: pickEnum(r.outputFormat, RENDER_FORMATS, fallback.outputFormat),
+    outputCompression,
+    moderation: pickEnum(r.moderation, RENDER_MODERATIONS, fallback.moderation),
+  };
 }
 
 export type CandidateDetailsForPrompt = {

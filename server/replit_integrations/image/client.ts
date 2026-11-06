@@ -455,6 +455,84 @@ export function buildGptImage2ReplicateInput(params: {
   return input;
 }
 
+/**
+ * Minimal public wrapper around the Replicate gpt-image-2.5 prediction loop for
+ * callers that already know their model slug and exact per-call parameters
+ * (size, quality, background, output_format, output_compression, moderation).
+ *
+ * Unlike `generateImageBase64`, this skips the GenerationPlan / style-route
+ * machinery — My Pet (server/my-pet.ts) composes its own prompt and holds its
+ * own settings, so it just needs a direct "image edit with two references →
+ * PNG bytes" primitive routed through REPLICATE_API_TOKEN.
+ */
+export type ReplicateImageEditResult = {
+  mimeType: string;
+  data: string;
+  durationMs: number;
+  providerRequestId: string | null;
+  /** Null if the alpha check could not run; false = came back opaque despite transparent request. */
+  transparent: boolean | null;
+  transparentFraction: number | null;
+};
+
+export async function renderReplicateImageEdit(opts: {
+  token: string;
+  modelSlug: string;
+  prompt: string;
+  /** HTTPS URLs or `data:image/png;base64,...` URLs — both accepted by Replicate. */
+  references: string[];
+  size: string;
+  quality: "low" | "medium" | "high";
+  background: "transparent" | "opaque";
+  outputFormat: "png" | "jpeg" | "webp";
+  outputCompression: number;
+  moderation: "low" | "auto";
+}): Promise<ReplicateImageEditResult> {
+  const refs = (opts.references ?? []).filter((u): u is string => typeof u === "string" && u.length > 0);
+  const input: Record<string, unknown> = {
+    prompt: opts.prompt,
+    input_images: refs,
+    size: opts.size,
+    quality: opts.quality,
+    background: opts.background,
+    output_format: opts.outputFormat,
+    output_compression: opts.outputCompression,
+    moderation: opts.moderation,
+    number_of_images: 1,
+  };
+  const started = Date.now();
+  console.log(
+    `[Replicate] edit model=${opts.modelSlug} size=${opts.size} quality=${opts.quality} ` +
+      `background=${opts.background} refs=${refs.length} moderation=${opts.moderation}`,
+  );
+  const created = await createGptImage2Prediction(opts.token, input, opts.modelSlug);
+  const result = await pollAndDownload(opts.token, created);
+  const durationMs = Date.now() - started;
+  let transparent: boolean | null = null;
+  let transparentFraction: number | null = null;
+  if (opts.background === "transparent") {
+    try {
+      const report = await measureTransparency(result.data);
+      transparentFraction = report.transparentFraction;
+      transparent = !isOpaqueNativeOutput(report);
+      console.log(
+        `[Replicate] ${opts.modelSlug} alpha check: transparent=${report.transparentFraction.toFixed(3)} ` +
+          `opaqueBorder=${report.opaqueBorderFraction.toFixed(3)} ok=${transparent}`,
+      );
+    } catch (err) {
+      console.warn(`[Replicate] ${opts.modelSlug} transparency check failed:`, (err as Error)?.message ?? err);
+    }
+  }
+  return {
+    mimeType: result.mimeType,
+    data: result.data,
+    durationMs,
+    providerRequestId: created.id ?? null,
+    transparent,
+    transparentFraction,
+  };
+}
+
 async function createGptImage2Prediction(
   token: string,
   input: Record<string, unknown>,

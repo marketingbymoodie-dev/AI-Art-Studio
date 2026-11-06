@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   MY_PET_DEFAULT_CAPS,
+  MY_PET_DEFAULT_RENDER_PARAMS,
   MY_PET_LOCKED_PRINT_RULES,
+  MY_PET_SUNBURST_ESTIMATED_COST_USD,
   buildMyPetPrompt,
   collectMyPetSettingsShopDomains,
   defaultMyPetSettings,
   evaluateMyPetCap,
   isMyPetSettingsShop,
   sanitizeMyPetCaps,
+  sanitizeMyPetRenderParams,
   sanitizeMyPetStyleTweaks,
 } from "./myPetSettings";
 
@@ -80,6 +83,58 @@ describe("sanitizeMyPetStyleTweaks", () => {
       "not-a-style": "ignored",
     });
     expect(out).toEqual({ woodcut: "heavy carve lines" });
+  });
+});
+
+describe("sanitizeMyPetRenderParams", () => {
+  it("preserves the measured Sunburst defaults", () => {
+    expect(MY_PET_DEFAULT_RENDER_PARAMS).toEqual({
+      quality: "medium",
+      background: "transparent",
+      size: "1024x1536",
+      outputFormat: "png",
+      outputCompression: 90,
+      moderation: "low",
+    });
+    expect(MY_PET_SUNBURST_ESTIMATED_COST_USD).toBeGreaterThan(0);
+  });
+
+  it("accepts a full valid payload", () => {
+    const out = sanitizeMyPetRenderParams(
+      { quality: "high", background: "opaque", size: "1536x1024", outputFormat: "webp", outputCompression: 80, moderation: "auto" },
+      MY_PET_DEFAULT_RENDER_PARAMS,
+    );
+    expect(out).toEqual({
+      quality: "high",
+      background: "opaque",
+      size: "1536x1024",
+      outputFormat: "webp",
+      outputCompression: 80,
+      moderation: "auto",
+    });
+  });
+
+  it("falls back per-field on unknown values and clamps compression to 0..100", () => {
+    const out = sanitizeMyPetRenderParams(
+      { quality: "ultra", background: "mint", size: "2048x2048", outputFormat: "tiff", outputCompression: 200, moderation: "strict" },
+      MY_PET_DEFAULT_RENDER_PARAMS,
+    );
+    expect(out).toEqual({ ...MY_PET_DEFAULT_RENDER_PARAMS, outputCompression: 100 });
+  });
+
+  it("falls back wholesale on a non-object input", () => {
+    expect(sanitizeMyPetRenderParams(null, MY_PET_DEFAULT_RENDER_PARAMS)).toEqual(MY_PET_DEFAULT_RENDER_PARAMS);
+    expect(sanitizeMyPetRenderParams("string", MY_PET_DEFAULT_RENDER_PARAMS)).toEqual(MY_PET_DEFAULT_RENDER_PARAMS);
+  });
+});
+
+describe("defaultMyPetSettings", () => {
+  it("includes the Sunburst render parameter defaults", () => {
+    const settings = defaultMyPetSettings("shop.myshopify.com");
+    expect(settings.renderParams).toEqual(MY_PET_DEFAULT_RENDER_PARAMS);
+    // Must be a copy, not a reference — editing one must not mutate the global.
+    settings.renderParams.quality = "high";
+    expect(MY_PET_DEFAULT_RENDER_PARAMS.quality).toBe("medium");
   });
 });
 

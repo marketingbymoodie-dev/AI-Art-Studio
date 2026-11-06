@@ -1436,6 +1436,25 @@ export const myPetSettings = pgTable("my_pet_settings", {
   capPerListing: integer("cap_per_listing").notNull().default(2),
   capPerDay: integer("cap_per_day").notNull().default(20),
   capEmailBonus: integer("cap_email_bonus").notNull().default(2),
+  /**
+   * Per-call Replicate parameters for the pet-swap image edit (Sunburst).
+   * See shared/myPetSettings.ts → MyPetRenderParams. Defaults are the measured
+   * Sunburst medium / 1024×1536 / transparent / png-90 / moderation-low combo
+   * (~$0.05 and 20–25s per call). Editable on the admin settings page.
+   */
+  renderParams: jsonb("render_params")
+    .$type<{
+      quality: "low" | "medium" | "high";
+      background: "transparent" | "opaque";
+      size: string;
+      outputFormat: "png" | "jpeg" | "webp";
+      outputCompression: number;
+      moderation: "low" | "auto";
+    }>()
+    .notNull()
+    .default(
+      sql`'{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb`,
+    ),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

@@ -25,24 +25,34 @@ import {
 import {
   MY_PET_DEFAULT_BASE_PROMPT,
   MY_PET_DEFAULT_CAPS,
+  MY_PET_DEFAULT_RENDER_PARAMS,
+  MY_PET_SUNBURST_ESTIMATED_COST_USD,
   buildMyPetPrompt,
   evaluateMyPetCap,
   sanitizeMyPetCaps,
+  sanitizeMyPetRenderParams,
   sanitizeMyPetStyleTweaks,
   type MyPetCapResult,
+  type MyPetRenderParams,
   type MyPetSettings,
 } from "@shared/myPetSettings";
 import { db } from "./db";
-import { CREDENTIALS, RENDERERS, readCredential } from "./generation-providers";
-import { openAIEndUserId, estimateOpenAIImageCostUsd, renderOpenAIImage } from "./openai-image-client";
+import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from "./generation-providers";
 import { generationErrorCategory } from "./generation-events";
 import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 import { softstyleType } from "./mockup-library-store";
 import { decodeDataUrlOrBase64Image, getMyPetObject, putMyPetObject, removeMyPetObjects, signedMyPetUrl } from "./my-pet-storage";
+import { renderReplicateImageEdit } from "./replit_integrations/image/client";
 import { storage } from "./storage";
 
-const PETPOSTEROUS_CREDENTIAL = CREDENTIALS["openai:petposterous"];
-const PETPOSTEROUS_RENDERER = RENDERERS["openai-flare"];
+// My Pet uses the shared Replicate account (REPLICATE_API_TOKEN) to call Sunburst
+// — openai/gpt-image-2.5-sunburst, the premium tier of the gpt-image-2.5 family
+// routed through Replicate. See shared/myPetSettings.ts for the per-call
+// parameters (size, quality, background, output_format, output_compression,
+// moderation) and MY_PET_SUNBURST_ESTIMATED_COST_USD for the flat cost estimate
+// (Replicate's API does not return token usage per prediction).
+const MY_PET_REPLICATE_CREDENTIAL = CREDENTIALS["replicate:shared"];
+const MY_PET_REPLICATE_MODEL = REPLICATE_ROUTE_MODELS["replicate-sunburst"];
 
 const PHOTO_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const EMAIL_PREVIEW_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -52,11 +62,17 @@ const EMAIL_PREVIEW_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // ─────────────────────────────────────────────────────────────────────────
 
 function rowToSettings(row: MyPetSettingsRow): MyPetSettings {
+  // renderParams is JSONB with a defaulted row value — but guard against rows
+  // written before the column existed (or an operator setting it to an invalid
+  // partial payload by hand) by routing it through the same sanitizer the PUT
+  // endpoint uses, falling back to the default per-field.
+  const renderParams = sanitizeMyPetRenderParams(row.renderParams, MY_PET_DEFAULT_RENDER_PARAMS);
   return {
     shopDomain: row.shopDomain,
     basePrompt: row.basePrompt || MY_PET_DEFAULT_BASE_PROMPT,
     styleTweaks: (row.styleTweaks as Record<string, string>) || {},
     caps: { perListing: row.capPerListing, perDay: row.capPerDay, emailBonus: row.capEmailBonus },
+    renderParams,
   };
 }
 
@@ -65,13 +81,27 @@ export async function getMyPetSettings(shopDomain: string): Promise<MyPetSetting
   if (row) return rowToSettings(row);
   const [created] = await db
     .insert(myPetSettings)
-    .values({ shopDomain, basePrompt: MY_PET_DEFAULT_BASE_PROMPT, styleTweaks: {}, ...MY_PET_DEFAULT_CAPS_COLUMNS() })
+    .values({
+      shopDomain,
+      basePrompt: MY_PET_DEFAULT_BASE_PROMPT,
+      styleTweaks: {},
+      ...MY_PET_DEFAULT_CAPS_COLUMNS(),
+      renderParams: { ...MY_PET_DEFAULT_RENDER_PARAMS },
+    })
     .onConflictDoNothing()
     .returning();
   if (created) return rowToSettings(created);
   // Lost the race to insert — another request created it first.
   const [again] = await db.select().from(myPetSettings).where(eq(myPetSettings.shopDomain, shopDomain));
-  return again ? rowToSettings(again) : { shopDomain, basePrompt: MY_PET_DEFAULT_BASE_PROMPT, styleTweaks: {}, caps: { ...MY_PET_DEFAULT_CAPS } };
+  return again
+    ? rowToSettings(again)
+    : {
+        shopDomain,
+        basePrompt: MY_PET_DEFAULT_BASE_PROMPT,
+        styleTweaks: {},
+        caps: { ...MY_PET_DEFAULT_CAPS },
+        renderParams: { ...MY_PET_DEFAULT_RENDER_PARAMS },
+      };
 }
 
 function MY_PET_DEFAULT_CAPS_COLUMNS() {
@@ -84,12 +114,14 @@ function MY_PET_DEFAULT_CAPS_COLUMNS() {
 
 export async function updateMyPetSettings(
   shopDomain: string,
-  patch: { basePrompt?: string; styleTweaks?: unknown; caps?: unknown },
+  patch: { basePrompt?: string; styleTweaks?: unknown; caps?: unknown; renderParams?: unknown },
 ): Promise<MyPetSettings> {
   const current = await getMyPetSettings(shopDomain);
   const basePrompt = typeof patch.basePrompt === "string" && patch.basePrompt.trim() ? patch.basePrompt.trim().slice(0, 4000) : current.basePrompt;
   const styleTweaks = patch.styleTweaks !== undefined ? sanitizeMyPetStyleTweaks(patch.styleTweaks) : current.styleTweaks;
   const caps = patch.caps !== undefined ? sanitizeMyPetCaps(patch.caps, current.caps) : current.caps;
+  const renderParams =
+    patch.renderParams !== undefined ? sanitizeMyPetRenderParams(patch.renderParams, current.renderParams) : current.renderParams;
   await db
     .insert(myPetSettings)
     .values({
@@ -99,12 +131,21 @@ export async function updateMyPetSettings(
       capPerListing: caps.perListing,
       capPerDay: caps.perDay,
       capEmailBonus: caps.emailBonus,
+      renderParams,
     })
     .onConflictDoUpdate({
       target: myPetSettings.shopDomain,
-      set: { basePrompt, styleTweaks, capPerListing: caps.perListing, capPerDay: caps.perDay, capEmailBonus: caps.emailBonus, updatedAt: new Date() },
+      set: {
+        basePrompt,
+        styleTweaks,
+        capPerListing: caps.perListing,
+        capPerDay: caps.perDay,
+        capEmailBonus: caps.emailBonus,
+        renderParams,
+        updatedAt: new Date(),
+      },
     });
-  return { shopDomain, basePrompt, styleTweaks, caps };
+  return { shopDomain, basePrompt, styleTweaks, caps, renderParams };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -250,30 +291,33 @@ export async function generateMyPetRender(args: {
     punchline: args.candidate.punchline,
   });
 
-  const [designBuf, petBuf, apiKey] = await Promise.all([
-    readLibraryObject(args.candidate.artworkPath),
-    getMyPetObject(photo.storagePath),
-    readCredential(PETPOSTEROUS_CREDENTIAL),
+  // Signed HTTPS URLs for both references — keeps Replicate's POST body small
+  // vs. inlining multi-MB base64 data URLs, and matches the catalogue flow.
+  // Both buckets are the same ones the compositor reads from.
+  const [designUrl, petUrl, token] = await Promise.all([
+    signedLibraryUrl(args.candidate.artworkPath),
+    signedMyPetUrl(photo.storagePath),
+    Promise.resolve(readPlatformReplicateToken()),
   ]);
-  const endUserHash = openAIEndUserId(args.shop, args.deviceKey);
   const started = Date.now();
+  const renderParams: MyPetRenderParams = settings.renderParams;
 
   let result;
   try {
-    result = await renderOpenAIImage({
-      apiKey,
-      credential: PETPOSTEROUS_CREDENTIAL,
-      renderer: PETPOSTEROUS_RENDERER,
+    result = await renderReplicateImageEdit({
+      token,
+      modelSlug: MY_PET_REPLICATE_MODEL,
       prompt,
-      background: "transparent",
-      references: [
-        `data:image/png;base64,${designBuf.toString("base64")}`,
-        `data:image/png;base64,${petBuf.toString("base64")}`,
-      ],
-      user: endUserHash,
+      references: [designUrl, petUrl],
+      size: renderParams.size,
+      quality: renderParams.quality,
+      background: renderParams.background,
+      outputFormat: renderParams.outputFormat,
+      outputCompression: renderParams.outputCompression,
+      moderation: renderParams.moderation,
     });
   } catch (err) {
-    await recordMyPetGenerationEvent({ shop: args.shop, success: false, durationMs: Date.now() - started, error: err, endUserHash });
+    await recordMyPetGenerationEvent({ shop: args.shop, success: false, durationMs: Date.now() - started, error: err });
     throw err;
   }
 
@@ -295,16 +339,18 @@ export async function generateMyPetRender(args: {
   await putMyPetObject(previewPath, previewPng, "image/png");
   const previewUrl = await signedMyPetUrl(previewPath);
 
-  const estimatedCostUsd = estimateOpenAIImageCostUsd(result.usage, PETPOSTEROUS_RENDERER);
+  // Replicate's API does not return per-prediction token usage, so we record
+  // a flat measured cost (see MY_PET_SUNBURST_ESTIMATED_COST_USD). Update that
+  // constant if size/quality in MY_PET_DEFAULT_RENDER_PARAMS change.
+  const estimatedCostUsd = MY_PET_SUNBURST_ESTIMATED_COST_USD;
   await recordMyPetGenerationEvent({
     shop: args.shop,
     success: true,
     durationMs: result.durationMs,
-    usage: result.usage,
     estimatedCostUsd,
-    model: PETPOSTEROUS_RENDERER.model,
-    providerRequestId: result.requestId,
-    endUserHash,
+    model: MY_PET_REPLICATE_MODEL,
+    quality: renderParams.quality,
+    providerRequestId: result.providerRequestId,
   });
 
   const jobId = randomUUID();
@@ -362,11 +408,10 @@ async function recordMyPetGenerationEvent(args: {
   shop: string;
   success: boolean;
   durationMs: number;
-  usage?: { textInputTokens: number; imageInputTokens: number; outputTokens: number } | null;
   estimatedCostUsd?: number | null;
   model?: string;
+  quality?: string;
   providerRequestId?: string | null;
-  endUserHash?: string;
   error?: unknown;
 }): Promise<void> {
   try {
@@ -375,19 +420,20 @@ async function recordMyPetGenerationEvent(args: {
       route: "my-pet-generate",
       shopDomain: args.shop,
       productFamily: "apparel",
-      provider: "openai",
-      credentialScope: PETPOSTEROUS_CREDENTIAL.scope,
-      credentialRef: PETPOSTEROUS_CREDENTIAL.id,
-      model: args.model ?? PETPOSTEROUS_RENDERER.model,
-      quality: PETPOSTEROUS_RENDERER.quality,
+      provider: "replicate",
+      credentialScope: MY_PET_REPLICATE_CREDENTIAL.scope,
+      credentialRef: MY_PET_REPLICATE_CREDENTIAL.id,
+      model: args.model ?? MY_PET_REPLICATE_MODEL,
+      quality: args.quality ?? MY_PET_DEFAULT_RENDER_PARAMS.quality,
       durationMs: Math.round(args.durationMs),
-      usage: args.usage ?? null,
+      // Replicate's API does not return per-prediction token usage.
+      usage: null,
       estimatedCostUsd: args.estimatedCostUsd != null ? args.estimatedCostUsd.toFixed(6) : null,
       providerRequestId: args.providerRequestId ?? null,
       providerMime: "image/png",
       success: args.success,
       errorCategory: args.success ? null : generationErrorCategory(args.error),
-      endUserHash: args.endUserHash ?? null,
+      endUserHash: null,
     });
   } catch (err) {
     console.warn("[my-pet] failed to write generation event:", (err as Error)?.message);
