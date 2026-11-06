@@ -20,3 +20,7 @@ handle = "ai-art-studio"
   [[extensions.targeting]]
     module = "./blocks/ai-art-embed.liquid"
     target = "body"
+
+  [[extensions.targeting]]
+    module = "./blocks/my-pet.liquid"
+    target = "section"

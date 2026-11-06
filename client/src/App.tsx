@@ -56,6 +56,7 @@ import AdminHowToPage from "@/pages/admin/how-to";
 import PlatformSupportPage from "@/pages/admin/platform-support";
 import PlatformHowToPage from "@/pages/admin/platform-how-to";
 import PlatformNewsletterPage from "@/pages/admin/platform-newsletter";
+import MyPetSettingsPage from "@/pages/admin/my-pet-settings";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -113,6 +114,7 @@ function AppRouter() {
       <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
       <Route path="/admin/platform/newsletter" component={PlatformNewsletterPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
+      <Route path="/admin/my-pet-settings" component={MyPetSettingsPage} />
 
       {/* Creator Marketplace marketing (public) */}
       <Route path="/beta" component={LuxeLandingPage} />

@@ -51,6 +51,7 @@ import {
   Truck,
   KeyRound,
   Upload,
+  Camera,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -82,6 +83,9 @@ const platformMenuItems = [
   { title: "Shipping Coverage", url: "/admin/platform/shipping", icon: Truck },
   { title: "Design Studio", url: "/admin/catalogue-studio", icon: Shirt },
   { title: "Catalogue import", url: "/admin/catalogue-import", icon: Upload },
+  // Operator-only today (gated server-side by isMyPetSettingsShop, independently
+  // of platform-admin access, so it can open to a merchant later on its own).
+  { title: "My Pet Settings", url: "/admin/my-pet-settings", icon: Camera },
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
