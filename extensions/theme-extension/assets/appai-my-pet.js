@@ -51,7 +51,10 @@
       root.style.setProperty('--appai-my-pet-fg', cs.backgroundColor);
       root.style.setProperty('--appai-my-pet-border', cs.backgroundColor);
       root.style.setProperty('--appai-my-pet-radius', cs.borderRadius);
-      root.style.setProperty('--appai-my-pet-caption-fg', cs.color ? cs.color : '#666666');
+      // Intentionally NOT setting --appai-my-pet-caption-fg: the primary
+      // button's text color is its *inside* color (white on a black Add to
+      // cart), which painted the caption invisible on white page backgrounds.
+      // The CSS fallback (#666666 gray) reads on both light and dark themes.
       var btn = root.querySelector('.appai-my-pet__button');
       if (btn) {
         btn.style.fontFamily = cs.fontFamily;

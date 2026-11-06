@@ -79,9 +79,12 @@
     opacity: 0.85;
   }
   .appai-my-pet__caption {
-    margin: 0.4em 0 0;
-    font-size: 0.8em;
-    text-align: center;
-    color: var(--appai-my-pet-caption-fg, #666666);
+    margin: 0.4em 0 0 !important;
+    font-size: 0.8em !important;
+    text-align: center !important;
+    /* !important so themes that force all <p> to inherit the section's foreground
+       (e.g. white-on-white inside product-info) can't hide the caption. */
+    color: var(--appai-my-pet-caption-fg, #666666) !important;
+    opacity: 1 !important;
   }
 </style>
