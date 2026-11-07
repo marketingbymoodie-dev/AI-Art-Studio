@@ -588,7 +588,24 @@ export async function generateMyPetRender(args: {
     replicatePredictionUrl: result.providerRequestUrl,
   });
 
-  return { renderId, jobId, previewUrl, colorName: color.name };
+  // STAGING-95 bug — the pre-composite map `previewUrlsByColor` is built
+  // ~150 lines above (and the `[my-pet] generate pre-compose ... ok=N`
+  // log confirms the compositions succeed server-side), but this final
+  // return literal was missing the field entirely. The HTTP handler in
+  // routes/my-pet.ts just spreads `...result` back to the client, so when
+  // the field is absent here the client receives no map and
+  // state.previewUrlByColor stays `{}`. Every subsequent swatch click
+  // then triggered a lazy /recomposite round-trip (~4s each) instead of
+  // the designed <1ms client cache hit. TypeScript didn't catch the
+  // regression because tsconfig doesn't currently flag missing non-
+  // optional properties on object literals returned from an async
+  // function declared with an explicit Promise<...> return type.
+  console.log(
+    `[my-pet] generate response renderId=${renderId.slice(0, 8)} ` +
+      `chosenColor=${color.name} includedColours=[${Object.keys(previewUrlsByColor).join(",")}] ` +
+      `mapSize=${Object.keys(previewUrlsByColor).length}`,
+  );
+  return { renderId, jobId, previewUrl, colorName: color.name, previewUrlsByColor };
 }
 
 async function recordMyPetGenerationEvent(args: {

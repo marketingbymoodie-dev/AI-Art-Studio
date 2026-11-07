@@ -460,13 +460,21 @@
   // ship cart-notification / cart-icon-bubble / cart-live-region-text /
   // cart-drawer-items (all Dawn/Horizon-specific), so the old "ask for all
   // 6 at once" call failed on Ritual even though cart-drawer and header DO
-  // exist — the shopper never saw the cart drawer refresh.
+  // exist.
   //
-  // Fix: probe each candidate section independently (parallel), keep the
-  // ones that answer 2xx, then make the real render call with only those.
-  // Result cached in sessionStorage so we probe once per tab, not per ATC.
-  // If zero sections are known-available, skip the render fetch entirely
-  // and go straight to the cart-toggle / drawer-method fallback.
+  // STAGING-95 — the probe-then-bulk approach (staging-94) hit a Shopify
+  // edge: all 7 individual-section probes returned 2xx, but the bulk call
+  // with the 2xx-filtered list still returned 400 on Ritual. Rather than
+  // chase the exact combination that trips Shopify's multi-section
+  // validator, go fully per-section: one fetch per known-available section,
+  // in parallel. Each call carries its own 400/404 independently — one bad
+  // section can't poison the batch. 7 tiny GETs beat 1 call that blanks the
+  // whole drawer refresh.
+  //
+  // The sessionStorage cache still helps: it skips the full discovery pass
+  // after the first ATC per tab, so subsequent ATCs make exactly N real
+  // fetches where N is the known-good count (2-4 for most themes), not the
+  // 7-candidate probe sweep.
   var CART_SECTIONS_SESSION_KEY = 'appai-my-pet:cart-sections';
   var CART_SECTIONS_CANDIDATES = [
     'cart-drawer',            // Dawn, Ritual, most Horizon descendants
@@ -477,6 +485,22 @@
     'header',                 // most themes — refreshes the cart count
     'cart',                   // some older themes
   ];
+
+  // Fetch one section on its own and return { name, html } on success or
+  // { name, html: null } on any failure. Never rejects — so Promise.all
+  // across many sections never short-circuits.
+  function fetchOneSection(name) {
+    return fetch('/?sections=' + encodeURIComponent(name), { credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) return { name: name, html: null };
+        return r.json().then(function (body) {
+          var html = body && typeof body === 'object' ? body[name] : null;
+          return { name: name, html: typeof html === 'string' && html ? html : null };
+        }).catch(function () { return { name: name, html: null }; });
+      })
+      .catch(function () { return { name: name, html: null }; });
+  }
+
   function discoverCartSections() {
     try {
       var cached = sessionStorage.getItem(CART_SECTIONS_SESSION_KEY);
@@ -489,63 +513,60 @@
       }
     } catch (_) { /* sessionStorage disabled → re-probe */ }
     console.log(TAG, 'cart-sections probing');
-    return Promise.all(
-      CART_SECTIONS_CANDIDATES.map(function (name) {
-        // Section Rendering API ignores the body, so a tiny GET is fine.
-        return fetch('/?sections=' + encodeURIComponent(name), { credentials: 'same-origin' })
-          .then(function (r) { return r.ok ? name : null; })
-          .catch(function () { return null; });
-      })
-    ).then(function (results) {
-      var available = results.filter(Boolean);
-      console.log(TAG, 'cart-sections available:', available);
-      try { sessionStorage.setItem(CART_SECTIONS_SESSION_KEY, JSON.stringify(available)); } catch (_) {}
-      return available;
-    });
+    return Promise.all(CART_SECTIONS_CANDIDATES.map(fetchOneSection))
+      .then(function (results) {
+        // "Available" = fetched AND returned usable HTML on this discovery
+        // pass. A section that 2xx'd but returned null/empty html is NOT
+        // kept — staging-95 showed Shopify will sometimes 200 a probe but
+        // 400 the real content fetch, so we need the content check too.
+        var available = results.filter(function (r) { return r.html; }).map(function (r) { return r.name; });
+        console.log(TAG, 'cart-sections available:', available);
+        try { sessionStorage.setItem(CART_SECTIONS_SESSION_KEY, JSON.stringify(available)); } catch (_) {}
+        return available;
+      });
+  }
+
+  function applySection(name, html) {
+    if (!html) return;
+    var target = document.getElementById('shopify-section-' + name);
+    if (!target) {
+      console.log(TAG, 'section', name, 'no target wrapper (shopify-section-' + name + ') in DOM');
+      return;
+    }
+    var templ = document.createElement('template');
+    templ.innerHTML = html;
+    var newRoot = templ.content.getElementById('shopify-section-' + name);
+    if (newRoot) {
+      target.replaceWith(newRoot);
+      console.log(TAG, 'section', name, 'replaced via wrapper');
+    } else {
+      // Some themes return the section body directly, not wrapped.
+      target.innerHTML = html;
+      console.log(TAG, 'section', name, 'inner HTML swapped');
+    }
   }
 
   function refreshAndOpenCartDrawer() {
     console.log(TAG, 'refreshAndOpenCartDrawer start');
     discoverCartSections().then(function (available) {
       if (!available.length) {
-        // Theme has none of our known sections — skip the render fetch and
-        // fall straight to event dispatch + cart-toggle click below.
-        console.log(TAG, 'no known cart sections — skipping render fetch');
-        return null;
+        // Theme has none of our known sections — skip per-section fetches
+        // and fall straight to event dispatch + cart-toggle click below.
+        console.log(TAG, 'no known cart sections — skipping render fetches');
+        return [];
       }
-      var url = '/?sections=' + encodeURIComponent(available.join(','));
-      return fetch(url, { credentials: 'same-origin' }).then(function (r) {
-        console.log(TAG, 'section fetch status:', r.status, r.ok);
-        return r.ok ? r.json() : null;
-      });
+      // One fetch per known-available section, in parallel. Independent
+      // 400/404 handling per section means one bad one can't blank the
+      // whole drawer refresh — a Ritual-safe replacement for the bulk call.
+      return Promise.all(available.map(fetchOneSection));
     })
-      .then(function (sections) {
-        console.log(TAG, 'sections received:', sections ? Object.keys(sections) : null);
-        if (sections && typeof sections === 'object') {
-          Object.keys(sections).forEach(function (name) {
-            var html = sections[name];
-            if (typeof html !== 'string' || !html) {
-              console.log(TAG, 'section', name, 'empty/missing');
-              return;
-            }
-            var target = document.getElementById('shopify-section-' + name);
-            if (!target) {
-              console.log(TAG, 'section', name, 'no target wrapper (shopify-section-' + name + ') in DOM');
-              return;
-            }
-            var templ = document.createElement('template');
-            templ.innerHTML = html;
-            var newRoot = templ.content.getElementById('shopify-section-' + name);
-            if (newRoot) {
-              target.replaceWith(newRoot);
-              console.log(TAG, 'section', name, 'replaced via wrapper');
-            } else {
-              // Some themes return the section body directly, not wrapped.
-              target.innerHTML = html;
-              console.log(TAG, 'section', name, 'inner HTML swapped');
-            }
-          });
-        }
+      .then(function (results) {
+        var applied = [];
+        results.forEach(function (r) {
+          if (r && r.html) { applySection(r.name, r.html); applied.push(r.name); }
+          else if (r) { console.log(TAG, 'section', r.name, 'empty/400 on refresh — skipped'); }
+        });
+        console.log(TAG, 'sections applied:', applied);
       })
       .catch(function (err) {
         console.warn(TAG, 'section fetch/apply failed:', err && err.message);
