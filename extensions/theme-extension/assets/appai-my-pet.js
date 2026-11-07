@@ -1504,6 +1504,150 @@
       scheduleHeroVerify(colorName, url);
     }
 
+    function canonicalPreviewColor(raw) {
+      var want = String(raw || '').trim().toLowerCase();
+      if (!want) return null;
+      var map = state.previewUrlByColor || {};
+      var keys = Object.keys(map);
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).trim().toLowerCase() === want) return keys[i];
+      }
+      return String(raw).trim();
+    }
+
+    // Colour from the control the shopper actually clicked, not from the
+    // currently-checked radio — in the capture phase that radio is still
+    // the previous colour. Size swatches return null so we don't blank
+    // the hero on a size-only change.
+    function colorFromSwatchEvent(event) {
+      var node = event && event.target;
+      if (!node) return null;
+      if (node.nodeType === 3) node = node.parentNode;
+      if (!node || node.nodeType !== 1) return null;
+      if (node.closest && node.closest('.appai-my-pet')) return null;
+      var probed = node;
+      if (node.tagName !== 'INPUT' && node.tagName !== 'SELECT' && node.tagName !== 'OPTION') {
+        var label = node.closest ? node.closest('label') : null;
+        var viaLabel = null;
+        if (label) {
+          viaLabel = label.querySelector('input, select');
+          if (!viaLabel && label.htmlFor) viaLabel = document.getElementById(label.htmlFor);
+        }
+        probed = viaLabel || (node.closest ? node.closest('input, select, button') : null) || node;
+      }
+      if (!probed || probed.nodeType !== 1) return null;
+      if (probed.tagName === 'OPTION') probed = probed.parentNode || probed;
+      var box = probed.closest ? probed.closest('fieldset, [data-option-name], [data-option]') : null;
+      var ctx = '';
+      if (box) {
+        ctx = String(box.getAttribute('data-option-name') || box.getAttribute('data-option') || '').toLowerCase();
+        var legend = box.querySelector ? box.querySelector('legend') : null;
+        if (legend) ctx += ' ' + String(legend.textContent || '').trim().toLowerCase();
+      }
+      ctx += ' ' + String(probed.name || '').toLowerCase();
+      if (ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) return null;
+      var value = '';
+      if (probed.tagName === 'SELECT' || probed.tagName === 'INPUT') value = probed.value || '';
+      if (!value) {
+        value = probed.getAttribute('data-option-value') || probed.getAttribute('data-value') || probed.getAttribute('aria-label') || '';
+      }
+      value = String(value).trim();
+      if (!value || value.length > 40) return null;
+      return canonicalPreviewColor(value);
+    }
+
+    function applyHeroHold(el) {
+      if (!el || el.nodeType !== 1) return;
+      if (el.getAttribute('data-appai-my-pet-held') === '1') return;
+      el.setAttribute('data-appai-my-pet-held', '1');
+      el.__appaiHeldVisibility = el.style.visibility || '';
+      el.style.visibility = 'hidden';
+    }
+
+    function hideHeroForSwatch() {
+      var targets = heroAssertTargets();
+      for (var i = 0; i < targets.length; i++) {
+        applyHeroHold(targets[i]);
+        var picture = targets[i].closest ? targets[i].closest('picture') : null;
+        if (picture) applyHeroHold(picture);
+      }
+    }
+
+    function clearHeroHold() {
+      var scope = productSectionScope();
+      var held = [];
+      try { held = scope.querySelectorAll('[data-appai-my-pet-held]'); } catch (e) {}
+      for (var i = 0; i < held.length; i++) {
+        var el = held[i];
+        el.style.visibility = el.__appaiHeldVisibility || '';
+        el.removeAttribute('data-appai-my-pet-held');
+      }
+      state.heroHoldToken = 0;
+    }
+
+    // STAGING-106 — hide on the swatch click (capture, before the theme
+    // paints the stock variant), write the cached preview, reveal when
+    // that image has decoded. 600ms safety in case decode never settles
+    // (replaced node, decode unsupported). Poll + hero guard stay as the
+    // backstop if this misses the control.
+    function revealHeroAfterDecode(token, colorName, url) {
+      var finished = false;
+      var finish = function (why) {
+        if (finished || token !== state.heroHoldToken) return;
+        finished = true;
+        if (state.inlineApplied && url) reassertColourPreview('swatch-reveal', colorName, url);
+        clearHeroHold();
+        console.log(TAG, 'swatch preempt reveal', why, 'colour=' + (colorName || '?'));
+      };
+      var safety = setTimeout(function () { finish('safety-600ms'); }, 600);
+      var armDecode = function () {
+        if (finished || token !== state.heroHoldToken || !state.inlineApplied) return;
+        hideHeroForSwatch();
+        if (url) reassertColourPreview('swatch-preempt', colorName, url);
+        var imgs = heroAssertTargets();
+        var pending = 0;
+        var settled = 0;
+        var one = function () {
+          settled++;
+          if (settled < pending) return;
+          clearTimeout(safety);
+          finish('decoded');
+        };
+        for (var i = 0; i < imgs.length; i++) {
+          if (!imgs[i] || typeof imgs[i].decode !== 'function') continue;
+          pending++;
+          imgs[i].decode().then(one, one);
+        }
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(armDecode);
+      else setTimeout(armDecode, 0);
+    }
+
+    function installSwatchPreempt() {
+      if (state.swatchPreemptInstalled) return;
+      state.swatchPreemptInstalled = true;
+      var handler = function (event) {
+        if (!state.inlineApplied || !state.renderId) return;
+        var scope = productSectionScope();
+        if (scope && scope !== document && event.target && event.target.nodeType === 1 && !scope.contains(event.target)) return;
+        var colorName = colorFromSwatchEvent(event);
+        if (!colorName) return;
+        var url = (state.previewUrlByColor && state.previewUrlByColor[colorName]) || null;
+        var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
+        hideHeroForSwatch();
+        console.log(TAG, 'swatch preempt', event.type, 'colour=' + colorName, url ? 'cached' : 'uncached');
+        if (url) {
+          state.previewUrl = url;
+          reassertColourPreview('swatch-click', colorName, url);
+        } else {
+          swapInlineColor(colorName);
+        }
+        revealHeroAfterDecode(token, colorName, url);
+      };
+      document.addEventListener('click', handler, true);
+      document.addEventListener('change', handler, true);
+    }
+
     function swapInlineHero(hero, url) {
       if (!url) return;
       // Theme section re-renders (Shopify Section Rendering API, Horizon's
@@ -1880,6 +2024,7 @@
       installInlineVariantListeners();
       installInlineATCIntercept();
       installInlineFormPollFallback();
+      installSwatchPreempt();
       console.log(TAG, 'inline activate: full install complete (hero+gallery observers, variant listeners, ATC intercept, form poll fallback)');
       return true;
     }
@@ -1915,6 +2060,7 @@
      */
     function revertToOriginalDesign() {
       console.log(TAG, 'revert to original design');
+      clearHeroHold();
       // 1. Disconnect observers + stop backup poll BEFORE touching src so
       //    the observers don't see our restoration as a "theme stole the
       //    preview" mutation and re-assert back to preview.
@@ -2214,6 +2360,11 @@
               // Only touch what looks like the hero (ignore thumbnails /
               // zoom previews / decorative icons).
               if (!isHeroCandidate(img)) continue;
+              // STAGING-106 — a swatch click already hid the outgoing hero.
+              // A node the theme inserts in the same turn must stay hidden
+              // too, or the stock variant paints for one frame. The decode
+              // / 600ms reveal clears the hold.
+              if (state.heroHoldToken) applyHeroHold(img);
               // Hide BEFORE paint — the browser batches style writes with
               // layout so setting opacity now takes effect same-frame.
               var prevTransition = img.style.transition;
