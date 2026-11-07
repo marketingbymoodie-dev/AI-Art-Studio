@@ -759,6 +759,30 @@ export async function sendMyPetEmailSave(args: {
   const email = args.email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Please enter a valid email");
 
+  // Defensive one-shot audit (post-staging-92): hasEmailBonus is a
+  // boolean-exists check in checkMyPetCap, and perListingLimit =
+  // perListing + (bonus ? emailBonus : 0) — additive ONCE regardless of
+  // row count — so a repeat consent=true submission from the same device
+  // on the same listing cannot double-grant the +2 bonus. Still, we want
+  // to (a) log clearly when a repeat happens so audit trail stays
+  // searchable, (b) treat consent as false on repeat so we don't re-fire
+  // the Shopify customer upsert / audit-row spam. The underlying mechanic
+  // (one-shot bonus) is preserved either way; this just stops wasting an
+  // API call and polluting myPetEmailCaptures with "consented 7 times".
+  const requestedConsent = !!args.marketingConsent;
+  let effectiveConsent = requestedConsent;
+  if (requestedConsent && render.shopifyProductId) {
+    const alreadyConsented = await hasEmailBonus(args.shop, args.deviceKey, render.shopifyProductId);
+    if (alreadyConsented) {
+      console.log(
+        `[my-pet] email-save repeat consent ignored shop=${args.shop} ` +
+          `device=${args.deviceKey.slice(0, 8)} product=${render.shopifyProductId} ` +
+          `render=${render.id.slice(0, 8)} — bonus already applied, recording as consent=false`,
+      );
+      effectiveConsent = false;
+    }
+  }
+
   const token = generateToken();
   await db.insert(myPetEmailCaptures).values({
     shopDomain: args.shop,
@@ -766,7 +790,7 @@ export async function sendMyPetEmailSave(args: {
     shopifyProductId: render.shopifyProductId,
     renderId: render.id,
     email,
-    marketingConsent: !!args.marketingConsent,
+    marketingConsent: effectiveConsent,
     token,
     expiresAt: new Date(Date.now() + EMAIL_PREVIEW_RETENTION_MS),
   });
@@ -781,7 +805,11 @@ export async function sendMyPetEmailSave(args: {
   const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
   const link = withTokenParam(args.pageUrl, token);
   await sendMyPetSaveEmail(email, previewUrl, link);
-  void createShopifyCustomerWithConsent(args.shop, email, args.marketingConsent);
+  // Shopify customer upsert is skipped on repeat consents (effectiveConsent
+  // dropped to false above) so we don't spam Shopify Admin on every save-
+  // modal submit — the merchant's customer-with-consent row was already
+  // written the first time around.
+  void createShopifyCustomerWithConsent(args.shop, email, effectiveConsent);
   return { ok: true };
 }
 

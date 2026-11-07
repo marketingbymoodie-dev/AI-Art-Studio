@@ -1713,14 +1713,35 @@
       var thumbHtml = state.previewUrl
         ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
-      // BUG C — adapt the headline + body for the cap-gate trigger so the ask
-      // reads as the direct answer to "I want more" instead of the generic
-      // "Save your design?" that made sense only at exit-intent time.
+      // Save modal state machine:
+      //   State A (no consent, under cap, exit-intent)       → "Save your design?" + opt-in checkbox
+      //   State B (no consent, at cap, try-another-photo)    → "Get 2 more custom designs" + opt-in checkbox
+      //   State C (already consented, any trigger)           → "Save your design?" + NO checkbox
+      //
+      // State detection: capStatus.emailBonusApplied is the server's
+      // authoritative "this device + listing + marketing_consent=true row
+      // already exists" boolean (hasEmailBonus in server/my-pet.ts), so we
+      // don't need to re-query — the latest refreshCapStatus already fetched
+      // it. State C wins over A/B regardless of trigger: if the shopper is
+      // already on the Press there's nothing new to offer, so we drop the
+      // checkbox and reframe the body as a pure save link. For the "at cap +
+      // already consented" case tryAnotherPhoto already routes to
+      // showCapTerminalMessage instead of the save modal, so State C only
+      // actually renders on exit-intent (or any future save-prompt entry
+      // point) when the shopper is UNDER cap but has already consented.
+      var alreadyConsented = !!(state.capStatus && state.capStatus.emailBonusApplied);
       var isCapGate = trigger === 'try-another-photo';
-      var headline = isCapGate ? "Get 2 more custom designs" : "Save your design?";
-      var bodyCopy = isCapGate
-        ? "You've used your free designs on this product. Sign up to the Petposterous Press and we'll unlock 2 more for you — plus a save link to this design."
-        : "We'll email you a link back to this design — works for 30 days, on any device.";
+      var headline = isCapGate && !alreadyConsented
+        ? "Get 2 more custom designs"
+        : "Save your design?";
+      var bodyCopy;
+      if (alreadyConsented) {
+        bodyCopy = "We'll email you a link back to this design — works for 30 days, on any device. You're already on the Petposterous Press, so this is just a save link.";
+      } else if (isCapGate) {
+        bodyCopy = "You've used your free designs on this product. Sign up to the Petposterous Press and we'll unlock 2 more for you — plus a save link to this design.";
+      } else {
+        bodyCopy = "We'll email you a link back to this design — works for 30 days, on any device.";
+      }
       // Polish E + F (Model 2) — single primary "Email me this design" with
       // a default-checked "Join the Petposterous Press for 2 more custom
       // designs" checkbox. The checkbox is the single source of truth for
@@ -1730,25 +1751,35 @@
       // felt heavier than the pattern the rest of the Petposterous site
       // already uses; the single primary with an explicit, pre-checked
       // opt-in keeps the mechanic honest without the extra chrome.
-      // BUG C — when the ask is triggered by a cap-gate, the consent checkbox
-      // reads "Yes, send me the Press (required for +2)" to make the exchange
-      // obvious and keep it default-checked. Unchecking still sends the save
-      // link but foregoes the bonus (same server behaviour as exit-intent).
+      // State A: checkbox reads "Join the Press for 2 more custom designs".
+      // State B (cap-gate): checkbox reads "Yes, send me the Press (required
+      //   for +2 designs)" — makes the exchange obvious.
+      // State C (already consented): no checkbox at all — nothing new to
+      //   offer, so pretending otherwise is the bug this change fixes.
       var consentLabel = isCapGate
         ? "Yes, send me the Petposterous Press (required for +2 designs)"
         : "Join the Petposterous Press for 2 more custom designs";
-      var primaryLabel = isCapGate ? "Unlock 2 more designs" : "Email me this design";
+      var primaryLabel = isCapGate && !alreadyConsented
+        ? "Unlock 2 more designs"
+        : "Email me this design";
+      var consentRowHtml = alreadyConsented
+        ? ''
+        : '<label class="appai-my-pet-consent">' +
+          '  <input type="checkbox" data-action="consent-checkbox" checked />' +
+          '  <span>' + consentLabel + '</span>' +
+          '</label>';
+      // Footnote only reads honestly when we're actually offering the Press.
+      var footnoteHtml = alreadyConsented
+        ? ''
+        : '<p class="appai-my-pet-footnote">Press is weekly, small, witty. Unsubscribe in one click.</p>';
       modal.body.innerHTML =
         '<h3>' + headline + '</h3>' +
         thumbHtml +
         '<p class="appai-my-pet-msg">' + bodyCopy + '</p>' +
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
-        '<label class="appai-my-pet-consent">' +
-        '  <input type="checkbox" data-action="consent-checkbox" checked />' +
-        '  <span>' + consentLabel + '</span>' +
-        '</label>' +
+        consentRowHtml +
         '<button type="button" class="appai-primary" data-action="send-email">' + primaryLabel + '</button>' +
-        '<p class="appai-my-pet-footnote">Press is weekly, small, witty. Unsubscribe in one click.</p>' +
+        footnoteHtml +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
       var thumb = modal.body.querySelector('img.appai-thumb');
       if (thumb) thumb.addEventListener('click', function (e) { showZoom(e.currentTarget.src); });
@@ -1757,6 +1788,13 @@
         var emailInput = modal.body.querySelector('.appai-my-pet-email');
         var consentInput = modal.body.querySelector('[data-action="consent-checkbox"]');
         var email = (emailInput && emailInput.value) || '';
+        // State C renders no checkbox, so consentInput is null → withConsent
+        // is false → no spurious "consented again" audit row server-side.
+        // The server is already one-shot on bonus (hasEmailBonus is a
+        // boolean-exists check on marketing_consent=true, not a count), so
+        // sending true here wouldn't double-grant, but sending false in State
+        // C keeps the audit trail honest and avoids the Shopify customer
+        // upsert API call on every re-send.
         var withConsent = !!(consentInput && consentInput.checked);
         var status = modal.body.querySelector('#appai-my-pet-email-status');
         var sendBtn = modal.body.querySelector('[data-action="send-email"]');
@@ -1765,6 +1803,11 @@
         postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl })
           .then(function (res) {
             if (res && res.ok) {
+              // Confirmation copy:
+              //   State A+checked / State B+checked   → "You're in!" (just joined)
+              //   State A+unchecked / State B+unchecked / State C → "Sent!"
+              // State C uses "Sent!" because the shopper was already on the
+              // Press — there's no "you're in" moment to celebrate.
               if (status) status.textContent = withConsent
                 ? "You're in! Check your inbox for the save link."
                 : 'Sent! Check your inbox for the save link.';
