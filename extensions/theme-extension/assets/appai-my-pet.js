@@ -461,34 +461,51 @@
       'cart-live-region-text', 'header', 'cart-drawer-items',
     ];
     var url = '/?sections=' + encodeURIComponent(CANDIDATE_SECTIONS.join(','));
+    console.log(TAG, 'refreshAndOpenCartDrawer start', { url: url });
     fetch(url, { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        console.log(TAG, 'section fetch status:', r.status, r.ok);
+        return r.ok ? r.json() : null;
+      })
       .then(function (sections) {
+        console.log(TAG, 'sections received:', sections ? Object.keys(sections) : null);
         if (sections && typeof sections === 'object') {
           Object.keys(sections).forEach(function (name) {
             var html = sections[name];
-            if (typeof html !== 'string' || !html) return;
+            if (typeof html !== 'string' || !html) {
+              console.log(TAG, 'section', name, 'empty/missing');
+              return;
+            }
             var target = document.getElementById('shopify-section-' + name);
-            if (!target) return;
+            if (!target) {
+              console.log(TAG, 'section', name, 'no target wrapper (shopify-section-' + name + ') in DOM');
+              return;
+            }
             var templ = document.createElement('template');
             templ.innerHTML = html;
             var newRoot = templ.content.getElementById('shopify-section-' + name);
             if (newRoot) {
               target.replaceWith(newRoot);
+              console.log(TAG, 'section', name, 'replaced via wrapper');
             } else {
               // Some themes return the section body directly, not wrapped.
               target.innerHTML = html;
+              console.log(TAG, 'section', name, 'inner HTML swapped');
             }
           });
         }
       })
-      .catch(function () { /* section fetch failed — events + manual open below still run */ })
+      .catch(function (err) {
+        console.warn(TAG, 'section fetch/apply failed:', err && err.message);
+      })
       .then(function () {
         // Fire the union of cart-updated event names different themes listen for.
         var EVENTS = [
           'cart:refresh', 'cart:updated', 'cart:update', 'cart:build',
           'cart:item-added', 'cart-updated', 'appai:cart-updated',
           'ajaxProduct:added', 'product:added', 'cart:open',
+          // Horizon / Ritual-family add these
+          'cart:open-drawer', 'cart-drawer:open', 'cart:toggle',
         ];
         for (var i = 0; i < EVENTS.length; i++) {
           try { document.dispatchEvent(new CustomEvent(EVENTS[i], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (e) {}
@@ -498,17 +515,58 @@
         var DRAWER_SELECTORS = [
           'cart-drawer-component', 'cart-drawer', 'cart-notification',
           '[id*="CartDrawer"]', '[id*="cart-drawer"]',
+          // Native <dialog> inside a drawer wrapper (Horizon pattern)
+          'cart-drawer-component dialog', 'cart-drawer dialog',
+          'dialog[id*="cart" i]', 'dialog[aria-labelledby*="cart" i]',
         ];
         for (var d = 0; d < DRAWER_SELECTORS.length; d++) {
           var nodes;
           try { nodes = document.querySelectorAll(DRAWER_SELECTORS[d]); } catch (e) { continue; }
+          console.log(TAG, 'drawer selector', DRAWER_SELECTORS[d], 'matched', nodes.length, 'node(s)');
           for (var n = 0; n < nodes.length; n++) {
             var el = nodes[n];
-            try {
-              if (typeof el.open === 'function') { el.open(); }
-              else if (typeof el.show === 'function') { el.show(); }
-              else { el.setAttribute('open', ''); el.setAttribute('aria-hidden', 'false'); }
-            } catch (e) {}
+            var opened = false;
+            // Try every method name a theme might expose. First one that
+            // doesn't throw AND returns truthy or undefined wins.
+            var METHODS = ['showCartDrawer', 'openDrawer', 'openCart', 'open', 'show', 'showDialog', 'showModal'];
+            for (var m = 0; m < METHODS.length; m++) {
+              var fn = el[METHODS[m]];
+              if (typeof fn === 'function') {
+                try { fn.call(el); opened = true; console.log(TAG, 'drawer opened via', METHODS[m]); break; } catch (e) {}
+              }
+            }
+            if (!opened) {
+              // Attribute toggle as last resort.
+              try {
+                el.setAttribute('open', '');
+                el.setAttribute('aria-hidden', 'false');
+                el.removeAttribute('inert');
+                console.log(TAG, 'drawer opened via attribute toggle');
+              } catch (e) {}
+            }
+            // Also dispatch 'show' / 'open' directly on the element — some
+            // themes wire their drawer open to an element-level event rather
+            // than a method.
+            var ELEMENT_EVENTS = ['show', 'open', 'cart:open', 'cart:show'];
+            for (var e2 = 0; e2 < ELEMENT_EVENTS.length; e2++) {
+              try { el.dispatchEvent(new CustomEvent(ELEMENT_EVENTS[e2], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (_) {}
+            }
+          }
+        }
+        // Last-ditch: simulate a click on the theme's cart-toggle button. Ritual
+        // and most Dawn descendants wire ATC → drawer through a hidden toggle
+        // the header surface shares.
+        var TOGGLE_SELECTORS = [
+          '[data-cart-drawer-toggle]', '[data-cart-drawer-open]',
+          'a[href="/cart"][aria-controls]', '[aria-controls*="cart-drawer" i]',
+          '[data-open-cart-drawer]', '.js-drawer-open-cart',
+        ];
+        for (var t = 0; t < TOGGLE_SELECTORS.length; t++) {
+          var toggle;
+          try { toggle = document.querySelector(TOGGLE_SELECTORS[t]); } catch (e) { continue; }
+          if (toggle && typeof toggle.click === 'function') {
+            console.log(TAG, 'clicking cart-toggle:', TOGGLE_SELECTORS[t]);
+            try { toggle.click(); break; } catch (e) {}
           }
         }
       });
@@ -576,12 +634,13 @@
       // always outlives a modal session, so no expiry bookkeeping needed.
       previewUrlByColor: {},
       // UX 7 inline mode — populated by activateInlinePreview. inlineHero is
-      // the PDP <img> we swapped; inlineWatcherTimer is the setInterval id
-      // watching the native variant form; inlineAttached indicates the ATC
-      // intercept + hero swap have been installed so we don't double-install.
+      // the PDP <img> we swapped. inlineAttached indicates the ATC intercept +
+      // hero MutationObserver + variant-event listeners have been installed
+      // so we don't double-install. inlineGuardBackupTimer re-finds the hero
+      // every 1.5s when the theme replaces the <img> node outright.
       inlineHero: null,
-      inlineWatcherTimer: null,
       inlineAttached: false,
+      inlineGuardBackupTimer: null,
     };
 
     function markDismissed(renderId) {
@@ -715,6 +774,28 @@
     // forcibly switch back to modal via the block setting at any time.
     // ─────────────────────────────────────────────────────────────────────
 
+    function preloadPreviewUrls(urlsByColor) {
+      if (!urlsByColor) return;
+      var urls = [];
+      try {
+        for (var key in urlsByColor) {
+          if (Object.prototype.hasOwnProperty.call(urlsByColor, key)) {
+            var u = urlsByColor[key];
+            if (typeof u === 'string' && u.indexOf('http') === 0) urls.push(u);
+          }
+        }
+      } catch (e) {}
+      if (!urls.length) return;
+      console.log(TAG, 'preloading', urls.length, 'colour URLs');
+      for (var i = 0; i < urls.length; i++) {
+        try {
+          var img = new Image();
+          img.decoding = 'async';
+          img.src = urls[i];
+        } catch (e) {}
+      }
+    }
+
     function findProductHeroImg() {
       // Priority list: most-specific (is-active media item) → broad
       // (product section <img>). Skip anything inside our own block so we
@@ -774,34 +855,225 @@
       hero.setAttribute('data-appai-my-pet-preview', 'true');
     }
 
+    /**
+     * BUGs B + C (post-staging-90) — single entry point for the "Try another
+     * photo" interaction, shared across:
+     *   - inline mode's My Pet button (relabeled to "Try another photo" once
+     *     activateInlinePreview has swapped the hero)
+     *   - modal mode's change-photo button inside the preview modal
+     *
+     * Cap-aware branching:
+     *   under cap                   → openUploadStep()
+     *   at cap, no marketing consent → maybePromptEmailSave({force,trigger})
+     *                                  — the honest cap-gate ask: consent
+     *                                  checkbox → +2 bonus, same mechanic
+     *                                  as exit-intent but triggered when
+     *                                  the shopper is directly asking for
+     *                                  more (highest intent moment)
+     *   at cap, consent already given → show "you've used all your designs
+     *                                   for this product" terminal message
+     *
+     * Logging on every branch so a silent fail becomes visible — BUG B
+     * symptom was "no modal opens, no error, no console log", which could
+     * mean handler not firing OR handler short-circuiting silently. These
+     * logs disambiguate.
+     *
+     * fromModalBody: when called from the preview modal's change-photo
+     * button, we pass the modal body so we can close it before opening the
+     * next step (upload modal, save modal, or terminal message).
+     */
+    function tryAnotherPhoto(fromModalBody) {
+      console.log(TAG, 'Try another photo clicked', {
+        inline: state.inlineAttached,
+        renderId: state.renderId ? state.renderId.slice(0, 8) : null,
+        fromModal: !!fromModalBody,
+      });
+      refreshCapStatus().then(function (cap) {
+        var count = (cap && typeof cap.perListingCount === 'number') ? cap.perListingCount : 0;
+        var limit = (cap && typeof cap.perListingLimit === 'number') ? cap.perListingLimit : Number.POSITIVE_INFINITY;
+        var bonusApplied = !!(cap && cap.emailBonusApplied);
+        var atCap = !cap || cap.allowed === false || count >= limit;
+        console.log(TAG, 'Try another photo cap decision', {
+          count: count, limit: limit, bonusApplied: bonusApplied, atCap: atCap,
+        });
+
+        if (!atCap) {
+          console.log(TAG, 'Try another photo → openUploadStep');
+          closeIfModalBody(fromModalBody);
+          openUploadStep();
+          return;
+        }
+
+        if (!bonusApplied) {
+          console.log(TAG, 'Try another photo at cap, no bonus → save modal');
+          closeIfModalBody(fromModalBody);
+          maybePromptEmailSave({ force: true, trigger: 'try-another-photo' });
+          return;
+        }
+
+        console.log(TAG, 'Try another photo at cap, bonus already applied → terminal message');
+        showCapTerminalMessage(fromModalBody, cap);
+      });
+    }
+
+    function closeIfModalBody(body) {
+      if (!body) return;
+      var overlay = body.closest && body.closest('.appai-my-pet-modal__overlay');
+      if (overlay) overlay.remove();
+    }
+
+    function showCapTerminalMessage(fromModalBody, cap) {
+      var copy = (cap && cap.message) || "You've used all your custom designs for this product. New designs are available on the Petposterous Press each week.";
+      // In inline mode with no modal open, surface via caption.
+      if (!fromModalBody && caption) {
+        caption.textContent = copy;
+        caption.classList.remove('appai-shimmer');
+      }
+      // Always also show a lightweight modal so the shopper sees a clear
+      // dead-end message regardless of where they clicked from — avoids the
+      // "clicked a button and nothing happened" ambiguity that was BUG B.
+      var modal = buildModal();
+      modal.body.innerHTML =
+        '<h3>All done on this design</h3>' +
+        '<p class="appai-my-pet-msg">' + copy + '</p>' +
+        '<button type="button" class="appai-primary" data-action="close-terminal">Close</button>';
+      modal.body.querySelector('[data-action="close-terminal"]').addEventListener('click', function () {
+        modal.overlay.remove();
+      });
+      closeIfModalBody(fromModalBody);
+    }
+
     function activateInlinePreview(previewUrl) {
       var hero = state.inlineHero || findProductHeroImg();
       if (!hero) return false;
       state.inlineHero = hero;
       swapInlineHero(hero, previewUrl);
+      // MutationObserver install/refresh on EVERY activation — even when
+      // already attached, because the hero node may have been replaced since
+      // the last activation (theme section re-render, "Try another photo"
+      // flow re-generating). swapInlineHero already re-finds a detached hero.
+      installHeroGuard(state.inlineHero);
       if (state.inlineAttached) return true;
       state.inlineAttached = true;
-      installInlineSwatchWatcher();
+      installInlineVariantListeners();
       installInlineATCIntercept();
       // Relabel the My Pet open button as the "reset" / re-upload control.
       if (openBtn) {
         openBtn.textContent = 'Try another photo';
         openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
+        openBtn.removeAttribute('aria-disabled');
       }
       return true;
     }
 
-    function installInlineSwatchWatcher() {
-      if (state.inlineWatcherTimer) return;
-      var last = currentVariantInfo(root);
-      state.inlineWatcherTimer = setInterval(function () {
-        if (!state.renderId || !state.inlineHero) return; // paused but kept alive
-        var now = currentVariantInfo(root);
-        if (now.colorName && now.colorName !== last.colorName) {
-          swapInlineColor(now.colorName);
+    /**
+     * BUG A (post-staging-90) — the 600ms polling watcher lost the race
+     * against the theme's own synchronous variant-change handler: theme
+     * swaps hero.src to the stock variant image, user sees it for up to
+     * 600ms before our polled swap catches up, and on Ritual / Horizon
+     * the theme may re-assert the stock image again on a later event
+     * cycle (overwriting ours a second time).
+     *
+     * MutationObserver fires synchronously in a microtask the moment the
+     * theme writes hero.src OR hero.srcset. We immediately re-assert our
+     * composited URL. No perceivable lag, and theme re-assertions get
+     * overwritten the same microtask.
+     *
+     * Loop prevention: if currentSrc already matches `expected`, we return
+     * without writing. Our own `hero.src = expected` triggers the observer
+     * again but then returns immediately on the matches-expected check.
+     *
+     * Fallbacks:
+     *   - If the shopper swatched to a colour we HAVEN'T pre-composited yet
+     *     (partial fail during generate), we assert the last-known preview
+     *     right away (avoids the stock flash) then kick off /recomposite in
+     *     the background.
+     *   - Theme sometimes replaces the entire <img> rather than mutating its
+     *     src (e.g. a Section Rendering API swap of the gallery). A 1500ms
+     *     backup poll re-finds the hero + re-installs the observer if our
+     *     reference went detached.
+     */
+    function installHeroGuard(hero) {
+      if (!hero) return;
+      if (hero.__appaiMyPetObserver) {
+        try { hero.__appaiMyPetObserver.disconnect(); } catch (e) {}
+      }
+      var observer = new MutationObserver(function () {
+        if (!state.renderId || !state.inlineAttached) return;
+        var info = currentVariantInfo(root);
+        var colorName = info.colorName;
+        var expected = colorName ? state.previewUrlByColor[colorName] : null;
+        // Compare resolved absolute URLs; `hero.src` returns absolute.
+        var currentSrc = hero.src || '';
+        if (expected && currentSrc === expected) return; // already ours
+        if (expected) {
+          hero.src = expected;
+          try { hero.removeAttribute('srcset'); } catch (e) {}
+          hero.setAttribute('data-appai-my-pet-preview', 'true');
+          console.log(TAG, 'inline hero guard re-asserted', colorName);
+        } else if (state.previewUrl) {
+          // Colour not pre-composited — stop the stock flash immediately with
+          // last-known preview, then kick off compose in the background.
+          hero.src = state.previewUrl;
+          try { hero.removeAttribute('srcset'); } catch (e) {}
+          hero.setAttribute('data-appai-my-pet-preview', 'true');
+          if (colorName) swapInlineColor(colorName);
         }
-        last = now;
-      }, 600);
+      });
+      observer.observe(hero, { attributes: true, attributeFilter: ['src', 'srcset'] });
+      hero.__appaiMyPetObserver = observer;
+
+      // Element-replacement backup: themes that re-render the gallery via
+      // Section Rendering API replace the <img> node outright, which breaks
+      // our observer silently. Re-find and re-install every 1.5s. If the
+      // same node is still there, this is a cheap no-op.
+      if (state.inlineGuardBackupTimer) clearInterval(state.inlineGuardBackupTimer);
+      state.inlineGuardBackupTimer = setInterval(function () {
+        if (!state.renderId || !state.inlineAttached) return;
+        var currentHero = state.inlineHero;
+        if (currentHero && document.body.contains(currentHero) && currentHero.__appaiMyPetObserver) return;
+        var fresh = findProductHeroImg();
+        if (fresh && fresh !== currentHero) {
+          state.inlineHero = fresh;
+          // Re-apply preview + install observer on the new node.
+          var info = currentVariantInfo(root);
+          var colorName = info.colorName;
+          var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
+          if (expected) swapInlineHero(fresh, expected);
+          installHeroGuard(fresh);
+          console.log(TAG, 'inline hero node replaced — re-installed guard');
+        }
+      }, 1500);
+    }
+
+    function installInlineVariantListeners() {
+      // Secondary signal: Shopify Dawn / Horizon / Ritual all fire a variant
+      // change event on their product-form custom element. The MutationObserver
+      // on hero.src is still the primary defence (fires regardless of event
+      // name), but these events give us a head-start to swap BEFORE the theme
+      // gets around to updating its hero image on slow devices.
+      var EVENT_NAMES = [
+        'variant:change', 'variant:changed',
+        'variantChange', 'variantChanged',
+        'product-form:variant-changed',
+        'product:variant-change', 'shopify:variant-change',
+      ];
+      var handler = function () {
+        if (!state.inlineAttached || !state.inlineHero || !state.renderId) return;
+        var info = currentVariantInfo(root);
+        if (!info.colorName) return;
+        var expected = state.previewUrlByColor[info.colorName];
+        if (expected) {
+          swapInlineHero(state.inlineHero, expected);
+          state.previewUrl = expected;
+        } else {
+          swapInlineColor(info.colorName);
+        }
+      };
+      for (var i = 0; i < EVENT_NAMES.length; i++) {
+        document.addEventListener(EVENT_NAMES[i], handler, true);
+        window.addEventListener(EVENT_NAMES[i], handler, true);
+      }
     }
 
     function swapInlineColor(colorName) {
@@ -971,6 +1243,15 @@
             state.previewUrlByColor = (genRes.previewUrlsByColor && typeof genRes.previewUrlsByColor === 'object')
               ? Object.assign({}, genRes.previewUrlsByColor)
               : {};
+            // Queued (post-staging-90) — prime the HTTP cache for every
+            // pre-composited colour the moment generate returns. First swatch
+            // click per colour then becomes a <img>.src assignment that paints
+            // straight from browser cache (no network wait), so the swap
+            // reads as instant even on a cold load. Image().src kicks off a
+            // GET without needing the element to be in the DOM; browser
+            // keeps the decoded bytes around for the matching URL, so our
+            // real <img> later reuses them.
+            preloadPreviewUrls(state.previewUrlByColor);
             // New render id is never in dismissedRenderIds — exit-intent will
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
@@ -1004,19 +1285,20 @@
     function showGeneratingProgress(body) {
       body.innerHTML =
         '<h3>Creating your design…</h3>' +
-        '<p class="appai-my-pet-msg appai-progress-copy">Usually takes 20–25 seconds.</p>' +
+        '<p class="appai-my-pet-msg appai-progress-copy">Usually takes 25 to 30 seconds.</p>' +
         '<div class="appai-progress"><span></span></div>';
       var bar = body.querySelector('.appai-progress > span');
       var copy = body.querySelector('.appai-progress-copy');
       var elapsed = 0;
-      // Fill 90% over 22s (the measured median); hold the last 10% so we never
-      // claim "done" before the server responds.
+      // Fill 90% over 27s — the Sunburst edit runs ~22s and the server-side
+      // pre-composite of the remaining 7 colours adds ~5s on top (staging-90).
+      // Hold the last 10% so we never claim "done" before the server responds.
       var fillTimer = setInterval(function () {
         if (!document.body.contains(body)) { clearInterval(fillTimer); return; }
         elapsed += 500;
-        var pct = Math.min(90, (elapsed / 22000) * 90);
+        var pct = Math.min(90, (elapsed / 27000) * 90);
         if (bar) bar.style.width = pct + '%';
-        if (copy && elapsed >= 21000 && elapsed < 45000) copy.textContent = 'Almost there…';
+        if (copy && elapsed >= 26000 && elapsed < 45000) copy.textContent = 'Almost there…';
         if (copy && elapsed >= 45000) copy.textContent = 'Taking longer than usual — hang on…';
       }, 500);
       // Clean up when the body changes (next render step).
@@ -1086,19 +1368,11 @@
       });
       body.querySelector('[data-action="add-to-cart"]').addEventListener('click', function () { addToCart(body); });
       body.querySelector('[data-action="change-photo"]').addEventListener('click', function () {
-        // Pre-check cap so the shopper sees the message before uploading a
-        // new photo rather than wasting ~25s on a generation the server will
-        // refuse. "Try another photo" on a blocked product is the direct
-        // trigger for the user-facing failure Bug #1 was really about.
-        refreshCapStatus().then(function (status) {
-          if (status && status.allowed === false) {
-            var statusEl = body.querySelector('#appai-my-pet-status');
-            if (statusEl) statusEl.textContent = status.message || 'No more tries on this design.';
-            return;
-          }
-          body.closest('.appai-my-pet-modal__overlay').remove();
-          openUploadStep();
-        });
+        // BUG C — delegate to the shared tryAnotherPhoto() so the modal path
+        // and the inline path both route cap-exceeded shoppers through the
+        // save-modal-first mechanic (consent → +2 bonus) instead of the old
+        // "status text only" dead-end that just said "No more tries".
+        tryAnotherPhoto(body);
       });
       var colorBtns = body.querySelectorAll('[data-action="swatch-color"]');
       for (var cb = 0; cb < colorBtns.length; cb++) {
@@ -1384,6 +1658,12 @@
           if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
           if (status) {
             status.innerHTML = 'Added to cart! <a href="/cart">View cart</a>';
+            // Queued — the modal is max-height:92vh; overflow:auto, so on
+            // tall content the status row can land below the fold. Scroll
+            // it into view so the shopper actually sees the confirmation
+            // (and the "View cart" link) rather than wondering if ATC
+            // succeeded.
+            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
           }
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
@@ -1395,7 +1675,10 @@
         })
         .catch(function (err) {
           if (btn) btn.disabled = false;
-          if (status) status.textContent = err && err.message ? err.message : 'Could not add to cart. Please try again.';
+          if (status) {
+            status.textContent = err && err.message ? err.message : 'Could not add to cart. Please try again.';
+            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+          }
         });
     }
 
@@ -1405,9 +1688,20 @@
      * NEW design they generate afterward. emailModalOpen guards against
      * mouseleave firing more than once before the shopper reacts (would
      * otherwise stack a second modal over the first).
+     *
+     * BUG C (post-staging-90): opts.force skips the per-render dismissal
+     * check so the "Try another photo at cap" trigger can re-prompt even if
+     * the shopper previously dismissed the exit-intent prompt for this
+     * design. opts.trigger is logged + optionally used to adapt the headline
+     * ("Sign up to get 2 more" instead of "Save your design?") so the
+     * mechanic (consent → +2 bonus) reads honestly at the cap-gate moment.
      */
-    function maybePromptEmailSave() {
-      if (!state.renderId || state.emailModalOpen || isDismissed(state.renderId)) return;
+    function maybePromptEmailSave(opts) {
+      opts = opts || {};
+      var force = !!opts.force;
+      var trigger = opts.trigger || 'exit-intent';
+      if (!state.renderId || state.emailModalOpen) return;
+      if (!force && isDismissed(state.renderId)) return;
       state.emailModalOpen = true;
       var renderIdAtOpen = state.renderId;
       var modal = buildModal({
@@ -1419,6 +1713,14 @@
       var thumbHtml = state.previewUrl
         ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
+      // BUG C — adapt the headline + body for the cap-gate trigger so the ask
+      // reads as the direct answer to "I want more" instead of the generic
+      // "Save your design?" that made sense only at exit-intent time.
+      var isCapGate = trigger === 'try-another-photo';
+      var headline = isCapGate ? "Get 2 more custom designs" : "Save your design?";
+      var bodyCopy = isCapGate
+        ? "You've used your free designs on this product. Sign up to the Petposterous Press and we'll unlock 2 more for you — plus a save link to this design."
+        : "We'll email you a link back to this design — works for 30 days, on any device.";
       // Polish E + F (Model 2) — single primary "Email me this design" with
       // a default-checked "Join the Petposterous Press for 2 more custom
       // designs" checkbox. The checkbox is the single source of truth for
@@ -1428,16 +1730,24 @@
       // felt heavier than the pattern the rest of the Petposterous site
       // already uses; the single primary with an explicit, pre-checked
       // opt-in keeps the mechanic honest without the extra chrome.
+      // BUG C — when the ask is triggered by a cap-gate, the consent checkbox
+      // reads "Yes, send me the Press (required for +2)" to make the exchange
+      // obvious and keep it default-checked. Unchecking still sends the save
+      // link but foregoes the bonus (same server behaviour as exit-intent).
+      var consentLabel = isCapGate
+        ? "Yes, send me the Petposterous Press (required for +2 designs)"
+        : "Join the Petposterous Press for 2 more custom designs";
+      var primaryLabel = isCapGate ? "Unlock 2 more designs" : "Email me this design";
       modal.body.innerHTML =
-        '<h3>Save your design?</h3>' +
+        '<h3>' + headline + '</h3>' +
         thumbHtml +
-        '<p class="appai-my-pet-msg">We\'ll email you a link back to this design — works for 30 days, on any device.</p>' +
+        '<p class="appai-my-pet-msg">' + bodyCopy + '</p>' +
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
         '<label class="appai-my-pet-consent">' +
         '  <input type="checkbox" data-action="consent-checkbox" checked />' +
-        '  <span>Join the Petposterous Press for 2 more custom designs</span>' +
+        '  <span>' + consentLabel + '</span>' +
         '</label>' +
-        '<button type="button" class="appai-primary" data-action="send-email">Email me this design</button>' +
+        '<button type="button" class="appai-primary" data-action="send-email">' + primaryLabel + '</button>' +
         '<p class="appai-my-pet-footnote">Press is weekly, small, witty. Unsubscribe in one click.</p>' +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
       var thumb = modal.body.querySelector('img.appai-thumb');
@@ -1502,17 +1812,11 @@
 
     openBtn.addEventListener('click', function () {
       // UX 7 inline mode — when inline preview is already active, the My Pet
-      // button acts as "Try another photo" and jumps straight to upload
-      // (cap-gated) rather than re-opening a modal whose role was taken over
-      // by the inline hero.
+      // button acts as "Try another photo" and routes through the shared
+      // tryAnotherPhoto() so cap-at + save-modal + terminal-message branches
+      // all behave the same as the modal-mode change-photo button.
       if (previewMode === 'inline' && state.inlineAttached) {
-        refreshCapStatus().then(function (cap) {
-          if (cap && cap.allowed === false) {
-            if (caption) caption.textContent = cap.message || 'No more tries on this design.';
-            return;
-          }
-          openUploadStep();
-        });
+        tryAnotherPhoto();
         return;
       }
       // If the shopper already generated this visit, re-open the SAME preview
