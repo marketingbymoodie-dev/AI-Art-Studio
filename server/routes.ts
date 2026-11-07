@@ -11767,7 +11767,40 @@ ${orientationExtra}
           }
         }
       }
-      const token = installation.accessToken!;
+      // ISSUE 3 (post-staging-92) — pre-flight token refresh.
+      //
+      // Previously we read installation.accessToken verbatim and only
+      // reacted to 401s AFTER a Shopify call. With expiring offline tokens
+      // (24h TTL, refresh via grant_type=refresh_token) a request that
+      // arrives after expiry always failed its first call, then
+      // markShopTokenInvalid blanked the token, and the merchant saw
+      // "Admin API token invalid — reconnect the app" until they ran an
+      // OAuth reinstall by hand. The exchange infrastructure already
+      // exists (shopify-offline-token.ts) — getAuthorizedInstallation
+      // just wasn't using it.
+      //
+      // ensureValidOfflineAccessToken refreshes in place when the token
+      // is within REFRESH_SKEW_MS (2min) of expiry via the stored refresh
+      // token, persists the new token, and returns it. Legacy
+      // non-expiring installs get migrated on the same call. Covers the
+      // overwhelming majority of recurrence cases without the shopper
+      // touching Shopify Admin.
+      const tokenReady = await ensureValidOfflineAccessToken(installation);
+      if (!tokenReady.ok) {
+        console.error(
+          `${resolveTag} pre-flight refresh failed shop=${shop} error=${tokenReady.error}`,
+        );
+        if (tokenReady.needsReinstall) await markShopTokenInvalid(shop);
+        return res.status(403).json({
+          success: false,
+          error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
+          reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+          fallback: true,
+          variantId: String(variantId),
+        });
+      }
+      let token = tokenReady.accessToken;
+      Object.assign(installation, tokenReady.installation);
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
       step(`authorized shop=${shop} design=${String(designId).slice(0, 80)} variant=${variantId}`);
@@ -12006,8 +12039,26 @@ ${orientationExtra}
 
       // 2. Canonical source of truth: resolve productId from variantId.
       //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
-      const variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      let variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
       step(`base variant lookup ${variantLookupRes.status}`);
+      // ISSUE 3 (post-staging-92) — on-401 retry. Pre-flight refresh above
+      // handles the known-expired case; this catches the edge where the
+      // token looked valid to us (not yet within REFRESH_SKEW_MS) but
+      // Shopify rejected it anyway (manual revoke, clock skew, mid-flight
+      // expiry). forceRefresh:true bypasses the "looks fresh" short-circuit.
+      // One retry only — if that also 401s, fall through to markShopTokenInvalid.
+      if (variantLookupRes.status === 401 || variantLookupRes.status === 403) {
+        const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
+        if (retried.ok) {
+          token = retried.accessToken;
+          Object.assign(installation, retried.installation);
+          headers["X-Shopify-Access-Token"] = token;
+          variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+          step(`base variant lookup retry-after-refresh ${variantLookupRes.status}`);
+        } else {
+          console.warn(`${resolveTag} variant lookup 401 refresh failed: ${retried.error}`);
+        }
+      }
       if (!variantLookupRes.ok) {
         const t = await variantLookupRes.text();
         console.error(`[ShadowProduct] Failed to fetch variant ${variantId}:`, t.substring(0, 200));
@@ -12073,29 +12124,53 @@ ${orientationExtra}
       // is not linked from navigation — Shopify only surfaces products in collections.
       const sixHoursFromNow = new Date(Date.now() + 6 * 60 * 60 * 1000);
       step("creating shadow product");
-      const createProductRes = await shadowFetch(`${apiBase}/products.json`, {
+      const createProductBody = JSON.stringify({
+        product: {
+          title: shadowTitle,
+          status: shopifyStatusForVisibility("hidden"),
+          tags: 'appai-shadow',
+          variants: [{
+            price: overridePriceFormatted || baseVariant.price,
+            compare_at_price: baseVariant.compare_at_price || null,
+            taxable: baseVariant.taxable,
+            requires_shipping: baseVariant.requires_shipping,
+            weight: baseVariant.weight,
+            weight_unit: baseVariant.weight_unit,
+            inventory_management: null,          // untracked — never sold-out
+            inventory_policy: 'continue',
+            fulfillment_service: 'manual',
+          }],
+          images: [{ src: mockupUrl }],
+        },
+      });
+      let createProductRes = await shadowFetch(`${apiBase}/products.json`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          product: {
-            title: shadowTitle,
-            status: shopifyStatusForVisibility("hidden"),
-            tags: 'appai-shadow',
-            variants: [{
-              price: overridePriceFormatted || baseVariant.price,
-              compare_at_price: baseVariant.compare_at_price || null,
-              taxable: baseVariant.taxable,
-              requires_shipping: baseVariant.requires_shipping,
-              weight: baseVariant.weight,
-              weight_unit: baseVariant.weight_unit,
-              inventory_management: null,          // untracked — never sold-out
-              inventory_policy: 'continue',
-              fulfillment_service: 'manual',
-            }],
-            images: [{ src: mockupUrl }],
-          },
-        }),
+        body: createProductBody,
       });
+      // ISSUE 3 (post-staging-92) — same on-401 retry pattern as the variant
+      // lookup above. One refresh, one retry; fall through to markShopTokenInvalid
+      // if still 401. Idempotency note: this is the shadow-product create call,
+      // which is the first side-effect we make. If the first attempt actually
+      // created a product then returned 401, the retry would create a second
+      // orphan — but a 401 means the request never authenticated, so there's
+      // no server-side state change. Safe to retry.
+      if (createProductRes.status === 401 || createProductRes.status === 403) {
+        const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
+        if (retried.ok) {
+          token = retried.accessToken;
+          Object.assign(installation, retried.installation);
+          headers["X-Shopify-Access-Token"] = token;
+          createProductRes = await shadowFetch(`${apiBase}/products.json`, {
+            method: 'POST',
+            headers,
+            body: createProductBody,
+          });
+          step(`create shadow product retry-after-refresh ${createProductRes.status}`);
+        } else {
+          console.warn(`${resolveTag} create product 401 refresh failed: ${retried.error}`);
+        }
+      }
       if (!createProductRes.ok) {
         const errText = await createProductRes.text();
         console.error(`[ShadowProduct] Failed to create shadow product:`, createProductRes.status, errText.substring(0, 300));

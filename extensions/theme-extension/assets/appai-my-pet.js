@@ -639,6 +639,11 @@
       // so we don't double-install. inlineGuardBackupTimer re-finds the hero
       // every 1.5s when the theme replaces the <img> node outright.
       inlineHero: null,
+      // Issue 4 (post-staging-92) — childList observer on the gallery
+      // container; swaps opacity:0 + runs installHeroGuard before paint so
+      // Ritual's "replace hero <img> on variant change" never flashes the
+      // stock variant image.
+      inlineGalleryObserver: null,
       inlineAttached: false,
       inlineGuardBackupTimer: null,
     };
@@ -953,6 +958,12 @@
       // the last activation (theme section re-render, "Try another photo"
       // flow re-generating). swapInlineHero already re-finds a detached hero.
       installHeroGuard(state.inlineHero);
+      // ISSUE 4 (post-staging-92) — fast path for gallery re-renders: when
+      // the theme replaces the hero node outright (Ritual does this on every
+      // variant change), the gallery-childList observer runs assert() in the
+      // same microtask as insertion, so the shopper never sees a flash of
+      // the stock image. Idempotent — safe to re-install on every activation.
+      installGalleryGuard();
       if (state.inlineAttached) return true;
       state.inlineAttached = true;
       installInlineVariantListeners();
@@ -974,6 +985,17 @@
      * the theme may re-assert the stock image again on a later event
      * cycle (overwriting ours a second time).
      *
+     * ISSUE 2 (post-staging-92) — MutationObserver alone catches FUTURE
+     * src/srcset mutations, but Ritual REPLACES the hero <img> node on
+     * every variant change (size OR colour). The new node is inserted
+     * already holding the stock variant src, so nothing mutates after
+     * we install the observer and re-assertion never fires. The
+     * element-replacement 1.5s backup poll below eventually catches it,
+     * but 1500ms of stock image is a visible glitch. Fix: call assert()
+     * IMMEDIATELY on every installHeroGuard entry (initial + every
+     * re-install after node replacement), before attaching the observer.
+     * The settled-node case is now caught synchronously.
+     *
      * MutationObserver fires synchronously in a microtask the moment the
      * theme writes hero.src OR hero.srcset. We immediately re-assert our
      * composited URL. No perceivable lag, and theme re-assertions get
@@ -991,14 +1013,19 @@
      *   - Theme sometimes replaces the entire <img> rather than mutating its
      *     src (e.g. a Section Rendering API swap of the gallery). A 1500ms
      *     backup poll re-finds the hero + re-installs the observer if our
-     *     reference went detached.
+     *     reference went detached. Issue 4's gallery-childList observer
+     *     (installGalleryGuard) is the fast path — the 1500ms poll is now
+     *     a last-resort for themes we didn't match a gallery container on.
      */
     function installHeroGuard(hero) {
       if (!hero) return;
       if (hero.__appaiMyPetObserver) {
         try { hero.__appaiMyPetObserver.disconnect(); } catch (e) {}
       }
-      var observer = new MutationObserver(function () {
+      // Shared assert — called both synchronously on install (catches the
+      // settled replacement-node case) and on every observed src/srcset
+      // mutation (catches theme re-assertions).
+      var assert = function () {
         if (!state.renderId || !state.inlineAttached) return;
         var info = currentVariantInfo(root);
         var colorName = info.colorName;
@@ -1011,13 +1038,29 @@
           try { hero.removeAttribute('srcset'); } catch (e) {}
           hero.setAttribute('data-appai-my-pet-preview', 'true');
           console.log(TAG, 'inline hero guard re-asserted', colorName);
-        } else if (state.previewUrl) {
+        } else if (colorName && state.previewUrl) {
           // Colour not pre-composited — stop the stock flash immediately with
           // last-known preview, then kick off compose in the background.
           hero.src = state.previewUrl;
           try { hero.removeAttribute('srcset'); } catch (e) {}
           hero.setAttribute('data-appai-my-pet-preview', 'true');
-          if (colorName) swapInlineColor(colorName);
+          console.warn(TAG, 'no preview for colour', colorName,
+            'available:', Object.keys(state.previewUrlByColor || {}));
+          swapInlineColor(colorName);
+        }
+      };
+      // Immediate: handles the Ritual node-replacement case where the new
+      // <img> is inserted with its src already set to the stock variant
+      // image — no future mutation fires on it so the observer would never
+      // trigger.
+      assert();
+      var observer = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+          var m = mutations[i];
+          if (m.attributeName === 'src' || m.attributeName === 'srcset') {
+            assert();
+            return;
+          }
         }
       });
       observer.observe(hero, { attributes: true, attributeFilter: ['src', 'srcset'] });
@@ -1026,7 +1069,9 @@
       // Element-replacement backup: themes that re-render the gallery via
       // Section Rendering API replace the <img> node outright, which breaks
       // our observer silently. Re-find and re-install every 1.5s. If the
-      // same node is still there, this is a cheap no-op.
+      // same node is still there, this is a cheap no-op. Last-resort —
+      // installGalleryGuard (Issue 4) is faster when the gallery container
+      // selector matches the theme.
       if (state.inlineGuardBackupTimer) clearInterval(state.inlineGuardBackupTimer);
       state.inlineGuardBackupTimer = setInterval(function () {
         if (!state.renderId || !state.inlineAttached) return;
@@ -1041,9 +1086,113 @@
           var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
           if (expected) swapInlineHero(fresh, expected);
           installHeroGuard(fresh);
-          console.log(TAG, 'inline hero node replaced — re-installed guard');
+          console.log(TAG, 'inline hero node replaced (poll) — re-installed guard');
         }
       }, 1500);
+    }
+
+    /**
+     * ISSUE 4 (post-staging-92) — even with the immediate-assert fix above,
+     * the browser may paint one frame of the stock src between the theme's
+     * new-node insertion and our assert() running (Ritual rebuilds the
+     * gallery on every variant change — size OR colour). The flash is brief
+     * but visible.
+     *
+     * Fix: watch the gallery container's childList for added nodes. On any
+     * added <img> (which, in a gallery re-render, IS the new hero), set its
+     * opacity to 0 immediately, then installHeroGuard → assert() swaps the
+     * src to our composited URL, then transition opacity back to 1 over
+     * ~100ms. The shopper never sees the stock pixels because they were
+     * invisible while the swap happened.
+     *
+     * Scope: we hunt for the same gallery containers across themes. On
+     * themes where none match, we fall back to the 1500ms element-
+     * replacement poll above (slower but functionally correct).
+     */
+    function installGalleryGuard() {
+      if (state.inlineGalleryObserver) {
+        try { state.inlineGalleryObserver.disconnect(); } catch (e) {}
+        state.inlineGalleryObserver = null;
+      }
+      var GALLERY_SELECTORS = [
+        '.product__media-wrapper',
+        '.product__media-list',
+        '.product-media-list',
+        '.product-gallery',
+        'media-gallery',
+        'product-media-gallery',
+        '[data-media-gallery]',
+      ];
+      var container = null;
+      for (var i = 0; i < GALLERY_SELECTORS.length; i++) {
+        try { container = document.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
+        if (container) break;
+      }
+      if (!container) {
+        console.log(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
+        return;
+      }
+      console.log(TAG, 'gallery guard: watching', container.tagName.toLowerCase() + (container.className ? '.' + String(container.className).split(' ').join('.') : ''));
+      var observer = new MutationObserver(function (mutations) {
+        if (!state.renderId || !state.inlineAttached) return;
+        for (var i = 0; i < mutations.length; i++) {
+          var added = mutations[i].addedNodes;
+          for (var j = 0; j < added.length; j++) {
+            var node = added[j];
+            if (!node || node.nodeType !== 1) continue; // elements only
+            // The added node may be the <img> itself or a wrapper containing one.
+            var imgs = node.tagName === 'IMG'
+              ? [node]
+              : (node.querySelectorAll ? node.querySelectorAll('img') : []);
+            for (var k = 0; k < imgs.length; k++) {
+              var img = imgs[k];
+              if (img.closest && img.closest('.appai-my-pet')) continue;
+              // Only touch what looks like the hero (ignore thumbnails /
+              // zoom previews / decorative icons).
+              if (!isHeroCandidate(img)) continue;
+              // Hide BEFORE paint — the browser batches style writes with
+              // layout so setting opacity now takes effect same-frame.
+              var prevTransition = img.style.transition;
+              img.style.transition = '';
+              img.style.opacity = '0';
+              // Promote this to our inlineHero reference + run assert via
+              // installHeroGuard synchronously before we hand control back
+              // to the browser, so the first paint shows OUR src at opacity:0.
+              state.inlineHero = img;
+              installHeroGuard(img);
+              // Restore opacity next frame once the src is correct.
+              var el = img;
+              var restore = function () {
+                el.style.transition = 'opacity 100ms ease-out';
+                el.style.opacity = '1';
+                // Clean up the inline transition after it runs so we don't
+                // leak styles into the theme's own CSS.
+                setTimeout(function () {
+                  el.style.transition = prevTransition || '';
+                }, 150);
+              };
+              if (typeof requestAnimationFrame === 'function') requestAnimationFrame(restore);
+              else setTimeout(restore, 0);
+            }
+          }
+        }
+      });
+      observer.observe(container, { childList: true, subtree: true });
+      state.inlineGalleryObserver = observer;
+    }
+
+    // Heuristic: the hero image is usually large (>160px on either side)
+    // and sits at the top of the gallery. Thumbnails / nav arrows / badges
+    // are small. This filters out anything that clearly isn't the main
+    // product image so we don't flicker the thumbs on gallery re-render.
+    function isHeroCandidate(img) {
+      if (!img) return false;
+      var w = img.naturalWidth || img.width || 0;
+      var h = img.naturalHeight || img.height || 0;
+      if (w && h && (w < 160 || h < 160)) return false;
+      var rect = img.getBoundingClientRect ? img.getBoundingClientRect() : null;
+      if (rect && (rect.width < 160 || rect.height < 160)) return false;
+      return true;
     }
 
     function installInlineVariantListeners() {
@@ -1243,6 +1392,7 @@
             state.previewUrlByColor = (genRes.previewUrlsByColor && typeof genRes.previewUrlsByColor === 'object')
               ? Object.assign({}, genRes.previewUrlsByColor)
               : {};
+            console.log(TAG, 'previewUrlByColor populated', Object.keys(state.previewUrlByColor));
             // Queued (post-staging-90) — prime the HTTP cache for every
             // pre-composited colour the moment generate returns. First swatch
             // click per colour then becomes a <img>.src assignment that paints
