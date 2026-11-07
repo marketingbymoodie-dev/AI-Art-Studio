@@ -32,6 +32,52 @@
     return json;
   }
 
+  // Bug 10 — exit-intent email pre-fill: once a shopper types an email into
+  // the save modal (successfully or not), remember it so a later re-prompt
+  // (different generation) is one tap, not re-typing.
+  var EMAIL_STORAGE_KEY = 'appai_my_pet_email_v1';
+  function readStoredEmail() {
+    try { return String(window.localStorage.getItem(EMAIL_STORAGE_KEY) || ''); } catch (e) { return ''; }
+  }
+  function writeStoredEmail(value) {
+    if (!value) return;
+    try { window.localStorage.setItem(EMAIL_STORAGE_KEY, value); } catch (e) { /* localStorage disabled */ }
+  }
+
+  // UX 6 — same-device cross-session restore. Keyed by product + device key
+  // (not just product) so two different devices/browsers sharing a computer
+  // don't bleed into each other. Deliberately does NOT store previewUrl —
+  // signed URLs expire in an hour; the server's resolve-render endpoint
+  // re-signs on demand from the stored renderId.
+  var RENDER_STORAGE_PREFIX = 'appai_my_pet_render_v1:';
+  var RENDER_STORAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+  function renderStorageKey(shopifyProductId) {
+    var deviceKey = readStoredDeviceKey();
+    var shortKey = deviceKey ? deviceKey.slice(0, 16) : 'anon';
+    return RENDER_STORAGE_PREFIX + shopifyProductId + ':' + shortKey;
+  }
+  function readStoredRender(shopifyProductId) {
+    try {
+      var raw = window.localStorage.getItem(renderStorageKey(shopifyProductId));
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || !parsed.renderId || !parsed.savedAt) return null;
+      if (Date.now() - parsed.savedAt > RENDER_STORAGE_MAX_AGE_MS) return null;
+      return parsed;
+    } catch (e) { return null; }
+  }
+  function writeStoredRender(shopifyProductId, renderId, jobId) {
+    try {
+      window.localStorage.setItem(
+        renderStorageKey(shopifyProductId),
+        JSON.stringify({ renderId: renderId, jobId: jobId, savedAt: Date.now() }),
+      );
+    } catch (e) { /* localStorage disabled */ }
+  }
+  function clearStoredRender(shopifyProductId) {
+    try { window.localStorage.removeItem(renderStorageKey(shopifyProductId)); } catch (e) {}
+  }
+
   function proxyPath(path) {
     return '/apps/appai/' + path.replace(/^\//, '');
   }
@@ -78,11 +124,25 @@
       );
       if (!primary) return;
       var cs = getComputedStyle(primary);
-      // Outline/secondary look derived from the primary button's own colour and
-      // shape — most themes have no dedicated secondary button on the PDP at all.
-      root.style.setProperty('--appai-my-pet-bg', 'transparent');
-      root.style.setProperty('--appai-my-pet-fg', cs.backgroundColor);
-      root.style.setProperty('--appai-my-pet-border', cs.backgroundColor);
+      // Polish 8 — filled CTA matching the theme's own Primary button, so Add
+      // My Pet belongs instead of introducing a fourth competing red. Priority
+      // (CSS side): --appai-my-pet-cta (set here ONLY when confident) →
+      // theme's own --color-button-background setting-token → hardcoded
+      // #D65857 named fallback. The Add-to-cart button sampled here is not
+      // necessarily the same "Primary" button as a marketing hero CTA (some
+      // themes, e.g. Ritual, use a dark Add-to-cart but a red Primary button
+      // elsewhere) — only trust this sample when it's confidently red-family,
+      // otherwise leave --appai-my-pet-cta unset so the CSS var() fallback
+      // chain (theme token, then named token) decides instead of a wrong
+      // dark/black override.
+      var rgb = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(cs.backgroundColor || '');
+      if (rgb) {
+        var r = Number(rgb[1]), g = Number(rgb[2]), b = Number(rgb[3]);
+        var isRedFamily = r > g * 1.3 && r > b * 1.3 && r > 80;
+        if (isRedFamily) {
+          root.style.setProperty('--appai-my-pet-cta', cs.backgroundColor);
+        }
+      }
       root.style.setProperty('--appai-my-pet-radius', cs.borderRadius);
       // Intentionally NOT setting --appai-my-pet-caption-fg: the primary
       // button's text color is its *inside* color (white on a black Add to
@@ -98,6 +158,80 @@
     } catch (e) {
       console.warn(TAG, 'theme sampling failed', e);
     }
+  }
+
+  /**
+   * UX 4 — default size should be a size available in every colour (M when
+   * present), not whatever the theme happened to preselect. XS/Red/Sage/Blue
+   * style gaps mean loading on XS leaves every colour swatch click with no
+   * valid variant to land on. Only overrides when the CURRENT selection is
+   * genuinely not-universal; leaves an already-fine selection alone (don't
+   * fight a shopper or theme that already picked something sensible).
+   */
+  function preferUniversalSize(root) {
+    var colors = allColorOptions(root);
+    var sizes = allSizeOptions(root);
+    if (colors.length < 2 || sizes.length < 2) return;
+    var variants = [];
+    var optionNames = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+    function availableInAllColors(size) {
+      for (var i = 0; i < colors.length; i++) {
+        var found = false;
+        for (var j = 0; j < variants.length; j++) {
+          var v = variants[j];
+          var c = findOptionValue(v, optionNames, ['color', 'colour']);
+          var s = findOptionValue(v, optionNames, ['size']);
+          if (String(c) === String(colors[i]) && String(s) === String(size) && v.available !== false) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) return false;
+      }
+      return true;
+    }
+    var universal = [];
+    for (var k = 0; k < sizes.length; k++) {
+      if (availableInAllColors(sizes[k])) universal.push(sizes[k]);
+    }
+    if (!universal.length) return; // no size exists in every colour — nothing sensible to default to
+    var info = currentVariantInfo(root);
+    if (info.sizeId && universal.indexOf(String(info.sizeId)) !== -1) return; // already universal — leave it
+    var preferred = universal.indexOf('M') !== -1 ? 'M' : universal[0];
+    var v = variantForSize(root, preferred, info.colorName);
+    if (v && v.id && String(v.id) !== String(info.variantId)) {
+      var form = document.querySelector('form[action*="/cart/add"]');
+      var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
+      if (idInput) {
+        idInput.value = String(v.id);
+        try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+      }
+    }
+  }
+
+  /**
+   * Bug 1b — strict lookup: returns a variant only when BOTH colour and size
+   * match exactly AND Shopify reports it as purchasable (unlike
+   * variantForColor/variantForSize, which fall back to "any variant with this
+   * one option" for UI display purposes, and don't check availability at
+   * all). Used right before ATC so an invalid/sold-out combination never
+   * reaches the server — no "Shop not authorized"-style error for what's
+   * actually just "not offered in that colour".
+   */
+  function findExactVariant(root, colorName, sizeId) {
+    var variants = [];
+    var optionNames = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+    for (var i = 0; i < variants.length; i++) {
+      var v = variants[i];
+      var c = findOptionValue(v, optionNames, ['color', 'colour']);
+      var s = findOptionValue(v, optionNames, ['size']);
+      if (String(c) === String(colorName) && String(s) === String(sizeId) && v.available !== false) return v;
+    }
+    return null;
   }
 
   function findOptionValue(variant, optionNames, wantedNames) {
@@ -233,7 +367,11 @@
       '.appai-my-pet-modal__overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:1rem;}' +
       '.appai-my-pet-modal{background:#fff;border-radius:8px;max-width:460px;width:100%;max-height:92vh;overflow:auto;position:relative;padding:1.5rem;}' +
       '.appai-my-pet-modal__close{position:absolute;top:0.5rem;right:0.75rem;background:none;border:none;font-size:1.5rem;cursor:pointer;line-height:1;z-index:2;}' +
-      '.appai-my-pet-modal__body img.appai-preview-img{width:100%;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;}' +
+      '.appai-my-pet-modal__body img.appai-preview-img{width:100%;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
+      // UX 5 — instant visual feedback the moment a colour swatch is tapped,
+      // before the recomposite round-trip even starts.
+      '.appai-my-pet-modal__body img.appai-preview-img.appai-swatch-loading{opacity:.6;cursor:wait;}' +
+      '.appai-my-pet-swatches button[aria-busy="true"]{opacity:.6;cursor:wait;}' +
       '.appai-my-pet-modal__body img.appai-thumb{max-width:140px;border-radius:6px;display:block;margin:0.5rem auto;cursor:zoom-in;}' +
       '.appai-my-pet-modal__body button.appai-primary{display:block;width:100%;padding:0.75em;margin-top:0.5rem;border-radius:4px;border:none;background:#111;color:#fff;font-weight:600;cursor:pointer;}' +
       '.appai-my-pet-modal__body button.appai-primary:disabled{opacity:.6;cursor:not-allowed;}' +
@@ -276,35 +414,84 @@
     var caption = root.querySelector('.appai-my-pet__caption');
     if (!openBtn) return;
 
+    // UX 4 — run once on init, before anything else reads the form's variant.
+    preferUniversalSize(root);
+
     // state.previewUrl: so re-opening the Add My Pet button on a device that
     //   already generated this visit re-shows the preview instead of silently
     //   doing nothing (bug #2).
     // state.capStatus: server's latest view of remaining attempts, used to
     //   gate "Try another photo" client-side and label the button caption.
-    var state = { renderId: null, jobId: null, previewUrl: null, emailPrompted: false, capStatus: null };
+    // state.dismissedRenderIds: per-render exit-intent dismissal (bug 10) —
+    //   keyed by renderId so "said no once" only suppresses THAT design, not
+    //   every design the shopper generates this session.
+    // state.emailModalOpen: re-entrancy guard — mouseleave can fire repeatedly
+    //   before the shopper reacts; without this a second call stacks a second
+    //   modal on top of the first.
+    var state = {
+      renderId: null,
+      jobId: null,
+      previewUrl: null,
+      dismissedRenderIds: {},
+      emailModalOpen: false,
+      capStatus: null,
+    };
+
+    function markDismissed(renderId) {
+      if (renderId) state.dismissedRenderIds[renderId] = true;
+    }
+    function isDismissed(renderId) {
+      return !!(renderId && state.dismissedRenderIds[renderId]);
+    }
 
     function showMessage(body, message) {
       body.innerHTML = '<p class="appai-my-pet-msg">' + message + '</p>';
     }
 
+    /**
+     * Bugs 3 + 11 — single source of truth for the "X remaining" string so
+     * the page caption and the modal subtitle can never disagree (both read
+     * the exact same capStatus object through this one formatter). Also
+     * surfaces the email bonus explicitly ("(incl. 2 email bonus)") instead
+     * of a silently-higher number that looks like miscounting.
+     */
+    function formatAttemptsMessage(capStatus) {
+      if (!capStatus) return '';
+      if (capStatus.allowed === false) {
+        return capStatus.message || 'No more tries on this design.';
+      }
+      var remaining = capStatus.perListingRemaining;
+      if (typeof remaining !== 'number') return '';
+      if (remaining <= 0) {
+        return capStatus.emailBonusAvailable
+          ? 'Enter your email for 2 more tries.'
+          : 'No more tries on this design.';
+      }
+      var limit = capStatus.perListingLimit;
+      var bonusSuffix =
+        capStatus.emailBonusApplied && capStatus.emailBonusAmount > 0
+          ? ' (incl. ' + capStatus.emailBonusAmount + ' email bonus)'
+          : '';
+      var noun = remaining === 1 ? ' free design remaining' : ' free designs remaining';
+      return (typeof limit === 'number' ? remaining + ' of ' + limit : remaining) + noun + bonusSuffix + '.';
+    }
+
     function renderAttemptsCaption(capStatus) {
       if (!caption || !capStatus) return;
-      var attempts = typeof capStatus.perListingRemaining === 'number' ? capStatus.perListingRemaining : null;
+      caption.textContent = formatAttemptsMessage(capStatus);
       if (capStatus.allowed === false) {
-        caption.textContent = capStatus.message || 'No more tries on this design.';
         openBtn.setAttribute('aria-disabled', 'true');
+        caption.classList.remove('appai-shimmer');
         return;
       }
       openBtn.removeAttribute('aria-disabled');
-      if (attempts == null) return;
-      if (attempts <= 0) {
-        caption.textContent = capStatus.emailBonusAvailable
-          ? 'Enter your email for 2 more tries.'
-          : 'No more tries on this design.';
-      } else if (attempts === 1) {
-        caption.textContent = '1 free design remaining.';
+      var remaining = capStatus.perListingRemaining;
+      // Polish 9 — shimmer only on the inviting "you have tries left" state;
+      // not on "no more tries" (that's a stop, not a draw-the-eye moment).
+      if (typeof remaining === 'number' && remaining > 0) {
+        caption.classList.add('appai-shimmer');
       } else {
-        caption.textContent = attempts + ' free designs remaining.';
+        caption.classList.remove('appai-shimmer');
       }
     }
 
@@ -317,6 +504,27 @@
         })
         .catch(function () { return null; });
     }
+
+    // UX 6 — restore a same-device, cross-session render on page load so
+    // "Add My Pet" reopens the existing preview instead of offering a fresh
+    // (cap-consuming) generation. Async; if the shopper clicks the button
+    // before this resolves, the normal upload flow runs instead — acceptable,
+    // low-likelihood race, next click will have it.
+    (function restoreStoredRender() {
+      var stored = readStoredRender(shopifyProductId);
+      if (!stored) return;
+      getJson('my-pet/resolve-render', { renderId: stored.renderId })
+        .then(function (res) {
+          if (res && res.ok && res.previewUrl) {
+            state.renderId = res.renderId;
+            state.jobId = res.jobId;
+            state.previewUrl = res.previewUrl;
+          } else {
+            clearStoredRender(shopifyProductId);
+          }
+        })
+        .catch(function () { /* leave stored entry; try again next load */ });
+    })();
 
     function openUploadStep() {
       var picker = buildModal();
@@ -350,12 +558,18 @@
             state.renderId = genRes.renderId;
             state.jobId = genRes.jobId;
             state.previewUrl = genRes.previewUrl;
-            state.emailPrompted = false;
+            // New render id is never in dismissedRenderIds — exit-intent will
+            // re-ask on this generation even if an earlier one was dismissed
+            // (bug 10: re-ask across different generations).
+            writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
             picker.overlay.remove();
-            // Refresh counters after a successful generation so the caption
-            // under the button mirrors the new perListingRemaining server-side.
-            refreshCapStatus();
-            openPreviewStep(genRes.previewUrl);
+            // Bugs 3 + 11 — await the refresh before opening the preview so
+            // the modal subtitle never renders the pre-generation count. The
+            // previous fire-and-forget refresh let the modal open ~300ms
+            // before perListingRemaining actually decremented.
+            refreshCapStatus().then(function () {
+              openPreviewStep(genRes.previewUrl);
+            });
           })
           .catch(function (err) {
             showMessage(picker.body, err && err.message ? err.message : 'Something went wrong. Please try again.');
@@ -429,16 +643,11 @@
         }
         sizeSwatchesHtml += '</div>';
       }
-      var attemptsHtml = '';
-      if (state.capStatus && typeof state.capStatus.perListingRemaining === 'number' && state.capStatus.perListingRemaining > 0) {
-        attemptsHtml = '<p class="appai-attempts">' +
-          (state.capStatus.perListingRemaining === 1
-            ? '1 free design remaining on this product.'
-            : state.capStatus.perListingRemaining + ' free designs remaining on this product.') +
-          '</p>';
-      } else if (state.capStatus && state.capStatus.emailBonusAvailable) {
-        attemptsHtml = '<p class="appai-attempts">Give us your email for 2 more tries on this design.</p>';
-      }
+      // Bugs 3 + 11 — same formatAttemptsMessage() the page caption uses, fed
+      // by the capStatus that was just refreshed (and awaited) before this
+      // modal opened, so this can never show a stale/disagreeing count.
+      var attemptsMessage = state.capStatus ? formatAttemptsMessage(state.capStatus) : '';
+      var attemptsHtml = attemptsMessage ? '<p class="appai-attempts">' + attemptsMessage + '</p>' : '';
       body.innerHTML =
         '<h3>Your design</h3>' +
         '<img src="' + previewUrl + '" class="appai-preview-img" alt="Your pet on this design (tap to enlarge)" />' +
@@ -470,7 +679,7 @@
       var colorBtns = body.querySelectorAll('[data-action="swatch-color"]');
       for (var cb = 0; cb < colorBtns.length; cb++) {
         colorBtns[cb].addEventListener('click', function (e) {
-          selectColor(body, e.currentTarget.getAttribute('data-color'));
+          selectColor(body, e.currentTarget.getAttribute('data-color'), e.currentTarget);
         });
       }
       var sizeBtns = body.querySelectorAll('[data-action="swatch-size"]');
@@ -479,6 +688,30 @@
           selectSize(body, e.currentTarget.getAttribute('data-size'));
         });
       }
+      // Bug 1b — also validate on initial render, in case the PDP's own
+      // default selection is somehow already an invalid combo.
+      checkComboAvailable(body);
+    }
+
+    /**
+     * Bug 1b — shared combo-availability gate, used before ATC and after
+     * every colour/size swatch click. Greys out "Add to cart" and shows the
+     * exact message in the plan ("[Size] isn't available in [Colour] — pick
+     * another combination.") instead of letting an invalid combo reach the
+     * server at all.
+     */
+    function checkComboAvailable(body) {
+      var info = currentVariantInfo(root);
+      var atcBtn = body.querySelector('[data-action="add-to-cart"]');
+      var status = body.querySelector('#appai-my-pet-status');
+      if (info.colorName && info.sizeId && !findExactVariant(root, info.colorName, info.sizeId)) {
+        if (atcBtn) atcBtn.disabled = true;
+        if (status) status.textContent = info.sizeId + " isn't available in " + info.colorName + " — pick another combination.";
+        return false;
+      }
+      if (atcBtn) atcBtn.disabled = false;
+      if (status && status.textContent && status.textContent.indexOf("isn't available in") !== -1) status.textContent = '';
+      return true;
     }
 
     /** Size swatch click (Issue 12): switch base variant to the same colour + chosen size. No model call. */
@@ -503,10 +736,11 @@
           allBtns[i].removeAttribute('aria-current');
         }
       }
+      checkComboAvailable(body);
     }
 
     /** Swatch click in the preview modal: switch base variant, recomposite. No new generation. */
-    function selectColor(body, colorName) {
+    function selectColor(body, colorName, clickedBtn) {
       if (!colorName || !state.renderId) return;
       var info = currentVariantInfo(root);
       var v = variantForColor(root, colorName, info.sizeId);
@@ -520,8 +754,12 @@
           try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
         }
       }
-      // Reflect active state on the swatches without a full re-render
-      var allBtns = body.querySelectorAll('[data-action="swatch"]');
+      // Reflect active state on the swatches without a full re-render.
+      // Bug fix: this previously queried '[data-action="swatch"]', but the
+      // actual buttons are rendered with data-action="swatch-color" (see
+      // colorSwatchesHtml above) — the selector never matched anything, so
+      // the active-state highlight silently never updated on any click.
+      var allBtns = body.querySelectorAll('[data-action="swatch-color"]');
       for (var i = 0; i < allBtns.length; i++) {
         if (String(allBtns[i].getAttribute('data-color')) === String(colorName)) {
           allBtns[i].setAttribute('aria-current', 'true');
@@ -529,18 +767,54 @@
           allBtns[i].removeAttribute('aria-current');
         }
       }
+      checkComboAvailable(body);
+      var img = body.querySelector('img.appai-preview-img');
       var status = body.querySelector('#appai-my-pet-status');
+      // UX 5 — immediate feedback: dim the current preview the instant the
+      // swatch is tapped, rather than only showing "Updating colour…" text
+      // that's easy to miss below the fold. The slow part was real network +
+      // compose time, not the lack of a loading cue, but the cue removes the
+      // "did my tap even register?" feeling while that work happens.
+      if (img) img.classList.add('appai-swatch-loading');
+      if (clickedBtn) clickedBtn.setAttribute('aria-busy', 'true');
       if (status) status.textContent = 'Updating colour…';
+      var swapStarted = Date.now();
+      function clearLoadingState() {
+        if (img) img.classList.remove('appai-swatch-loading');
+        if (clickedBtn) clickedBtn.removeAttribute('aria-busy');
+      }
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
-          if (res && res.ok) {
-            var img = body.querySelector('img.appai-preview-img');
-            if (img) img.src = res.previewUrl;
+          if (res && res.ok && img) {
+            // UX 5 — preload off-DOM so the <img> swap is a single paint
+            // (no visible blank/flash frame while the browser fetches it).
+            var preload = new Image();
+            preload.onload = function () {
+              img.src = res.previewUrl;
+              clearLoadingState();
+              if (status) status.textContent = '';
+              console.log(TAG, 'colour swap total', Date.now() - swapStarted, 'ms');
+            };
+            preload.onerror = function () {
+              img.src = res.previewUrl;
+              clearLoadingState();
+              if (status) status.textContent = '';
+            };
+            preload.src = res.previewUrl;
             state.previewUrl = res.previewUrl;
+            // UX 6 — bump savedAt on every successful recomposite too, so a
+            // shopper who keeps swapping colours across visits keeps the
+            // restore window fresh, not just at initial generation time.
+            writeStoredRender(shopifyProductId, state.renderId, state.jobId);
+          } else {
+            clearLoadingState();
+            if (status) status.textContent = '';
           }
-          if (status) status.textContent = '';
         })
-        .catch(function () { if (status) status.textContent = ''; });
+        .catch(function () {
+          clearLoadingState();
+          if (status) status.textContent = '';
+        });
     }
 
     /** Watch the base PDP form for colour changes made outside the modal — mirror into the modal preview. */
@@ -582,7 +856,21 @@
               });
             }
           }
-          var msg = (res && (res.error || res.message)) || 'Could not add this design to cart.';
+          // Bug 1a — "Shop not authorized" / not_design_owner are server-internal
+          // auth-plumbing states (expired/missing OAuth token, or an ownership
+          // check refusal), not something the shopper did wrong. The raw string
+          // was confusing shoppers into thinking the item itself was blocked.
+          // The real cause gets logged loudly server-side (see
+          // resolve-variant's console.error) for us to chase; this is just the
+          // calmer thing to show the shopper while that gets fixed.
+          var rawMsg = (res && (res.error || res.message)) || '';
+          var rawCode = res && res.code;
+          var msg;
+          if (rawMsg === 'Shop not authorized' || rawCode === 'not_design_owner') {
+            msg = "Can't reach your store right now. If this persists, the My Pet app may need to be reinstalled.";
+          } else {
+            msg = rawMsg || 'Could not add this design to cart.';
+          }
           throw new Error(msg);
         });
     }
@@ -593,6 +881,13 @@
       // Re-read the base PDP form at click time so a colour or size swatch
       // chosen in the preview modal flows through to the cart line.
       var info = currentVariantInfo(root);
+      // Bug 1b — the modal's colour/size swatches can land on a combination
+      // the theme itself doesn't sell (e.g. XS doesn't exist in Red). Without
+      // this check that invalid combo reached the server, which correctly
+      // refused it, but surfaced as the same scary "Shop not authorized"-style
+      // error as a real auth failure. Catch it client-side with the exact
+      // availability data the theme already embedded, before any network call.
+      if (!checkComboAvailable(body)) return;
       if (btn) btn.disabled = true;
       if (status) status.textContent = 'Setting up your cart line…';
       attemptResolveVariant(info.variantId, info.price, 0)
@@ -630,7 +925,7 @@
           }
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
-          state.emailPrompted = true;
+          markDismissed(state.renderId);
           document.dispatchEvent(new CustomEvent('cart:refresh'));
         })
         .catch(function (err) {
@@ -639,10 +934,23 @@
         });
     }
 
+    /**
+     * Bug 10 — per-render dismissal (not a one-shot boolean) so a shopper who
+     * dismisses the save prompt for one design still gets asked again for a
+     * NEW design they generate afterward. emailModalOpen guards against
+     * mouseleave firing more than once before the shopper reacts (would
+     * otherwise stack a second modal over the first).
+     */
     function maybePromptEmailSave() {
-      if (!state.renderId || state.emailPrompted) return;
-      state.emailPrompted = true;
-      var modal = buildModal();
+      if (!state.renderId || state.emailModalOpen || isDismissed(state.renderId)) return;
+      state.emailModalOpen = true;
+      var renderIdAtOpen = state.renderId;
+      var modal = buildModal({
+        onClose: function () {
+          state.emailModalOpen = false;
+          markDismissed(renderIdAtOpen); // closed without sending — don't re-ask for this design
+        },
+      });
       var thumbHtml = state.previewUrl
         ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
@@ -650,7 +958,7 @@
         '<h3>Save your design?</h3>' +
         thumbHtml +
         '<p class="appai-my-pet-msg">We\'ll email you a link back to it — works for 30 days, on any device.</p>' +
-        '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" />' +
+        '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
         '<label><input type="checkbox" class="appai-my-pet-consent" checked /> Keep me posted about new designs</label>' +
         '<button type="button" class="appai-primary" data-action="send">Email me this design</button>' +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
@@ -664,9 +972,13 @@
         postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: consent, pageUrl: pageUrl })
           .then(function (res) {
             status.textContent = res && res.ok ? 'Sent! Check your inbox.' : (res && res.error) || 'Could not send email.';
-            // Refresh caption — email-save grants +emailBonus more attempts on
-            // this listing, so the "X free remaining" number changes.
-            if (res && res.ok) refreshCapStatus();
+            if (res && res.ok) {
+              writeStoredEmail(email);
+              markDismissed(renderIdAtOpen); // sent successfully — stay suppressed for this design
+              // Refresh caption — email-save grants +emailBonus more attempts on
+              // this listing, so the "X free remaining" number changes.
+              refreshCapStatus();
+            }
           })
           .catch(function () { status.textContent = 'Could not send email.'; });
       });
@@ -698,8 +1010,13 @@
       // If the shopper already generated this visit, re-open the SAME preview
       // (no new generation call, no cap attempt consumed). Bug #2 was that
       // this branch returned silently without reopening anything.
+      // Bugs 3 + 11 — also the "stale modal on first/re- open" case: await
+      // the refresh so the subtitle reflects the current count, not whatever
+      // was cached from the last refresh (e.g. before an email-save bonus).
       if (state.renderId && state.previewUrl) {
-        openPreviewStep(state.previewUrl);
+        refreshCapStatus().then(function () {
+          openPreviewStep(state.previewUrl);
+        });
         return;
       }
       refreshCapStatus()

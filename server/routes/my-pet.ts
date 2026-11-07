@@ -16,6 +16,7 @@ import {
   getMyPetSettings,
   recompositeMyPetRender,
   resolveMyPetEmailToken,
+  resolveMyPetRenderById,
   sendMyPetEmailSave,
   startMyPetSweepInterval,
   updateMyPetSettings,
@@ -229,10 +230,42 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         data.previewUrl = previewUrl;
         data.renderId = String(renderId);
         data.designLabel = designLabel;
+      } else {
+        // Bug 1a: "Shop not authorized" / "not_design_owner" surfaced to the
+        // shopper as a bare string with no trace of *why*. Log loudly here —
+        // shop, the base variant id the shopper picked, the job/design id
+        // prefix, and the exact upstream status + code — so a Railway search
+        // on "[my-pet] resolve-variant refused" during a smoke test points
+        // straight at the failing path (expired OAuth token vs ownership
+        // check vs still-preparing) instead of guessing from the client error.
+        console.error(
+          `[my-pet] resolve-variant refused shop=${shop} baseVariantId=${variantId} ` +
+            `designId=${jobId.slice(0, 8)} renderId=${String(renderId).slice(0, 8)} ` +
+            `upstreamStatus=${upstream.status} code=${data?.code ?? "none"} error=${data?.error ?? "none"}`,
+        );
       }
       res.status(upstream.status).json(data);
     } catch (err: any) {
       res.status(400).json({ success: false, error: err?.message || "Could not add to cart" });
+    }
+  });
+
+  // UX 6: same-device cross-session restore. Client keeps { renderId, jobId,
+  // candidateId } in localStorage (never the signed previewUrl, which expires
+  // in an hour) and calls this on return visits to get a fresh signed URL, or
+  // a clean not_found if the render was swept or belongs to a different
+  // device_key since.
+  app.get("/api/proxy/my-pet/resolve-render", myPetProxyAuth, async (req: Request, res: Response) => {
+    const shop = (req as any).proxyShop as string;
+    const renderId = String(req.query.renderId || "");
+    if (!shop || !renderId) return res.status(400).json({ ok: false, error: "renderId is required" });
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
+    try {
+      const result = await resolveMyPetRenderById({ shop, deviceKey, renderId });
+      if (!result) return res.json({ ok: false, code: "not_found", deviceKey: signed });
+      res.json({ ok: true, ...result, deviceKey: signed });
+    } catch (err: any) {
+      res.json({ ok: false, code: "not_found", error: err?.message || "Could not restore design", deviceKey: signed });
     }
   });
 

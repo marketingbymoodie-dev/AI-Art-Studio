@@ -57,6 +57,18 @@
 {% endschema %}
 
 <style>
+  :root {
+    /*
+     * Polish 8 — named fallback token for the My Pet CTA. Only kicks in when
+     * NEITHER the live JS sampling of the theme's own Add to cart button
+     * (--appai-my-pet-cta, set in appai-my-pet.js's applyThemeVars) NOR the
+     * theme's own --color-button-background setting-token exists. This is
+     * the current brand red (matches the hero "WEAR YOUR PET PEEVE" button) —
+     * edit here, in one place, if the brand colour is retuned later and the
+     * other two sources are ever unavailable.
+     */
+    --appai-my-pet-cta-fallback: #D65857;
+  }
   .appai-my-pet {
     width: 100%;
     margin: 0.75rem 0;
@@ -69,22 +81,68 @@
     font-weight: 600;
     border-radius: var(--appai-my-pet-radius, 4px);
     cursor: pointer;
-    /* Matches the theme's secondary button via CSS vars set by appai-my-pet.js
-       (extractStoreTheme-style sampling); safe neutral fallback below. */
-    background: var(--appai-my-pet-bg, #ffffff);
-    color: var(--appai-my-pet-fg, #111111);
-    border: 1px solid var(--appai-my-pet-border, #111111);
+    border: none;
+    /*
+     * Polish 8 — filled CTA matching the theme's existing Primary button
+     * (same visual family as "WEAR YOUR PET PEEVE") instead of a competing
+     * fourth red. Priority order: (1) --appai-my-pet-cta — only set by
+     * appai-my-pet.js when the live Add-to-cart button sample is confidently
+     * red-family, i.e. direct proof it IS the brand red; (2) the theme's own
+     * --color-button-background settings token (what most Dawn-family themes,
+     * incl. Ritual, expose for their Primary button — covers the common case
+     * where Add to cart isn't red but the theme's Primary button style is);
+     * (3) hardcoded named fallback above. Text stays white to match the
+     * Primary button's own text treatment, with the theme's token preferred
+     * if it exposes one.
+     */
+    background: var(--appai-my-pet-cta, var(--color-button-background, var(--appai-my-pet-cta-fallback)));
+    color: var(--color-button-text, #ffffff);
   }
   .appai-my-pet__button:hover {
     opacity: 0.85;
   }
   .appai-my-pet__caption {
     margin: 0.4em 0 0 !important;
-    font-size: 0.8em !important;
+    font-size: 0.9em !important;
+    font-weight: 500 !important;
     text-align: center !important;
     /* !important so themes that force all <p> to inherit the section's foreground
        (e.g. white-on-white inside product-info) can't hide the caption. */
     color: var(--appai-my-pet-caption-fg, #666666) !important;
     opacity: 1 !important;
+  }
+  /*
+   * Polish 9 — shimmer sweep on the "X free designs remaining" caption, using
+   * the CTA colour as the highlight band so it visually ties back to the
+   * button. Toggled on/off in JS (renderAttemptsCaption) — only applied on
+   * the inviting "you have tries left" state, never on the cap-reached state.
+   * Ported from client/src/index.css's .shimmer-text admin pattern, which
+   * doesn't load on the storefront.
+   */
+  .appai-my-pet__caption.appai-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--appai-my-pet-caption-fg, #666666) 0%,
+      var(--appai-my-pet-cta, var(--color-button-background, var(--appai-my-pet-cta-fallback))) 50%,
+      var(--appai-my-pet-caption-fg, #666666) 100%
+    ) !important;
+    background-size: 200% auto !important;
+    -webkit-background-clip: text !important;
+    background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    color: transparent !important;
+    animation: appai-shimmer-sweep 2.2s linear infinite;
+  }
+  @keyframes appai-shimmer-sweep {
+    0% { background-position: 200% center; }
+    100% { background-position: -200% center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .appai-my-pet__caption.appai-shimmer {
+      animation: none;
+      -webkit-text-fill-color: unset !important;
+      color: var(--appai-my-pet-caption-fg, #666666) !important;
+      background: none !important;
+    }
   }
 </style>

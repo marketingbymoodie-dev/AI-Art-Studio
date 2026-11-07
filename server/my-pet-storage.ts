@@ -46,7 +46,14 @@ export async function removeMyPetObjects(paths: string[]): Promise<void> {
   if (error && !/not found/i.test(error.message)) throw new Error(error.message);
 }
 
-/** Short-lived signed URL — re-signed on demand, never persisted. */
+/**
+ * Signed URL, re-signed on demand, never persisted as the canonical reference
+ * (storagePath/previewPath stay the source of truth). Default 1hr is for URLs
+ * consumed immediately in a page response. Callers that bake the URL into a
+ * static document that outlives an hour (e.g. the email-save HTML body) MUST
+ * pass a longer expiresInSec matching how long that document needs to work —
+ * see sendMyPetEmailSave's EMAIL_PREVIEW_RETENTION_MS usage.
+ */
 export async function signedMyPetUrl(path: string, expiresInSec = 60 * 60): Promise<string> {
   const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, expiresInSec);
   if (error || !data?.signedUrl) throw new Error(error?.message || "Could not sign the stored file");

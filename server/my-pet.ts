@@ -197,7 +197,13 @@ function resolveColorHex(candidate: MyPetEligibleCandidate, colorName: string | 
 // login, cookie + IP").
 // ─────────────────────────────────────────────────────────────────────────
 
-async function countRenders(shop: string, shopifyProductId: string | null, deviceKey: string, clientIp: string, sinceDailyOnly: boolean): Promise<{ perListingCount: number; dailyCount: number }> {
+async function countRenders(
+  shop: string,
+  shopifyProductId: string | null,
+  deviceKey: string,
+  clientIp: string,
+  sinceDailyOnly: boolean,
+): Promise<{ perListingCount: number; dailyCount: number; perListingRenderIds: string[] }> {
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const [deviceDaily] = await db
     .select({ n: sql<number>`count(*)` })
@@ -210,9 +216,13 @@ async function countRenders(shop: string, shopifyProductId: string | null, devic
         .where(and(eq(myPetRenders.shopDomain, shop), eq(myPetRenders.clientIp, clientIp), gte(myPetRenders.createdAt, dayAgo)))
     : [{ n: 0 }];
   let perListingCount = 0;
+  // Bug 3 diagnostic: the actual device-scoped render ids counted against this
+  // product, so a merchant/debugger can reconcile "what's in the DB right now"
+  // against what the shopper remembers doing, without a manual DB dump.
+  let perListingRenderIds: string[] = [];
   if (!sinceDailyOnly && shopifyProductId) {
-    const [deviceListing] = await db
-      .select({ n: sql<number>`count(*)` })
+    const deviceListingRows = await db
+      .select({ id: myPetRenders.id })
       .from(myPetRenders)
       .where(and(eq(myPetRenders.shopDomain, shop), eq(myPetRenders.deviceKey, deviceKey), eq(myPetRenders.shopifyProductId, shopifyProductId)));
     const [ipListing] = clientIp
@@ -221,9 +231,10 @@ async function countRenders(shop: string, shopifyProductId: string | null, devic
           .from(myPetRenders)
           .where(and(eq(myPetRenders.shopDomain, shop), eq(myPetRenders.clientIp, clientIp), eq(myPetRenders.shopifyProductId, shopifyProductId)))
       : [{ n: 0 }];
-    perListingCount = Math.max(Number(deviceListing?.n) || 0, Number(ipListing?.n) || 0);
+    perListingCount = Math.max(deviceListingRows.length, Number(ipListing?.n) || 0);
+    perListingRenderIds = deviceListingRows.map((r) => r.id);
   }
-  return { perListingCount, dailyCount: Math.max(Number(deviceDaily?.n) || 0, Number(ipDaily?.n) || 0) };
+  return { perListingCount, dailyCount: Math.max(Number(deviceDaily?.n) || 0, Number(ipDaily?.n) || 0), perListingRenderIds };
 }
 
 async function hasEmailBonus(shop: string, deviceKey: string, shopifyProductId: string): Promise<boolean> {
@@ -239,6 +250,10 @@ export type MyPetCapStatus = MyPetCapResult & {
   perListingCount: number;
   perListingLimit: number;
   perListingRemaining: number;
+  /** Base per-listing limit before any email bonus — lets the client show "X of Y (incl. Z email bonus)". */
+  perListingBaseLimit: number;
+  /** Configured email-bonus amount (settings.caps.emailBonus), regardless of whether it's been applied yet. */
+  emailBonusAmount: number;
   dailyCount: number;
   dailyLimit: number;
   dailyRemaining: number;
@@ -246,6 +261,10 @@ export type MyPetCapStatus = MyPetCapResult & {
   emailBonusApplied: boolean;
   /** True when the shopper can earn +emailBonus more attempts by saving their email on this product. */
   emailBonusAvailable: boolean;
+  /** First 8 chars of the signed device key — same prefix the Railway cap-check log line shows. */
+  deviceKeyShort: string;
+  /** Bug 3 diagnostic: the exact render ids counted against this product for this device. */
+  diagnostics: { shopifyProductId: string; countedRenderIds: string[] };
 };
 
 export async function checkMyPetCap(args: {
@@ -255,7 +274,7 @@ export async function checkMyPetCap(args: {
   clientIp: string;
 }): Promise<MyPetCapStatus> {
   const settings = await getMyPetSettings(args.shop);
-  const [{ perListingCount, dailyCount }, emailBonus] = await Promise.all([
+  const [{ perListingCount, dailyCount, perListingRenderIds }, emailBonus] = await Promise.all([
     countRenders(args.shop, args.shopifyProductId, args.deviceKey, args.clientIp, false),
     hasEmailBonus(args.shop, args.deviceKey, args.shopifyProductId),
   ]);
@@ -267,17 +286,22 @@ export async function checkMyPetCap(args: {
     perListingCount,
     perListingLimit,
     perListingRemaining: Math.max(0, perListingLimit - perListingCount),
+    perListingBaseLimit: settings.caps.perListing,
+    emailBonusAmount: settings.caps.emailBonus,
     dailyCount,
     dailyLimit,
     dailyRemaining: Math.max(0, dailyLimit - dailyCount),
     emailBonusApplied: emailBonus,
     emailBonusAvailable: !emailBonus && settings.caps.emailBonus > 0,
+    deviceKeyShort: args.deviceKey.slice(0, 8),
+    diagnostics: { shopifyProductId: args.shopifyProductId, countedRenderIds: perListingRenderIds },
   };
   console.log(
     `[my-pet] cap check shop=${args.shop} product=${args.shopifyProductId} ` +
       `device=${args.deviceKey.slice(0, 8)} ip=${args.clientIp || "-"} ` +
       `perListing=${perListingCount}/${perListingLimit} daily=${dailyCount}/${dailyLimit} ` +
-      `emailBonus=${emailBonus ? "applied" : "none"} allowed=${base.allowed}` +
+      `emailBonus=${emailBonus ? "applied" : "none"} allowed=${base.allowed} ` +
+      `renderIds=[${perListingRenderIds.map((id) => id.slice(0, 8)).join(",")}]` +
       (base.allowed ? "" : ` reason=${base.reason}`),
   );
   return status;
@@ -486,6 +510,9 @@ async function recordMyPetGenerationEvent(args: {
 // ─────────────────────────────────────────────────────────────────────────
 
 export async function recompositeMyPetRender(args: { shop: string; deviceKey: string; renderId: string; colorName: string }): Promise<{ previewUrl: string; colorName: string }> {
+  // UX 5: timing breakdown so a slow colour-swap smoke test tells us whether
+  // the lag is compose, storage write, signing, or job update — not a guess.
+  const started = Date.now();
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) {
     throw new Error("Design not found");
@@ -496,6 +523,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   const designState = (job?.designState as Record<string, unknown>) || {};
   const editedArtworkPath = String(designState.editedArtworkPath || "");
   if (!editedArtworkPath) throw new Error("Original edit is missing — please generate again");
+  const afterLookup = Date.now();
 
   const productType = await softstyleType();
   const { png } = await renderCandidateOnPanel({
@@ -506,9 +534,11 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     colorHex: color.hex,
     artworkPath: editedArtworkPath,
   });
+  const afterCompose = Date.now();
   const previewPath = `my-pet/previews/${render.id}-${color.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
   await putMyPetObject(previewPath, png, "image/png");
   const previewUrl = await signedMyPetUrl(previewPath);
+  const afterStorage = Date.now();
 
   if (render.jobId) {
     await storage.updateGenerationJob(render.jobId, {
@@ -517,6 +547,14 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       designState: { ...designState, colorName: color.name, colorHex: color.hex },
     } as any);
   }
+  const afterJobUpdate = Date.now();
+
+  console.log(
+    `[my-pet] recomposite renderId=${render.id.slice(0, 8)} color=${color.name} ` +
+      `lookup=${afterLookup - started}ms compose=${afterCompose - afterLookup}ms ` +
+      `storage=${afterStorage - afterCompose}ms jobUpdate=${afterJobUpdate - afterStorage}ms ` +
+      `total=${afterJobUpdate - started}ms`,
+  );
 
   return { previewUrl, colorName: color.name };
 }
@@ -561,6 +599,26 @@ export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// UX 6 — resolve a render by id for same-device cross-session restore.
+// Client keeps { renderId, jobId, candidateId } in localStorage (never the
+// signed previewUrl — that expires in an hour); on return visit it calls this
+// to get a freshly-signed URL, or a clean "not_found" if the render was swept
+// or belongs to a different device_key (e.g. localStorage survived but the
+// signed device key cookie/localStorage was cleared and re-minted).
+// ─────────────────────────────────────────────────────────────────────────
+
+export async function resolveMyPetRenderById(args: {
+  shop: string;
+  deviceKey: string;
+  renderId: string;
+}): Promise<{ renderId: string; jobId: string | null; previewUrl: string; colorName: string | null } | null> {
+  const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
+  if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) return null;
+  const previewUrl = await signedMyPetUrl(render.previewPath);
+  return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Email save
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -595,7 +653,14 @@ export async function sendMyPetEmailSave(args: {
     expiresAt: new Date(Date.now() + EMAIL_PREVIEW_RETENTION_MS),
   });
 
-  const previewUrl = await signedMyPetUrl(render.previewPath);
+  // Bug 2: the default signedMyPetUrl TTL is 1 hour — fine for URLs used
+  // immediately in a page response, but this one gets baked verbatim into the
+  // email HTML. An hour after send every email showed a broken image. Sign
+  // for the full 30-day email-save retention window instead so the thumbnail
+  // works for as long as the saved link itself is valid. Already-sent emails
+  // with the old 1hr URL cannot be fixed retroactively (the URL is static
+  // text in a delivered email) — this only fixes emails sent from here on.
+  const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
   const link = withTokenParam(args.pageUrl, token);
   await sendMyPetSaveEmail(email, previewUrl, link);
   void createShopifyCustomerWithConsent(args.shop, email, args.marketingConsent);
