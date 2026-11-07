@@ -202,7 +202,7 @@
     var preferred = universal.indexOf('M') !== -1 ? 'M' : universal[0];
     var v = variantForSize(root, preferred, info.colorName);
     if (v && v.id && String(v.id) !== String(info.variantId)) {
-      var form = document.querySelector('form[action*="/cart/add"]');
+      var form = findMainProductForm(root);
       var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
       if (idInput) {
         idInput.value = String(v.id);
@@ -255,12 +255,142 @@
     return null;
   }
 
+  /**
+   * STAGING-99 — Ritual / Horizon-family themes render MULTIPLE
+   * form[action*="/cart/add"] on a PDP (main product form, sticky
+   * add-to-cart form, related-products quick-add forms). A blind
+   * document.querySelector picked up the first — on the user's
+   * Petposterous Ritual storefront that was NOT the main product
+   * form, so currentVariantInfo read a frozen variant id (symptom:
+   * activate landed on Black while White was really selected; the
+   * poll fallback never saw a change because the quick-add form
+   * has no colour swatches wired to it).
+   *
+   * Strategy (first match wins):
+   *   1. Form inside the My Pet block's enclosing product section
+   *      whose current input[name=id] value is one of the base
+   *      product's known variant ids.
+   *   2. First form inside the enclosing product section (variant
+   *      may currently be out of set — covers mid-change races).
+   *   3. Document-wide: form whose current id matches one of our
+   *      variant ids.
+   *   4. First form[action*="/cart/add"] (pre-staging-99 fallback).
+   *
+   * The scope walk prefers the closest ancestor that looks like a
+   * product section: a <main>, a <section>, or any element with
+   * data-section-type / data-section-id / data-product-id. Stops
+   * at <body>.
+   */
+  function findMainProductForm(root) {
+    if (!root) return document.querySelector('form[action*="/cart/add"]');
+    var forms = Array.prototype.slice.call(document.querySelectorAll('form[action*="/cart/add"]'));
+    if (!forms.length) return null;
+    if (forms.length === 1) return forms[0];
+    var variantIdSet = {};
+    try {
+      var vs = JSON.parse(root.getAttribute('data-variants') || '[]');
+      for (var i = 0; i < vs.length; i++) variantIdSet[String(vs[i].id)] = true;
+    } catch (e) {}
+    function formVariantIdInSet(form) {
+      var inp = form.querySelector('input[name="id"], select[name="id"]');
+      var v = inp ? String(inp.value || '') : '';
+      return !!(v && variantIdSet[v]);
+    }
+    var scope = null;
+    var cur = root.parentNode;
+    while (cur && cur !== document.body && cur.nodeType === 1) {
+      var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+      if (tag === 'main' || tag === 'section' ||
+          cur.hasAttribute('data-section-type') ||
+          cur.hasAttribute('data-section-id') ||
+          cur.hasAttribute('data-product-id')) {
+        scope = cur; break;
+      }
+      cur = cur.parentNode;
+    }
+    if (scope) {
+      var scoped = scope.querySelectorAll('form[action*="/cart/add"]');
+      for (var s1 = 0; s1 < scoped.length; s1++) {
+        if (formVariantIdInSet(scoped[s1])) return scoped[s1];
+      }
+      if (scoped.length) return scoped[0];
+    }
+    for (var s2 = 0; s2 < forms.length; s2++) {
+      if (formVariantIdInSet(forms[s2])) return forms[s2];
+    }
+    return forms[0];
+  }
+
+  /**
+   * STAGING-99 cross-check — read the selected colour directly from
+   * the main product section's checked swatch input / selected option
+   * label, independent of the form's variant id. Returned alongside
+   * the form-based colour so a disagreement (poll watching the wrong
+   * form) is immediately visible in the logs.
+   *
+   * Covers common Shopify theme patterns:
+   *   - fieldset / block with data-option-name "Color"/"Colour" and a
+   *     checked radio input (Dawn, Horizon, Ritual, Impulse, Prestige).
+   *   - input[name="options[Color]"]:checked (name= pattern).
+   *   - select[name="options[Color]"] (legacy select).
+   *   - [data-option-name="Color"] [aria-checked="true"] (custom
+   *     button-group swatches, aria-driven).
+   */
+  function readSwatchColor(root) {
+    var scope = null;
+    var cur = root ? root.parentNode : null;
+    while (cur && cur !== document.body && cur.nodeType === 1) {
+      var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+      if (tag === 'main' || tag === 'section' ||
+          cur.hasAttribute('data-section-type') ||
+          cur.hasAttribute('data-section-id') ||
+          cur.hasAttribute('data-product-id')) {
+        scope = cur; break;
+      }
+      cur = cur.parentNode;
+    }
+    var search = scope || document;
+    try {
+      var inputs = search.querySelectorAll('input[type="radio"]:checked');
+      for (var i = 0; i < inputs.length; i++) {
+        var inp = inputs[i];
+        var name = String(inp.name || '').toLowerCase();
+        if (name.indexOf('color') !== -1 || name.indexOf('colour') !== -1) {
+          var val = inp.value || '';
+          if (val) return val;
+        }
+      }
+    } catch (e) {}
+    try {
+      var sels = search.querySelectorAll('select[name*="olor" i], select[name*="olour" i]');
+      for (var j = 0; j < sels.length; j++) {
+        var sel = sels[j];
+        if (sel && sel.value) return sel.value;
+      }
+    } catch (e) {}
+    try {
+      var aria = search.querySelectorAll('[aria-checked="true"]');
+      for (var k = 0; k < aria.length; k++) {
+        var node = aria[k];
+        var container = node.closest ? node.closest('[data-option-name], [data-option]') : null;
+        if (container) {
+          var optName = String(container.getAttribute('data-option-name') || container.getAttribute('data-option') || '').toLowerCase();
+          if (optName.indexOf('color') !== -1 || optName.indexOf('colour') !== -1) {
+            var txt = (node.getAttribute('data-value') || node.getAttribute('aria-label') || node.textContent || '').trim();
+            if (txt) return txt;
+          }
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
   function currentVariantInfo(root) {
     var variants = [];
     var optionNames = [];
     try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
     try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
-    var form = document.querySelector('form[action*="/cart/add"]');
+    var form = findMainProductForm(root);
     var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
     var variantId = idInput ? idInput.value : root.getAttribute('data-selected-variant');
     var variant = null;
@@ -887,9 +1017,15 @@
             // (section may still be rendering when restore resolves).
             if (previewMode === 'inline') {
               var restoreInfo = currentVariantInfo(root);
-              var restoreColorUrl = restoreInfo.colorName ? state.previewUrlByColor[restoreInfo.colorName] : null;
+              var restoreSw = readSwatchColor(root);
+              var restoreColor = (restoreSw && restoreInfo.colorName && restoreSw !== restoreInfo.colorName)
+                ? restoreSw
+                : (restoreInfo.colorName || restoreSw || null);
+              var restoreColorUrl = restoreColor ? state.previewUrlByColor[restoreColor] : null;
               var activationUrl = restoreColorUrl || res.previewUrl;
-              console.log(TAG, 'restore activate: currentColor=' + (restoreInfo.colorName || '(unknown)') +
+              console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
+                ' formColor=' + (restoreInfo.colorName || '(none)') +
+                ' swatchColor=' + (restoreSw || '(none)') +
                 ' usingCached=' + !!restoreColorUrl);
               activateInlinePreviewWithRetry(activationUrl);
             }
@@ -1142,13 +1278,24 @@
       // selection may differ after a hard refresh (Shopify restored a
       // different variant). Without this, hero shows Black-composite under
       // a White-selected swatch until the first variant change.
+      //
+      // STAGING-99 — cross-check with readSwatchColor because the form
+      // lookup might land on the wrong form (Ritual multi-form PDP). The
+      // checked swatch input is the shopper's actual intent.
       var info = currentVariantInfo(root);
-      var effectiveUrl = (info.colorName && state.previewUrlByColor[info.colorName]) || previewUrl;
+      var swatchColor = readSwatchColor(root);
+      var effectiveColor = (swatchColor && info.colorName && swatchColor !== info.colorName)
+        ? swatchColor
+        : (info.colorName || swatchColor || null);
+      if (swatchColor && info.colorName && swatchColor !== info.colorName) {
+        console.warn(TAG, 'inline activate: COLOUR MISMATCH form=' + info.colorName + ' swatch=' + swatchColor + ' — using swatch');
+      }
+      var effectiveUrl = (effectiveColor && state.previewUrlByColor[effectiveColor]) || previewUrl;
       swapInlineHero(hero, effectiveUrl);
       var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
-      console.log(TAG, 'inline activate: hero swapped colour=' + (info.colorName || '(unknown)') +
+      console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
         ' urlTail=' + tail +
-        (effectiveUrl !== previewUrl ? ' (overrode passed url with current-colour cache)' : ''));
+        (effectiveUrl !== previewUrl ? ' (overrode passed url with effective-colour cache)' : ''));
       // MutationObserver install/refresh on EVERY activation — even when
       // already attached, because the hero node may have been replaced since
       // the last activation (theme section re-render, "Try another photo"
@@ -1321,7 +1468,13 @@
       var assert = function () {
         if (!state.renderId || !state.inlineApplied) return;
         var info = currentVariantInfo(root);
-        var colorName = info.colorName;
+        // STAGING-99 — swatch cross-check. If the form is the wrong one
+        // (Ritual multi-form PDP), info.colorName will be frozen on the
+        // wrong variant; the checked swatch is the shopper's actual intent.
+        var swColor = readSwatchColor(root);
+        var colorName = (swColor && info.colorName && swColor !== info.colorName)
+          ? swColor
+          : (info.colorName || swColor || null);
         var expected = colorName ? state.previewUrlByColor[colorName] : null;
         // Compare resolved absolute URLs; `hero.src` returns absolute.
         var currentSrc = hero.src || '';
@@ -1375,11 +1528,15 @@
           state.inlineHero = fresh;
           // Re-apply preview + install observer on the new node.
           var info = currentVariantInfo(root);
-          var colorName = info.colorName;
+          // STAGING-99 — swatch cross-check (see assert() rationale).
+          var pollSw = readSwatchColor(root);
+          var colorName = (pollSw && info.colorName && pollSw !== info.colorName)
+            ? pollSw
+            : (info.colorName || pollSw || null);
           var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
           if (expected) swapInlineHero(fresh, expected);
           installHeroGuard(fresh);
-          console.log(TAG, 'inline hero node replaced (poll) — re-installed guard');
+          console.log(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
         }
       }, 1500);
     }
@@ -1509,7 +1666,19 @@
         if (!state.inlineHero) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineHero=null'); return; }
         if (!state.renderId) { console.log(TAG, 'inline variant evt:', evtType, '→ bail renderId=null'); return; }
         var info = currentVariantInfo(root);
-        if (!info.colorName) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant'); return; }
+        // STAGING-99 cross-check — if the form-derived colour disagrees
+        // with the swatch-input-derived colour, prefer the swatch (that's
+        // what the shopper actually clicked). Logs the mismatch loudly so
+        // a wrong-form pick in findMainProductForm is visible.
+        var swColor = readSwatchColor(root);
+        if (swColor && info.colorName && swColor !== info.colorName) {
+          console.warn(TAG, 'inline variant evt:', evtType, '→ COLOUR MISMATCH form=' + info.colorName + ' swatch=' + swColor + ' — using swatch');
+          info.colorName = swColor;
+        } else if (swColor && !info.colorName) {
+          console.log(TAG, 'inline variant evt:', evtType, '→ form had no colorName, using swatch', swColor);
+          info.colorName = swColor;
+        }
+        if (!info.colorName) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
         var expected = state.previewUrlByColor[info.colorName];
         if (expected) {
           console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', info.colorName);
@@ -1537,21 +1706,69 @@
      */
     function installInlineFormPollFallback() {
       if (state.inlineFormPollTimer) return;
+      // STAGING-99 — log which form we picked so a wrong-form pick (e.g.
+      // the quick-add form of a related product instead of the main PDP
+      // form) is obvious. Includes form id/section/product-id attrs +
+      // initial variant id + swatch-derived colour cross-check.
+      var pickedForm = findMainProductForm(root);
+      var formIdInput = pickedForm ? pickedForm.querySelector('input[name="id"], select[name="id"]') : null;
+      var initialVid = formIdInput ? formIdInput.value : '(no id input)';
+      var formDescriptor = pickedForm
+        ? 'id=' + (pickedForm.id || '(none)') +
+          ' product-id=' + (pickedForm.getAttribute('product-id') || pickedForm.getAttribute('data-product-id') || '(none)') +
+          ' section=' + (function () {
+            var sec = pickedForm.closest ? pickedForm.closest('[data-section-id]') : null;
+            return sec ? (sec.getAttribute('data-section-id') || '(no section-id)') : '(no section)';
+          })() +
+          ' formCount=' + document.querySelectorAll('form[action*="/cart/add"]').length
+        : '(no form found)';
+      console.log(TAG, 'inline form poll install: watching', formDescriptor, 'initialVariantId=' + initialVid,
+        'swatchColor=' + (readSwatchColor(root) || '(none)'),
+        'variantColor=' + (currentVariantInfo(root).colorName || '(none)'));
       var last = currentVariantInfo(root);
+      var tickCount = 0;
       state.inlineFormPollTimer = setInterval(function () {
         if (!state.inlineApplied || !state.inlineHero || !state.renderId) return;
+        tickCount++;
+        // Heartbeat every 5s (10 × 500ms) so if the form id is frozen the
+        // value it's reading is still visible in the console. Strip after
+        // the first few diagnostic cycles ship green — keep for now so
+        // STAGING-99 debugging has a trace.
+        if (tickCount % 10 === 0) {
+          var hbForm = findMainProductForm(root);
+          var hbIdInput = hbForm ? hbForm.querySelector('input[name="id"], select[name="id"]') : null;
+          var hbVid = hbIdInput ? hbIdInput.value : '(no id)';
+          var hbInfo = currentVariantInfo(root);
+          var hbSw = readSwatchColor(root);
+          console.log(TAG, 'inline form poll heartbeat: variantId=' + hbVid +
+            ' variantColor=' + (hbInfo.colorName || '(none)') +
+            ' swatchColor=' + (hbSw || '(none)'));
+        }
         var now = currentVariantInfo(root);
-        if (!now.colorName || now.colorName === last.colorName) { last = now; return; }
-        console.log(TAG, 'inline form poll: variant changed', last.colorName, '→', now.colorName);
-        last = now;
-        var expected = state.previewUrlByColor[now.colorName];
+        var swColor = readSwatchColor(root);
+        // STAGING-99 cross-check — colour change can come from the swatch
+        // BEFORE the form input catches up (theme's swatch handler runs
+        // sync; form id update may be in a microtask). Trigger on EITHER
+        // channel changing.
+        var effectiveColor = (swColor && now.colorName && swColor !== now.colorName)
+          ? swColor  // swatch is the shopper's actual intent
+          : (now.colorName || swColor);
+        var lastEffective = last.__swatch || last.colorName;
+        if (!effectiveColor || effectiveColor === lastEffective) {
+          last = now; last.__swatch = swColor; return;
+        }
+        console.log(TAG, 'inline form poll: colour changed', lastEffective, '→', effectiveColor,
+          '(formId=' + now.variantId + ' formColor=' + (now.colorName || '(none)') +
+          ' swatch=' + (swColor || '(none)') + ')');
+        last = now; last.__swatch = swColor;
+        var expected = state.previewUrlByColor[effectiveColor];
         if (expected) {
-          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', now.colorName);
+          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor);
           swapInlineHero(state.inlineHero, expected);
           state.previewUrl = expected;
         } else {
-          console.log(TAG, 'inline form poll: no cached URL for', now.colorName, '— recomposite');
-          swapInlineColor(now.colorName);
+          console.log(TAG, 'inline form poll: no cached URL for', effectiveColor, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
+          swapInlineColor(effectiveColor);
         }
       }, 500);
     }
@@ -1584,7 +1801,7 @@
     }
 
     function installInlineATCIntercept() {
-      var form = document.querySelector('form[action*="/cart/add"]');
+      var form = findMainProductForm(root);
       if (!form) return;
       // Capture-phase listeners beat any theme handler (which almost always
       // attaches in bubble phase). stopImmediatePropagation keeps the theme
@@ -1629,7 +1846,10 @@
         console.warn(TAG, 'inline ATC: no variant id on form, aborting');
         return;
       }
-      var atcBtn = document.querySelector('form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] button.product-form__submit, form[action*="/cart/add"] [name="add"]');
+      // STAGING-99 — scope to the main product form so sticky/quick-add
+      // ATC buttons on Ritual don't get disabled mid-request.
+      var mainForm = findMainProductForm(root);
+      var atcBtn = mainForm ? mainForm.querySelector('[type="submit"], button.product-form__submit, [name="add"]') : null;
       if (atcBtn) atcBtn.disabled = true;
       attemptResolveVariant(String(variantId), info.price, 0)
         .then(function (res) {
@@ -1917,7 +2137,7 @@
         return false;
       }
       // Valid combo — sync the PDP form so theme price / stock / etc. update.
-      var form = document.querySelector('form[action*="/cart/add"]');
+      var form = findMainProductForm(root);
       var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
       if (idInput && String(idInput.value) !== String(v.id)) {
         idInput.value = String(v.id);
@@ -2351,9 +2571,15 @@
             // restoreStoredRender.
             if (previewMode === 'inline') {
               var tokInfo = currentVariantInfo(root);
-              var tokColorUrl = tokInfo.colorName ? state.previewUrlByColor[tokInfo.colorName] : null;
+              var tokSw = readSwatchColor(root);
+              var tokColor = (tokSw && tokInfo.colorName && tokSw !== tokInfo.colorName)
+                ? tokSw
+                : (tokInfo.colorName || tokSw || null);
+              var tokColorUrl = tokColor ? state.previewUrlByColor[tokColor] : null;
               var tokUrl = tokColorUrl || res.previewUrl;
-              console.log(TAG, 'email-token restore activate: currentColor=' + (tokInfo.colorName || '(unknown)') +
+              console.log(TAG, 'email-token restore activate: effectiveColor=' + (tokColor || '(unknown)') +
+                ' formColor=' + (tokInfo.colorName || '(none)') +
+                ' swatchColor=' + (tokSw || '(none)') +
                 ' usingCached=' + !!tokColorUrl);
               activateInlinePreviewWithRetry(tokUrl);
               return;
