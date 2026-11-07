@@ -212,13 +212,21 @@
   }
 
   /**
-   * Bug 1b — strict lookup: returns a variant only when BOTH colour and size
+   * Bug 1b — strict lookup: returns a variant only when the requested options
    * match exactly AND Shopify reports it as purchasable (unlike
    * variantForColor/variantForSize, which fall back to "any variant with this
    * one option" for UI display purposes, and don't check availability at
    * all). Used right before ATC so an invalid/sold-out combination never
    * reaches the server — no "Shop not authorized"-style error for what's
    * actually just "not offered in that colour".
+   *
+   * BUG A (post-staging-89) — null-tolerant on either option so this also
+   * handles products without a colour option, without a size option, or
+   * with a single variant entirely (e.g. "Love what you've done with the
+   * place" is one SKU). Passing null for an option means "don't filter on
+   * it", so a single-variant product with (null, null) returns that one
+   * available variant and ATC proceeds without the "Please pick a colour
+   * and a size" refusal that was blocking the flow.
    */
   function findExactVariant(root, colorName, sizeId) {
     var variants = [];
@@ -227,9 +235,12 @@
     try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
     for (var i = 0; i < variants.length; i++) {
       var v = variants[i];
+      if (v.available === false) continue;
       var c = findOptionValue(v, optionNames, ['color', 'colour']);
       var s = findOptionValue(v, optionNames, ['size']);
-      if (String(c) === String(colorName) && String(s) === String(sizeId) && v.available !== false) return v;
+      var colorOk = colorName == null || String(c) === String(colorName);
+      var sizeOk = sizeId == null || String(s) === String(sizeId);
+      if (colorOk && sizeOk) return v;
     }
     return null;
   }
@@ -377,12 +388,30 @@
       '.appai-my-pet-modal__body button.appai-primary:disabled{opacity:.6;cursor:not-allowed;}' +
       '.appai-my-pet-modal__body button.appai-secondary{display:block;width:100%;padding:0.75em;margin-top:0.5rem;border-radius:4px;border:1px solid #ccc;background:#fff;color:#111;cursor:pointer;}' +
       '.appai-my-pet-modal__body button.appai-secondary:disabled{opacity:.6;cursor:not-allowed;}' +
-      // Polish F — smaller outlined variant for the "Just save my design"
-      // escape hatch under the primary "Save & join Petposterous Press"
-      // button in the save modal. Visually de-emphasised so the opt-in path
-      // stays the obvious default without hiding the no-opt-in option.
+      // Polish F — smaller outlined variant retained for the "change" link
+      // in the upload modal (after a photo is picked) and any other secondary
+      // escape hatches.
       '.appai-my-pet-modal__body button.appai-secondary--sm{padding:0.5em 0.9em;font-size:.88em;margin-top:0.35rem;color:#555;border-color:#d8d8d8;}' +
       '.appai-my-pet-modal__body .appai-my-pet-footnote{font-size:.72em;color:#888;text-align:center;margin:0.55rem 0 0;line-height:1.4;}' +
+      // Polish REVERT — single primary + checkbox pattern for the save modal.
+      // Consent row sits BELOW the email input, ABOVE the primary CTA so the
+      // shopper reads the exchange (newsletter opt-in = +2 bonus) before
+      // clicking Send.
+      '.appai-my-pet-modal__body label.appai-my-pet-consent{display:flex;align-items:center;gap:0.5em;margin:0.6em 0 0.3em;font-size:.88em;color:#333;cursor:pointer;line-height:1.35;}' +
+      '.appai-my-pet-modal__body label.appai-my-pet-consent input[type=checkbox]{flex:0 0 auto;margin:0;}' +
+      // Polish — brand-red styled file picker. Hides the native "Choose file |
+      // No file chosen" chrome and overlays a <label> that acts as a filled
+      // CTA (same red family as the My Pet button itself via the same CSS
+      // var chain). "change" link only appears once a file is selected.
+      '.appai-my-pet-modal__body .appai-my-pet-file-row{margin:0.75rem 0;}' +
+      '.appai-my-pet-modal__body input.appai-my-pet-file{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0);pointer-events:none;}' +
+      '.appai-my-pet-modal__body label.appai-my-pet-file-cta{display:flex;align-items:center;justify-content:center;gap:0.5em;padding:0.85em 1.5em;border-radius:var(--appai-my-pet-radius,4px);background:var(--appai-my-pet-cta,var(--color-button-background,var(--appai-my-pet-cta-fallback,#D65857)));color:var(--color-button-text,#fff);font-weight:600;cursor:pointer;line-height:1.2;text-align:center;}' +
+      '.appai-my-pet-modal__body label.appai-my-pet-file-cta:hover{opacity:.85;}' +
+      '.appai-my-pet-modal__body label.appai-my-pet-file-cta[data-state="picked"]{background:#f3f3f3;color:#222;flex-direction:column;gap:0.15em;padding:0.65em 1em;}' +
+      '.appai-my-pet-modal__body .appai-my-pet-file-cta__filename{font-size:.82em;color:#555;font-weight:400;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap;}' +
+      '.appai-my-pet-modal__body label.appai-my-pet-file-cta[data-state="empty"] .appai-my-pet-file-cta__filename{display:none;}' +
+      '.appai-my-pet-modal__body button.appai-my-pet-file-change{display:block;margin:0.4em auto 0;background:none;border:none;color:#666;text-decoration:underline;font-size:.82em;cursor:pointer;padding:0.1em 0.3em;}' +
+      '.appai-my-pet-modal__body button.appai-my-pet-file-change[hidden]{display:none;}' +
       '.appai-my-pet-modal__body input[type=email]{display:block;width:100%;padding:0.6em;margin-top:0.5rem;border:1px solid #ccc;border-radius:4px;}' +
       '.appai-my-pet-modal__body .appai-my-pet-msg{color:#444;text-align:center;margin:0.5rem 0;}' +
       '.appai-my-pet-modal__body label{display:flex;align-items:center;gap:0.4em;font-size:0.85em;margin-top:0.5em;}' +
@@ -492,6 +521,12 @@
     var candidateId = root.getAttribute('data-candidate-id');
     var shopifyProductId = root.getAttribute('data-product-id');
     var pageUrl = root.getAttribute('data-page-url') || window.location.href;
+    // UX 7 — "modal" (default, legacy popup) or "inline" (Ritual-scoped
+    // experimental: replace the PDP hero img directly, use the theme's own
+    // native colour/size swatches instead of our custom modal swatches).
+    // If inline mode can't find the theme's hero image at generate time,
+    // activateInlinePreview returns false and the modal takes over.
+    var previewMode = (root.getAttribute('data-preview-mode') || 'modal').toLowerCase();
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
     // Theme-setting subtitle ("See your pet on this design") captured once at
@@ -540,6 +575,13 @@
       // Session-scoped (dropped when the modal closes); 1hr signed URL TTL
       // always outlives a modal session, so no expiry bookkeeping needed.
       previewUrlByColor: {},
+      // UX 7 inline mode — populated by activateInlinePreview. inlineHero is
+      // the PDP <img> we swapped; inlineWatcherTimer is the setInterval id
+      // watching the native variant form; inlineAttached indicates the ATC
+      // intercept + hero swap have been installed so we don't double-install.
+      inlineHero: null,
+      inlineWatcherTimer: null,
+      inlineAttached: false,
     };
 
     function markDismissed(renderId) {
@@ -641,6 +683,13 @@
             state.jobId = res.jobId;
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
+            // UX 7 — restore the inline hero swap on return visits so the
+            // shopper sees "their" product straight away without having to
+            // click the button again. Server cache keeps per-colour swaps
+            // fast even though we don't have the full colour map here.
+            if (previewMode === 'inline') {
+              activateInlinePreview(res.previewUrl);
+            }
           } else {
             clearStoredRender(shopifyProductId);
           }
@@ -648,16 +697,244 @@
         .catch(function () { /* leave stored entry; try again next load */ });
     })();
 
+    // ─────────────────────────────────────────────────────────────────────
+    // UX 7 — inline preview mode (Ritual-scoped experimental)
+    //
+    // Flow:
+    //   generate success → activateInlinePreview(previewUrl)
+    //     → find PDP hero <img> → swap src to preview
+    //     → install native swatch watcher (variant form change → recomposite)
+    //     → install native ATC intercept (click → resolve-variant → cart/add)
+    //     → relabel My Pet open button to "Try another photo"
+    //   subsequent generate → activateInlinePreview is re-called; it short-
+    //     circuits the one-time installs via state.inlineAttached but always
+    //     swaps the hero to the fresh preview.
+    //
+    // Fall-back: findProductHeroImg returns null → returns false → caller
+    // (upload generate handler) opens the modal instead. Merchant can
+    // forcibly switch back to modal via the block setting at any time.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function findProductHeroImg() {
+      // Priority list: most-specific (is-active media item) → broad
+      // (product section <img>). Skip anything inside our own block so we
+      // don't accidentally swap our own thumbnail.
+      var SELECTORS = [
+        '.product__media-item.is-active img',
+        '.product__media.is-active img',
+        '[data-media-id].is-active img',
+        '.product__media-item img',
+        '.product__media img',
+        '[data-product-featured-image]',
+        '.product-featured-media img',
+        '.product__main-photos img',
+        '.product-gallery__image',
+        '.product-single__photo img',
+        '.product__photo img',
+        '.product-image img',
+        '.product-single__media img',
+        '[data-media-id] img',
+        '.product-gallery img',
+        '.product__images img',
+        '.product-images img',
+      ];
+      for (var i = 0; i < SELECTORS.length; i++) {
+        var el;
+        try { el = document.querySelector(SELECTORS[i]); } catch (e) { continue; }
+        if (el && el.tagName === 'IMG' && !el.closest('.appai-my-pet')) return el;
+      }
+      return null;
+    }
+
+    function swapInlineHero(hero, url) {
+      if (!url) return;
+      // Theme section re-renders (Shopify Section Rendering API, Horizon's
+      // media-gallery component swap, etc.) can detach the <img> we cached.
+      // If our reference is detached, look it up fresh so we still land on
+      // a visible node.
+      if (!hero || !document.body.contains(hero)) {
+        hero = findProductHeroImg();
+        if (!hero) return;
+        state.inlineHero = hero;
+      }
+      // Preserve the original blank so a later "Try another photo" abort or a
+      // theme section re-render can reset to the merchant's own hero image.
+      if (!hero.hasAttribute('data-appai-my-pet-original-src')) {
+        hero.setAttribute('data-appai-my-pet-original-src', hero.getAttribute('src') || '');
+        var origSrcset = hero.getAttribute('srcset');
+        if (origSrcset) hero.setAttribute('data-appai-my-pet-original-srcset', origSrcset);
+      }
+      try { hero.src = url; } catch (e) {}
+      try { hero.removeAttribute('srcset'); } catch (e) {}
+      // Clear theme lazy-loaders so they don't overwrite our src on next scroll.
+      if (hero.dataset) {
+        try { delete hero.dataset.src; } catch (e) {}
+        try { delete hero.dataset.srcset; } catch (e) {}
+      }
+      hero.setAttribute('data-appai-my-pet-preview', 'true');
+    }
+
+    function activateInlinePreview(previewUrl) {
+      var hero = state.inlineHero || findProductHeroImg();
+      if (!hero) return false;
+      state.inlineHero = hero;
+      swapInlineHero(hero, previewUrl);
+      if (state.inlineAttached) return true;
+      state.inlineAttached = true;
+      installInlineSwatchWatcher();
+      installInlineATCIntercept();
+      // Relabel the My Pet open button as the "reset" / re-upload control.
+      if (openBtn) {
+        openBtn.textContent = 'Try another photo';
+        openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
+      }
+      return true;
+    }
+
+    function installInlineSwatchWatcher() {
+      if (state.inlineWatcherTimer) return;
+      var last = currentVariantInfo(root);
+      state.inlineWatcherTimer = setInterval(function () {
+        if (!state.renderId || !state.inlineHero) return; // paused but kept alive
+        var now = currentVariantInfo(root);
+        if (now.colorName && now.colorName !== last.colorName) {
+          swapInlineColor(now.colorName);
+        }
+        last = now;
+      }, 600);
+    }
+
+    function swapInlineColor(colorName) {
+      if (!state.inlineHero || !state.renderId || !colorName) return;
+      var cached = state.previewUrlByColor[colorName];
+      if (cached) {
+        swapInlineHero(state.inlineHero, cached);
+        state.previewUrl = cached;
+        console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
+        return;
+      }
+      postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
+        .then(function (res) {
+          if (res && res.ok && res.previewUrl && state.inlineHero) {
+            swapInlineHero(state.inlineHero, res.previewUrl);
+            state.previewUrl = res.previewUrl;
+            state.previewUrlByColor[colorName] = res.previewUrl;
+            writeStoredRender(shopifyProductId, state.renderId, state.jobId);
+          }
+        })
+        .catch(function () { /* leave hero as-is */ });
+    }
+
+    function installInlineATCIntercept() {
+      var form = document.querySelector('form[action*="/cart/add"]');
+      if (!form) return;
+      // Capture-phase listeners beat any theme handler (which almost always
+      // attaches in bubble phase). stopImmediatePropagation keeps the theme
+      // from running its own cart/add after us.
+      form.addEventListener('submit', function (e) {
+        if (!state.renderId || !state.inlineHero) return;
+        e.preventDefault();
+        e.stopPropagation();
+        try { e.stopImmediatePropagation(); } catch (_) {}
+        runInlineATC();
+      }, true);
+      // Some themes bypass form submit via a direct button click handler.
+      // Intercepting click too is belt-and-braces; the submit intercept above
+      // handles keyboard "enter" in the quantity input etc.
+      var atc = form.querySelector('[type="submit"], [name="add"], button.product-form__submit, .shopify-payment-button');
+      if (atc) {
+        atc.addEventListener('click', function (e) {
+          if (!state.renderId || !state.inlineHero) return;
+          if (e.target.closest('.shopify-payment-button')) return; // skip dynamic checkout — no My Pet support on express checkout
+          e.preventDefault();
+          e.stopPropagation();
+          try { e.stopImmediatePropagation(); } catch (_) {}
+          runInlineATC();
+        }, true);
+      }
+    }
+
+    function runInlineATC() {
+      // Read the current variant directly from the PDP form — the native
+      // swatch logic already keeps form.input[name=id] in sync, so we trust
+      // it as the source of truth in inline mode (modal mode has its own
+      // state.swatchColor/Size because the modal duplicates swatches).
+      var info = currentVariantInfo(root);
+      var variantId = info.variantId;
+      if (!variantId) {
+        console.warn(TAG, 'inline ATC: no variant id on form, aborting');
+        return;
+      }
+      var atcBtn = document.querySelector('form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] button.product-form__submit, form[action*="/cart/add"] [name="add"]');
+      if (atcBtn) atcBtn.disabled = true;
+      attemptResolveVariant(String(variantId), info.price, 0)
+        .then(function (res) {
+          var properties = {
+            '_design_id': res.designLabel || 'My Pet',
+            '_appai_my_pet_render_id': res.renderId || state.renderId || '',
+          };
+          if (res.jobId) properties['_appai_job_id'] = res.jobId;
+          if (res.previewUrl && res.previewUrl.indexOf('https://') === 0) {
+            properties['_mockup_url'] = res.previewUrl;
+          }
+          if (info.colorName != null) properties['_color'] = info.colorName;
+          if (info.sizeId != null) properties['_size'] = info.sizeId;
+          return fetch('/cart/add.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1, properties: properties }] }),
+          }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); });
+        })
+        .then(function (added) {
+          if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
+          markDismissed(state.renderId);
+          refreshAndOpenCartDrawer();
+          if (atcBtn) atcBtn.disabled = false;
+        })
+        .catch(function (err) {
+          if (atcBtn) atcBtn.disabled = false;
+          console.warn(TAG, 'inline ATC failed:', err && err.message);
+          // Surface error in the caption so the shopper sees something.
+          if (caption) caption.textContent = (err && err.message) || 'Could not add to cart. Please try again.';
+        });
+    }
+
     function openUploadStep() {
       var picker = buildModal();
+      // Polish — native <input type="file"> ships with unstyleable OS chrome
+      // ("Choose file | No file chosen") that reads as unfinished next to the
+      // brand-red primary CTA. Standard pattern: hide the real input, overlay
+      // a styled <label for=…> that acts as the button. After the shopper
+      // picks a file we flip the row to "filename + change" so they can see
+      // what they selected and swap it before kicking off the ~25s generate.
       picker.body.innerHTML =
         '<h3>Add your pet</h3>' +
         '<p class="appai-my-pet-msg">Choose a clear photo of your pet.</p>' +
-        '<input type="file" accept="image/*" class="appai-my-pet-file" />';
+        '<div class="appai-my-pet-file-row">' +
+        '  <input type="file" accept="image/*" class="appai-my-pet-file" id="appai-my-pet-file-input" />' +
+        '  <label for="appai-my-pet-file-input" class="appai-my-pet-file-cta" data-state="empty">' +
+        '    <span class="appai-my-pet-file-cta__label">Choose a photo</span>' +
+        '    <span class="appai-my-pet-file-cta__filename"></span>' +
+        '  </label>' +
+        '  <button type="button" class="appai-my-pet-file-change" hidden>change</button>' +
+        '</div>';
       var input = picker.body.querySelector('.appai-my-pet-file');
+      var cta = picker.body.querySelector('.appai-my-pet-file-cta');
+      var ctaLabel = picker.body.querySelector('.appai-my-pet-file-cta__label');
+      var ctaFilename = picker.body.querySelector('.appai-my-pet-file-cta__filename');
+      var changeBtn = picker.body.querySelector('.appai-my-pet-file-change');
+      if (changeBtn) {
+        changeBtn.addEventListener('click', function () { input.click(); });
+      }
       input.addEventListener('change', function () {
         var file = input.files && input.files[0];
         if (!file) return;
+        // Brief filename flash before the progress UI replaces the whole body,
+        // so the shopper sees "we got this file" rather than an instant jump.
+        if (cta) cta.setAttribute('data-state', 'picked');
+        if (ctaLabel) ctaLabel.textContent = 'Selected';
+        if (ctaFilename) ctaFilename.textContent = file.name;
+        if (changeBtn) changeBtn.hidden = false;
         showGeneratingProgress(picker.body);
         fileToDataUrl(file)
           .then(function (dataUrl) { return postJson('my-pet/upload-photo', { imageData: dataUrl }); })
@@ -684,7 +961,16 @@
             // entries point at the previous render's composited images (wrong
             // artwork). Drop them; the new render's colour will be seeded in
             // renderPreviewBody.
-            state.previewUrlByColor = {};
+            // BUG D (post-staging-89) — server pre-composites every candidate
+            // colour in parallel during generate and returns the full map, so
+            // we seed previewUrlByColor with all N signed urls up front.
+            // Every subsequent swatch click is a CLIENT CACHE HIT (instant
+            // <img.src =…> swap with no /recomposite round-trip). On older
+            // bundles / partial failures previewUrlsByColor may be missing or
+            // undercount; the recomposite path still works as the fallback.
+            state.previewUrlByColor = (genRes.previewUrlsByColor && typeof genRes.previewUrlsByColor === 'object')
+              ? Object.assign({}, genRes.previewUrlsByColor)
+              : {};
             // New render id is never in dismissedRenderIds — exit-intent will
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
@@ -695,6 +981,12 @@
             // previous fire-and-forget refresh let the modal open ~300ms
             // before perListingRemaining actually decremented.
             refreshCapStatus().then(function () {
+              // UX 7 inline mode: try to swap the PDP hero img in place,
+              // skipping the modal entirely. activateInlinePreview returns
+              // false when it can't find the hero image (e.g. unsupported
+              // theme), in which case the modal is the fall-back so the
+              // shopper still gets their preview + ATC.
+              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) return;
               openPreviewStep(genRes.previewUrl);
             });
           })
@@ -838,14 +1130,23 @@
       var status = body.querySelector('#appai-my-pet-status');
       var color = state.swatchColor;
       var size = state.swatchSize;
-      if (!color || !size) {
-        if (atcBtn) atcBtn.disabled = false;
-        return true;
-      }
+      // BUG A — null-tolerant. findExactVariant with (null, null) returns
+      // the first available variant for a single-variant product; (color,
+      // null) works for colour-only products; (null, size) for size-only.
       var v = findExactVariant(root, color, size);
       if (!v) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) status.textContent = size + " isn't available in " + color + " — pick another combination.";
+        if (status) {
+          if (color && size) {
+            status.textContent = size + " isn't available in " + color + " — pick another combination.";
+          } else if (color) {
+            status.textContent = color + " isn't available right now.";
+          } else if (size) {
+            status.textContent = "Size " + size + " isn't available right now.";
+          } else {
+            status.textContent = "This product isn't available right now.";
+          }
+        }
         return false;
       }
       // Valid combo — sync the PDP form so theme price / stock / etc. update.
@@ -856,7 +1157,7 @@
         try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
       }
       if (atcBtn) atcBtn.disabled = false;
-      if (status && status.textContent && status.textContent.indexOf("isn't available in") !== -1) status.textContent = '';
+      if (status && status.textContent && status.textContent.indexOf("isn't available") !== -1) status.textContent = '';
       return true;
     }
 
@@ -1029,15 +1330,16 @@
       // variant (user reported: XS/Pink click → cart got S/Pink). The modal's
       // own swatch intent is the source of truth for what the shopper picked;
       // findExactVariant decides whether to allow or refuse.
-      var exact = state.swatchColor && state.swatchSize
-        ? findExactVariant(root, state.swatchColor, state.swatchSize)
-        : null;
+      //
+      // BUG A (post-staging-89) — unconditional call so single-variant and
+      // one-option-only products (no swatchColor or no swatchSize) still
+      // resolve to their one buyable variant. findExactVariant is null-
+      // tolerant per option now, and checkComboAvailable writes the correct
+      // "colour X isn't available" / "size Y isn't available" / "product
+      // isn't available" message if we come back empty.
+      var exact = findExactVariant(root, state.swatchColor, state.swatchSize);
       if (!exact) {
-        if (checkComboAvailable(body) === false) {
-          // checkComboAvailable already wrote the exact user-facing message.
-          return;
-        }
-        if (status) status.textContent = "Please pick a colour and a size before adding to cart.";
+        checkComboAvailable(body);
         return;
       }
       var exactVariantId = String(exact.id);
@@ -1067,8 +1369,11 @@
           }
           // Bugs B/C — write the shopper's ACTUAL selected colour/size, not
           // whatever happened to be on the PDP form when ATC was clicked.
-          properties['_color'] = state.swatchColor;
-          properties['_size'] = state.swatchSize;
+          // BUG A — only set when the option exists (single-variant products
+          // have no colour/size swatches; leaving undefined keeps the line
+          // properties clean).
+          if (state.swatchColor != null) properties['_color'] = state.swatchColor;
+          if (state.swatchSize != null) properties['_size'] = state.swatchSize;
           return fetch('/cart/add.js', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1114,33 +1419,38 @@
       var thumbHtml = state.previewUrl
         ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
-      // Polish E + F (Model 2) — two explicit choices: "Save & join Petposterous
-      // Press" (sends email + marketing_consent=true + grants the +2 bonus) vs
-      // "Just save my design" (sends email + marketing_consent=false, save link
-      // only, no bonus). Replaces the single [Send] + checkbox pattern because
-      // the new copy on the cap caption ("Sign up to the Petposterous Press
-      // for 2 more custom designs") promises the bonus for opt-in — honouring
-      // that promise requires the opt-in to be the trigger, not the email itself.
+      // Polish E + F (Model 2) — single primary "Email me this design" with
+      // a default-checked "Join the Petposterous Press for 2 more custom
+      // designs" checkbox. The checkbox is the single source of truth for
+      // BOTH marketing_consent AND the +2 bonus (server-side hasEmailBonus
+      // requires marketing_consent=true). Reverting from the staging-89
+      // two-button UI because the explicit "Just save my design" secondary
+      // felt heavier than the pattern the rest of the Petposterous site
+      // already uses; the single primary with an explicit, pre-checked
+      // opt-in keeps the mechanic honest without the extra chrome.
       modal.body.innerHTML =
         '<h3>Save your design?</h3>' +
         thumbHtml +
         '<p class="appai-my-pet-msg">We\'ll email you a link back to this design — works for 30 days, on any device.</p>' +
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
-        '<button type="button" class="appai-primary" data-action="send-with-consent">Save &amp; join Petposterous Press</button>' +
-        '<button type="button" class="appai-secondary appai-secondary--sm" data-action="send-no-consent">Just save my design</button>' +
+        '<label class="appai-my-pet-consent">' +
+        '  <input type="checkbox" data-action="consent-checkbox" checked />' +
+        '  <span>Join the Petposterous Press for 2 more custom designs</span>' +
+        '</label>' +
+        '<button type="button" class="appai-primary" data-action="send-email">Email me this design</button>' +
         '<p class="appai-my-pet-footnote">Press is weekly, small, witty. Unsubscribe in one click.</p>' +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
       var thumb = modal.body.querySelector('img.appai-thumb');
       if (thumb) thumb.addEventListener('click', function (e) { showZoom(e.currentTarget.src); });
 
-      function sendEmailSave(withConsent) {
+      modal.body.querySelector('[data-action="send-email"]').addEventListener('click', function () {
         var emailInput = modal.body.querySelector('.appai-my-pet-email');
+        var consentInput = modal.body.querySelector('[data-action="consent-checkbox"]');
         var email = (emailInput && emailInput.value) || '';
+        var withConsent = !!(consentInput && consentInput.checked);
         var status = modal.body.querySelector('#appai-my-pet-email-status');
-        var primary = modal.body.querySelector('[data-action="send-with-consent"]');
-        var secondary = modal.body.querySelector('[data-action="send-no-consent"]');
-        if (primary) primary.disabled = true;
-        if (secondary) secondary.disabled = true;
+        var sendBtn = modal.body.querySelector('[data-action="send-email"]');
+        if (sendBtn) sendBtn.disabled = true;
         if (status) status.textContent = 'Sending…';
         postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl })
           .then(function (res) {
@@ -1155,19 +1465,14 @@
               if (withConsent) refreshCapStatus();
             } else {
               if (status) status.textContent = (res && res.error) || 'Could not send email.';
-              if (primary) primary.disabled = false;
-              if (secondary) secondary.disabled = false;
+              if (sendBtn) sendBtn.disabled = false;
             }
           })
           .catch(function () {
             if (status) status.textContent = 'Could not send email.';
-            if (primary) primary.disabled = false;
-            if (secondary) secondary.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
           });
-      }
-
-      modal.body.querySelector('[data-action="send-with-consent"]').addEventListener('click', function () { sendEmailSave(true); });
-      modal.body.querySelector('[data-action="send-no-consent"]').addEventListener('click', function () { sendEmailSave(false); });
+      });
     }
 
     // Desktop exit-intent (mouse leaving toward the browser chrome). Mobile has
@@ -1187,6 +1492,8 @@
             state.renderId = res.renderId;
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
+            // UX 7 — honour inline mode on email-token resume as well.
+            if (previewMode === 'inline' && activateInlinePreview(res.previewUrl)) return;
             openPreviewStep(res.previewUrl);
           }
         });
@@ -1194,6 +1501,20 @@
     } catch (e) {}
 
     openBtn.addEventListener('click', function () {
+      // UX 7 inline mode — when inline preview is already active, the My Pet
+      // button acts as "Try another photo" and jumps straight to upload
+      // (cap-gated) rather than re-opening a modal whose role was taken over
+      // by the inline hero.
+      if (previewMode === 'inline' && state.inlineAttached) {
+        refreshCapStatus().then(function (cap) {
+          if (cap && cap.allowed === false) {
+            if (caption) caption.textContent = cap.message || 'No more tries on this design.';
+            return;
+          }
+          openUploadStep();
+        });
+        return;
+      }
       // If the shopper already generated this visit, re-open the SAME preview
       // (no new generation call, no cap attempt consumed). Bug #2 was that
       // this branch returned silently without reopening anything.

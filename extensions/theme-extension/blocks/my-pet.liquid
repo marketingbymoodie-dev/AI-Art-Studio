@@ -11,6 +11,7 @@
 {% if candidate_id != blank and my_pet_enabled != false %}
   {% assign button_label = block.settings.button_label | default: "My Pet" %}
   {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
+  {% assign preview_mode = block.settings.preview_mode | default: "modal" %}
 
   <div
     class="appai-my-pet"
@@ -22,6 +23,7 @@
     data-option-names="{{ product.options_with_values | map: 'name' | join: '::' | escape }}"
     data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
     data-page-url="{{ shop.url }}{{ product.url }}"
+    data-preview-mode="{{ preview_mode | escape }}"
   >
     <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
       {{ button_label | escape }}
@@ -60,6 +62,17 @@
       "label": "Button subtitle",
       "default": "See your pet on this design",
       "info": "Small caption shown below the button. Leave blank to hide."
+    },
+    {
+      "type": "select",
+      "id": "preview_mode",
+      "label": "Preview mode",
+      "default": "modal",
+      "options": [
+        { "value": "modal", "label": "Modal (default — opens in a popup)" },
+        { "value": "inline", "label": "Inline — replace product image (Ritual theme, experimental)" }
+      ],
+      "info": "Inline mode replaces the product page's hero image with the generated preview, hooks into the theme's native colour/size swatches, and uses the theme's Add to cart button. If the hero image can't be found on your theme, the preview falls back to modal automatically."
     }
   ]
 }

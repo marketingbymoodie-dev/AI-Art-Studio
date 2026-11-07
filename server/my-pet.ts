@@ -342,6 +342,23 @@ export type MyPetGenerateResult = {
   jobId: string;
   previewUrl: string;
   colorName: string;
+  /**
+   * BUG D (post-staging-89) — server-side pre-composite: at generate time
+   * we composite the shopper's chosen colour synchronously (previewUrl) AND
+   * every other candidate colour in parallel, returning the full
+   * {colourName: signedUrl} map so the client can pre-populate its
+   * per-colour cache. Every subsequent swatch click is then a CLIENT CACHE
+   * HIT (instant <img src=…> swap, no /recomposite round-trip, no Supabase
+   * sign, no server compose). Trades ~3-8s of parallel compose on top of
+   * the existing ~22s generate wait for permanently-instant colour swaps.
+   * Shopper eats the cost once per design; the current per-swap 6s was
+   * being paid every single click.
+   *
+   * Partial failures silently drop the failed colour from the map (compose
+   * is deterministic and retried on demand via /recomposite on first click,
+   * which still has its own server-side cache lookup as a fallback).
+   */
+  previewUrlsByColor: Record<string, string>;
 };
 
 export async function generateMyPetRender(args: {
@@ -410,9 +427,71 @@ export async function generateMyPetRender(args: {
     colorHex: color.hex,
     artworkPath: editedPath,
   });
+  // Canonical preview path — stays `{renderId}.png` for backward-compat with
+  // every existing row (myPetRenders.previewPath, the sweep's object delete,
+  // email save, etc.). The per-colour sibling we additionally write below
+  // feeds the recomposite cache.
   const previewPath = `my-pet/previews/${renderId}.png`;
   await putMyPetObject(previewPath, previewPng, "image/png");
   const previewUrl = await signedMyPetUrl(previewPath);
+
+  // Deterministic per-colour path matches recompositeMyPetRender's naming
+  // scheme so a later `/recomposite` for the chosen (or any pre-composited)
+  // colour finds the file and hits its CACHE HIT fast path.
+  const previewPathFor = (name: string) =>
+    `my-pet/previews/${renderId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
+  const chosenPerColorPath = previewPathFor(color.name);
+  try {
+    await putMyPetObject(chosenPerColorPath, previewPng, "image/png");
+  } catch (err) {
+    console.warn("[my-pet] chosen-colour sibling write failed:", (err as Error)?.message);
+  }
+
+  // BUG D — pre-composite every OTHER candidate colour in parallel so the
+  // client can seed state.previewUrlByColor with all N urls and every swatch
+  // click is a client-cache hit. Promise.allSettled + per-colour try/catch
+  // means one bad colour (missing mockup panel, etc.) never blocks the
+  // chosen one from returning. Each entry we succeed in composing goes
+  // straight into the server-side cache too, so a cross-session restore
+  // path still hits CACHE HIT on recomposite.
+  const otherColors = args.candidate.selectedColors.filter(
+    (c) => c.name.trim().toLowerCase() !== color.name.trim().toLowerCase(),
+  );
+  const precomposeStarted = Date.now();
+  const otherResults = await Promise.allSettled(
+    otherColors.map(async (other) => {
+      const otherPath = previewPathFor(other.name);
+      const existing = await myPetObjectExists(otherPath);
+      if (!existing) {
+        const { png } = await renderCandidateOnPanel({
+          productTypeId: productType.id,
+          typeName: productType.name,
+          panelId: args.candidate.panelId,
+          colorName: other.name,
+          colorHex: other.hex,
+          artworkPath: editedPath,
+        });
+        await putMyPetObject(otherPath, png, "image/png");
+      }
+      const url = await signedMyPetUrl(otherPath);
+      return [other.name, url] as const;
+    }),
+  );
+  const previewUrlsByColor: Record<string, string> = { [color.name]: previewUrl };
+  let precomposeFailures = 0;
+  for (const r of otherResults) {
+    if (r.status === "fulfilled") {
+      previewUrlsByColor[r.value[0]] = r.value[1];
+    } else {
+      precomposeFailures += 1;
+      console.warn("[my-pet] pre-composite failed:", (r.reason as Error)?.message || r.reason);
+    }
+  }
+  console.log(
+    `[my-pet] generate pre-compose renderId=${renderId.slice(0, 8)} chosen=${color.name} ` +
+      `others=${otherColors.length} ok=${otherResults.length - precomposeFailures} ` +
+      `failed=${precomposeFailures} durationMs=${Date.now() - precomposeStarted}`,
+  );
 
   // Replicate's API does not return per-prediction token usage, so we record
   // a flat measured cost (see MY_PET_SUNBURST_ESTIMATED_COST_USD). Update that
