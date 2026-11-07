@@ -758,6 +758,11 @@
       inlineApplied: false,
       inlineAttached: false,
       inlineGuardBackupTimer: null,
+      // STAGING-98 — fallback poll on form[name=id] for themes whose
+      // variant events don't match any of the 7 names in
+      // installInlineVariantListeners (seen on Ritual). Set by
+      // installInlineFormPollFallback; cleared by revertToOriginalDesign.
+      inlineFormPollTimer: null,
     };
 
     function markDismissed(renderId) {
@@ -870,12 +875,23 @@
               ? Object.assign({}, res.previewUrlsByColor)
               : {};
             console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            logPreviewUrlTails('restore', state.previewUrlByColor);
             preloadPreviewUrls(state.previewUrlByColor);
             // UX 7 — restore the inline hero swap on return visits so the
             // shopper sees "their" product straight away without having to
-            // click the button again.
+            // click the button again. STAGING-98 fix: prefer the CURRENT
+            // selected colour's cached URL over res.previewUrl (which is
+            // whatever the shopper chose when they first generated —
+            // Shopify may restore a different variant on hard refresh).
+            // Retry up to 5 × 500ms if the hero isn't in the DOM yet
+            // (section may still be rendering when restore resolves).
             if (previewMode === 'inline') {
-              activateInlinePreview(res.previewUrl);
+              var restoreInfo = currentVariantInfo(root);
+              var restoreColorUrl = restoreInfo.colorName ? state.previewUrlByColor[restoreInfo.colorName] : null;
+              var activationUrl = restoreColorUrl || res.previewUrl;
+              console.log(TAG, 'restore activate: currentColor=' + (restoreInfo.colorName || '(unknown)') +
+                ' usingCached=' + !!restoreColorUrl);
+              activateInlinePreviewWithRetry(activationUrl);
             }
           } else {
             clearStoredRender(shopifyProductId);
@@ -922,6 +938,48 @@
           img.src = urls[i];
         } catch (e) {}
       }
+    }
+
+    // STAGING-98 diagnostic — log each colour → url tail so a Black mockup
+    // showing under the White key (wrong mapping) is immediately visible.
+    // Tail strips the signed query + path prefix so the log line stays
+    // scannable. Safe to call with an empty map.
+    function logPreviewUrlTails(label, urlsByColor) {
+      try {
+        var keys = Object.keys(urlsByColor || {});
+        for (var i = 0; i < keys.length; i++) {
+          var name = keys[i];
+          var tail = String(urlsByColor[name] || '').split('?')[0].split('/').pop();
+          console.log(TAG, label + ' map:', name, '→', tail);
+        }
+      } catch (e) {}
+    }
+
+    // STAGING-98 — activateInlinePreview can fail (return false) on a hard
+    // refresh if restoreStoredRender resolves BEFORE the product gallery is
+    // in the DOM. Without this retry, the restore silently gives up and
+    // state.inlineApplied stays false — the hero never swaps, the observers
+    // never install, and every subsequent swatch click bails silently
+    // (matches the symptom the user reported). 5 × 500ms = 2.5s budget,
+    // well within the "page felt loaded" window on 3G.
+    function activateInlinePreviewWithRetry(url) {
+      var attempts = 0;
+      var MAX = 5;
+      function tryOnce() {
+        attempts++;
+        var ok = activateInlinePreview(url);
+        if (ok) {
+          console.log(TAG, 'inline activate: success on attempt', attempts);
+          return;
+        }
+        if (attempts >= MAX) {
+          console.warn(TAG, 'inline activate: hero not found after', attempts, 'attempts — giving up');
+          return;
+        }
+        console.log(TAG, 'inline activate: hero not found, retrying in 500ms (attempt', attempts, 'of', MAX, ')');
+        setTimeout(tryOnce, 500);
+      }
+      tryOnce();
     }
 
     function findProductHeroImg() {
@@ -1073,9 +1131,24 @@
 
     function activateInlinePreview(previewUrl) {
       var hero = state.inlineHero || findProductHeroImg();
-      if (!hero) return false;
+      if (!hero) {
+        console.log(TAG, 'inline activate: no hero found (gallery may not be rendered yet)');
+        return false;
+      }
       state.inlineHero = hero;
-      swapInlineHero(hero, previewUrl);
+      // STAGING-98 — honour current colour selection even if caller passed
+      // a "chosen colour" URL. On the restore path, previewUrl is whatever
+      // was selected when the render was first saved; the shopper's current
+      // selection may differ after a hard refresh (Shopify restored a
+      // different variant). Without this, hero shows Black-composite under
+      // a White-selected swatch until the first variant change.
+      var info = currentVariantInfo(root);
+      var effectiveUrl = (info.colorName && state.previewUrlByColor[info.colorName]) || previewUrl;
+      swapInlineHero(hero, effectiveUrl);
+      var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
+      console.log(TAG, 'inline activate: hero swapped colour=' + (info.colorName || '(unknown)') +
+        ' urlTail=' + tail +
+        (effectiveUrl !== previewUrl ? ' (overrode passed url with current-colour cache)' : ''));
       // MutationObserver install/refresh on EVERY activation — even when
       // already attached, because the hero node may have been replaced since
       // the last activation (theme section re-render, "Try another photo"
@@ -1098,10 +1171,15 @@
         openBtn.removeAttribute('aria-disabled');
       }
       showRevertLink();
-      if (state.inlineAttached) return true;
+      if (state.inlineAttached) {
+        console.log(TAG, 'inline activate: observers re-installed (listeners already attached from earlier activation)');
+        return true;
+      }
       state.inlineAttached = true;
       installInlineVariantListeners();
       installInlineATCIntercept();
+      installInlineFormPollFallback();
+      console.log(TAG, 'inline activate: full install complete (hero+gallery observers, variant listeners, ATC intercept, form poll fallback)');
       return true;
     }
 
@@ -1151,6 +1229,12 @@
       if (state.inlineGuardBackupTimer) {
         clearInterval(state.inlineGuardBackupTimer);
         state.inlineGuardBackupTimer = null;
+      }
+      // STAGING-98 — stop the form poll so a post-revert variant change
+      // doesn't re-swap the hero back to our preview.
+      if (state.inlineFormPollTimer) {
+        clearInterval(state.inlineFormPollTimer);
+        state.inlineFormPollTimer = null;
       }
       // 2. Restore src/srcset on the CURRENT live hero (may differ from the
       //    staleHero reference if the theme replaced the node during the
@@ -1416,15 +1500,23 @@
         'product-form:variant-changed',
         'product:variant-change', 'shopify:variant-change',
       ];
-      var handler = function () {
-        if (!state.inlineApplied || !state.inlineHero || !state.renderId) return;
+      var handler = function (event) {
+        var evtType = event && event.type ? event.type : '(unknown)';
+        // STAGING-98 — log every entry + every bail reason so silent fails
+        // are visible in the console. Noise budget: only fires on variant
+        // change events, not every microtask.
+        if (!state.inlineApplied) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineApplied=false'); return; }
+        if (!state.inlineHero) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineHero=null'); return; }
+        if (!state.renderId) { console.log(TAG, 'inline variant evt:', evtType, '→ bail renderId=null'); return; }
         var info = currentVariantInfo(root);
-        if (!info.colorName) return;
+        if (!info.colorName) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant'); return; }
         var expected = state.previewUrlByColor[info.colorName];
         if (expected) {
+          console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', info.colorName);
           swapInlineHero(state.inlineHero, expected);
           state.previewUrl = expected;
         } else {
+          console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', info.colorName, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(info.colorName);
         }
       };
@@ -1432,6 +1524,36 @@
         document.addEventListener(EVENT_NAMES[i], handler, true);
         window.addEventListener(EVENT_NAMES[i], handler, true);
       }
+    }
+
+    /**
+     * STAGING-98 — fallback for themes that don't fire any of the variant
+     * events installInlineVariantListeners listens for (Ritual ships with
+     * a <product-form> that may not dispatch the Horizon event names we
+     * know about). Polls the PDP form's input[name=id] value every 500ms
+     * and fires the same swap logic on change. Mirrors the modal-mode
+     * watchVariantChange poll. ~2 lookups/s while inlineApplied — no-op
+     * overhead when the shopper isn't interacting.
+     */
+    function installInlineFormPollFallback() {
+      if (state.inlineFormPollTimer) return;
+      var last = currentVariantInfo(root);
+      state.inlineFormPollTimer = setInterval(function () {
+        if (!state.inlineApplied || !state.inlineHero || !state.renderId) return;
+        var now = currentVariantInfo(root);
+        if (!now.colorName || now.colorName === last.colorName) { last = now; return; }
+        console.log(TAG, 'inline form poll: variant changed', last.colorName, '→', now.colorName);
+        last = now;
+        var expected = state.previewUrlByColor[now.colorName];
+        if (expected) {
+          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', now.colorName);
+          swapInlineHero(state.inlineHero, expected);
+          state.previewUrl = expected;
+        } else {
+          console.log(TAG, 'inline form poll: no cached URL for', now.colorName, '— recomposite');
+          swapInlineColor(now.colorName);
+        }
+      }, 500);
     }
 
     function swapInlineColor(colorName) {
@@ -2222,9 +2344,20 @@
               ? Object.assign({}, res.previewUrlsByColor)
               : {};
             console.log(TAG, 'email-token restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            logPreviewUrlTails('email-token restore', state.previewUrlByColor);
             preloadPreviewUrls(state.previewUrlByColor);
             // UX 7 — honour inline mode on email-token resume as well.
-            if (previewMode === 'inline' && activateInlinePreview(res.previewUrl)) return;
+            // STAGING-98 — same current-colour + retry treatment as
+            // restoreStoredRender.
+            if (previewMode === 'inline') {
+              var tokInfo = currentVariantInfo(root);
+              var tokColorUrl = tokInfo.colorName ? state.previewUrlByColor[tokInfo.colorName] : null;
+              var tokUrl = tokColorUrl || res.previewUrl;
+              console.log(TAG, 'email-token restore activate: currentColor=' + (tokInfo.colorName || '(unknown)') +
+                ' usingCached=' + !!tokColorUrl);
+              activateInlinePreviewWithRetry(tokUrl);
+              return;
+            }
             openPreviewStep(res.previewUrl);
           }
         });
@@ -2248,7 +2381,13 @@
       // so inline mode doesn't fall through to the modal.
       if (previewMode === 'inline' && state.renderId && state.previewUrl) {
         refreshCapStatus().then(function () {
-          activateInlinePreview(state.previewUrl);
+          // STAGING-98 — prefer the current colour's cached URL, same as
+          // the restore paths, so a revert+re-activate after a colour
+          // change lands on the right composite. Retry wrapper is cheap
+          // if the hero is already in the DOM (succeeds first attempt).
+          var reInfo = currentVariantInfo(root);
+          var reColorUrl = reInfo.colorName ? state.previewUrlByColor[reInfo.colorName] : null;
+          activateInlinePreviewWithRetry(reColorUrl || state.previewUrl);
         });
         return;
       }
