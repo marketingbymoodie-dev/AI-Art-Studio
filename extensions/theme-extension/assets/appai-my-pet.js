@@ -591,7 +591,7 @@
       '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}' +
       // STAGING-107 — mask lives on a container the theme does not replace,
       // so a new gallery <img> inserted mid-swap stays invisible too.
-      '.appai-my-pet-swapping media-gallery img,.appai-my-pet-swapping .media-gallery img{opacity:0 !important;transition:none !important;}';
+      '.appai-my-pet-swapping media-gallery img,.appai-my-pet-swapping .media-gallery img,.appai-my-pet-swapping img.product-media__image{opacity:0 !important;transition:none !important;}';
     document.head.appendChild(style);
   }
 
@@ -1518,10 +1518,9 @@
       return String(raw).trim();
     }
 
-    // Colour from the control the shopper actually clicked, not from the
-    // currently-checked radio — in the capture phase that radio is still
-    // the previous colour. Size swatches return null so we don't blank
-    // the hero on a size-only change.
+    // Colour or size control the shopper clicked. Size changes still
+    // replace the hero node, so they take the same mask path; the colour
+    // used for the preview stays the one already selected.
     function colorFromSwatchEvent(event) {
       var node = event && event.target;
       if (!node) return null;
@@ -1548,7 +1547,10 @@
         if (legend) ctx += ' ' + String(legend.textContent || '').trim().toLowerCase();
       }
       ctx += ' ' + String(probed.name || '').toLowerCase();
-      if (ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) return null;
+      var isColor = ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
+      var isSize = !isColor && ctx.indexOf('size') !== -1;
+      if (!isColor && !isSize) return null;
+      if (isSize) return { kind: 'size', colorName: currentInlineColour() };
       var value = '';
       if (probed.tagName === 'SELECT' || probed.tagName === 'INPUT') value = probed.value || '';
       if (!value) {
@@ -1556,7 +1558,16 @@
       }
       value = String(value).trim();
       if (!value || value.length > 40) return null;
-      return canonicalPreviewColor(value);
+      return { kind: 'color', colorName: canonicalPreviewColor(value) };
+    }
+
+    function currentInlineColour() {
+      var sw = readSwatchColor(root);
+      var info = currentVariantInfo(root);
+      var raw = (sw && info.colorName && String(sw).trim().toLowerCase() !== String(info.colorName).trim().toLowerCase())
+        ? sw
+        : (info.colorName || sw || '');
+      return raw ? canonicalPreviewColor(raw) : null;
     }
 
     function swapMaskContainer() {
@@ -1594,11 +1605,94 @@
       if (el && el.classList) el.classList.remove('appai-my-pet-swapping');
       state.swapMaskStarted = 0;
       state.swapMaskEl = null;
-      console.log(TAG, 'swap-mask off',
+      console.log(TAG, 'mask off reason=' + why,
         'colour=' + (colorName || '?'),
-        'reason=' + why,
         'elapsedMs=' + elapsed,
         'beforeThemeChange=' + beforeTheme);
+    }
+
+    function previewUrlForColour(colorName) {
+      if (colorName && state.previewUrlByColor && state.previewUrlByColor[colorName]) {
+        return state.previewUrlByColor[colorName];
+      }
+      return state.previewUrl || null;
+    }
+
+    function paintProductMediaImage(img) {
+      if (!img || img.tagName !== 'IMG') return false;
+      if (!img.classList || !img.classList.contains('product-media__image')) return false;
+      if (img.closest && img.closest('.appai-my-pet')) return false;
+      var colorName = currentInlineColour();
+      var url = previewUrlForColour(colorName);
+      if (!url) return false;
+      if (img.__appaiAssertUrl === url && !img.getAttribute('srcset') && !img.getAttribute('sizes') && (Date.now() - (img.__appaiAssertAt || 0)) < 400) {
+        return true;
+      }
+      applyPreviewSrc(img, url);
+      if (isHeroCandidate(img)) state.inlineHero = img;
+      return true;
+    }
+
+    function endSwapMask(why, colorName) {
+      if (!state.swapMaskWaiting) return;
+      state.swapMaskWaiting = 0;
+      state.swapMaskEndedAt = Date.now();
+      if (state.swapMaskTimer) {
+        clearTimeout(state.swapMaskTimer);
+        state.swapMaskTimer = null;
+      }
+      swapMaskOff(why, colorName || currentInlineColour());
+    }
+
+    function noteReplacementDecoded(img, colorName) {
+      var token = state.swapMaskWaiting;
+      if (!token || !img) return;
+      var finish = function () {
+        if (state.swapMaskWaiting !== token) return;
+        endSwapMask('replaced', colorName);
+      };
+      if (typeof img.decode === 'function') img.decode().then(finish, finish);
+      else finish();
+    }
+
+    // STAGING-108 — the theme inserts img.product-media__image after our
+    // decode of the old node. This observer runs in the mutation microtask,
+    // before paint, and writes the cached preview onto that new node.
+    function installProductMediaObserver() {
+      if (state.productMediaObserver) return;
+      var container = swapMaskContainer();
+      if (!container) return;
+      var observer = new MutationObserver(function (mutations) {
+        if (!state.renderId || !state.inlineApplied) return;
+        var colorName = currentInlineColour();
+        var replaced = null;
+        for (var i = 0; i < mutations.length; i++) {
+          var m = mutations[i];
+          if (m.type === 'childList') {
+            for (var n = 0; n < m.addedNodes.length; n++) {
+              var node = m.addedNodes[n];
+              if (!node || node.nodeType !== 1) continue;
+              var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img.product-media__image') : []);
+              for (var k = 0; k < imgs.length; k++) {
+                if (!paintProductMediaImage(imgs[k])) continue;
+                replaced = imgs[k];
+              }
+            }
+          } else if (m.type === 'attributes' && m.target && m.target.tagName === 'IMG') {
+            paintProductMediaImage(m.target);
+          }
+        }
+        if (replaced) noteReplacementDecoded(replaced, colorName);
+      });
+      observer.observe(container, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'srcset'],
+      });
+      state.productMediaObserver = observer;
+      console.log(TAG, 'product-media observer watching',
+        container.tagName ? String(container.tagName).toLowerCase() : '?');
     }
 
     function visibleSlideImg() {
@@ -1632,71 +1726,51 @@
         el.removeAttribute('data-appai-my-pet-held');
       }
       state.heroHoldToken = 0;
-      if (state.swapMaskEl && state.swapMaskEl.classList && state.swapMaskEl.classList.contains('appai-my-pet-swapping')) {
-        swapMaskOff('cleared', '');
+      state.swapMaskWaiting = 0;
+      if (state.swapMaskTimer) {
+        clearTimeout(state.swapMaskTimer);
+        state.swapMaskTimer = null;
       }
-    }
-
-    // STAGING-107 — the mask class sits on the product section, which the
-    // theme does not replace. Every gallery img, including one inserted
-    // after the click, stays at opacity 0 until we drop the class.
-    function revealHeroAfterDecode(token, colorName, url) {
-      var finished = false;
-      var finish = function (why) {
-        if (finished || token !== state.heroHoldToken) return;
-        finished = true;
-        if (state.inlineApplied && url) {
-          var slide = visibleSlideImg();
-          if (slide) applyPreviewSrc(slide, url);
-          reassertColourPreview('swap-mask-off', colorName, url);
-        }
-        swapMaskOff(why, colorName);
-        clearHeroHold();
-      };
-      var safety = setTimeout(function () { finish('safety-600ms'); }, 600);
-      var armDecode = function () {
-        if (finished || token !== state.heroHoldToken || !state.inlineApplied) return;
-        var slide = visibleSlideImg();
-        if (url && slide) applyPreviewSrc(slide, url);
-        if (!slide || typeof slide.decode !== 'function') return;
-        slide.decode().then(function () {
-          clearTimeout(safety);
-          finish('decoded');
-        }, function () {
-          clearTimeout(safety);
-          finish('decode-error');
-        });
-      };
-      // Two frames: the theme's own swatch handler queues a rAF during
-      // bubble, which runs after the rAF we queue here in capture. Decoding
-      // on the second frame reads the replacement node, still under the mask.
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(function () { requestAnimationFrame(armDecode); });
-      } else {
-        setTimeout(armDecode, 0);
+      if (state.swapMaskEl && state.swapMaskEl.classList && state.swapMaskEl.classList.contains('appai-my-pet-swapping')) {
+        swapMaskOff('cleared', currentInlineColour());
       }
     }
 
     function installSwatchPreempt() {
       if (state.swatchPreemptInstalled) return;
       state.swatchPreemptInstalled = true;
+      installProductMediaObserver();
       var handler = function (event) {
         if (!state.inlineApplied || !state.renderId) return;
         var scope = productSectionScope();
         if (scope && scope !== document && event.target && event.target.nodeType === 1 && !scope.contains(event.target)) return;
-        var colorName = colorFromSwatchEvent(event);
-        if (!colorName) return;
-        var url = (state.previewUrlByColor && state.previewUrlByColor[colorName]) || null;
+        var intent = colorFromSwatchEvent(event);
+        if (!intent || !intent.colorName) return;
+        var colorName = intent.colorName;
+        // click then change is one gesture. Re-arming on change either
+        // resets the wait or, if the replacement already landed, hides
+        // the gallery until the 1500ms safety with nothing left to replace.
+        if (state.swapMaskWaiting) {
+          swapMaskOn(colorName, event.type + ':' + intent.kind);
+          return;
+        }
+        if (event.type === 'change' && state.swapMaskEndedAt && (Date.now() - state.swapMaskEndedAt) < 500) return;
+        var url = previewUrlForColour(colorName);
         var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
-        swapMaskOn(colorName, event.type);
+        state.swapMaskWaiting = token;
+        if (state.swapMaskTimer) clearTimeout(state.swapMaskTimer);
+        state.swapMaskTimer = setTimeout(function () {
+          if (state.swapMaskWaiting !== token) return;
+          endSwapMask('timeout', colorName);
+        }, 1500);
+        swapMaskOn(colorName, event.type + ':' + intent.kind);
         if (url) {
           state.previewUrl = url;
           var slide = visibleSlideImg();
           if (slide) applyPreviewSrc(slide, url);
-        } else {
+        } else if (intent.kind === 'color') {
           swapInlineColor(colorName);
         }
-        revealHeroAfterDecode(token, colorName, url);
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
