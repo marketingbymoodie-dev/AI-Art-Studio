@@ -489,20 +489,25 @@ export async function generateMyPetRender(args: {
   const productType = await softstyleType();
   console.log(
     `[my-pet] pre-compose chosen start colour=${color.name} ` +
-      `designSrc=${editedPathTail} panelId=${args.candidate.panelId}`,
+      `designSrc=${editedPathTail} panelId=${args.candidate.panelId} ` +
+      `composeFn=renderCandidateOnPanel forceRecolour=true ` +
+      `steps=[loadWhiteMaster, recolourGarmentToHex, overlayDesign, flatten]`,
   );
-  const { png: previewPng } = await renderCandidateOnPanel({
+  const { png: previewPng, source: chosenMode } = await renderCandidateOnPanel({
     productTypeId: productType.id,
     typeName: productType.name,
     panelId: args.candidate.panelId,
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedPath,
+    // STAGING-103 — unify chosen + pre-composite compose path. See
+    // renderCandidateOnPanel's forceRecolour JSDoc for rationale.
+    forceRecolour: true,
   });
   const chosenHash = createHash("md5").update(previewPng).digest("hex").slice(0, 16);
   console.log(
     `[my-pet] pre-compose chosen done colour=${color.name} ` +
-      `outputLen=${previewPng.length} outputMd5=${chosenHash}`,
+      `mode=${chosenMode} outputLen=${previewPng.length} outputMd5=${chosenHash}`,
   );
   // Canonical preview path — stays `{renderId}.png` for backward-compat with
   // every existing row (myPetRenders.previewPath, the sweep's object delete,
@@ -555,20 +560,24 @@ export async function generateMyPetRender(args: {
         console.log(
           `[my-pet] pre-composite colour=${other.name} ` +
             `designSrc=${editedPathTail} designMd5=${editedHash} ` +
-            `panelId=${args.candidate.panelId} outputSrc=${otherPathTail}`,
+            `panelId=${args.candidate.panelId} outputSrc=${otherPathTail} ` +
+            `composeFn=renderCandidateOnPanel forceRecolour=true ` +
+            `steps=[loadWhiteMaster, recolourGarmentToHex, overlayDesign, flatten]`,
         );
-        const { png } = await renderCandidateOnPanel({
+        const { png, source: otherMode } = await renderCandidateOnPanel({
           productTypeId: productType.id,
           typeName: productType.name,
           panelId: args.candidate.panelId,
           colorName: other.name,
           colorHex: other.hex,
           artworkPath: editedPath,
+          // STAGING-103 — see chosen compose above.
+          forceRecolour: true,
         });
         const outHash = createHash("md5").update(png).digest("hex").slice(0, 16);
         console.log(
           `[my-pet] pre-composite colour=${other.name} ` +
-            `outputLen=${png.length} outputMd5=${outHash} ` +
+            `mode=${otherMode} outputLen=${png.length} outputMd5=${outHash} ` +
             `matchesChosenMd5=${outHash === chosenHash}`,
         );
         await putMyPetObject(otherPath, png, "image/png");
@@ -774,6 +783,11 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedArtworkPath,
+    // STAGING-103 — recomposite must mirror generate's forceRecolour so a
+    // shopper hitting a colour whose pre-composite failed (or was never
+    // run, e.g. an older render) gets the same clean recoloured-blank +
+    // overlay result as the pre-composited ones.
+    forceRecolour: true,
   });
   const afterCompose = Date.now();
   await putMyPetObject(previewPath, png, "image/png");

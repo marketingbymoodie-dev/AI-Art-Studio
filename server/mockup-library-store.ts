@@ -714,6 +714,18 @@ export async function renderCandidateOnPanel(args: {
   colorName: string;
   colorHex: string;
   artworkPath: string | null;
+  /**
+   * STAGING-103 — opt-in: skip resolvePanelColour's "exact match → produced"
+   * branch and ALWAYS recolour from the white master, regardless of whether
+   * the requested colour has a dedicated produced row. Used by My Pet
+   * generate's pre-composite loop (and chosen compose) so every colour runs
+   * the same code path and every garment is a clean recoloured blank —
+   * produced rows for this design-product carry the original artwork baked
+   * into the panel photo, so compositing the Sunburst overlay on top left
+   * the original design visually dominant. Catalogue flows keep the
+   * exact-match behaviour by not passing this flag.
+   */
+  forceRecolour?: boolean;
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {
   const loaded = await loadCandidatePanel(args);
   const png = await renderArtworkOnPanel({
@@ -734,6 +746,7 @@ async function loadCandidatePanel(args: {
   colorName: string;
   colorHex: string;
   artworkPath: string | null;
+  forceRecolour?: boolean;
 }) {
   const rows = await sceneRows(args.productTypeId, args.panelId);
   if (!rows.length) {
@@ -745,7 +758,21 @@ async function loadCandidatePanel(args: {
     kind: row.kind === "white-master" ? "white-master" : "produced",
   }));
   const label = rows[0].label;
-  const resolved = resolvePanelColour(colours, { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, label);
+  // STAGING-103 — when forceRecolour is set, bypass exact-match resolution
+  // and always route through the white-master recolour path. Throws with
+  // the same shape of error resolvePanelColour would if no white master
+  // row exists for the panel.
+  const resolved = args.forceRecolour
+    ? (() => {
+        const white = colours.find((c) => c.kind === "white-master");
+        if (!white) {
+          throw new Error(
+            `${args.colorName} on ${args.typeName} (${args.productTypeId}), panel ${label}, has no white master (forceRecolour requested)`,
+          );
+        }
+        return { kind: "recolour" as const, hex: args.colorHex, sourceName: white.name };
+      })()
+    : resolvePanelColour(colours, { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, label);
   const sourceRow = rows.find((row) => row.garmentColor.trim().toLowerCase() === (resolved.kind === "produced" ? args.colorName : resolved.sourceName).trim().toLowerCase());
   if (!sourceRow) throw new Error(`${args.colorName} on ${args.typeName} (${args.productTypeId}), panel ${label}, has no produced colourway and no white master`);
   if (!args.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
