@@ -238,10 +238,22 @@ async function countRenders(
 }
 
 async function hasEmailBonus(shop: string, deviceKey: string, shopifyProductId: string): Promise<boolean> {
+  // Polish F (Model 2): the +2 bonus is granted only to shoppers who explicitly
+  // opted in to the Petposterous Press (marketing_consent=true), not for every
+  // email submission. The "Just save my design" secondary button still records
+  // a capture row (marketing_consent=false, enabling the save-link email) but
+  // does NOT earn the bonus — keeping the "Sign up for 2 more custom designs"
+  // copy honest. No backfill needed: all existing captures already carry a
+  // concrete true/false consent from the pre-change checkbox state.
   const [row] = await db
     .select({ id: myPetEmailCaptures.id })
     .from(myPetEmailCaptures)
-    .where(and(eq(myPetEmailCaptures.shopDomain, shop), eq(myPetEmailCaptures.deviceKey, deviceKey), eq(myPetEmailCaptures.shopifyProductId, shopifyProductId)))
+    .where(and(
+      eq(myPetEmailCaptures.shopDomain, shop),
+      eq(myPetEmailCaptures.deviceKey, deviceKey),
+      eq(myPetEmailCaptures.shopifyProductId, shopifyProductId),
+      eq(myPetEmailCaptures.marketingConsent, true),
+    ))
     .limit(1);
   return !!row;
 }

@@ -377,6 +377,12 @@
       '.appai-my-pet-modal__body button.appai-primary:disabled{opacity:.6;cursor:not-allowed;}' +
       '.appai-my-pet-modal__body button.appai-secondary{display:block;width:100%;padding:0.75em;margin-top:0.5rem;border-radius:4px;border:1px solid #ccc;background:#fff;color:#111;cursor:pointer;}' +
       '.appai-my-pet-modal__body button.appai-secondary:disabled{opacity:.6;cursor:not-allowed;}' +
+      // Polish F — smaller outlined variant for the "Just save my design"
+      // escape hatch under the primary "Save & join Petposterous Press"
+      // button in the save modal. Visually de-emphasised so the opt-in path
+      // stays the obvious default without hiding the no-opt-in option.
+      '.appai-my-pet-modal__body button.appai-secondary--sm{padding:0.5em 0.9em;font-size:.88em;margin-top:0.35rem;color:#555;border-color:#d8d8d8;}' +
+      '.appai-my-pet-modal__body .appai-my-pet-footnote{font-size:.72em;color:#888;text-align:center;margin:0.55rem 0 0;line-height:1.4;}' +
       '.appai-my-pet-modal__body input[type=email]{display:block;width:100%;padding:0.6em;margin-top:0.5rem;border:1px solid #ccc;border-radius:4px;}' +
       '.appai-my-pet-modal__body .appai-my-pet-msg{color:#444;text-align:center;margin:0.5rem 0;}' +
       '.appai-my-pet-modal__body label{display:flex;align-items:center;gap:0.4em;font-size:0.85em;margin-top:0.5em;}' +
@@ -1108,34 +1114,60 @@
       var thumbHtml = state.previewUrl
         ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
+      // Polish E + F (Model 2) — two explicit choices: "Save & join Petposterous
+      // Press" (sends email + marketing_consent=true + grants the +2 bonus) vs
+      // "Just save my design" (sends email + marketing_consent=false, save link
+      // only, no bonus). Replaces the single [Send] + checkbox pattern because
+      // the new copy on the cap caption ("Sign up to the Petposterous Press
+      // for 2 more custom designs") promises the bonus for opt-in — honouring
+      // that promise requires the opt-in to be the trigger, not the email itself.
       modal.body.innerHTML =
         '<h3>Save your design?</h3>' +
         thumbHtml +
-        '<p class="appai-my-pet-msg">We\'ll email you a link back to it — works for 30 days, on any device.</p>' +
+        '<p class="appai-my-pet-msg">We\'ll email you a link back to this design — works for 30 days, on any device.</p>' +
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
-        '<label><input type="checkbox" class="appai-my-pet-consent" checked /> Keep me posted about new designs</label>' +
-        '<button type="button" class="appai-primary" data-action="send">Email me this design</button>' +
+        '<button type="button" class="appai-primary" data-action="send-with-consent">Save &amp; join Petposterous Press</button>' +
+        '<button type="button" class="appai-secondary appai-secondary--sm" data-action="send-no-consent">Just save my design</button>' +
+        '<p class="appai-my-pet-footnote">Press is weekly, small, witty. Unsubscribe in one click.</p>' +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
       var thumb = modal.body.querySelector('img.appai-thumb');
       if (thumb) thumb.addEventListener('click', function (e) { showZoom(e.currentTarget.src); });
-      modal.body.querySelector('[data-action="send"]').addEventListener('click', function () {
-        var email = modal.body.querySelector('.appai-my-pet-email').value;
-        var consent = modal.body.querySelector('.appai-my-pet-consent').checked;
+
+      function sendEmailSave(withConsent) {
+        var emailInput = modal.body.querySelector('.appai-my-pet-email');
+        var email = (emailInput && emailInput.value) || '';
         var status = modal.body.querySelector('#appai-my-pet-email-status');
-        status.textContent = 'Sending…';
-        postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: consent, pageUrl: pageUrl })
+        var primary = modal.body.querySelector('[data-action="send-with-consent"]');
+        var secondary = modal.body.querySelector('[data-action="send-no-consent"]');
+        if (primary) primary.disabled = true;
+        if (secondary) secondary.disabled = true;
+        if (status) status.textContent = 'Sending…';
+        postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl })
           .then(function (res) {
-            status.textContent = res && res.ok ? 'Sent! Check your inbox.' : (res && res.error) || 'Could not send email.';
             if (res && res.ok) {
+              if (status) status.textContent = withConsent
+                ? "You're in! Check your inbox for the save link."
+                : 'Sent! Check your inbox for the save link.';
               writeStoredEmail(email);
               markDismissed(renderIdAtOpen); // sent successfully — stay suppressed for this design
-              // Refresh caption — email-save grants +emailBonus more attempts on
-              // this listing, so the "X free remaining" number changes.
-              refreshCapStatus();
+              // Only the opt-in path changes perListingLimit (Model 2); refresh
+              // the cap caption so the "+2 more" is reflected immediately.
+              if (withConsent) refreshCapStatus();
+            } else {
+              if (status) status.textContent = (res && res.error) || 'Could not send email.';
+              if (primary) primary.disabled = false;
+              if (secondary) secondary.disabled = false;
             }
           })
-          .catch(function () { status.textContent = 'Could not send email.'; });
-      });
+          .catch(function () {
+            if (status) status.textContent = 'Could not send email.';
+            if (primary) primary.disabled = false;
+            if (secondary) secondary.disabled = false;
+          });
+      }
+
+      modal.body.querySelector('[data-action="send-with-consent"]').addEventListener('click', function () { sendEmailSave(true); });
+      modal.body.querySelector('[data-action="send-no-consent"]').addEventListener('click', function () { sendEmailSave(false); });
     }
 
     // Desktop exit-intent (mouse leaving toward the browser chrome). Mobile has
