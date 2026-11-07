@@ -589,9 +589,9 @@
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
       '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}' +
-      // STAGING-107 — mask lives on a container the theme does not replace,
-      // so a new gallery <img> inserted mid-swap stays invisible too.
-      '.appai-my-pet-swapping media-gallery img,.appai-my-pet-swapping .media-gallery img,.appai-my-pet-swapping img.product-media__image{opacity:0 !important;transition:none !important;}';
+      // STAGING-109 — opaque hero cover. Thumbnails stay visible; the
+      // gallery is never blanked with opacity:0.
+      '.appai-my-pet-cover{position:absolute;pointer-events:none;z-index:30;margin:0;padding:0;border:0;max-width:none;max-height:none;object-fit:cover;opacity:1;}';
     document.head.appendChild(style);
   }
 
@@ -1184,7 +1184,7 @@
       for (var i = 0; i < SELECTORS.length; i++) {
         var el;
         try { el = document.querySelector(SELECTORS[i]); } catch (e) { continue; }
-        if (el && el.tagName === 'IMG' && !el.closest('.appai-my-pet')) return el;
+        if (el && el.tagName === 'IMG' && !el.closest('.appai-my-pet') && !(el.classList && el.classList.contains('appai-my-pet-cover'))) return el;
       }
       return null;
     }
@@ -1264,6 +1264,7 @@
       for (var i = 0; i < imgs.length; i++) {
         var img = imgs[i];
         if (img.closest && img.closest('.appai-my-pet')) continue;
+        if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
         var rect;
         try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
         if (rect.width < 160 || rect.height < 160) continue;
@@ -1294,6 +1295,7 @@
           var img = nodes[i];
           if (!img || img.tagName !== 'IMG') continue;
           if (img.closest && img.closest('.appai-my-pet')) continue;
+          if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
           var rect;
           try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
           var area = Math.max(0, rect.width) * Math.max(0, rect.height);
@@ -1570,45 +1572,119 @@
       return raw ? canonicalPreviewColor(raw) : null;
     }
 
-    function swapMaskContainer() {
+    function isCoverImg(img) {
+      return !!(img && img.classList && img.classList.contains('appai-my-pet-cover'));
+    }
+
+    // The product section survives Horizon's hero-node swap. The cover is a
+    // child of that section (or media-gallery when the element itself stays),
+    // so it can sit over the hero for the whole section re-render.
+    function coverHost() {
       var section = productSectionScope();
+      var scope = section && section !== document ? section : document;
+      var gallery = null;
+      try { gallery = scope.querySelector('media-gallery, .media-gallery, product-media-gallery'); } catch (e) {}
+      if (gallery) return gallery;
       if (section && section !== document) return section;
-      var gallery = document.querySelector('media-gallery, .media-gallery');
-      if (gallery && gallery.parentElement) return gallery.parentElement;
       return document.body;
     }
 
-    function swapMaskOn(colorName, eventType) {
-      var el = swapMaskContainer();
-      var checked = readSwatchColor(root);
-      var beforeTheme = !checked || String(checked).trim().toLowerCase() !== String(colorName || '').trim().toLowerCase();
-      var already = !!(el && el.classList && el.classList.contains('appai-my-pet-swapping'));
-      if (!already) {
-        state.swapMaskStarted = Date.now();
-        state.swapMaskBeforeTheme = beforeTheme;
-        state.swapMaskEl = el;
-        if (el && el.classList) el.classList.add('appai-my-pet-swapping');
+    function positionCover(cover, host, hero) {
+      if (!cover || !host) return;
+      var box = null;
+      if (hero && !isCoverImg(hero)) {
+        var hr;
+        try { hr = hero.getBoundingClientRect(); } catch (e) { hr = null; }
+        if (hr && hr.width >= 10 && hr.height >= 10) {
+          var fit = 'cover';
+          var objectPosition = 'center';
+          try {
+            var cs = window.getComputedStyle(hero);
+            if (cs.objectFit && cs.objectFit !== 'auto') fit = cs.objectFit;
+            if (cs.objectPosition) objectPosition = cs.objectPosition;
+          } catch (e2) {}
+          box = { left: hr.left, top: hr.top, width: hr.width, height: hr.height, fit: fit, objectPosition: objectPosition };
+          state.coverViewport = box;
+        }
       }
-      console.log(TAG, 'swap-mask on',
-        'colour=' + (colorName || '?'),
-        'event=' + eventType,
-        'beforeThemeChange=' + beforeTheme,
-        'alreadyOn=' + already,
-        'checked=' + (checked || '(none)'),
-        'container=' + (el && el.tagName ? String(el.tagName).toLowerCase() : '?'));
+      if (!box) box = state.coverViewport;
+      if (!box) return;
+      var pos = 'static';
+      try { pos = window.getComputedStyle(host).position; } catch (e3) {}
+      if (pos === 'static') {
+        if (!state.coverHostPosSaved) {
+          state.coverHostEl = host;
+          state.coverHostPos = host.style.position || '';
+          state.coverHostPosSaved = true;
+        }
+        host.style.position = 'relative';
+      }
+      var br;
+      try { br = host.getBoundingClientRect(); } catch (e4) { return; }
+      cover.style.left = (box.left - br.left + host.scrollLeft) + 'px';
+      cover.style.top = (box.top - br.top + host.scrollTop) + 'px';
+      cover.style.width = box.width + 'px';
+      cover.style.height = box.height + 'px';
+      cover.style.objectFit = box.fit || 'cover';
+      cover.style.objectPosition = box.objectPosition || 'center';
     }
 
-    function swapMaskOff(why, colorName) {
+    function coverOn(colorName, eventType) {
+      var url = previewUrlForColour(colorName);
+      var hero = visibleSlideImg();
+      if (isCoverImg(hero)) hero = findProductHeroImg();
+      var already = !!(state.swapCoverEl && state.swapCoverEl.isConnected);
       var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
-      var beforeTheme = !!state.swapMaskBeforeTheme;
-      var el = state.swapMaskEl || swapMaskContainer();
-      if (el && el.classList) el.classList.remove('appai-my-pet-swapping');
+      if (!url || (!hero && !state.coverViewport)) {
+        console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'), 'skipped=no-url-or-hero');
+        return;
+      }
+      if (!state.swapMaskStarted) state.swapMaskStarted = Date.now();
+      var host = coverHost();
+      var cover = state.swapCoverEl;
+      if (!cover) {
+        cover = document.createElement('img');
+        cover.className = 'appai-my-pet-cover';
+        cover.alt = '';
+        cover.setAttribute('aria-hidden', 'true');
+        cover.draggable = false;
+        cover.style.zIndex = '30';
+        cover.style.maxWidth = 'none';
+        cover.style.maxHeight = 'none';
+        cover.style.pointerEvents = 'none';
+        state.swapCoverEl = cover;
+      }
+      if (cover.getAttribute('src') !== url) cover.src = url;
+      if (cover.parentNode !== host) host.appendChild(cover);
+      positionCover(cover, host, hero);
+      if (hero && !isCoverImg(hero)) applyHeroHold(hero);
+      console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + (already ? (Date.now() - state.swapMaskStarted) : 0), 'colour=' + (colorName || '?'));
+    }
+
+    function restoreHeldHeroes() {
+      var scope = productSectionScope();
+      var held = [];
+      try { held = scope.querySelectorAll('[data-appai-my-pet-held]'); } catch (e) {}
+      for (var i = 0; i < held.length; i++) {
+        held[i].style.visibility = held[i].__appaiHeldVisibility || '';
+        held[i].removeAttribute('data-appai-my-pet-held');
+      }
+    }
+
+    function coverOff(why, colorName) {
+      var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
+      var cover = state.swapCoverEl;
+      if (cover && cover.parentNode) cover.parentNode.removeChild(cover);
+      state.swapCoverEl = null;
       state.swapMaskStarted = 0;
-      state.swapMaskEl = null;
-      console.log(TAG, 'mask off reason=' + why,
-        'colour=' + (colorName || '?'),
-        'elapsedMs=' + elapsed,
-        'beforeThemeChange=' + beforeTheme);
+      state.coverViewport = null;
+      if (state.coverHostPosSaved && state.coverHostEl) {
+        state.coverHostEl.style.position = state.coverHostPos || '';
+        state.coverHostPosSaved = false;
+        state.coverHostEl = null;
+      }
+      restoreHeldHeroes();
+      console.log(TAG, 'cover off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
     }
 
     function previewUrlForColour(colorName) {
@@ -1641,7 +1717,7 @@
         clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = null;
       }
-      swapMaskOff(why, colorName || currentInlineColour());
+      coverOff(why, colorName || currentInlineColour());
     }
 
     function noteReplacementDecoded(img, colorName) {
@@ -1660,27 +1736,42 @@
     // before paint, and writes the cached preview onto that new node.
     function installProductMediaObserver() {
       if (state.productMediaObserver) return;
-      var container = swapMaskContainer();
+      var container = productSectionScope();
+      if (!container || container === document) container = coverHost();
       if (!container) return;
       var observer = new MutationObserver(function (mutations) {
         if (!state.renderId || !state.inlineApplied) return;
         var colorName = currentInlineColour();
         var replaced = null;
+        var replacedArea = -1;
         for (var i = 0; i < mutations.length; i++) {
           var m = mutations[i];
           if (m.type === 'childList') {
             for (var n = 0; n < m.addedNodes.length; n++) {
               var node = m.addedNodes[n];
               if (!node || node.nodeType !== 1) continue;
+              if (isCoverImg(node)) continue;
               var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img.product-media__image') : []);
               for (var k = 0; k < imgs.length; k++) {
+                if (isCoverImg(imgs[k])) continue;
                 if (!paintProductMediaImage(imgs[k])) continue;
-                replaced = imgs[k];
+                var area = 0;
+                try {
+                  var rect = imgs[k].getBoundingClientRect();
+                  area = Math.max(0, rect.width) * Math.max(0, rect.height);
+                } catch (e) {}
+                if (!replaced || area >= replacedArea) {
+                  replaced = imgs[k];
+                  replacedArea = area;
+                }
               }
             }
-          } else if (m.type === 'attributes' && m.target && m.target.tagName === 'IMG') {
+          } else if (m.type === 'attributes' && m.target && m.target.tagName === 'IMG' && !isCoverImg(m.target)) {
             paintProductMediaImage(m.target);
           }
+        }
+        if (state.swapMaskWaiting && (!state.swapCoverEl || !state.swapCoverEl.isConnected)) {
+          coverOn(colorName, 'reattach');
         }
         if (replaced) noteReplacementDecoded(replaced, colorName);
       });
@@ -1731,9 +1822,8 @@
         clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = null;
       }
-      if (state.swapMaskEl && state.swapMaskEl.classList && state.swapMaskEl.classList.contains('appai-my-pet-swapping')) {
-        swapMaskOff('cleared', currentInlineColour());
-      }
+      if (state.swapCoverEl) coverOff('cleared', currentInlineColour());
+      else restoreHeldHeroes();
     }
 
     function installSwatchPreempt() {
@@ -1751,7 +1841,7 @@
         // resets the wait or, if the replacement already landed, hides
         // the gallery until the 1500ms safety with nothing left to replace.
         if (state.swapMaskWaiting) {
-          swapMaskOn(colorName, event.type + ':' + intent.kind);
+          coverOn(colorName, event.type + ':' + intent.kind);
           return;
         }
         if (event.type === 'change' && state.swapMaskEndedAt && (Date.now() - state.swapMaskEndedAt) < 500) return;
@@ -1762,8 +1852,8 @@
         state.swapMaskTimer = setTimeout(function () {
           if (state.swapMaskWaiting !== token) return;
           endSwapMask('timeout', colorName);
-        }, 1500);
-        swapMaskOn(colorName, event.type + ':' + intent.kind);
+        }, 2000);
+        coverOn(colorName, event.type + ':' + intent.kind);
         if (url) {
           state.previewUrl = url;
           var slide = visibleSlideImg();
@@ -2480,6 +2570,11 @@
             for (var k = 0; k < imgs.length; k++) {
               var img = imgs[k];
               if (img.closest && img.closest('.appai-my-pet')) continue;
+              if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
+              // STAGING-109 — the hero cover is the visual during a swatch.
+              // Zeroing opacity here blanks the hero for a frame after the
+              // cover comes off.
+              if (state.swapMaskWaiting) continue;
               // STAGING-100 — skip anything already swapped by
               // swapVariantSlides (data-media-id matched); re-applying
               // the hero-opacity trick on an already-correct slide only
