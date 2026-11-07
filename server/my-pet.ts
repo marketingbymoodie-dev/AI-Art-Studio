@@ -382,6 +382,37 @@ export async function generateMyPetRender(args: {
     artStyle: args.candidate.artStyle,
     punchline: args.candidate.punchline,
   });
+  // Issue 5 (post-staging-93) — prompt diagnostic. getMyPetSettings has no
+  // in-memory cache (fresh DB SELECT every call via rowToSettings), so a
+  // save from /admin/my-pet-settings is live on the very next generate.
+  // When the Sunburst output doesn't reflect a merchant edit to basePrompt,
+  // this log settles the debate between (a) stale cache / wrong shop /
+  // wrong row and (b) the wording isn't strong enough to steer the model:
+  //
+  //   basePromptSource        — "default" if no row override, else "db"
+  //   basePromptLen / tweakLen — quick sanity-check sizes
+  //   basePromptHead           — first 160 chars of the stored basePrompt
+  //                               so Craig can eyeball-match what he saved
+  //   fullPromptLen            — bytes shipped to Replicate
+  //   fullPromptHead/Tail      — first 240 + last 240 chars of the exact
+  //                               string sent to Replicate (base + tweak +
+  //                               details + locked rules concatenated)
+  //
+  // Log at info level — intentionally chatty, scoped to generate calls so
+  // it runs at most once per cap-attempt. Trimmed to ~720 chars total so
+  // Railway doesn't truncate it mid-prompt.
+  const tweak = settings.styleTweaks?.[args.candidate.artStyle] || "";
+  const basePromptSource = settings.basePrompt && settings.basePrompt !== MY_PET_DEFAULT_BASE_PROMPT ? "db" : "default";
+  console.log(
+    `[my-pet] prompt diagnostic shop=${args.shop} ` +
+      `candidate=${args.candidate.id?.slice(0, 8) || "?"} ` +
+      `artStyle=${args.candidate.artStyle || "?"} ` +
+      `basePromptSource=${basePromptSource} basePromptLen=${settings.basePrompt.length} ` +
+      `tweakLen=${tweak.length} fullPromptLen=${prompt.length}`,
+  );
+  console.log(`[my-pet] prompt basePromptHead=${JSON.stringify(settings.basePrompt.slice(0, 160))}`);
+  console.log(`[my-pet] prompt fullPromptHead=${JSON.stringify(prompt.slice(0, 240))}`);
+  console.log(`[my-pet] prompt fullPromptTail=${JSON.stringify(prompt.slice(-240))}`);
 
   // Signed HTTPS URLs for both references — keeps Replicate's POST body small
   // vs. inlining multi-MB base64 data URLs, and matches the catalogue flow.

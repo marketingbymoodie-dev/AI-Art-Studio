@@ -455,18 +455,70 @@
    *   3) Dispatch every cart event name we've seen themes listen for.
    *   4) Try to call .open() / .show() on any <cart-drawer*> custom element.
    */
+  // Section Rendering API returns 400 for the WHOLE request if ANY one
+  // requested section id does not exist in the active theme. Ritual doesn't
+  // ship cart-notification / cart-icon-bubble / cart-live-region-text /
+  // cart-drawer-items (all Dawn/Horizon-specific), so the old "ask for all
+  // 6 at once" call failed on Ritual even though cart-drawer and header DO
+  // exist — the shopper never saw the cart drawer refresh.
+  //
+  // Fix: probe each candidate section independently (parallel), keep the
+  // ones that answer 2xx, then make the real render call with only those.
+  // Result cached in sessionStorage so we probe once per tab, not per ATC.
+  // If zero sections are known-available, skip the render fetch entirely
+  // and go straight to the cart-toggle / drawer-method fallback.
+  var CART_SECTIONS_SESSION_KEY = 'appai-my-pet:cart-sections';
+  var CART_SECTIONS_CANDIDATES = [
+    'cart-drawer',            // Dawn, Ritual, most Horizon descendants
+    'cart-drawer-items',      // Horizon fragment
+    'cart-notification',      // Dawn
+    'cart-icon-bubble',       // Dawn / Horizon header bubble
+    'cart-live-region-text',  // Dawn ARIA live region
+    'header',                 // most themes — refreshes the cart count
+    'cart',                   // some older themes
+  ];
+  function discoverCartSections() {
+    try {
+      var cached = sessionStorage.getItem(CART_SECTIONS_SESSION_KEY);
+      if (cached) {
+        var parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          console.log(TAG, 'cart-sections cache hit:', parsed);
+          return Promise.resolve(parsed);
+        }
+      }
+    } catch (_) { /* sessionStorage disabled → re-probe */ }
+    console.log(TAG, 'cart-sections probing');
+    return Promise.all(
+      CART_SECTIONS_CANDIDATES.map(function (name) {
+        // Section Rendering API ignores the body, so a tiny GET is fine.
+        return fetch('/?sections=' + encodeURIComponent(name), { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? name : null; })
+          .catch(function () { return null; });
+      })
+    ).then(function (results) {
+      var available = results.filter(Boolean);
+      console.log(TAG, 'cart-sections available:', available);
+      try { sessionStorage.setItem(CART_SECTIONS_SESSION_KEY, JSON.stringify(available)); } catch (_) {}
+      return available;
+    });
+  }
+
   function refreshAndOpenCartDrawer() {
-    var CANDIDATE_SECTIONS = [
-      'cart-drawer', 'cart-notification', 'cart-icon-bubble',
-      'cart-live-region-text', 'header', 'cart-drawer-items',
-    ];
-    var url = '/?sections=' + encodeURIComponent(CANDIDATE_SECTIONS.join(','));
-    console.log(TAG, 'refreshAndOpenCartDrawer start', { url: url });
-    fetch(url, { credentials: 'same-origin' })
-      .then(function (r) {
+    console.log(TAG, 'refreshAndOpenCartDrawer start');
+    discoverCartSections().then(function (available) {
+      if (!available.length) {
+        // Theme has none of our known sections — skip the render fetch and
+        // fall straight to event dispatch + cart-toggle click below.
+        console.log(TAG, 'no known cart sections — skipping render fetch');
+        return null;
+      }
+      var url = '/?sections=' + encodeURIComponent(available.join(','));
+      return fetch(url, { credentials: 'same-origin' }).then(function (r) {
         console.log(TAG, 'section fetch status:', r.status, r.ok);
         return r.ok ? r.json() : null;
-      })
+      });
+    })
       .then(function (sections) {
         console.log(TAG, 'sections received:', sections ? Object.keys(sections) : null);
         if (sections && typeof sections === 'object') {
@@ -587,6 +639,37 @@
     var previewMode = (root.getAttribute('data-preview-mode') || 'modal').toLowerCase();
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
+    // Issue 7 (post-staging-93) — snapshot the merchant-configured button
+    // label before we relabel it to "Try another photo" on activate, so
+    // revertToOriginalDesign can restore it exactly. Falls back to "My Pet"
+    // to match the liquid default when the button is missing text.
+    var openBtnOriginalLabel = openBtn ? (openBtn.textContent || 'My Pet').trim() : 'My Pet';
+    // Revert link element — appended once after the button and shown only
+    // while inlineApplied is true. Styled to read as secondary de-emphasised
+    // text (brand red link, smaller, no bold) so the primary CTA still wins.
+    var revertLink = null;
+    function ensureRevertLink() {
+      if (revertLink || !openBtn || !openBtn.parentNode) return revertLink;
+      revertLink = document.createElement('button');
+      revertLink.type = 'button';
+      revertLink.className = 'appai-my-pet__revert';
+      revertLink.setAttribute('data-appai-my-pet-revert', '1');
+      revertLink.textContent = 'Buy the original design instead';
+      revertLink.hidden = true;
+      revertLink.style.cssText =
+        'display:block;margin:6px auto 0;padding:0;background:none;border:0;' +
+        'color:#D65857;font-size:12px;line-height:1.4;' +
+        'text-decoration:underline;cursor:pointer;';
+      revertLink.addEventListener('click', function () { revertToOriginalDesign(); });
+      // Place AFTER the caption if present (keeps button + caption together)
+      // or directly after the button.
+      var anchor = caption && caption.parentNode === openBtn.parentNode ? caption : openBtn;
+      if (anchor.nextSibling) anchor.parentNode.insertBefore(revertLink, anchor.nextSibling);
+      else anchor.parentNode.appendChild(revertLink);
+      return revertLink;
+    }
+    function showRevertLink() { ensureRevertLink(); if (revertLink) revertLink.hidden = false; }
+    function hideRevertLink() { if (revertLink) revertLink.hidden = true; }
     // Theme-setting subtitle ("See your pet on this design") captured once at
     // init, so refreshCapStatus can restore it whenever the shopper hasn't
     // generated on this product yet. Falls back to the current text content
@@ -644,6 +727,14 @@
       // Ritual's "replace hero <img> on variant change" never flashes the
       // stock variant image.
       inlineGalleryObserver: null,
+      // Issue 7 (post-staging-93) — separates "inline has ever been attached
+      // this session" (inlineAttached; one-time ATC/listener install flag)
+      // from "the preview is currently swapped onto the hero right now"
+      // (inlineApplied). Revert sets inlineApplied=false without touching
+      // inlineAttached/renderId/previewUrl, so re-clicking the My Pet button
+      // re-activates the existing render on the hero without re-uploading
+      // or consuming another cap attempt.
+      inlineApplied: false,
       inlineAttached: false,
       inlineGuardBackupTimer: null,
     };
@@ -889,7 +980,7 @@
      */
     function tryAnotherPhoto(fromModalBody) {
       console.log(TAG, 'Try another photo clicked', {
-        inline: state.inlineAttached,
+        inline: state.inlineApplied,
         renderId: state.renderId ? state.renderId.slice(0, 8) : null,
         fromModal: !!fromModalBody,
       });
@@ -964,17 +1055,99 @@
       // same microtask as insertion, so the shopper never sees a flash of
       // the stock image. Idempotent — safe to re-install on every activation.
       installGalleryGuard();
-      if (state.inlineAttached) return true;
-      state.inlineAttached = true;
-      installInlineVariantListeners();
-      installInlineATCIntercept();
-      // Relabel the My Pet open button as the "reset" / re-upload control.
+      // Issue 7 — inlineApplied gates every observer / listener / ATC
+      // intercept so revertToOriginalDesign can turn them off without
+      // tearing down the one-time installs below.
+      state.inlineApplied = true;
+      // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
         openBtn.textContent = 'Try another photo';
         openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
         openBtn.removeAttribute('aria-disabled');
       }
+      showRevertLink();
+      if (state.inlineAttached) return true;
+      state.inlineAttached = true;
+      installInlineVariantListeners();
+      installInlineATCIntercept();
       return true;
+    }
+
+    /**
+     * Issue 7 (post-staging-93) — "Buy the original design instead" link
+     * reverts the inline hero swap without discarding the generated render.
+     *
+     *   - Restores src/srcset from data-appai-my-pet-original-src(set) that
+     *     swapInlineHero stashed at activation time (captured per-node, so
+     *     this works even after Ritual replaced the hero during variant
+     *     changes — the latest live node still has its own stash).
+     *   - Disconnects the hero + gallery MutationObservers and clears the
+     *     1.5s element-replacement backup poll so nothing re-asserts the
+     *     preview src behind the shopper's back.
+     *   - Clears state.inlineApplied + state.inlineHero so the ATC intercept
+     *     and variant listeners short-circuit (they test inlineApplied).
+     *     Leaves state.inlineAttached untouched so those listeners don't
+     *     get re-installed twice if the shopper re-activates.
+     *   - Keeps state.renderId / previewUrl / previewUrlByColor so
+     *     re-clicking the My Pet button instantly re-activates the same
+     *     render on the hero — no re-upload, no second cap attempt.
+     *   - Relabels the button back to its merchant-configured label and
+     *     hides the revert link.
+     *
+     * ATC in the reverted state: form submits/clicks still bubble through
+     * the capture-phase intercept, but the inlineApplied/inlineHero guard
+     * returns early so the theme's native cart/add runs with no
+     * _appai_*/_design_id/_mockup_url properties. The shopper buys the
+     * stock product cleanly.
+     */
+    function revertToOriginalDesign() {
+      console.log(TAG, 'revert to original design');
+      // 1. Disconnect observers + stop backup poll BEFORE touching src so
+      //    the observers don't see our restoration as a "theme stole the
+      //    preview" mutation and re-assert back to preview.
+      var staleHero = state.inlineHero;
+      if (staleHero && staleHero.__appaiMyPetObserver) {
+        try { staleHero.__appaiMyPetObserver.disconnect(); } catch (_) {}
+        try { delete staleHero.__appaiMyPetObserver; } catch (_) { staleHero.__appaiMyPetObserver = null; }
+      }
+      if (state.inlineGalleryObserver) {
+        try { state.inlineGalleryObserver.disconnect(); } catch (_) {}
+        state.inlineGalleryObserver = null;
+      }
+      if (state.inlineGuardBackupTimer) {
+        clearInterval(state.inlineGuardBackupTimer);
+        state.inlineGuardBackupTimer = null;
+      }
+      // 2. Restore src/srcset on the CURRENT live hero (may differ from the
+      //    staleHero reference if the theme replaced the node during the
+      //    session — latest swapInlineHero call stashed the current node's
+      //    own original on it).
+      var live = findProductHeroImg();
+      if (live && live.hasAttribute('data-appai-my-pet-original-src')) {
+        var origSrc = live.getAttribute('data-appai-my-pet-original-src') || '';
+        var origSrcset = live.getAttribute('data-appai-my-pet-original-srcset') || '';
+        try { if (origSrc) live.src = origSrc; } catch (_) {}
+        try {
+          if (origSrcset) live.setAttribute('srcset', origSrcset);
+          else live.removeAttribute('srcset');
+        } catch (_) {}
+        live.removeAttribute('data-appai-my-pet-preview');
+        // Keep the original-src attrs around so a re-activate followed by
+        // another revert still has them (swapInlineHero won't re-capture
+        // when the attribute is already set, so this is correct).
+      } else {
+        console.warn(TAG, 'revert: no live hero or no original-src stash to restore from');
+      }
+      // 3. Flip state flags — ATC intercept + variant listeners + observers
+      //    all gate on inlineApplied/inlineHero.
+      state.inlineApplied = false;
+      state.inlineHero = null;
+      // 4. Button + link UI back to pre-activation state.
+      if (openBtn) {
+        openBtn.textContent = openBtnOriginalLabel;
+        openBtn.removeAttribute('data-appai-my-pet-inline-active');
+      }
+      hideRevertLink();
     }
 
     /**
@@ -1024,9 +1197,11 @@
       }
       // Shared assert — called both synchronously on install (catches the
       // settled replacement-node case) and on every observed src/srcset
-      // mutation (catches theme re-assertions).
+      // mutation (catches theme re-assertions). Gated on inlineApplied
+      // (not inlineAttached) so revertToOriginalDesign can stop re-assert
+      // without tearing down the whole intercept.
       var assert = function () {
-        if (!state.renderId || !state.inlineAttached) return;
+        if (!state.renderId || !state.inlineApplied) return;
         var info = currentVariantInfo(root);
         var colorName = info.colorName;
         var expected = colorName ? state.previewUrlByColor[colorName] : null;
@@ -1074,7 +1249,7 @@
       // selector matches the theme.
       if (state.inlineGuardBackupTimer) clearInterval(state.inlineGuardBackupTimer);
       state.inlineGuardBackupTimer = setInterval(function () {
-        if (!state.renderId || !state.inlineAttached) return;
+        if (!state.renderId || !state.inlineApplied) return;
         var currentHero = state.inlineHero;
         if (currentHero && document.body.contains(currentHero) && currentHero.__appaiMyPetObserver) return;
         var fresh = findProductHeroImg();
@@ -1134,7 +1309,7 @@
       }
       console.log(TAG, 'gallery guard: watching', container.tagName.toLowerCase() + (container.className ? '.' + String(container.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
-        if (!state.renderId || !state.inlineAttached) return;
+        if (!state.renderId || !state.inlineApplied) return;
         for (var i = 0; i < mutations.length; i++) {
           var added = mutations[i].addedNodes;
           for (var j = 0; j < added.length; j++) {
@@ -1208,7 +1383,7 @@
         'product:variant-change', 'shopify:variant-change',
       ];
       var handler = function () {
-        if (!state.inlineAttached || !state.inlineHero || !state.renderId) return;
+        if (!state.inlineApplied || !state.inlineHero || !state.renderId) return;
         var info = currentVariantInfo(root);
         if (!info.colorName) return;
         var expected = state.previewUrlByColor[info.colorName];
@@ -1226,7 +1401,10 @@
     }
 
     function swapInlineColor(colorName) {
-      if (!state.inlineHero || !state.renderId || !colorName) return;
+      // Issue 7 (post-staging-93) — inlineApplied gate prevents a background
+      // /recomposite from completing AFTER the shopper reverted and
+      // overwriting the restored stock hero.
+      if (!state.inlineHero || !state.renderId || !colorName || !state.inlineApplied) return;
       var cached = state.previewUrlByColor[colorName];
       if (cached) {
         swapInlineHero(state.inlineHero, cached);
@@ -1236,7 +1414,10 @@
       }
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
-          if (res && res.ok && res.previewUrl && state.inlineHero) {
+          // Issue 7 — re-check inlineApplied after the awaited round-trip
+          // so a revert that happened during /recomposite doesn't get
+          // undone by this late success writing back to the hero.
+          if (res && res.ok && res.previewUrl && state.inlineHero && state.inlineApplied) {
             swapInlineHero(state.inlineHero, res.previewUrl);
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor[colorName] = res.previewUrl;
@@ -1252,8 +1433,14 @@
       // Capture-phase listeners beat any theme handler (which almost always
       // attaches in bubble phase). stopImmediatePropagation keeps the theme
       // from running its own cart/add after us.
+      // Issue 7 (post-staging-93): guard on inlineApplied, not just
+      // inlineHero — revertToOriginalDesign sets inlineApplied=false
+      // without clearing the intercept, so these guards let the theme's
+      // own cart/add run unmodified when the shopper chose "Buy the
+      // original design instead". No _appai_*/_design_id/_mockup_url
+      // properties get attached to the stock-product ATC.
       form.addEventListener('submit', function (e) {
-        if (!state.renderId || !state.inlineHero) return;
+        if (!state.renderId || !state.inlineHero || !state.inlineApplied) return;
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
@@ -1265,7 +1452,7 @@
       var atc = form.querySelector('[type="submit"], [name="add"], button.product-form__submit, .shopify-payment-button');
       if (atc) {
         atc.addEventListener('click', function (e) {
-          if (!state.renderId || !state.inlineHero) return;
+          if (!state.renderId || !state.inlineHero || !state.inlineApplied) return;
           if (e.target.closest('.shopify-payment-button')) return; // skip dynamic checkout — no My Pet support on express checkout
           e.preventDefault();
           e.stopPropagation();
@@ -2004,12 +2191,24 @@
     } catch (e) {}
 
     openBtn.addEventListener('click', function () {
-      // UX 7 inline mode — when inline preview is already active, the My Pet
-      // button acts as "Try another photo" and routes through the shared
-      // tryAnotherPhoto() so cap-at + save-modal + terminal-message branches
-      // all behave the same as the modal-mode change-photo button.
-      if (previewMode === 'inline' && state.inlineAttached) {
+      // UX 7 inline mode — when inline preview is CURRENTLY applied, the My
+      // Pet button acts as "Try another photo" and routes through the
+      // shared tryAnotherPhoto() so cap-at + save-modal + terminal-message
+      // branches all behave the same as the modal-mode change-photo button.
+      if (previewMode === 'inline' && state.inlineApplied) {
         tryAnotherPhoto();
+        return;
+      }
+      // Issue 7 (post-staging-93) — reverted-but-already-generated state in
+      // inline mode: the shopper clicked "Buy the original design instead"
+      // but now wants their pet design back. Re-activate the existing
+      // render on the hero without re-upload / cap hit. Must come BEFORE
+      // the generic "already generated → open modal preview" branch below
+      // so inline mode doesn't fall through to the modal.
+      if (previewMode === 'inline' && state.renderId && state.previewUrl) {
+        refreshCapStatus().then(function () {
+          activateInlinePreview(state.previewUrl);
+        });
         return;
       }
       // If the shopper already generated this visit, re-open the SAME preview
