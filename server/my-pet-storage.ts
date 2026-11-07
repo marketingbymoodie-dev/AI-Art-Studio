@@ -47,6 +47,30 @@ export async function removeMyPetObjects(paths: string[]): Promise<void> {
 }
 
 /**
+ * Cheap metadata-only existence probe — no download, no signed URL mint.
+ * Used by `recompositeMyPetRender` so a repeat colour swap on an already-
+ * composited (renderId, colour) can skip the ~4-5s compose + storage write
+ * and just re-sign the existing object, cutting repeat swaps from ~6s to
+ * well under 500ms. Returns false rather than throwing on any error so
+ * callers can safely fall through to the fresh-compose path.
+ */
+export async function myPetObjectExists(path: string): Promise<boolean> {
+  const idx = path.lastIndexOf("/");
+  const dir = idx >= 0 ? path.slice(0, idx) : "";
+  const name = idx >= 0 ? path.slice(idx + 1) : path;
+  try {
+    const { data, error } = await supabase()
+      .storage
+      .from(BUCKET)
+      .list(dir, { limit: 1, search: name });
+    if (error || !data) return false;
+    return data.some((f) => f.name === name);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Signed URL, re-signed on demand, never persisted as the canonical reference
  * (storagePath/previewPath stay the source of truth). Default 1hr is for URLs
  * consumed immediately in a page response. Callers that bake the URL into a

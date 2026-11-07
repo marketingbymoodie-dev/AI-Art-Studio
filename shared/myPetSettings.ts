@@ -250,7 +250,11 @@ export function evaluateMyPetCap(input: MyPetCapCheckInput): MyPetCapResult {
       reason: "listing_cap",
       message: input.hasEmailBonus
         ? "You've used all your My Pet tries on this design."
-        : "You've used your My Pet tries on this design — give us your email for two more.",
+        // Polish E — reframe from transactional "give us your email" to brand-
+        // appropriate newsletter opt-in. The mechanic is the same (email
+        // submission grants +emailBonus attempts) but the ask reads as a
+        // signup-with-benefits rather than a paywall squeeze.
+        : "Sign up to the Petposterous Press for 2 more custom designs. Exclusive deals and early access to new products included.",
     };
   }
   return { allowed: true };

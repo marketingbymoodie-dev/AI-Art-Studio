@@ -41,7 +41,7 @@ import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from 
 import { generationErrorCategory } from "./generation-events";
 import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 import { softstyleType } from "./mockup-library-store";
-import { decodeDataUrlOrBase64Image, getMyPetObject, putMyPetObject, removeMyPetObjects, signedMyPetUrl } from "./my-pet-storage";
+import { decodeDataUrlOrBase64Image, getMyPetObject, myPetObjectExists, putMyPetObject, removeMyPetObjects, signedMyPetUrl } from "./my-pet-storage";
 import { renderReplicateImageEdit } from "./replit_integrations/image/client";
 import { storage } from "./storage";
 
@@ -525,6 +525,34 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   if (!editedArtworkPath) throw new Error("Original edit is missing — please generate again");
   const afterLookup = Date.now();
 
+  const previewPath = `my-pet/previews/${render.id}-${color.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
+
+  // Bug A (post-staging-86): the composite for a given (renderId, colour) is
+  // deterministic (same artwork + same mockup + same colour hex = identical
+  // bytes), so a repeat colour swap in the modal was paying ~4-5s of pointless
+  // compose+write every time. If the object already exists in storage, skip
+  // the compose and just re-sign — cuts repeat swaps from the user-reported
+  // 6s down to a Supabase metadata-list + createSignedUrl round-trip.
+  const cacheHit = await myPetObjectExists(previewPath);
+  if (cacheHit) {
+    const previewUrl = await signedMyPetUrl(previewPath);
+    const afterSign = Date.now();
+    if (render.jobId) {
+      await storage.updateGenerationJob(render.jobId, {
+        designImageUrl: previewUrl,
+        frameColor: color.name,
+        designState: { ...designState, colorName: color.name, colorHex: color.hex },
+      } as any);
+    }
+    const afterJobUpdate = Date.now();
+    console.log(
+      `[my-pet] recomposite CACHE HIT renderId=${render.id.slice(0, 8)} color=${color.name} ` +
+        `lookup=${afterLookup - started}ms sign=${afterSign - afterLookup}ms ` +
+        `jobUpdate=${afterJobUpdate - afterSign}ms total=${afterJobUpdate - started}ms`,
+    );
+    return { previewUrl, colorName: color.name };
+  }
+
   const productType = await softstyleType();
   const { png } = await renderCandidateOnPanel({
     productTypeId: productType.id,
@@ -535,7 +563,6 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     artworkPath: editedArtworkPath,
   });
   const afterCompose = Date.now();
-  const previewPath = `my-pet/previews/${render.id}-${color.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
   await putMyPetObject(previewPath, png, "image/png");
   const previewUrl = await signedMyPetUrl(previewPath);
   const afterStorage = Date.now();
@@ -550,7 +577,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   const afterJobUpdate = Date.now();
 
   console.log(
-    `[my-pet] recomposite renderId=${render.id.slice(0, 8)} color=${color.name} ` +
+    `[my-pet] recomposite FRESH renderId=${render.id.slice(0, 8)} color=${color.name} ` +
       `lookup=${afterLookup - started}ms compose=${afterCompose - afterLookup}ms ` +
       `storage=${afterStorage - afterCompose}ms jobUpdate=${afterJobUpdate - afterStorage}ms ` +
       `total=${afterJobUpdate - started}ms`,

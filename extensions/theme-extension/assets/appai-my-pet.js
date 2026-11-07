@@ -403,6 +403,82 @@
     document.body.appendChild(z);
   }
 
+  /**
+   * Bug D — after a successful ATC, re-render the cart drawer via Shopify's
+   * Section Rendering API, dispatch the common theme/app cart events, and
+   * try to open the drawer. The old code just dispatched `cart:refresh`
+   * (our own appai-cart-images.js listens for that to re-paint mockup
+   * thumbnails), but the theme's own cart drawer never re-fetched its
+   * content or opened, so the shopper had to navigate to /cart manually.
+   *
+   * Approach — belt-and-braces across theme variants:
+   *   1) Fetch /cart with ?sections=<drawer-section-ids> to get freshly
+   *      rendered HTML for each (section id is theme-specific, so we try
+   *      several known ones from Dawn / Horizon / Impulse / Ritual).
+   *   2) Swap the returned HTML into the matching <div id="shopify-section-X">
+   *      wrappers already in the page.
+   *   3) Dispatch every cart event name we've seen themes listen for.
+   *   4) Try to call .open() / .show() on any <cart-drawer*> custom element.
+   */
+  function refreshAndOpenCartDrawer() {
+    var CANDIDATE_SECTIONS = [
+      'cart-drawer', 'cart-notification', 'cart-icon-bubble',
+      'cart-live-region-text', 'header', 'cart-drawer-items',
+    ];
+    var url = '/?sections=' + encodeURIComponent(CANDIDATE_SECTIONS.join(','));
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (sections) {
+        if (sections && typeof sections === 'object') {
+          Object.keys(sections).forEach(function (name) {
+            var html = sections[name];
+            if (typeof html !== 'string' || !html) return;
+            var target = document.getElementById('shopify-section-' + name);
+            if (!target) return;
+            var templ = document.createElement('template');
+            templ.innerHTML = html;
+            var newRoot = templ.content.getElementById('shopify-section-' + name);
+            if (newRoot) {
+              target.replaceWith(newRoot);
+            } else {
+              // Some themes return the section body directly, not wrapped.
+              target.innerHTML = html;
+            }
+          });
+        }
+      })
+      .catch(function () { /* section fetch failed — events + manual open below still run */ })
+      .then(function () {
+        // Fire the union of cart-updated event names different themes listen for.
+        var EVENTS = [
+          'cart:refresh', 'cart:updated', 'cart:update', 'cart:build',
+          'cart:item-added', 'cart-updated', 'appai:cart-updated',
+          'ajaxProduct:added', 'product:added', 'cart:open',
+        ];
+        for (var i = 0; i < EVENTS.length; i++) {
+          try { document.dispatchEvent(new CustomEvent(EVENTS[i], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent(EVENTS[i], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (e) {}
+        }
+        // Try to open any cart-drawer custom element directly.
+        var DRAWER_SELECTORS = [
+          'cart-drawer-component', 'cart-drawer', 'cart-notification',
+          '[id*="CartDrawer"]', '[id*="cart-drawer"]',
+        ];
+        for (var d = 0; d < DRAWER_SELECTORS.length; d++) {
+          var nodes;
+          try { nodes = document.querySelectorAll(DRAWER_SELECTORS[d]); } catch (e) { continue; }
+          for (var n = 0; n < nodes.length; n++) {
+            var el = nodes[n];
+            try {
+              if (typeof el.open === 'function') { el.open(); }
+              else if (typeof el.show === 'function') { el.show(); }
+              else { el.setAttribute('open', ''); el.setAttribute('aria-hidden', 'false'); }
+            } catch (e) {}
+          }
+        }
+      });
+  }
+
   function init(root) {
     injectModalStyles();
     applyThemeVars(root);
@@ -442,6 +518,22 @@
       dismissedRenderIds: {},
       emailModalOpen: false,
       capStatus: null,
+      // Bugs B/C — the modal tracks its own swatch selection independently of
+      // the PDP form's variant id. variantForColor/variantForSize fell back to
+      // "any variant with just this one option" when the exact (colour, size)
+      // didn't exist, which silently reshuffled the form to a different combo
+      // (XS/Pink click → form switches to S/Pink or XS/Black). Separating
+      // intent (what the shopper selected) from state (what Shopify can sell)
+      // lets us refuse an invalid combo instead of swapping it out from under
+      // the shopper. Initialised in renderPreviewBody from currentVariantInfo.
+      swatchColor: null,
+      swatchSize: null,
+      // Bug A — per-colour client cache keyed by colour name, holding the
+      // signed preview URL from the last successful recomposite in this modal
+      // session. Repeat swaps swap images without any network round-trip.
+      // Session-scoped (dropped when the modal closes); 1hr signed URL TTL
+      // always outlives a modal session, so no expiry bookkeeping needed.
+      previewUrlByColor: {},
     };
 
     function markDismissed(renderId) {
@@ -470,8 +562,11 @@
       var remaining = capStatus.perListingRemaining;
       if (typeof remaining !== 'number') return '';
       if (remaining <= 0) {
+        // Polish E — matches the newsletter framing in evaluateMyPetCap on the
+        // server. The ask is a signup, not a paywall; the mechanic (email
+        // submission → +emailBonus attempts) is unchanged.
         return capStatus.emailBonusAvailable
-          ? 'Enter your email for 2 more tries.'
+          ? 'Sign up to the Petposterous Press for 2 more custom designs.'
           : 'No more tries on this design.';
       }
       var limit = capStatus.perListingLimit;
@@ -539,6 +634,7 @@
             state.renderId = res.renderId;
             state.jobId = res.jobId;
             state.previewUrl = res.previewUrl;
+            state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
           } else {
             clearStoredRender(shopifyProductId);
           }
@@ -578,6 +674,11 @@
             state.renderId = genRes.renderId;
             state.jobId = genRes.jobId;
             state.previewUrl = genRes.previewUrl;
+            // Bug A — fresh render id means the previous per-colour cache
+            // entries point at the previous render's composited images (wrong
+            // artwork). Drop them; the new render's colour will be seeded in
+            // renderPreviewBody.
+            state.previewUrlByColor = {};
             // New render id is never in dismissedRenderIds — exit-intent will
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
@@ -636,28 +737,33 @@
     function renderPreviewBody(body, previewUrl) {
       var colors = allColorOptions(root);
       var sizes = allSizeOptions(root);
+      // Bugs B/C — seed the modal's own swatch intent from the PDP form on open
+      // (and seed the per-colour client cache with the preview we already have).
       var info = currentVariantInfo(root);
-      var currentColor = info.colorName;
-      var currentSize = info.sizeId;
+      state.swatchColor = info.colorName;
+      state.swatchSize = info.sizeId;
+      if (state.swatchColor && previewUrl && !state.previewUrlByColor[state.swatchColor]) {
+        state.previewUrlByColor[state.swatchColor] = previewUrl;
+      }
       var colorSwatchesHtml = '';
       if (colors.length > 1) {
         colorSwatchesHtml += '<div class="appai-my-pet-swatches" data-group="color">';
         for (var i = 0; i < colors.length; i++) {
-          var isCurrentC = String(colors[i]) === String(currentColor);
+          var isCurrentC = String(colors[i]) === String(state.swatchColor);
           colorSwatchesHtml += '<button type="button" data-action="swatch-color" data-color="' + colors[i].replace(/"/g, '&quot;') + '"' +
             (isCurrentC ? ' aria-current="true"' : '') + '>' + colors[i] + '</button>';
         }
         colorSwatchesHtml += '</div>';
       }
-      // Issue 12 — size swatches alongside colour. Size change updates the base
-      // variant only; no recomposite call is needed (print area is the same for
-      // S/M/L on apparel). The ATC variantId will pick up the new size via
-      // currentVariantInfo at add-to-cart time.
+      // Size swatches alongside colour. Size change doesn't require a
+      // recomposite (print area is the same for S/M/L on apparel), just a
+      // variant-id update on the PDP form if (current colour, chosen size) is
+      // a real combo.
       var sizeSwatchesHtml = '';
       if (sizes.length > 1) {
         sizeSwatchesHtml += '<div class="appai-my-pet-swatches" data-group="size">';
         for (var j = 0; j < sizes.length; j++) {
-          var isCurrentS = String(sizes[j]) === String(currentSize);
+          var isCurrentS = String(sizes[j]) === String(state.swatchSize);
           sizeSwatchesHtml += '<button type="button" data-action="swatch-size" data-size="' + sizes[j].replace(/"/g, '&quot;') + '"' +
             (isCurrentS ? ' aria-current="true"' : '') + '>' + sizes[j] + '</button>';
         }
@@ -714,40 +820,44 @@
     }
 
     /**
-     * Bug 1b — shared combo-availability gate, used before ATC and after
-     * every colour/size swatch click. Greys out "Add to cart" and shows the
-     * exact message in the plan ("[Size] isn't available in [Colour] — pick
-     * another combination.") instead of letting an invalid combo reach the
-     * server at all.
+     * Bugs B/C — single source of truth for "is the shopper's selected combo
+     * actually sellable?". Reads from the modal's own swatch intent
+     * (state.swatchColor + state.swatchSize), NOT from currentVariantInfo —
+     * because an invalid-combo swatch click deliberately does NOT update the
+     * PDP form, so reading the form would hide the invalidity. Also syncs
+     * the form variant and dispatches `change` only when the combo is real.
      */
     function checkComboAvailable(body) {
-      var info = currentVariantInfo(root);
       var atcBtn = body.querySelector('[data-action="add-to-cart"]');
       var status = body.querySelector('#appai-my-pet-status');
-      if (info.colorName && info.sizeId && !findExactVariant(root, info.colorName, info.sizeId)) {
+      var color = state.swatchColor;
+      var size = state.swatchSize;
+      if (!color || !size) {
+        if (atcBtn) atcBtn.disabled = false;
+        return true;
+      }
+      var v = findExactVariant(root, color, size);
+      if (!v) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) status.textContent = info.sizeId + " isn't available in " + info.colorName + " — pick another combination.";
+        if (status) status.textContent = size + " isn't available in " + color + " — pick another combination.";
         return false;
+      }
+      // Valid combo — sync the PDP form so theme price / stock / etc. update.
+      var form = document.querySelector('form[action*="/cart/add"]');
+      var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
+      if (idInput && String(idInput.value) !== String(v.id)) {
+        idInput.value = String(v.id);
+        try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
       }
       if (atcBtn) atcBtn.disabled = false;
       if (status && status.textContent && status.textContent.indexOf("isn't available in") !== -1) status.textContent = '';
       return true;
     }
 
-    /** Size swatch click (Issue 12): switch base variant to the same colour + chosen size. No model call. */
+    /** Size swatch click: update modal intent + revalidate combo. No recomposite. */
     function selectSize(body, sizeId) {
       if (!sizeId) return;
-      var info = currentVariantInfo(root);
-      var v = variantForSize(root, sizeId, info.colorName);
-      if (v && v.id) {
-        var form = document.querySelector('form[action*="/cart/add"]');
-        var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
-        if (idInput) {
-          idInput.value = String(v.id);
-          try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-        }
-      }
-      // Reflect active state on the size chips.
+      state.swatchSize = sizeId;
       var allBtns = body.querySelectorAll('[data-action="swatch-size"]');
       for (var i = 0; i < allBtns.length; i++) {
         if (String(allBtns[i].getAttribute('data-size')) === String(sizeId)) {
@@ -759,26 +869,18 @@
       checkComboAvailable(body);
     }
 
-    /** Swatch click in the preview modal: switch base variant, recomposite. No new generation. */
+    /**
+     * Colour swatch click: update modal intent, revalidate combo, and swap
+     * the preview image. The preview refresh runs even when (colour, size)
+     * is an invalid combo — the shopper can still see what Pink looks like
+     * even though XS/Pink isn't buyable; they then pick an available size.
+     * Uses a per-colour client cache for instant repeat swaps (Bug A).
+     */
     function selectColor(body, colorName, clickedBtn) {
       if (!colorName || !state.renderId) return;
-      var info = currentVariantInfo(root);
-      var v = variantForColor(root, colorName, info.sizeId);
-      if (v && v.id) {
-        // Update the live product form so Add to cart (and the main PDP state)
-        // reflect the chosen colour.
-        var form = document.querySelector('form[action*="/cart/add"]');
-        var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
-        if (idInput) {
-          idInput.value = String(v.id);
-          try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
-        }
-      }
-      // Reflect active state on the swatches without a full re-render.
-      // Bug fix: this previously queried '[data-action="swatch"]', but the
-      // actual buttons are rendered with data-action="swatch-color" (see
-      // colorSwatchesHtml above) — the selector never matched anything, so
-      // the active-state highlight silently never updated on any click.
+      state.swatchColor = colorName;
+      // Aria-current update — selector FIX in staging-86 (swatch-color, not
+      // the old "swatch" selector that silently never matched).
       var allBtns = body.querySelectorAll('[data-action="swatch-color"]');
       for (var i = 0; i < allBtns.length; i++) {
         if (String(allBtns[i].getAttribute('data-color')) === String(colorName)) {
@@ -787,27 +889,39 @@
           allBtns[i].removeAttribute('aria-current');
         }
       }
+      // Revalidate combo (updates ATC disabled state + status msg + form id).
       checkComboAvailable(body);
+
       var img = body.querySelector('img.appai-preview-img');
       var status = body.querySelector('#appai-my-pet-status');
-      // UX 5 — immediate feedback: dim the current preview the instant the
-      // swatch is tapped, rather than only showing "Updating colour…" text
-      // that's easy to miss below the fold. The slow part was real network +
-      // compose time, not the lack of a loading cue, but the cue removes the
-      // "did my tap even register?" feeling while that work happens.
-      if (img) img.classList.add('appai-swatch-loading');
-      if (clickedBtn) clickedBtn.setAttribute('aria-busy', 'true');
-      if (status) status.textContent = 'Updating colour…';
-      var swapStarted = Date.now();
       function clearLoadingState() {
         if (img) img.classList.remove('appai-swatch-loading');
         if (clickedBtn) clickedBtn.removeAttribute('aria-busy');
       }
+
+      // Bug A — client-side cache hit: repeat swap on a colour we've already
+      // composited in this modal session is a zero-network, single-paint swap.
+      var cached = state.previewUrlByColor[colorName];
+      if (cached && img) {
+        img.src = cached;
+        state.previewUrl = cached;
+        clearLoadingState();
+        if (status) status.textContent = '';
+        console.log(TAG, 'colour swap CLIENT CACHE HIT', colorName);
+        return;
+      }
+
+      // First-time swap for this colour — show loading cue instantly, then
+      // call recomposite (which now has its own server-side cache too, so a
+      // cross-session restore case where our client cache is empty is still
+      // fast: metadata list + sign only, no compose).
+      if (img) img.classList.add('appai-swatch-loading');
+      if (clickedBtn) clickedBtn.setAttribute('aria-busy', 'true');
+      if (status) status.textContent = 'Updating colour…';
+      var swapStarted = Date.now();
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
           if (res && res.ok && img) {
-            // UX 5 — preload off-DOM so the <img> swap is a single paint
-            // (no visible blank/flash frame while the browser fetches it).
             var preload = new Image();
             preload.onload = function () {
               img.src = res.previewUrl;
@@ -822,6 +936,7 @@
             };
             preload.src = res.previewUrl;
             state.previewUrl = res.previewUrl;
+            state.previewUrlByColor[colorName] = res.previewUrl; // Bug A: populate cache
             // UX 6 — bump savedAt on every successful recomposite too, so a
             // shopper who keeps swapping colours across visits keeps the
             // restore window fresh, not just at initial generation time.
@@ -837,18 +952,21 @@
         });
     }
 
-    /** Watch the base PDP form for colour changes made outside the modal — mirror into the modal preview. */
+    /** Watch the base PDP form for colour/size changes made outside the modal — mirror into the modal's swatch state so the combo gate stays coherent. */
     function watchVariantChange(body) {
       var last = currentVariantInfo(root);
       var timer = setInterval(function () {
         if (!document.body.contains(body)) { clearInterval(timer); return; }
         var now = currentVariantInfo(root);
-        if (now.colorName && now.colorName !== last.colorName && state.renderId) {
-          last = now;
-          selectColor(body, now.colorName);
-        } else {
-          last = now;
+        // Size first so that when colour also changed, selectColor's combo
+        // check reads the already-updated size (not the stale one).
+        if (now.sizeId && now.sizeId !== last.sizeId) {
+          selectSize(body, now.sizeId);
         }
+        if (now.colorName && now.colorName !== last.colorName && state.renderId) {
+          selectColor(body, now.colorName);
+        }
+        last = now;
       }, 600);
     }
 
@@ -898,19 +1016,30 @@
     function addToCart(body) {
       var status = body.querySelector('#appai-my-pet-status');
       var btn = body.querySelector('[data-action="add-to-cart"]');
-      // Re-read the base PDP form at click time so a colour or size swatch
-      // chosen in the preview modal flows through to the cart line.
-      var info = currentVariantInfo(root);
-      // Bug 1b — the modal's colour/size swatches can land on a combination
-      // the theme itself doesn't sell (e.g. XS doesn't exist in Red). Without
-      // this check that invalid combo reached the server, which correctly
-      // refused it, but surfaced as the same scary "Shop not authorized"-style
-      // error as a real auth failure. Catch it client-side with the exact
-      // availability data the theme already embedded, before any network call.
-      if (!checkComboAvailable(body)) return;
+      // Bugs B/C — do NOT read currentVariantInfo. The PDP form's variant id
+      // is only kept in sync when the combo is valid; on an invalid combo the
+      // form stays on the last valid variant so the theme's price/stock stay
+      // consistent, which would otherwise let ATC silently ship the wrong
+      // variant (user reported: XS/Pink click → cart got S/Pink). The modal's
+      // own swatch intent is the source of truth for what the shopper picked;
+      // findExactVariant decides whether to allow or refuse.
+      var exact = state.swatchColor && state.swatchSize
+        ? findExactVariant(root, state.swatchColor, state.swatchSize)
+        : null;
+      if (!exact) {
+        if (checkComboAvailable(body) === false) {
+          // checkComboAvailable already wrote the exact user-facing message.
+          return;
+        }
+        if (status) status.textContent = "Please pick a colour and a size before adding to cart.";
+        return;
+      }
+      var exactVariantId = String(exact.id);
+      var exactPrice = exact.price != null ? (exact.price / 100).toFixed(2) : null;
+
       if (btn) btn.disabled = true;
       if (status) status.textContent = 'Setting up your cart line…';
-      attemptResolveVariant(info.variantId, info.price, 0)
+      attemptResolveVariant(exactVariantId, exactPrice, 0)
         .then(function (res) {
           if (status) status.textContent = 'Adding to cart…';
           // Issue 10: line-item properties that (a) let appai-cart-images.js
@@ -930,8 +1059,10 @@
           if (res.previewUrl && res.previewUrl.indexOf('https://') === 0) {
             properties['_mockup_url'] = res.previewUrl;
           }
-          if (info.colorName) properties['_color'] = info.colorName;
-          if (info.sizeId) properties['_size'] = info.sizeId;
+          // Bugs B/C — write the shopper's ACTUAL selected colour/size, not
+          // whatever happened to be on the PDP form when ATC was clicked.
+          properties['_color'] = state.swatchColor;
+          properties['_size'] = state.swatchSize;
           return fetch('/cart/add.js', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -946,7 +1077,10 @@
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
-          document.dispatchEvent(new CustomEvent('cart:refresh'));
+          // Bug D — Section Rendering API refresh + theme-drawer open attempt.
+          // Replaces the previous single-event dispatch that only fed our own
+          // cart-images repaint, never the theme's drawer.
+          refreshAndOpenCartDrawer();
         })
         .catch(function (err) {
           if (btn) btn.disabled = false;
@@ -1020,6 +1154,7 @@
           if (res && res.ok) {
             state.renderId = res.renderId;
             state.previewUrl = res.previewUrl;
+            state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
             openPreviewStep(res.previewUrl);
           }
         });
