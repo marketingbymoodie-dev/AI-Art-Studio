@@ -858,11 +858,22 @@
             state.renderId = res.renderId;
             state.jobId = res.jobId;
             state.previewUrl = res.previewUrl;
-            state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
+            // STAGING-96 restore-path bug fix: previewUrlsByColor is now
+            // rebuilt server-side from the deterministic {renderId}-{slug}
+            // storage paths generate wrote, so swatch clicks on a restored
+            // render are CLIENT CACHE HITs just like fresh-generate. Seed
+            // the map and preload the URLs the same way renderPreviewBody
+            // does on generate success. Missing / failed-precompose colours
+            // are silently absent from the map; client falls back to the
+            // existing /recomposite lazy path on first click for those.
+            state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+              ? Object.assign({}, res.previewUrlsByColor)
+              : {};
+            console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            preloadPreviewUrls(state.previewUrlByColor);
             // UX 7 — restore the inline hero swap on return visits so the
             // shopper sees "their" product straight away without having to
-            // click the button again. Server cache keeps per-colour swaps
-            // fast even though we don't have the full colour map here.
+            // click the button again.
             if (previewMode === 'inline') {
               activateInlinePreview(res.previewUrl);
             }
@@ -2204,7 +2215,14 @@
           if (res && res.ok) {
             state.renderId = res.renderId;
             state.previewUrl = res.previewUrl;
-            state.previewUrlByColor = {}; // Bug A: different render — drop any session cache
+            // STAGING-96 — email-token restore now receives the same
+            // previewUrlsByColor map as fresh generate, so colour swaps
+            // after following the save-link are instant CLIENT CACHE HITs.
+            state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+              ? Object.assign({}, res.previewUrlsByColor)
+              : {};
+            console.log(TAG, 'email-token restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            preloadPreviewUrls(state.previewUrlByColor);
             // UX 7 — honour inline mode on email-token resume as well.
             if (previewMode === 'inline' && activateInlinePreview(res.previewUrl)) return;
             openPreviewStep(res.previewUrl);

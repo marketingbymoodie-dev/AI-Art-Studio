@@ -468,9 +468,14 @@ export async function generateMyPetRender(args: {
 
   // Deterministic per-colour path matches recompositeMyPetRender's naming
   // scheme so a later `/recomposite` for the chosen (or any pre-composited)
-  // colour finds the file and hits its CACHE HIT fast path.
-  const previewPathFor = (name: string) =>
-    `my-pet/previews/${renderId}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.png`;
+  // colour finds the file and hits its CACHE HIT fast path. STAGING-96 bug:
+  // the cross-session restore paths (resolve-render, resolve-token) now
+  // read these same deterministic paths to rebuild previewUrlsByColor on
+  // return visits — see collectExistingPreviewUrlsByColor below. If this
+  // slug function ever changes shape, update it there too or the restore
+  // paths will stop seeing pre-composited colours and shoppers go back to
+  // the 4s-per-click /recomposite tax they had on staging-95 and earlier.
+  const previewPathFor = (name: string) => myPetPreviewPathForColor(renderId, name);
   const chosenPerColorPath = previewPathFor(color.name);
   try {
     await putMyPetObject(chosenPerColorPath, previewPng, "image/png");
@@ -773,15 +778,121 @@ export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey
 // signed device key cookie/localStorage was cleared and re-minted).
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Shared slug function used by generate's pre-composite write AND the
+ * restore-path read below. MUST stay identical shape so the paths match.
+ * Keep in sync with the inline previewPathFor in generateMyPetRender.
+ */
+export function myPetPreviewPathForColor(renderId: string, colorName: string): string {
+  const slug = colorName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return `my-pet/previews/${renderId}-${slug}.png`;
+}
+
+/**
+ * STAGING-96 restore-path bug — generate returns the full
+ * previewUrlsByColor map so the client seeds state.previewUrlByColor and
+ * every swatch click is a <1ms CLIENT CACHE HIT. But both restore paths
+ * (resolve-render reading from localStorage on hard refresh,
+ * resolve-token following an emailed save link) were only returning the
+ * single chosen-colour previewUrl — client's map stayed empty and every
+ * swatch click cost a 4s /recomposite round-trip.
+ *
+ * Fix: this helper rebuilds the map from storage on restore. The per-
+ * colour PNGs still exist (generate's pre-composite wrote them at
+ * deterministic paths and nothing sweeps them until 30d retention),
+ * so we probe each candidate colour with myPetObjectExists and sign
+ * the ones that land. Signed with EMAIL_PREVIEW_RETENTION_MS so the
+ * URLs stay valid for the full 30d restore window.
+ *
+ * Colours the candidate was unpromoted for (or that failed their
+ * pre-composite at generate time, since that path is Promise.allSettled)
+ * are silently omitted — the client's existing /recomposite lazy path
+ * still works as the fallback for them. Failing candidate lookup
+ * entirely (candidate row deleted, shopDomain mismatch) returns an
+ * empty map rather than throwing — the restore itself must still
+ * succeed with the main previewUrl even if the colour map can't be
+ * rebuilt.
+ */
+async function collectExistingPreviewUrlsByColor(args: {
+  shop: string;
+  renderId: string;
+  candidateId: string;
+  chosenColorName: string | null;
+  chosenPreviewPath: string;
+}): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  // Always include the chosen colour under its own name if we know it —
+  // the main previewPath IS the chosen-colour composite, so no probe
+  // needed and it's always present.
+  if (args.chosenColorName) {
+    try {
+      map[args.chosenColorName] = await signedMyPetUrl(
+        args.chosenPreviewPath,
+        EMAIL_PREVIEW_RETENTION_MS / 1000,
+      );
+    } catch (err) {
+      console.warn(`[my-pet] restore: chosen-colour sign failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
+    }
+  }
+  // Probe the remaining candidate colours against storage in parallel.
+  try {
+    const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId));
+    if (!candidate || candidate.shopDomain !== args.shop) return map;
+    const colors = Array.isArray(candidate.selectedColors)
+      ? (candidate.selectedColors as Array<{ name: string; hex: string }>)
+      : [];
+    const chosenLc = (args.chosenColorName || "").trim().toLowerCase();
+    const others = colors.filter((c) => c.name && c.name.trim().toLowerCase() !== chosenLc);
+    const probed = await Promise.all(
+      others.map(async (c) => {
+        const path = myPetPreviewPathForColor(args.renderId, c.name);
+        const exists = await myPetObjectExists(path).catch(() => false);
+        if (!exists) return null;
+        try {
+          const url = await signedMyPetUrl(path, EMAIL_PREVIEW_RETENTION_MS / 1000);
+          return { name: c.name, url };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const entry of probed) {
+      if (entry) map[entry.name] = entry.url;
+    }
+  } catch (err) {
+    console.warn(`[my-pet] restore: candidate lookup failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
+  }
+  return map;
+}
+
 export async function resolveMyPetRenderById(args: {
   shop: string;
   deviceKey: string;
   renderId: string;
-}): Promise<{ renderId: string; jobId: string | null; previewUrl: string; colorName: string | null } | null> {
+}): Promise<{
+  renderId: string;
+  jobId: string | null;
+  previewUrl: string;
+  colorName: string | null;
+  previewUrlsByColor: Record<string, string>;
+} | null> {
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) return null;
-  const previewUrl = await signedMyPetUrl(render.previewPath);
-  return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId };
+  const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
+  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+    shop: args.shop,
+    renderId: render.id,
+    candidateId: render.candidateId,
+    chosenColorName: render.colorId,
+    chosenPreviewPath: render.previewPath,
+  });
+  console.log(
+    `[my-pet] restore response renderId=${render.id.slice(0, 8)} ` +
+      `chosenColor=${render.colorId || "?"} ` +
+      `includedColours=[${Object.keys(previewUrlsByColor).join(",")}] ` +
+      `mapSize=${Object.keys(previewUrlsByColor).length}`,
+  );
+  return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId, previewUrlsByColor };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -939,6 +1050,7 @@ export async function resolveMyPetEmailToken(token: string): Promise<{
   previewUrl: string;
   colorName: string | null;
   sizeId: string | null;
+  previewUrlsByColor: Record<string, string>;
 } | null> {
   const [capture] = await db.select().from(myPetEmailCaptures).where(eq(myPetEmailCaptures.token, token));
   if (!capture) return null;
@@ -946,8 +1058,32 @@ export async function resolveMyPetEmailToken(token: string): Promise<{
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, capture.renderId));
   if (!render) return null;
   await db.update(myPetEmailCaptures).set({ resolvedAt: new Date() }).where(eq(myPetEmailCaptures.id, capture.id));
-  const previewUrl = await signedMyPetUrl(render.previewPath);
-  return { renderId: render.id, candidateId: render.candidateId, previewUrl, colorName: render.colorId, sizeId: render.sizeId };
+  // STAGING-96 — sign with EMAIL_PREVIEW_RETENTION_MS (30d) so a shopper
+  // following the save-email link weeks later doesn't hit an expired URL,
+  // and rebuild the per-colour map so swatch clicks on the restored
+  // product are CLIENT CACHE HITs instead of 4s /recomposite calls.
+  const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
+  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+    shop: render.shopDomain,
+    renderId: render.id,
+    candidateId: render.candidateId,
+    chosenColorName: render.colorId,
+    chosenPreviewPath: render.previewPath,
+  });
+  console.log(
+    `[my-pet] email-token restore renderId=${render.id.slice(0, 8)} ` +
+      `chosenColor=${render.colorId || "?"} ` +
+      `includedColours=[${Object.keys(previewUrlsByColor).join(",")}] ` +
+      `mapSize=${Object.keys(previewUrlsByColor).length}`,
+  );
+  return {
+    renderId: render.id,
+    candidateId: render.candidateId,
+    previewUrl,
+    colorName: render.colorId,
+    sizeId: render.sizeId,
+    previewUrlsByColor,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
