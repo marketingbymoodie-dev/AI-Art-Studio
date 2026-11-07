@@ -715,15 +715,20 @@ export async function renderCandidateOnPanel(args: {
   colorHex: string;
   artworkPath: string | null;
   /**
-   * STAGING-103 — opt-in: skip resolvePanelColour's "exact match → produced"
-   * branch and ALWAYS recolour from the white master, regardless of whether
-   * the requested colour has a dedicated produced row. Used by My Pet
-   * generate's pre-composite loop (and chosen compose) so every colour runs
-   * the same code path and every garment is a clean recoloured blank —
-   * produced rows for this design-product carry the original artwork baked
-   * into the panel photo, so compositing the Sunburst overlay on top left
-   * the original design visually dominant. Catalogue flows keep the
-   * exact-match behaviour by not passing this flag.
+   * STAGING-103 added, STAGING-104 defused. Opt-in escape hatch: skip
+   * resolvePanelColour's "exact match → produced" branch and ALWAYS recolour
+   * from the white master, regardless of whether the requested colour has a
+   * dedicated produced row. Originally shipped as a stopgap for a reported
+   * "My Pet pre-composite shows the original design" symptom; offline tracing
+   * against staging data (render 25a79e80, panel Mockup_01, product type 54)
+   * proved the produced path composites correctly in both modes — the
+   * original-design visual was the catalogue-side mockupImages (written by
+   * approveCandidateChoice from the ORIGINAL artwork, uploaded to Shopify
+   * by flywheel-promote as variant images) leaking through a client-side
+   * hero-swap race against the Shopify theme's variant-image change, not a
+   * compose bug. Parameter retained so a future "the per-colour produced row
+   * for this product really is bad, force white+recolour" need has a tested
+   * knob to turn without re-plumbing. No current callers pass it.
    */
   forceRecolour?: boolean;
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {

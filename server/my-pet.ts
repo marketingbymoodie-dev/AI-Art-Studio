@@ -487,11 +487,24 @@ export async function generateMyPetRender(args: {
   }
 
   const productType = await softstyleType();
+  // STAGING-104 — reverted staging-103's forceRecolour workaround after an
+  // offline trace proved the produced path on real staging data (render
+  // 25a79e80 / candidate 07a0d57a) composites the Sunburst output correctly
+  // onto the real per-colour panel photo for every colour, both WITH and
+  // WITHOUT forceRecolour. The visual "original design on wrong colour"
+  // symptom Craig reported was not a compose bug — it's the catalogue-side
+  // mockupImages (approveCandidateChoice composites original artwork onto
+  // each colour, flywheel-promote uploads them to Shopify as the variant
+  // images) leaking through the client-side hero-swap race when the swatch
+  // changes. Reverting here restores the photorealistic produced-path
+  // output (real per-colour tee photo + shading) instead of the flatter
+  // recoloured-white output. See the hero-guard fallback warn added in
+  // appai-my-pet.js for the matching instrumentation on the client race.
   console.log(
     `[my-pet] pre-compose chosen start colour=${color.name} ` +
       `designSrc=${editedPathTail} panelId=${args.candidate.panelId} ` +
-      `composeFn=renderCandidateOnPanel forceRecolour=true ` +
-      `steps=[loadWhiteMaster, recolourGarmentToHex, overlayDesign, flatten]`,
+      `composeFn=renderCandidateOnPanel forceRecolour=false ` +
+      `steps=[loadPerColourBlank, overlayDesign, flatten]`,
   );
   const { png: previewPng, source: chosenMode } = await renderCandidateOnPanel({
     productTypeId: productType.id,
@@ -500,9 +513,6 @@ export async function generateMyPetRender(args: {
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedPath,
-    // STAGING-103 — unify chosen + pre-composite compose path. See
-    // renderCandidateOnPanel's forceRecolour JSDoc for rationale.
-    forceRecolour: true,
   });
   const chosenHash = createHash("md5").update(previewPng).digest("hex").slice(0, 16);
   console.log(
@@ -561,8 +571,8 @@ export async function generateMyPetRender(args: {
           `[my-pet] pre-composite colour=${other.name} ` +
             `designSrc=${editedPathTail} designMd5=${editedHash} ` +
             `panelId=${args.candidate.panelId} outputSrc=${otherPathTail} ` +
-            `composeFn=renderCandidateOnPanel forceRecolour=true ` +
-            `steps=[loadWhiteMaster, recolourGarmentToHex, overlayDesign, flatten]`,
+            `composeFn=renderCandidateOnPanel forceRecolour=false ` +
+            `steps=[loadPerColourBlank, overlayDesign, flatten]`,
         );
         const { png, source: otherMode } = await renderCandidateOnPanel({
           productTypeId: productType.id,
@@ -571,8 +581,6 @@ export async function generateMyPetRender(args: {
           colorName: other.name,
           colorHex: other.hex,
           artworkPath: editedPath,
-          // STAGING-103 — see chosen compose above.
-          forceRecolour: true,
         });
         const outHash = createHash("md5").update(png).digest("hex").slice(0, 16);
         console.log(
@@ -776,6 +784,10 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   }
 
   const productType = await softstyleType();
+  // STAGING-104 — matches generate's revert of forceRecolour. Produced path
+  // gives photorealistic per-colour panel photo output; the same code path
+  // generate uses, so recomposite stays identity-equal (modulo signed URL
+  // timestamp) with the pre-composited sibling if there was one.
   const { png } = await renderCandidateOnPanel({
     productTypeId: productType.id,
     typeName: productType.name,
@@ -783,11 +795,6 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedArtworkPath,
-    // STAGING-103 — recomposite must mirror generate's forceRecolour so a
-    // shopper hitting a colour whose pre-composite failed (or was never
-    // run, e.g. an older render) gets the same clean recoloured-blank +
-    // overlay result as the pre-composited ones.
-    forceRecolour: true,
   });
   const afterCompose = Date.now();
   await putMyPetObject(previewPath, png, "image/png");

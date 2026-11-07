@@ -1747,11 +1747,22 @@
         } else if (colorName && state.previewUrl) {
           // Colour not pre-composited — stop the stock flash immediately with
           // last-known preview, then kick off compose in the background.
+          //
+          // STAGING-104 — this fallback is the client-side race that lets the
+          // Shopify variant image (= catalogue mockup composited from the
+          // ORIGINAL artwork at approveCandidateChoice time) visually leak
+          // through for ~1 frame before we overwrite it with the chosen-colour
+          // preview. The server compose is correct (verified offline against
+          // render 25a79e80); this warn is the single place to measure how
+          // often the race loses in the field. If this fires often after the
+          // STAGING-104 deploy, follow up with the data-url-placeholder + spinner
+          // "Option A" or the catalogue-mockup swap "Option B" from the audit.
           hero.src = state.previewUrl;
           try { hero.removeAttribute('srcset'); } catch (e) {}
           hero.setAttribute('data-appai-my-pet-preview', 'true');
-          console.warn(TAG, 'no preview for colour', colorName,
-            'available:', Object.keys(state.previewUrlByColor || {}));
+          console.warn('[appai-my-pet] hero-guard fallback: no cached preview for colour', colorName,
+            '- showing chosen-colour preview while /recomposite runs. available:',
+            Object.keys(state.previewUrlByColor || {}));
           swapInlineColor(colorName);
         }
       };
