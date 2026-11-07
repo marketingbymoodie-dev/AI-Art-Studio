@@ -1096,9 +1096,11 @@
      *
      * ATC in the reverted state: form submits/clicks still bubble through
      * the capture-phase intercept, but the inlineApplied/inlineHero guard
-     * returns early so the theme's native cart/add runs with no
-     * _appai_*/_design_id/_mockup_url properties. The shopper buys the
-     * stock product cleanly.
+     * returns early so the theme's native cart/add runs with no appai
+     * _design_id, _appai_my_pet_render_id, _appai_job_id or _mockup_url
+     * line-item properties. The shopper buys the stock product cleanly.
+     * (Do not spell it with an asterisk-slash in this JSDoc — closes the
+     * block comment early and breaks the whole file parse — staging-94.)
      */
     function revertToOriginalDesign() {
       console.log(TAG, 'revert to original design');
@@ -1437,7 +1439,7 @@
       // inlineHero — revertToOriginalDesign sets inlineApplied=false
       // without clearing the intercept, so these guards let the theme's
       // own cart/add run unmodified when the shopper chose "Buy the
-      // original design instead". No _appai_*/_design_id/_mockup_url
+      // original design instead". No _appai_* / _design_id / _mockup_url
       // properties get attached to the stock-product ATC.
       form.addEventListener('submit', function (e) {
         if (!state.renderId || !state.inlineHero || !state.inlineApplied) return;
