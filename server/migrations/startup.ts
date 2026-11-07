@@ -73,6 +73,12 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
     column: "render_params",
     type: `JSONB NOT NULL DEFAULT '{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb`,
   },
+  // Replicate audit columns on my_pet_renders. Populated at generate time;
+  // linked back from the Shopify order via line-item properties on orders-paid.
+  { table: "my_pet_renders",       column: "replicate_prediction_id",     type: "TEXT" },
+  { table: "my_pet_renders",       column: "replicate_prediction_url",    type: "TEXT" },
+  { table: "my_pet_renders",       column: "shopify_order_id",            type: "TEXT" },
+  { table: "my_pet_renders",       column: "shopify_order_name",          type: "TEXT" },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "creator_session_id",          type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
@@ -2331,6 +2337,10 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "size_id" text,
         "duration_ms" integer,
         "estimated_cost_usd" numeric(10,4),
+        "replicate_prediction_id" text,
+        "replicate_prediction_url" text,
+        "shopify_order_id" text,
+        "shopify_order_name" text,
         "created_at" timestamp DEFAULT NOW() NOT NULL
       )
     `,
@@ -2423,6 +2433,11 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "my_pet_renders_ip_day_idx",
     sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_ip_day_idx"
       ON "my_pet_renders" ("shop_domain", "client_ip", "created_at")`,
+  },
+  {
+    name: "my_pet_renders_order_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_order_idx"
+      ON "my_pet_renders" ("shop_domain", "shopify_order_id")`,
   },
   {
     name: "my_pet_email_captures_device_product_idx",

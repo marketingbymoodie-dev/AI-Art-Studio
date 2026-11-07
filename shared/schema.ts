@@ -1493,12 +1493,21 @@ export const myPetRenders = pgTable("my_pet_renders", {
   sizeId: text("size_id"),
   durationMs: integer("duration_ms"),
   estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 4 }),
+  /** Replicate prediction id (same as createGptImage2Prediction's returned id). For support audit. */
+  replicatePredictionId: text("replicate_prediction_id"),
+  /** Direct link to Replicate's prediction page (urls.get). Clickable from Railway logs / admin. */
+  replicatePredictionUrl: text("replicate_prediction_url"),
+  /** Set when a Shopify order containing this render is paid. Enables order → render reverse lookup. */
+  shopifyOrderId: text("shopify_order_id"),
+  /** Human-readable order name ("#1234") — easier for merchants searching by what the customer quotes. */
+  shopifyOrderName: text("shopify_order_name"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   index("my_pet_renders_device_product_idx").on(table.shopDomain, table.deviceKey, table.shopifyProductId),
   index("my_pet_renders_device_day_idx").on(table.shopDomain, table.deviceKey, table.createdAt),
   index("my_pet_renders_ip_product_idx").on(table.shopDomain, table.clientIp, table.shopifyProductId),
   index("my_pet_renders_ip_day_idx").on(table.shopDomain, table.clientIp, table.createdAt),
+  index("my_pet_renders_order_idx").on(table.shopDomain, table.shopifyOrderId),
 ]);
 export type MyPetRender = typeof myPetRenders.$inferSelect;
 

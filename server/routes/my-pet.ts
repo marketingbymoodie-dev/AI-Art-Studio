@@ -11,6 +11,7 @@ import {
   checkMyPetCap,
   generateMyPetRender,
   getEligibleCandidateForMyPet,
+  getMyPetOrderDetails,
   getMyPetRenderForAddToCart,
   getMyPetSettings,
   recompositeMyPetRender,
@@ -200,7 +201,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     }
     const { deviceKey } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
-      const { jobId, previewUrl } = await getMyPetRenderForAddToCart({ shop, deviceKey, renderId: String(renderId) });
+      const { jobId, previewUrl, designLabel } = await getMyPetRenderForAddToCart({ shop, deviceKey, renderId: String(renderId) });
       const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");
       if (!base) return res.status(500).json({ success: false, error: "App URL is not configured" });
       const upstream = await fetch(`${base}/api/storefront/resolve-design-variant`, {
@@ -218,10 +219,36 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         }),
       });
       const data = await upstream.json().catch(() => ({}));
+      // Pass the data back verbatim and tack on the fields the client needs for
+      // line-item properties (jobId, previewUrl, renderId, designLabel). The
+      // upstream response already carries { success, variantId, code } — our
+      // additions let the storefront attach _mockup_url / _appai_job_id /
+      // _appai_my_pet_render_id / _design_id without a second round-trip.
+      if (data && data.success) {
+        data.jobId = jobId;
+        data.previewUrl = previewUrl;
+        data.renderId = String(renderId);
+        data.designLabel = designLabel;
+      }
       res.status(upstream.status).json(data);
     } catch (err: any) {
       res.status(400).json({ success: false, error: err?.message || "Could not add to cart" });
     }
+  });
+
+  // Admin audit (Issue 11): "Which My Pet renders went into this order?"
+  // Merchants can search by order name (#1234) or Shopify order id. Backs the
+  // Order lookup card on the My Pet settings admin page.
+  app.get("/api/admin/my-pet-orders", isAuthenticated, async (req: any, res: Response) => {
+    if (!isMyPetSettingsShop(req.shopDomain)) {
+      return res.status(403).json({ error: "My Pet is not available for this store" });
+    }
+    const rawName = String(req.query.orderName || "").trim();
+    const orderName = rawName && !rawName.startsWith("#") ? `#${rawName}` : (rawName || null);
+    const orderId = String(req.query.orderId || "").trim() || null;
+    if (!orderName && !orderId) return res.status(400).json({ error: "orderName or orderId is required" });
+    const result = await getMyPetOrderDetails({ shop: req.shopDomain, orderName, orderId });
+    res.json(result);
   });
 
   app.get("/api/proxy/my-pet/resolve-token", myPetProxyAuth, async (req: Request, res: Response) => {

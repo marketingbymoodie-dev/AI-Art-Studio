@@ -472,6 +472,8 @@ export type ReplicateImageEditResult = {
   data: string;
   durationMs: number;
   providerRequestId: string | null;
+  /** urls.get from the Replicate create response — clickable from Railway logs / admin audit page. */
+  providerRequestUrl: string | null;
   /** Null if the alpha check could not run; false = came back opaque despite transparent request. */
   transparent: boolean | null;
   transparentFraction: number | null;
@@ -513,13 +515,13 @@ export async function renderReplicateImageEdit(opts: {
   // Audit link for support tickets: click from Railway logs → exact Replicate prediction.
   // Replicate's public prediction URL is p.replicate.com/<id> regardless of which account
   // the token points at (the dashboard page resolves owner server-side).
-  const predictionUrl =
+  const providerRequestUrl =
     created.urls?.get ||
     (created.id ? `https://replicate.com/p/${created.id}` : null);
-  if (predictionUrl) {
+  if (providerRequestUrl) {
     console.log(
       `[Replicate] ${opts.modelSlug} prediction ok id=${created.id ?? "unknown"} ` +
-        `durationMs=${durationMs} url=${predictionUrl}`,
+        `durationMs=${durationMs} url=${providerRequestUrl}`,
     );
   }
   let transparent: boolean | null = null;
@@ -542,6 +544,7 @@ export async function renderReplicateImageEdit(opts: {
     data: result.data,
     durationMs,
     providerRequestId: created.id ?? null,
+    providerRequestUrl,
     transparent,
     transparentFraction,
   };

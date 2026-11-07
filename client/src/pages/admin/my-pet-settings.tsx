@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Save, Loader2 } from "lucide-react";
+import { Save, Loader2, Search, ExternalLink } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import {
   MY_PET_ART_STYLES,
@@ -300,9 +300,161 @@ export default function MyPetSettingsPage() {
               {saveMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
               Save
             </Button>
+
+            <OrderLookupCard />
           </>
         )}
       </div>
     </AdminLayout>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Order lookup (Issue 11) — audit a customer's order end-to-end.
+// Given an order name (#1234) or Shopify order id, lists every My Pet
+// render on that order with the preview, Replicate prediction link, and
+// candidate style. Pairs with the Shopify order metafield written by
+// server/my-pet.ts's recordMyPetSaleForOrder on orders/paid.
+// ─────────────────────────────────────────────────────────────────────────
+type MyPetOrderRender = {
+  renderId: string;
+  createdAt: string;
+  previewUrl: string | null;
+  previewPath: string;
+  candidateId: string;
+  artStyle: string | null;
+  species: string | null;
+  colorName: string | null;
+  sizeId: string | null;
+  replicatePredictionId: string | null;
+  replicatePredictionUrl: string | null;
+  petPhotoId: string | null;
+  jobId: string | null;
+  durationMs: number | null;
+  estimatedCostUsd: string | null;
+};
+type MyPetOrderLookup = {
+  found: boolean;
+  orderId: string | null;
+  orderName: string | null;
+  renders: MyPetOrderRender[];
+};
+
+function OrderLookupCard() {
+  const { toast } = useToast();
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState<MyPetOrderLookup | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  async function runLookup() {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setSearching(true);
+    setResult(null);
+    try {
+      // Numeric-only input → treat as Shopify internal order id; anything with
+      // # or non-digits → treat as order name (backend adds the # if missing).
+      const isNumericId = /^\d+$/.test(trimmed);
+      const url = isNumericId
+        ? `/api/admin/my-pet-orders?orderId=${encodeURIComponent(trimmed)}`
+        : `/api/admin/my-pet-orders?orderName=${encodeURIComponent(trimmed)}`;
+      const res = await apiRequest("GET", url);
+      const json = (await res.json()) as MyPetOrderLookup;
+      setResult(json);
+      if (!json.found) toast({ title: "No My Pet renders found on that order" });
+    } catch (err: any) {
+      toast({ title: "Lookup failed", description: err?.message, variant: "destructive" });
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Order lookup</CardTitle>
+        <CardDescription>
+          Audit a customer's order end-to-end. Enter the order name (e.g. <code>#1234</code>) or Shopify order id and
+          see every My Pet render on it with the preview, candidate style, and the Replicate prediction link.
+          The same summary is written to the Shopify order's <code>ai_art_studio.my_pet_render_id</code> metafield
+          when the order is paid.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex gap-2">
+          <Input
+            placeholder="#1234 or Shopify order id"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") runLookup(); }}
+            data-testid="input-my-pet-order-lookup"
+          />
+          <Button onClick={runLookup} disabled={searching || !query.trim()} data-testid="button-my-pet-order-lookup">
+            {searching ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Search className="h-4 w-4 mr-2" />}
+            Look up
+          </Button>
+        </div>
+
+        {result?.found && result.renders.length > 0 && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {result.renders.length} My Pet render{result.renders.length === 1 ? "" : "s"} on order{" "}
+              <strong>{result.orderName || result.orderId}</strong>
+            </p>
+            {result.renders.map((r) => (
+              <div key={r.renderId} className="border rounded-md p-3 flex gap-3">
+                {r.previewUrl ? (
+                  <a href={r.previewUrl} target="_blank" rel="noreferrer" className="flex-shrink-0">
+                    <img src={r.previewUrl} alt="Preview" className="w-24 h-24 object-cover rounded" />
+                  </a>
+                ) : (
+                  <div className="w-24 h-24 bg-muted rounded flex items-center justify-center text-xs text-muted-foreground">
+                    No preview
+                  </div>
+                )}
+                <div className="flex-1 min-w-0 text-sm space-y-1">
+                  <div className="font-medium">
+                    {r.artStyle || "(unknown style)"} · {r.species || "?"}
+                    {r.colorName ? ` · ${r.colorName}` : ""}
+                    {r.sizeId ? ` · ${r.sizeId}` : ""}
+                  </div>
+                  <div className="text-muted-foreground text-xs break-all">
+                    <div>render: <code>{r.renderId}</code></div>
+                    {r.jobId && <div>job: <code>{r.jobId}</code></div>}
+                    {r.petPhotoId && <div>pet photo: <code>{r.petPhotoId}</code></div>}
+                    <div>storage: <code>{r.previewPath}</code></div>
+                    <div>
+                      cost: {r.estimatedCostUsd ? `$${r.estimatedCostUsd}` : "—"}
+                      {typeof r.durationMs === "number" ? ` · ${(r.durationMs / 1000).toFixed(1)}s` : ""}
+                      {" · "}
+                      {new Date(r.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                  {r.replicatePredictionUrl && (
+                    <a
+                      href={r.replicatePredictionUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                      data-testid="link-replicate-prediction"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      Replicate prediction
+                      {r.replicatePredictionId ? ` (${r.replicatePredictionId.slice(0, 8)}…)` : ""}
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {result && !result.found && (
+          <p className="text-sm text-muted-foreground">
+            No My Pet renders found on that order. If the customer complaint references a product customised via the
+            standard studio flow (not My Pet), check that order's metafields directly in Shopify instead.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -438,6 +438,8 @@ export async function generateMyPetRender(args: {
     sizeId: args.sizeId || null,
     durationMs: result.durationMs,
     estimatedCostUsd: estimatedCostUsd != null ? String(estimatedCostUsd) : null,
+    replicatePredictionId: result.providerRequestId,
+    replicatePredictionUrl: result.providerRequestUrl,
   });
 
   return { renderId, jobId, previewUrl, colorName: color.name };
@@ -526,13 +528,36 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
 // signed preview URL (the one on the job row may have expired by now).
 // ─────────────────────────────────────────────────────────────────────────
 
-export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey: string; renderId: string }): Promise<{ jobId: string; previewUrl: string }> {
+export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey: string; renderId: string }): Promise<{
+  jobId: string;
+  previewUrl: string;
+  renderId: string;
+  /** Human-readable line-item label (e.g. "My Pet — Vintage Engraving"). */
+  designLabel: string;
+}> {
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey || !render.jobId) {
     throw new Error("Design not found");
   }
   const previewUrl = await signedMyPetUrl(render.previewPath);
-  return { jobId: render.jobId, previewUrl };
+  // Enrich the label with the candidate's art style for cart readability.
+  // Fallback to a plain "My Pet" if the candidate was later unpromoted.
+  let designLabel = "My Pet";
+  try {
+    const [candidate] = await db
+      .select({ artStyle: designCandidates.artStyle })
+      .from(designCandidates)
+      .where(eq(designCandidates.id, render.candidateId));
+    if (candidate?.artStyle) {
+      // "vintage-engraving" → "Vintage Engraving"
+      const pretty = String(candidate.artStyle)
+        .split(/[-_]/)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join(" ");
+      designLabel = `My Pet — ${pretty}`;
+    }
+  } catch { /* label is cosmetic — never block ATC on it */ }
+  return { jobId: render.jobId, previewUrl, renderId: render.id, designLabel };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -741,4 +766,257 @@ export async function markMyPetPhotoPurchased(petPhotoId: string, orderId: strin
   } catch (err) {
     console.warn("[my-pet] markMyPetPhotoPurchased failed:", (err as Error)?.message);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Order audit (Issue 11)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pull render ids out of a Shopify order's line-item properties.
+ * The storefront ATC in appai-my-pet.js sets `_appai_my_pet_render_id` on every
+ * custom cart line, so this is both the trigger ("is this order a My Pet sale?")
+ * and the lookup key back to my_pet_renders.
+ */
+function extractMyPetLineProperties(order: any): Array<{
+  renderId: string;
+  lineItemId: string | null;
+  mockupUrl: string | null;
+  jobId: string | null;
+}> {
+  const out: Array<{ renderId: string; lineItemId: string | null; mockupUrl: string | null; jobId: string | null }> = [];
+  const lineItems = Array.isArray(order?.line_items) ? order.line_items : [];
+  for (const li of lineItems) {
+    const props = Array.isArray(li?.properties) ? li.properties : [];
+    let renderId: string | null = null;
+    let mockupUrl: string | null = null;
+    let jobId: string | null = null;
+    for (const p of props) {
+      const n = String(p?.name || p?.key || "");
+      const v = p?.value == null ? "" : String(p.value);
+      if (!v) continue;
+      if (n === "_appai_my_pet_render_id") renderId = v;
+      else if (n === "_mockup_url" && v.startsWith("https://")) mockupUrl = v;
+      else if (n === "_appai_job_id") jobId = v;
+    }
+    if (renderId) out.push({ renderId, lineItemId: li?.id != null ? String(li.id) : null, mockupUrl, jobId });
+  }
+  return out;
+}
+
+/**
+ * On a paid order containing My Pet line(s), write a Shopify order metafield
+ * summarising every render on the order (preview URL, render id, Replicate
+ * prediction id + URL, candidate, line-item id), and backfill
+ * my_pet_renders.shopify_order_id / order_name for admin lookup.
+ *
+ * The metafield lives at ai_art_studio.my_pet_render_id as JSON. Shopify Admin
+ * shows it in the standard metafield panel on the order page — no admin
+ * extension required for v1. For richer inline display we'd add a Shopify
+ * Admin UI extension later (separate deploy-worthy scope).
+ */
+export async function recordMyPetSaleForOrder(shop: string, order: any): Promise<{ matched: number; metafieldWritten: boolean }> {
+  const entries = extractMyPetLineProperties(order);
+  if (entries.length === 0) return { matched: 0, metafieldWritten: false };
+  const orderGid = order?.admin_graphql_api_id ? String(order.admin_graphql_api_id) : null;
+  const orderId = order?.id != null ? String(order.id) : null;
+  const orderName = order?.name ? String(order.name) : null;
+
+  // Enrich each line with DB rows (cheap: at most a handful of renders per order).
+  const enriched: Array<{
+    renderId: string;
+    lineItemId: string | null;
+    mockupUrl: string | null;
+    jobId: string | null;
+    replicatePredictionId: string | null;
+    replicatePredictionUrl: string | null;
+    candidateId: string | null;
+    artStyle: string | null;
+    species: string | null;
+    petPhotoId: string | null;
+  }> = [];
+  for (const e of entries) {
+    try {
+      const [row] = await db.select().from(myPetRenders).where(and(eq(myPetRenders.shopDomain, shop), eq(myPetRenders.id, e.renderId)));
+      if (!row) {
+        enriched.push({ ...e, replicatePredictionId: null, replicatePredictionUrl: null, candidateId: null, artStyle: null, species: null, petPhotoId: null });
+        continue;
+      }
+      let artStyle: string | null = null;
+      let species: string | null = null;
+      try {
+        const [c] = await db
+          .select({ artStyle: designCandidates.artStyle, species: designCandidates.species })
+          .from(designCandidates)
+          .where(eq(designCandidates.id, row.candidateId));
+        artStyle = c?.artStyle ?? null;
+        species = c?.species ?? null;
+      } catch { /* enrichment only */ }
+      enriched.push({
+        ...e,
+        replicatePredictionId: row.replicatePredictionId,
+        replicatePredictionUrl: row.replicatePredictionUrl,
+        candidateId: row.candidateId,
+        artStyle,
+        species,
+        petPhotoId: row.petPhotoId,
+      });
+
+      // Backfill the reverse lookup on the render row.
+      if (orderId) {
+        try {
+          await db
+            .update(myPetRenders)
+            .set({ shopifyOrderId: orderId, shopifyOrderName: orderName })
+            .where(eq(myPetRenders.id, row.id));
+        } catch (err) {
+          console.warn("[my-pet] backfill order on render failed:", (err as Error)?.message);
+        }
+        if (row.petPhotoId) {
+          void markMyPetPhotoPurchased(row.petPhotoId, orderId);
+        }
+      }
+    } catch (err) {
+      console.warn("[my-pet] recordMyPetSaleForOrder enrichment failed:", (err as Error)?.message);
+    }
+  }
+
+  // Write the order metafield so merchants see the audit summary in Shopify.
+  // Failure here is non-fatal (warning only) — the DB row was already updated.
+  let metafieldWritten = false;
+  if (orderGid) {
+    try {
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      const accessToken = installation?.accessToken;
+      if (accessToken) {
+        const payload = {
+          version: 1,
+          orderName: orderName || null,
+          renders: enriched.map((e) => ({
+            renderId: e.renderId,
+            lineItemId: e.lineItemId,
+            mockupUrl: e.mockupUrl,
+            jobId: e.jobId,
+            replicatePredictionId: e.replicatePredictionId,
+            replicatePredictionUrl: e.replicatePredictionUrl,
+            candidateId: e.candidateId,
+            artStyle: e.artStyle,
+            species: e.species,
+          })),
+        };
+        const mutation = `mutation setMetafield($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) { userErrors { field message } }
+        }`;
+        const res = await fetch(`https://${shop}/admin/api/2025-10/graphql.json`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": accessToken },
+          body: JSON.stringify({
+            query: mutation,
+            variables: {
+              metafields: [{
+                ownerId: orderGid,
+                namespace: "ai_art_studio",
+                key: "my_pet_render_id",
+                type: "json",
+                value: JSON.stringify(payload),
+              }],
+            },
+          }),
+        });
+        const json: any = await res.json().catch(() => ({}));
+        const userErrors = json?.data?.metafieldsSet?.userErrors || [];
+        if (userErrors.length) {
+          console.warn(`[my-pet] metafieldsSet userErrors for order ${orderName || orderId}:`, JSON.stringify(userErrors));
+        } else {
+          metafieldWritten = true;
+        }
+      } else {
+        console.warn(`[my-pet] no OAuth token for ${shop} — order metafield not written`);
+      }
+    } catch (err) {
+      console.warn("[my-pet] metafieldsSet failed:", (err as Error)?.message);
+    }
+  }
+
+  console.log(
+    `[my-pet] recorded sale shop=${shop} order=${orderName || orderId} ` +
+      `lines=${enriched.length} metafield=${metafieldWritten ? "written" : "skipped"}`,
+  );
+  return { matched: enriched.length, metafieldWritten };
+}
+
+/**
+ * Admin audit lookup: given a Shopify order id or order name (e.g. "#1234"),
+ * return every My Pet render tied to that order with its preview URL (freshly
+ * signed), Replicate prediction URL, candidate style, and Supabase paths.
+ * Backs the "Order lookup" card in the My Pet settings admin page.
+ */
+export async function getMyPetOrderDetails(args: { shop: string; orderId?: string | null; orderName?: string | null }): Promise<{
+  found: boolean;
+  orderId: string | null;
+  orderName: string | null;
+  renders: Array<{
+    renderId: string;
+    createdAt: Date;
+    previewUrl: string | null;
+    previewPath: string;
+    candidateId: string;
+    artStyle: string | null;
+    species: string | null;
+    colorName: string | null;
+    sizeId: string | null;
+    replicatePredictionId: string | null;
+    replicatePredictionUrl: string | null;
+    petPhotoId: string | null;
+    jobId: string | null;
+    durationMs: number | null;
+    estimatedCostUsd: string | null;
+  }>;
+}> {
+  const rows = args.orderId
+    ? await db.select().from(myPetRenders).where(and(eq(myPetRenders.shopDomain, args.shop), eq(myPetRenders.shopifyOrderId, args.orderId)))
+    : args.orderName
+      ? await db.select().from(myPetRenders).where(and(eq(myPetRenders.shopDomain, args.shop), eq(myPetRenders.shopifyOrderName, args.orderName)))
+      : [];
+  if (rows.length === 0) return { found: false, orderId: args.orderId ?? null, orderName: args.orderName ?? null, renders: [] };
+
+  const renders = await Promise.all(
+    rows.map(async (row) => {
+      let previewUrl: string | null = null;
+      try { previewUrl = await signedMyPetUrl(row.previewPath); } catch { previewUrl = null; }
+      let artStyle: string | null = null;
+      let species: string | null = null;
+      try {
+        const [c] = await db
+          .select({ artStyle: designCandidates.artStyle, species: designCandidates.species })
+          .from(designCandidates)
+          .where(eq(designCandidates.id, row.candidateId));
+        artStyle = c?.artStyle ?? null;
+        species = c?.species ?? null;
+      } catch { /* enrichment only */ }
+      return {
+        renderId: row.id,
+        createdAt: row.createdAt,
+        previewUrl,
+        previewPath: row.previewPath,
+        candidateId: row.candidateId,
+        artStyle,
+        species,
+        colorName: row.colorId,
+        sizeId: row.sizeId,
+        replicatePredictionId: row.replicatePredictionId,
+        replicatePredictionUrl: row.replicatePredictionUrl,
+        petPhotoId: row.petPhotoId,
+        jobId: row.jobId,
+        durationMs: row.durationMs,
+        estimatedCostUsd: row.estimatedCostUsd,
+      };
+    }),
+  );
+  return {
+    found: true,
+    orderId: rows[0].shopifyOrderId,
+    orderName: rows[0].shopifyOrderName,
+    renders,
+  };
 }

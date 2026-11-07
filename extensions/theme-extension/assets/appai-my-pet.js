@@ -145,6 +145,25 @@
     return out;
   }
 
+  /** All size option values across the base product's variants (preserves order, deduped). */
+  function allSizeOptions(root) {
+    var variants = [];
+    var optionNames = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+    var seen = {};
+    var out = [];
+    for (var i = 0; i < variants.length; i++) {
+      var size = findOptionValue(variants[i], optionNames, ['size']);
+      if (size == null) continue;
+      var key = String(size);
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+      out.push(key);
+    }
+    return out;
+  }
+
   /** Find the first variant that matches the given colour (and current size if possible). */
   function variantForColor(root, colorName, preferSizeId) {
     var variants = [];
@@ -162,6 +181,25 @@
       if (preferSizeId && String(s) === String(preferSizeId)) { exact = v; break; }
     }
     return exact || colorOnly;
+  }
+
+  /** Find the first variant that matches the given size (and current colour if possible). */
+  function variantForSize(root, sizeId, preferColorName) {
+    var variants = [];
+    var optionNames = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+    var exact = null;
+    var sizeOnly = null;
+    for (var i = 0; i < variants.length; i++) {
+      var v = variants[i];
+      var s = findOptionValue(v, optionNames, ['size']);
+      if (String(s) !== String(sizeId)) continue;
+      if (!sizeOnly) sizeOnly = v;
+      var c = findOptionValue(v, optionNames, ['color', 'colour']);
+      if (preferColorName && String(c) === String(preferColorName)) { exact = v; break; }
+    }
+    return exact || sizeOnly;
   }
 
   function buildModal(opts) {
@@ -363,17 +401,33 @@
 
     function renderPreviewBody(body, previewUrl) {
       var colors = allColorOptions(root);
+      var sizes = allSizeOptions(root);
       var info = currentVariantInfo(root);
       var currentColor = info.colorName;
-      var swatchesHtml = '';
+      var currentSize = info.sizeId;
+      var colorSwatchesHtml = '';
       if (colors.length > 1) {
-        swatchesHtml += '<div class="appai-my-pet-swatches">';
+        colorSwatchesHtml += '<div class="appai-my-pet-swatches" data-group="color">';
         for (var i = 0; i < colors.length; i++) {
-          var isCurrent = String(colors[i]) === String(currentColor);
-          swatchesHtml += '<button type="button" data-action="swatch" data-color="' + colors[i].replace(/"/g, '&quot;') + '"' +
-            (isCurrent ? ' aria-current="true"' : '') + '>' + colors[i] + '</button>';
+          var isCurrentC = String(colors[i]) === String(currentColor);
+          colorSwatchesHtml += '<button type="button" data-action="swatch-color" data-color="' + colors[i].replace(/"/g, '&quot;') + '"' +
+            (isCurrentC ? ' aria-current="true"' : '') + '>' + colors[i] + '</button>';
         }
-        swatchesHtml += '</div>';
+        colorSwatchesHtml += '</div>';
+      }
+      // Issue 12 — size swatches alongside colour. Size change updates the base
+      // variant only; no recomposite call is needed (print area is the same for
+      // S/M/L on apparel). The ATC variantId will pick up the new size via
+      // currentVariantInfo at add-to-cart time.
+      var sizeSwatchesHtml = '';
+      if (sizes.length > 1) {
+        sizeSwatchesHtml += '<div class="appai-my-pet-swatches" data-group="size">';
+        for (var j = 0; j < sizes.length; j++) {
+          var isCurrentS = String(sizes[j]) === String(currentSize);
+          sizeSwatchesHtml += '<button type="button" data-action="swatch-size" data-size="' + sizes[j].replace(/"/g, '&quot;') + '"' +
+            (isCurrentS ? ' aria-current="true"' : '') + '>' + sizes[j] + '</button>';
+        }
+        sizeSwatchesHtml += '</div>';
       }
       var attemptsHtml = '';
       if (state.capStatus && typeof state.capStatus.perListingRemaining === 'number' && state.capStatus.perListingRemaining > 0) {
@@ -388,7 +442,8 @@
       body.innerHTML =
         '<h3>Your design</h3>' +
         '<img src="' + previewUrl + '" class="appai-preview-img" alt="Your pet on this design (tap to enlarge)" />' +
-        swatchesHtml +
+        colorSwatchesHtml +
+        sizeSwatchesHtml +
         '<button type="button" class="appai-primary" data-action="add-to-cart">Add to cart</button>' +
         '<button type="button" class="appai-secondary" data-action="change-photo">Try another photo</button>' +
         attemptsHtml +
@@ -412,11 +467,41 @@
           openUploadStep();
         });
       });
-      var swatchBtns = body.querySelectorAll('[data-action="swatch"]');
-      for (var s = 0; s < swatchBtns.length; s++) {
-        swatchBtns[s].addEventListener('click', function (e) {
+      var colorBtns = body.querySelectorAll('[data-action="swatch-color"]');
+      for (var cb = 0; cb < colorBtns.length; cb++) {
+        colorBtns[cb].addEventListener('click', function (e) {
           selectColor(body, e.currentTarget.getAttribute('data-color'));
         });
+      }
+      var sizeBtns = body.querySelectorAll('[data-action="swatch-size"]');
+      for (var sb = 0; sb < sizeBtns.length; sb++) {
+        sizeBtns[sb].addEventListener('click', function (e) {
+          selectSize(body, e.currentTarget.getAttribute('data-size'));
+        });
+      }
+    }
+
+    /** Size swatch click (Issue 12): switch base variant to the same colour + chosen size. No model call. */
+    function selectSize(body, sizeId) {
+      if (!sizeId) return;
+      var info = currentVariantInfo(root);
+      var v = variantForSize(root, sizeId, info.colorName);
+      if (v && v.id) {
+        var form = document.querySelector('form[action*="/cart/add"]');
+        var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
+        if (idInput) {
+          idInput.value = String(v.id);
+          try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+        }
+      }
+      // Reflect active state on the size chips.
+      var allBtns = body.querySelectorAll('[data-action="swatch-size"]');
+      for (var i = 0; i < allBtns.length; i++) {
+        if (String(allBtns[i].getAttribute('data-size')) === String(sizeId)) {
+          allBtns[i].setAttribute('aria-current', 'true');
+        } else {
+          allBtns[i].removeAttribute('aria-current');
+        }
       }
     }
 
@@ -505,16 +590,37 @@
     function addToCart(body) {
       var status = body.querySelector('#appai-my-pet-status');
       var btn = body.querySelector('[data-action="add-to-cart"]');
+      // Re-read the base PDP form at click time so a colour or size swatch
+      // chosen in the preview modal flows through to the cart line.
       var info = currentVariantInfo(root);
       if (btn) btn.disabled = true;
       if (status) status.textContent = 'Setting up your cart line…';
       attemptResolveVariant(info.variantId, info.price, 0)
         .then(function (res) {
           if (status) status.textContent = 'Adding to cart…';
+          // Issue 10: line-item properties that (a) let appai-cart-images.js
+          // recognise this as an AppAI line and swap the thumbnail to the
+          // composite mockup, (b) tie the line back to generationJobs for the
+          // existing fulfillment path, (c) tie it back to my_pet_renders for the
+          // audit metafield written on orders/paid.
+          //
+          // Underscore-prefixed keys are hidden from buyer-facing cart UI (per
+          // Shopify convention + our cart-guard script) — merchant / support
+          // sees them on the Shopify order page.
+          var properties = {
+            '_design_id': res.designLabel || 'My Pet',
+            '_appai_my_pet_render_id': res.renderId || state.renderId || '',
+          };
+          if (res.jobId) properties['_appai_job_id'] = res.jobId;
+          if (res.previewUrl && res.previewUrl.indexOf('https://') === 0) {
+            properties['_mockup_url'] = res.previewUrl;
+          }
+          if (info.colorName) properties['_color'] = info.colorName;
+          if (info.sizeId) properties['_size'] = info.sizeId;
           return fetch('/cart/add.js', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1 }] }),
+            body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1, properties: properties }] }),
           }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); });
         })
         .then(function (added) {

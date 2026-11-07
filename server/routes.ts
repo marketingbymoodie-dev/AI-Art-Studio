@@ -13446,6 +13446,18 @@ ${orientationExtra}
         );
       }
 
+      // ── My Pet audit (Issue 11): link render rows to the order + write the
+      // ai_art_studio.my_pet_render_id Shopify order metafield so merchants see
+      // the preview / Replicate prediction URL / Supabase paths in the order
+      // page. No-op (returns matched:0) if no My Pet line properties on the order.
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./my-pet")
+          .then(({ recordMyPetSaleForOrder }) => recordMyPetSaleForOrder(shop, order))
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] my-pet sale recording failed:", e?.message || e),
+          );
+      }
+
       // ── Creator Marketplace financial ledger (Phase 5) ─────────────────────
       // Platform-shop orders with `_creator_id` / job.creator_id → creator_orders.
       if (shop && Array.isArray(order.line_items)) {
