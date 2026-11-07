@@ -10,7 +10,7 @@
  * customizer flow) → on purchase, server/my-pet-print-file.ts builds the
  * print file from the stored edited artwork.
  */
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { and, eq, gte, sql } from "drizzle-orm";
 import {
   designCandidates,
@@ -449,7 +449,48 @@ export async function generateMyPetRender(args: {
   const editedBuf = Buffer.from(result.data, "base64");
   await writeLibraryObject(editedPath, editedBuf, "image/png");
 
+  // STAGING-102 — Craig reports every non-chosen colour composite shows the
+  // ORIGINAL design (tabby cat for Your Delivery Arrived) instead of the
+  // Sunburst output. Only the chosen colour is right. These logs identify
+  // whether the Sunburst bytes ever reach the compositor, whether every
+  // call reads the same path, and whether the output bytes differ between
+  // colours or are identical (which would prove the compose is reading a
+  // stale/wrong input).
+  const editedHashFull = createHash("md5").update(editedBuf).digest("hex");
+  const editedHash = editedHashFull.slice(0, 16);
+  const editedPathTail = editedPath.split("/").pop() || editedPath;
+  console.log(
+    `[my-pet] pre-compose source editedPath=${editedPathTail} ` +
+      `editedBufLen=${editedBuf.length} editedMd5=${editedHash}`,
+  );
+  // Defensive read-back — if Supabase hands us back bytes that don't match
+  // what we just uploaded, every per-colour compose that reads this path
+  // via getObject() will overlay the wrong artwork. One storage round-trip
+  // per generate (~100-300ms) is a worthwhile sanity check while we chase
+  // STAGING-102; we can strip once it's confirmed not the cause.
+  try {
+    const readBack = await readLibraryObject(editedPath);
+    const readBackHash = createHash("md5").update(readBack).digest("hex").slice(0, 16);
+    if (readBackHash !== editedHash) {
+      console.error(
+        `[my-pet] pre-compose CRITICAL editedPath read-back MISMATCH ` +
+          `wrote=${editedHash} read=${readBackHash} path=${editedPathTail} ` +
+          `wroteLen=${editedBuf.length} readLen=${readBack.length}`,
+      );
+    } else {
+      console.log(`[my-pet] pre-compose read-back OK md5=${readBackHash}`);
+    }
+  } catch (err) {
+    console.warn(
+      `[my-pet] pre-compose read-back failed path=${editedPathTail}: ${(err as Error)?.message}`,
+    );
+  }
+
   const productType = await softstyleType();
+  console.log(
+    `[my-pet] pre-compose chosen start colour=${color.name} ` +
+      `designSrc=${editedPathTail} panelId=${args.candidate.panelId}`,
+  );
   const { png: previewPng } = await renderCandidateOnPanel({
     productTypeId: productType.id,
     typeName: productType.name,
@@ -458,6 +499,11 @@ export async function generateMyPetRender(args: {
     colorHex: color.hex,
     artworkPath: editedPath,
   });
+  const chosenHash = createHash("md5").update(previewPng).digest("hex").slice(0, 16);
+  console.log(
+    `[my-pet] pre-compose chosen done colour=${color.name} ` +
+      `outputLen=${previewPng.length} outputMd5=${chosenHash}`,
+  );
   // Canonical preview path — stays `{renderId}.png` for backward-compat with
   // every existing row (myPetRenders.previewPath, the sweep's object delete,
   // email save, etc.). The per-colour sibling we additionally write below
@@ -497,8 +543,20 @@ export async function generateMyPetRender(args: {
   const otherResults = await Promise.allSettled(
     otherColors.map(async (other) => {
       const otherPath = previewPathFor(other.name);
+      const otherPathTail = otherPath.split("/").pop() || otherPath;
       const existing = await myPetObjectExists(otherPath);
       if (!existing) {
+        // STAGING-102 — per-colour diagnostic. designSrc MUST be editedPathTail
+        // (same file the chosen compose succeeded with). outputSrc is the
+        // per-colour sibling. The output MD5 after compose tells us whether
+        // every colour is producing different bytes (correct: each colour's
+        // garment differs) or identical bytes (bug: compose is using a stale
+        // input and ignoring the colour change).
+        console.log(
+          `[my-pet] pre-composite colour=${other.name} ` +
+            `designSrc=${editedPathTail} designMd5=${editedHash} ` +
+            `panelId=${args.candidate.panelId} outputSrc=${otherPathTail}`,
+        );
         const { png } = await renderCandidateOnPanel({
           productTypeId: productType.id,
           typeName: productType.name,
@@ -507,7 +565,18 @@ export async function generateMyPetRender(args: {
           colorHex: other.hex,
           artworkPath: editedPath,
         });
+        const outHash = createHash("md5").update(png).digest("hex").slice(0, 16);
+        console.log(
+          `[my-pet] pre-composite colour=${other.name} ` +
+            `outputLen=${png.length} outputMd5=${outHash} ` +
+            `matchesChosenMd5=${outHash === chosenHash}`,
+        );
         await putMyPetObject(otherPath, png, "image/png");
+      } else {
+        console.log(
+          `[my-pet] pre-composite colour=${other.name} ` +
+            `designSrc=${editedPathTail} outputSrc=${otherPathTail} CACHE HIT (skipped compose)`,
+        );
       }
       const url = await signedMyPetUrl(otherPath);
       return [other.name, url] as const;
