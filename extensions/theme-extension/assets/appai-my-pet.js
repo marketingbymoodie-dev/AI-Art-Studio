@@ -589,9 +589,9 @@
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
       '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}' +
-      // STAGING-109 — opaque hero cover. Thumbnails stay visible; the
-      // gallery is never blanked with opacity:0.
-      '.appai-my-pet-cover{position:absolute;pointer-events:none;z-index:30;margin:0;padding:0;border:0;max-width:none;max-height:none;object-fit:cover;opacity:1;}';
+      // STAGING-110 — cover lives on document.body so a section re-render
+      // cannot remove it. Thumbnails are never opacity-hidden.
+      '.appai-my-pet-cover{position:absolute;pointer-events:none;z-index:1000;margin:0;padding:0;border:0;max-width:none;max-height:none;object-fit:cover;opacity:1;}';
     document.head.appendChild(style);
   }
 
@@ -1589,8 +1589,17 @@
       return document.body;
     }
 
-    function positionCover(cover, host, hero) {
-      if (!cover || !host) return;
+    function pageScroll() {
+      return {
+        x: window.pageXOffset || document.documentElement.scrollLeft || 0,
+        y: window.pageYOffset || document.documentElement.scrollTop || 0,
+      };
+    }
+
+    // Document coordinates. The cover is position:absolute on document.body,
+    // outside the gallery the theme replaces.
+    function positionCover(cover, hero) {
+      if (!cover) return;
       var box = null;
       if (hero && !isCoverImg(hero)) {
         var hr;
@@ -1603,44 +1612,85 @@
             if (cs.objectFit && cs.objectFit !== 'auto') fit = cs.objectFit;
             if (cs.objectPosition) objectPosition = cs.objectPosition;
           } catch (e2) {}
-          box = { left: hr.left, top: hr.top, width: hr.width, height: hr.height, fit: fit, objectPosition: objectPosition };
+          var scroll = pageScroll();
+          box = {
+            left: hr.left + scroll.x,
+            top: hr.top + scroll.y,
+            width: hr.width,
+            height: hr.height,
+            fit: fit,
+            objectPosition: objectPosition,
+          };
           state.coverViewport = box;
         }
       }
       if (!box) box = state.coverViewport;
       if (!box) return;
-      var pos = 'static';
-      try { pos = window.getComputedStyle(host).position; } catch (e3) {}
-      if (pos === 'static') {
-        if (!state.coverHostPosSaved) {
-          state.coverHostEl = host;
-          state.coverHostPos = host.style.position || '';
-          state.coverHostPosSaved = true;
-        }
-        host.style.position = 'relative';
-      }
-      var br;
-      try { br = host.getBoundingClientRect(); } catch (e4) { return; }
-      cover.style.left = (box.left - br.left + host.scrollLeft) + 'px';
-      cover.style.top = (box.top - br.top + host.scrollTop) + 'px';
+      cover.style.position = 'absolute';
+      cover.style.left = box.left + 'px';
+      cover.style.top = box.top + 'px';
       cover.style.width = box.width + 'px';
       cover.style.height = box.height + 'px';
       cover.style.objectFit = box.fit || 'cover';
       cover.style.objectPosition = box.objectPosition || 'center';
     }
 
+    function syncCoverToHero() {
+      var cover = state.swapCoverEl;
+      if (!cover || !cover.isConnected) return;
+      var hero = visibleSlideImg();
+      if (isCoverImg(hero)) hero = findProductHeroImg();
+      positionCover(cover, hero);
+    }
+
+    function installCoverFollow() {
+      if (state.coverFollowInstalled) return;
+      state.coverFollowInstalled = true;
+      window.addEventListener('scroll', syncCoverToHero, true);
+      window.addEventListener('resize', syncCoverToHero);
+    }
+
+    function pinHeroBackdrop(hero) {
+      if (!hero || isCoverImg(hero)) return;
+      var nodes = [];
+      if (hero.parentElement) nodes.push(hero.parentElement);
+      var gallery = hero.closest ? hero.closest('media-gallery, .media-gallery, .product__media, .product-media') : null;
+      if (gallery && nodes.indexOf(gallery) === -1) nodes.push(gallery);
+      if (state.heroBackdropSaved && state.heroBackdropSaved.length) {
+        var same = state.heroBackdropSaved.length === nodes.length;
+        for (var s = 0; same && s < nodes.length; s++) {
+          if (state.heroBackdropSaved[s].el !== nodes[s]) same = false;
+        }
+        if (same && state.heroBackdropSaved[0] && state.heroBackdropSaved[0].el.isConnected) return;
+        releaseHeroBackdrop();
+      }
+      var saved = [];
+      for (var i = 0; i < nodes.length; i++) {
+        saved.push({ el: nodes[i], bg: nodes[i].style.backgroundColor || '' });
+        nodes[i].style.backgroundColor = 'transparent';
+      }
+      state.heroBackdropSaved = saved;
+    }
+
+    function releaseHeroBackdrop() {
+      var saved = state.heroBackdropSaved || [];
+      for (var i = 0; i < saved.length; i++) {
+        if (saved[i].el) saved[i].el.style.backgroundColor = saved[i].bg || '';
+      }
+      state.heroBackdropSaved = null;
+    }
+
     function coverOn(colorName, eventType) {
       var url = previewUrlForColour(colorName);
       var hero = visibleSlideImg();
       if (isCoverImg(hero)) hero = findProductHeroImg();
-      var already = !!(state.swapCoverEl && state.swapCoverEl.isConnected);
       var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
       if (!url || (!hero && !state.coverViewport)) {
         console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'), 'skipped=no-url-or-hero');
         return;
       }
       if (!state.swapMaskStarted) state.swapMaskStarted = Date.now();
-      var host = coverHost();
+      installCoverFollow();
       var cover = state.swapCoverEl;
       if (!cover) {
         cover = document.createElement('img');
@@ -1648,17 +1698,21 @@
         cover.alt = '';
         cover.setAttribute('aria-hidden', 'true');
         cover.draggable = false;
-        cover.style.zIndex = '30';
+        cover.style.position = 'absolute';
+        cover.style.zIndex = '1000';
         cover.style.maxWidth = 'none';
         cover.style.maxHeight = 'none';
         cover.style.pointerEvents = 'none';
         state.swapCoverEl = cover;
       }
       if (cover.getAttribute('src') !== url) cover.src = url;
-      if (cover.parentNode !== host) host.appendChild(cover);
-      positionCover(cover, host, hero);
+      if (cover.parentNode !== document.body) document.body.appendChild(cover);
+      positionCover(cover, hero);
+      pinHeroBackdrop(hero);
       if (hero && !isCoverImg(hero)) applyHeroHold(hero);
-      console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + (already ? (Date.now() - state.swapMaskStarted) : 0), 'colour=' + (colorName || '?'));
+      console.log(TAG, 'cover on reason=' + eventType,
+        'elapsedMs=' + (Date.now() - state.swapMaskStarted),
+        'colour=' + (colorName || '?'));
     }
 
     function restoreHeldHeroes() {
@@ -1678,11 +1732,7 @@
       state.swapCoverEl = null;
       state.swapMaskStarted = 0;
       state.coverViewport = null;
-      if (state.coverHostPosSaved && state.coverHostEl) {
-        state.coverHostEl.style.position = state.coverHostPos || '';
-        state.coverHostPosSaved = false;
-        state.coverHostEl = null;
-      }
+      releaseHeroBackdrop();
       restoreHeldHeroes();
       console.log(TAG, 'cover off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
     }
@@ -1694,12 +1744,33 @@
       return state.previewUrl || null;
     }
 
+    // Colour that owns this slide, from Shopify's data-media-id. Never the
+    // swatch the shopper just clicked — that colour belongs only to its
+    // own media id. A hero with no media id (Dawn's single <img>) is the
+    // one node allowed to follow the current colour.
+    function slideColourForImg(img) {
+      if (!img) return null;
+      var host = img.getAttribute && img.getAttribute('data-media-id')
+        ? img
+        : (img.closest ? img.closest('[data-media-id]') : null);
+      var mediaId = host ? String(host.getAttribute('data-media-id') || '') : '';
+      if (!mediaId) return isHeroCandidate(img) ? currentInlineColour() : null;
+      var map = getMediaIdByColor(root);
+      var found = null;
+      for (var color in map) {
+        if (!Object.prototype.hasOwnProperty.call(map, color)) continue;
+        if (String(map[color]) === mediaId) found = color;
+      }
+      return found ? canonicalPreviewColor(found) : null;
+    }
+
     function paintProductMediaImage(img) {
       if (!img || img.tagName !== 'IMG') return false;
+      if (isCoverImg(img)) return false;
       if (!img.classList || !img.classList.contains('product-media__image')) return false;
       if (img.closest && img.closest('.appai-my-pet')) return false;
-      var colorName = currentInlineColour();
-      var url = previewUrlForColour(colorName);
+      var colorName = slideColourForImg(img);
+      var url = (colorName && state.previewUrlByColor && state.previewUrlByColor[colorName]) || null;
       if (!url) return false;
       if (img.__appaiAssertUrl === url && !img.getAttribute('srcset') && !img.getAttribute('sizes') && (Date.now() - (img.__appaiAssertAt || 0)) < 400) {
         return true;
@@ -1760,7 +1831,9 @@
                   var rect = imgs[k].getBoundingClientRect();
                   area = Math.max(0, rect.width) * Math.max(0, rect.height);
                 } catch (e) {}
-                if (!replaced || area >= replacedArea) {
+                // Only the hero ends the cover. A thumbnail decode must not
+                // drop it while the new hero is still blank.
+                if (area >= 160 * 160 && area >= replacedArea) {
                   replaced = imgs[k];
                   replacedArea = area;
                 }
@@ -1770,10 +1843,16 @@
             paintProductMediaImage(m.target);
           }
         }
-        if (state.swapMaskWaiting && (!state.swapCoverEl || !state.swapCoverEl.isConnected)) {
-          coverOn(colorName, 'reattach');
+        if (state.swapMaskWaiting) {
+          if (!state.swapCoverEl || !state.swapCoverEl.isConnected) coverOn(colorName, 'reattach');
+          else syncCoverToHero();
+          var liveHero = visibleSlideImg();
+          if (liveHero && (!state.heroBackdropSaved || !state.heroBackdropSaved.length || !state.heroBackdropSaved[0].el.isConnected)) {
+            pinHeroBackdrop(liveHero);
+          }
         }
         if (replaced) noteReplacementDecoded(replaced, colorName);
+        if (replaced) scheduleSlideColourAudit('after-hero-replace');
       });
       observer.observe(container, {
         childList: true,
@@ -1901,6 +1980,47 @@
      * carrying our stash attribute get their src re-applied without
      * stashing a second original.
      */
+    function auditSlideColours(reason) {
+      if (!state.inlineApplied || !state.previewUrlByColor) return;
+      var mediaIdByColor = getMediaIdByColor(root);
+      var urls = state.previewUrlByColor;
+      var scope = productSectionScope();
+      var bad = [];
+      var ok = 0;
+      var checked = 0;
+      for (var color in urls) {
+        if (!Object.prototype.hasOwnProperty.call(urls, color)) continue;
+        var mediaId = mediaIdByColor[color] || '';
+        if (!mediaId) {
+          for (var raw in mediaIdByColor) {
+            if (!Object.prototype.hasOwnProperty.call(mediaIdByColor, raw)) continue;
+            if (canonicalPreviewColor(raw) === color) { mediaId = mediaIdByColor[raw]; break; }
+          }
+        }
+        if (!mediaId) continue;
+        var nodes = [];
+        try { nodes = scope.querySelectorAll('[data-media-id="' + mediaId + '"] img'); } catch (e) {}
+        for (var i = 0; i < nodes.length; i++) {
+          var img = nodes[i];
+          if (!img || img.tagName !== 'IMG' || isCoverImg(img)) continue;
+          checked++;
+          if (urlsMatch(img.getAttribute('src') || '', urls[color])) ok++;
+          else bad.push(color + '=' + urlTail(img.getAttribute('src') || ''));
+        }
+      }
+      if (!checked) return;
+      if (bad.length) console.warn(TAG, 'slide colour audit', reason, 'MISMATCH', bad.join(', '));
+      else console.log(TAG, 'slide colour audit', reason, 'each slide has its own colour', 'ok=' + ok);
+    }
+
+    function scheduleSlideColourAudit(reason) {
+      var token = (state._slideAuditToken = (state._slideAuditToken || 0) + 1);
+      setTimeout(function () {
+        if (token !== state._slideAuditToken || !state.inlineApplied) return;
+        auditSlideColours(reason);
+      }, 400);
+    }
+
     function swapVariantSlides(urlsByColor) {
       var mediaIdByColor = getMediaIdByColor(root);
       var scope = null;
@@ -2549,10 +2669,20 @@
         // slides in <media-gallery> custom elements.
         var sawAdded = false;
         for (var m = 0; m < mutations.length; m++) {
-          if (mutations[m].addedNodes && mutations[m].addedNodes.length) { sawAdded = true; break; }
+          var addedNodes = mutations[m].addedNodes;
+          if (!addedNodes || !addedNodes.length) continue;
+          for (var a = 0; a < addedNodes.length; a++) {
+            var addedNode = addedNodes[a];
+            if (!addedNode || addedNode.nodeType !== 1) continue;
+            if (isCoverImg(addedNode)) continue;
+            sawAdded = true;
+            break;
+          }
+          if (sawAdded) break;
         }
         if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
           swapVariantSlides(state.previewUrlByColor);
+          scheduleSlideColourAudit('after-slide-swap');
         }
         // Legacy single-hero fallback: themes without per-variant slides
         // (Dawn simple products) still need the opacity-hide + hero-src
