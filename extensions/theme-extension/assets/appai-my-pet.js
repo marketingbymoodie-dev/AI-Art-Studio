@@ -385,6 +385,38 @@
     return null;
   }
 
+  /**
+   * STAGING-100 — Ritual / Horizon carousel-style galleries render ONE
+   * <img> per variant media (data-media-id per slide). The theme hides
+   * all slides except the "active" one and shows a different slide when
+   * the shopper changes colour — the hero <img> we were tracking becomes
+   * off-screen, so writing our composite to its src leaves the shopper
+   * staring at the stock version of whatever slide the theme scrolled to.
+   *
+   * Build colour → media id from the product's variants data. First
+   * variant per colour wins (apparel typically has one featured_media
+   * per colour across all sizes). Variants without featured_media (DIY
+   * / digital / un-imaged variants) are skipped — those colours fall
+   * back to the single-hero code path.
+   */
+  function getMediaIdByColor(root) {
+    var variants = [];
+    var optionNames = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    try { optionNames = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+    var map = {};
+    for (var i = 0; i < variants.length; i++) {
+      var v = variants[i];
+      var mediaId = null;
+      if (v.featured_media && v.featured_media.id != null) mediaId = String(v.featured_media.id);
+      else if (v.featured_media_id != null) mediaId = String(v.featured_media_id);
+      if (!mediaId) continue;
+      var color = findOptionValue(v, optionNames, ['color', 'colour']);
+      if (color && !map[color]) map[color] = mediaId;
+    }
+    return map;
+  }
+
   function currentVariantInfo(root) {
     var variants = [];
     var optionNames = [];
@@ -893,6 +925,11 @@
       // installInlineVariantListeners (seen on Ritual). Set by
       // installInlineFormPollFallback; cleared by revertToOriginalDesign.
       inlineFormPollTimer: null,
+      // STAGING-100 — per-slide pre-swap for carousel-style galleries
+      // (Ritual, Horizon-family). List of <img> nodes we wrote our
+      // composite onto; each carries data-appai-my-pet-slide-original-src
+      // (+ -srcset) so revertVariantSlides can restore them cleanly.
+      inlineSlideStash: [],
     };
 
     function markDismissed(renderId) {
@@ -1178,6 +1215,116 @@
     }
 
     /**
+     * STAGING-100 — pre-swap every per-variant slide + thumbnail with the
+     * matching colour composite, up front at activate time. Ritual's
+     * media-gallery--carousel + Horizon-family themes render one <img> per
+     * variant image; the native swatch handler just scrolls / toggles
+     * active class. By pre-swapping, the theme's own behaviour SHOWS our
+     * image with no race, no flash, no observer chase. The single-hero
+     * guard remains as a safety net for Dawn-style themes that mutate src
+     * on one node.
+     *
+     * Lookup is scoped to the nearest product section (same walk as
+     * findMainProductForm / readSwatchColor) so related-product carousels
+     * and store-wide "trending now" strips are never touched. Match is
+     * by Shopify's own data-media-id attribute, so the thumbnail strip
+     * (also tagged with data-media-id) is swapped in the same pass.
+     *
+     * Idempotent — can be called repeatedly (on activate, on every
+     * gallery mutation, on every recomposite success). Nodes already
+     * carrying our stash attribute get their src re-applied without
+     * stashing a second original.
+     */
+    function swapVariantSlides(urlsByColor) {
+      var mediaIdByColor = getMediaIdByColor(root);
+      var scope = null;
+      var cur = root.parentNode;
+      while (cur && cur !== document.body && cur.nodeType === 1) {
+        var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+        if (tag === 'main' || tag === 'section' ||
+            cur.hasAttribute('data-section-type') ||
+            cur.hasAttribute('data-section-id') ||
+            cur.hasAttribute('data-product-id')) { scope = cur; break; }
+        cur = cur.parentNode;
+      }
+      if (!scope) scope = document;
+      var totalMatched = 0;
+      var stash = state.inlineSlideStash || [];
+      for (var color in urlsByColor) {
+        if (!Object.prototype.hasOwnProperty.call(urlsByColor, color)) continue;
+        var url = urlsByColor[color];
+        if (!url) continue;
+        var mediaId = mediaIdByColor[color];
+        if (!mediaId) {
+          console.log(TAG, 'slide swap:', color, '→ no featured_media id in variants data (skipped)');
+          continue;
+        }
+        var slides = [];
+        try { slides = scope.querySelectorAll('[data-media-id="' + mediaId + '"]'); } catch (e) {}
+        var matched = 0;
+        for (var i = 0; i < slides.length; i++) {
+          var slide = slides[i];
+          var imgs = slide.tagName === 'IMG'
+            ? [slide]
+            : (slide.querySelectorAll ? slide.querySelectorAll('img') : []);
+          for (var j = 0; j < imgs.length; j++) {
+            var img = imgs[j];
+            if (img.closest && img.closest('.appai-my-pet')) continue;
+            if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
+              img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
+              var origSrcset = img.getAttribute('srcset');
+              if (origSrcset) img.setAttribute('data-appai-my-pet-slide-original-srcset', origSrcset);
+              stash.push(img);
+            }
+            try { if (img.src !== url) img.src = url; } catch (e) {}
+            try { img.removeAttribute('srcset'); } catch (e) {}
+            if (img.dataset) {
+              try { delete img.dataset.src; } catch (e) {}
+              try { delete img.dataset.srcset; } catch (e) {}
+            }
+            img.setAttribute('data-appai-my-pet-slide', mediaId);
+            matched++;
+          }
+        }
+        totalMatched += matched;
+        console.log(TAG, 'slide swap:', color, '→ media', mediaId,
+          matched ? '(' + matched + ' nodes swapped, incl. thumbnail)' : '(NO MATCHING NODES in product section)');
+      }
+      state.inlineSlideStash = stash;
+      console.log(TAG, 'slide swap: total nodes swapped =', totalMatched, 'colours in map =', Object.keys(urlsByColor).length);
+    }
+
+    /**
+     * STAGING-100 — restore every per-slide swap (main carousel + thumbnails)
+     * from the stash attributes. Mirror of swapVariantSlides for revert.
+     * Safe to call multiple times (empties the stash on each run).
+     */
+    function revertVariantSlides() {
+      var stash = state.inlineSlideStash || [];
+      var restored = 0;
+      for (var i = 0; i < stash.length; i++) {
+        var img = stash[i];
+        if (!img) continue;
+        try {
+          if (img.hasAttribute('data-appai-my-pet-slide-original-src')) {
+            var origSrc = img.getAttribute('data-appai-my-pet-slide-original-src');
+            if (origSrc != null && origSrc !== '') img.src = origSrc;
+            img.removeAttribute('data-appai-my-pet-slide-original-src');
+          }
+          if (img.hasAttribute('data-appai-my-pet-slide-original-srcset')) {
+            var origSrcset = img.getAttribute('data-appai-my-pet-slide-original-srcset');
+            if (origSrcset) img.setAttribute('srcset', origSrcset);
+            img.removeAttribute('data-appai-my-pet-slide-original-srcset');
+          }
+          img.removeAttribute('data-appai-my-pet-slide');
+          restored++;
+        } catch (e) {}
+      }
+      state.inlineSlideStash = [];
+      console.log(TAG, 'slide revert: restored', restored, 'nodes');
+    }
+
+    /**
      * BUGs B + C (post-staging-90) — single entry point for the "Try another
      * photo" interaction, shared across:
      *   - inline mode's My Pet button (relabeled to "Try another photo" once
@@ -1296,6 +1443,12 @@
       console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
         ' urlTail=' + tail +
         (effectiveUrl !== previewUrl ? ' (overrode passed url with effective-colour cache)' : ''));
+      // STAGING-100 — pre-swap every per-variant slide + thumbnail so
+      // Ritual's carousel (and Horizon/Impulse-family multi-slide galleries)
+      // show OUR composite on whichever slide the native swatch handler
+      // scrolls to. Idempotent — safe to call again on every activate /
+      // every gallery mutation / every recomposite success.
+      swapVariantSlides(state.previewUrlByColor);
       // MutationObserver install/refresh on EVERY activation — even when
       // already attached, because the hero node may have been replaced since
       // the last activation (theme section re-render, "Try another photo"
@@ -1383,6 +1536,13 @@
         clearInterval(state.inlineFormPollTimer);
         state.inlineFormPollTimer = null;
       }
+      // STAGING-100 — restore every per-slide composite we swapped onto
+      // the gallery slides + thumbnails. Runs BEFORE the hero restore
+      // below so a live slide holding our preview as hero still has
+      // something to restore from (swapInlineHero's data-appai-my-pet-
+      // original-src vs swapVariantSlides' data-appai-my-pet-slide-
+      // original-src are different attrs — no collision).
+      revertVariantSlides();
       // 2. Restore src/srcset on the CURRENT live hero (may differ from the
       //    staleHero reference if the theme replaced the node during the
       //    session — latest swapInlineHero call stashed the current node's
@@ -1573,9 +1733,25 @@
         'product-media-gallery',
         '[data-media-gallery]',
       ];
+      // STAGING-99/100 — scope to the main product section so we don't
+      // end up observing a related-products carousel or store-wide
+      // trending strip whose nodes aren't the ones the shopper is
+      // looking at. Fall back to document scope only if we can't find
+      // a product section to walk up to.
+      var galleryScope = null;
+      var cur2 = root.parentNode;
+      while (cur2 && cur2 !== document.body && cur2.nodeType === 1) {
+        var tag2 = cur2.tagName ? cur2.tagName.toLowerCase() : '';
+        if (tag2 === 'main' || tag2 === 'section' ||
+            cur2.hasAttribute('data-section-type') ||
+            cur2.hasAttribute('data-section-id') ||
+            cur2.hasAttribute('data-product-id')) { galleryScope = cur2; break; }
+        cur2 = cur2.parentNode;
+      }
+      var searchRoot = galleryScope || document;
       var container = null;
       for (var i = 0; i < GALLERY_SELECTORS.length; i++) {
-        try { container = document.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
+        try { container = searchRoot.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
         if (container) break;
       }
       if (!container) {
@@ -1585,6 +1761,22 @@
       console.log(TAG, 'gallery guard: watching', container.tagName.toLowerCase() + (container.className ? '.' + String(container.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
         if (!state.renderId || !state.inlineApplied) return;
+        // STAGING-100 — primary defence for carousel-style galleries: if
+        // any new element was inserted, re-run per-variant slide swap so
+        // newly-rendered slides pick up our composites. Covers theme
+        // section re-renders (Section Rendering API) and lazy-rendered
+        // slides in <media-gallery> custom elements.
+        var sawAdded = false;
+        for (var m = 0; m < mutations.length; m++) {
+          if (mutations[m].addedNodes && mutations[m].addedNodes.length) { sawAdded = true; break; }
+        }
+        if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
+          swapVariantSlides(state.previewUrlByColor);
+        }
+        // Legacy single-hero fallback: themes without per-variant slides
+        // (Dawn simple products) still need the opacity-hide + hero-src
+        // trick for added <img> nodes. Scoped to hero-sized candidates
+        // to stay out of thumbnails / nav arrows / badges.
         for (var i = 0; i < mutations.length; i++) {
           var added = mutations[i].addedNodes;
           for (var j = 0; j < added.length; j++) {
@@ -1597,6 +1789,11 @@
             for (var k = 0; k < imgs.length; k++) {
               var img = imgs[k];
               if (img.closest && img.closest('.appai-my-pet')) continue;
+              // STAGING-100 — skip anything already swapped by
+              // swapVariantSlides (data-media-id matched); re-applying
+              // the hero-opacity trick on an already-correct slide only
+              // adds an unnecessary flash.
+              if (img.hasAttribute('data-appai-my-pet-slide')) continue;
               // Only touch what looks like the hero (ignore thumbnails /
               // zoom previews / decorative icons).
               if (!isHeroCandidate(img)) continue;
@@ -1794,6 +1991,11 @@
             swapInlineHero(state.inlineHero, res.previewUrl);
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor[colorName] = res.previewUrl;
+            // STAGING-100 — also apply to the per-variant slide for this
+            // colour so the carousel shows OUR image next time the theme
+            // scrolls to it (or now, if it's already the active slide).
+            var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
+            swapVariantSlides(singletonMap);
             writeStoredRender(shopifyProductId, state.renderId, state.jobId);
           }
         })
