@@ -588,7 +588,10 @@
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
-      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}';
+      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}' +
+      // STAGING-107 — mask lives on a container the theme does not replace,
+      // so a new gallery <img> inserted mid-swap stays invisible too.
+      '.appai-my-pet-swapping media-gallery img,.appai-my-pet-swapping .media-gallery img{opacity:0 !important;transition:none !important;}';
     document.head.appendChild(style);
   }
 
@@ -1556,6 +1559,52 @@
       return canonicalPreviewColor(value);
     }
 
+    function swapMaskContainer() {
+      var section = productSectionScope();
+      if (section && section !== document) return section;
+      var gallery = document.querySelector('media-gallery, .media-gallery');
+      if (gallery && gallery.parentElement) return gallery.parentElement;
+      return document.body;
+    }
+
+    function swapMaskOn(colorName, eventType) {
+      var el = swapMaskContainer();
+      var checked = readSwatchColor(root);
+      var beforeTheme = !checked || String(checked).trim().toLowerCase() !== String(colorName || '').trim().toLowerCase();
+      var already = !!(el && el.classList && el.classList.contains('appai-my-pet-swapping'));
+      if (!already) {
+        state.swapMaskStarted = Date.now();
+        state.swapMaskBeforeTheme = beforeTheme;
+        state.swapMaskEl = el;
+        if (el && el.classList) el.classList.add('appai-my-pet-swapping');
+      }
+      console.log(TAG, 'swap-mask on',
+        'colour=' + (colorName || '?'),
+        'event=' + eventType,
+        'beforeThemeChange=' + beforeTheme,
+        'alreadyOn=' + already,
+        'checked=' + (checked || '(none)'),
+        'container=' + (el && el.tagName ? String(el.tagName).toLowerCase() : '?'));
+    }
+
+    function swapMaskOff(why, colorName) {
+      var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
+      var beforeTheme = !!state.swapMaskBeforeTheme;
+      var el = state.swapMaskEl || swapMaskContainer();
+      if (el && el.classList) el.classList.remove('appai-my-pet-swapping');
+      state.swapMaskStarted = 0;
+      state.swapMaskEl = null;
+      console.log(TAG, 'swap-mask off',
+        'colour=' + (colorName || '?'),
+        'reason=' + why,
+        'elapsedMs=' + elapsed,
+        'beforeThemeChange=' + beforeTheme);
+    }
+
+    function visibleSlideImg() {
+      return findVisibleHeroImg() || findActiveSlideImg() || findProductHeroImg() || state.inlineHero;
+    }
+
     function applyHeroHold(el) {
       if (!el || el.nodeType !== 1) return;
       if (el.getAttribute('data-appai-my-pet-held') === '1') return;
@@ -1583,44 +1632,49 @@
         el.removeAttribute('data-appai-my-pet-held');
       }
       state.heroHoldToken = 0;
+      if (state.swapMaskEl && state.swapMaskEl.classList && state.swapMaskEl.classList.contains('appai-my-pet-swapping')) {
+        swapMaskOff('cleared', '');
+      }
     }
 
-    // STAGING-106 — hide on the swatch click (capture, before the theme
-    // paints the stock variant), write the cached preview, reveal when
-    // that image has decoded. 600ms safety in case decode never settles
-    // (replaced node, decode unsupported). Poll + hero guard stay as the
-    // backstop if this misses the control.
+    // STAGING-107 — the mask class sits on the product section, which the
+    // theme does not replace. Every gallery img, including one inserted
+    // after the click, stays at opacity 0 until we drop the class.
     function revealHeroAfterDecode(token, colorName, url) {
       var finished = false;
       var finish = function (why) {
         if (finished || token !== state.heroHoldToken) return;
         finished = true;
-        if (state.inlineApplied && url) reassertColourPreview('swatch-reveal', colorName, url);
+        if (state.inlineApplied && url) {
+          var slide = visibleSlideImg();
+          if (slide) applyPreviewSrc(slide, url);
+          reassertColourPreview('swap-mask-off', colorName, url);
+        }
+        swapMaskOff(why, colorName);
         clearHeroHold();
-        console.log(TAG, 'swatch preempt reveal', why, 'colour=' + (colorName || '?'));
       };
       var safety = setTimeout(function () { finish('safety-600ms'); }, 600);
       var armDecode = function () {
         if (finished || token !== state.heroHoldToken || !state.inlineApplied) return;
-        hideHeroForSwatch();
-        if (url) reassertColourPreview('swatch-preempt', colorName, url);
-        var imgs = heroAssertTargets();
-        var pending = 0;
-        var settled = 0;
-        var one = function () {
-          settled++;
-          if (settled < pending) return;
+        var slide = visibleSlideImg();
+        if (url && slide) applyPreviewSrc(slide, url);
+        if (!slide || typeof slide.decode !== 'function') return;
+        slide.decode().then(function () {
           clearTimeout(safety);
           finish('decoded');
-        };
-        for (var i = 0; i < imgs.length; i++) {
-          if (!imgs[i] || typeof imgs[i].decode !== 'function') continue;
-          pending++;
-          imgs[i].decode().then(one, one);
-        }
+        }, function () {
+          clearTimeout(safety);
+          finish('decode-error');
+        });
       };
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(armDecode);
-      else setTimeout(armDecode, 0);
+      // Two frames: the theme's own swatch handler queues a rAF during
+      // bubble, which runs after the rAF we queue here in capture. Decoding
+      // on the second frame reads the replacement node, still under the mask.
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () { requestAnimationFrame(armDecode); });
+      } else {
+        setTimeout(armDecode, 0);
+      }
     }
 
     function installSwatchPreempt() {
@@ -1634,11 +1688,11 @@
         if (!colorName) return;
         var url = (state.previewUrlByColor && state.previewUrlByColor[colorName]) || null;
         var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
-        hideHeroForSwatch();
-        console.log(TAG, 'swatch preempt', event.type, 'colour=' + colorName, url ? 'cached' : 'uncached');
+        swapMaskOn(colorName, event.type);
         if (url) {
           state.previewUrl = url;
-          reassertColourPreview('swatch-click', colorName, url);
+          var slide = visibleSlideImg();
+          if (slide) applyPreviewSrc(slide, url);
         } else {
           swapInlineColor(colorName);
         }
