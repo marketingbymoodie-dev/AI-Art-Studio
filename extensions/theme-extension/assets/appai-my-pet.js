@@ -1270,19 +1270,7 @@
           for (var j = 0; j < imgs.length; j++) {
             var img = imgs[j];
             if (img.closest && img.closest('.appai-my-pet')) continue;
-            if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
-              img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
-              var origSrcset = img.getAttribute('srcset');
-              if (origSrcset) img.setAttribute('data-appai-my-pet-slide-original-srcset', origSrcset);
-              stash.push(img);
-            }
-            try { if (img.src !== url) img.src = url; } catch (e) {}
-            try { img.removeAttribute('srcset'); } catch (e) {}
-            if (img.dataset) {
-              try { delete img.dataset.src; } catch (e) {}
-              try { delete img.dataset.srcset; } catch (e) {}
-            }
-            img.setAttribute('data-appai-my-pet-slide', mediaId);
+            swapOneSlideImage(img, url, color, mediaId, stash);
             matched++;
           }
         }
@@ -1295,33 +1283,145 @@
     }
 
     /**
+     * STAGING-101 — one swapped slide. Separated so <picture><source srcset>
+     * handling + rich per-node diagnostics live in one place.
+     *
+     * Ritual (and most Dawn-descended themes) render responsive images as:
+     *   <picture>
+     *     <source srcset="...@320w.webp 320w, ...@640w.webp 640w" type="image/webp">
+     *     <source srcset="...@320w.jpg 320w, ...@640w.jpg 640w">
+     *     <img src="...@fallback.jpg" srcset="...">
+     *   </picture>
+     * The browser renders whichever <source> its current media query matches;
+     * <img src> is used only when no <source> wins. Setting img.src alone is
+     * invisible — that's why STAGING-100 logged success but the carousel
+     * showed the stock image.
+     *
+     * Fix: clear srcset on every <source> in the enclosing <picture> so the
+     * browser falls back to our newly-set <img src>. Stash the originals on
+     * the <source> nodes so revert can restore them.
+     *
+     * Diagnostics (every swap):
+     *   - container class (first 3 classes) + visible? (offsetParent !== null)
+     *   - number of <source> siblings cleared
+     * +300ms delayed check:
+     *   - img.currentSrc tail vs the URL we meant to set, with matches=true/false
+     *   so a browser that ignored our write (cache, CSP, another observer
+     *   restoring it, …) is immediately visible in the console.
+     */
+    function swapOneSlideImage(img, url, color, mediaId, stash) {
+      if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
+        img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
+        var origSrcset = img.getAttribute('srcset');
+        if (origSrcset) img.setAttribute('data-appai-my-pet-slide-original-srcset', origSrcset);
+        stash.push(img);
+      }
+      try { if (img.src !== url) img.src = url; } catch (e) {}
+      try { img.removeAttribute('srcset'); } catch (e) {}
+      if (img.dataset) {
+        try { delete img.dataset.src; } catch (e) {}
+        try { delete img.dataset.srcset; } catch (e) {}
+      }
+      // <picture><source srcset>: clear every sibling source so the browser
+      // falls back to <img src>. Stash the originals for revert.
+      var picture = img.closest ? img.closest('picture') : null;
+      var sourceCount = 0;
+      if (picture) {
+        var sources = picture.querySelectorAll('source');
+        for (var s = 0; s < sources.length; s++) {
+          var src = sources[s];
+          if (!src.hasAttribute('data-appai-my-pet-source-original-srcset')) {
+            src.setAttribute('data-appai-my-pet-source-original-srcset', src.getAttribute('srcset') || '');
+            var dataSrcset = src.getAttribute('data-srcset');
+            if (dataSrcset != null) src.setAttribute('data-appai-my-pet-source-original-data-srcset', dataSrcset);
+            stash.push(src);
+          }
+          try { src.removeAttribute('srcset'); } catch (e) {}
+          if (src.dataset) { try { delete src.dataset.srcset; } catch (e) {} }
+          sourceCount++;
+        }
+      }
+      img.setAttribute('data-appai-my-pet-slide', mediaId);
+
+      // Diagnostic — container context + delayed render check
+      try {
+        var container = (img.closest && (img.closest('[data-media-id]') || img.parentElement)) || img.parentElement;
+        var cls = container && container.className
+          ? String(container.className).split(/\s+/).slice(0, 3).join('.')
+          : '(no class)';
+        var visible = img.offsetParent !== null;
+        var urlTail = String(url).split('?')[0].split('/').pop();
+        console.log(TAG, 'slide swap img:', color,
+          'media=' + mediaId,
+          'container=' + cls,
+          'visible=' + visible,
+          'picture=' + !!picture,
+          'sources=' + sourceCount,
+          'setSrc tail=' + urlTail);
+        // Capture closure refs
+        (function (capturedImg, capturedColor, capturedCls, capturedTail) {
+          setTimeout(function () {
+            try {
+              var rc = String(capturedImg.currentSrc || capturedImg.src || '').split('?')[0].split('/').pop();
+              var ok = rc === capturedTail;
+              if (ok) {
+                console.log(TAG, 'slide swap check (+300ms):', capturedColor,
+                  'container=' + capturedCls, '✓ currentSrc matches');
+              } else {
+                console.warn(TAG, 'slide swap check (+300ms):', capturedColor,
+                  'container=' + capturedCls,
+                  '✗ MISMATCH currentSrc tail=' + rc,
+                  'expected=' + capturedTail);
+              }
+            } catch (e) {}
+          }, 300);
+        })(img, color, cls, urlTail);
+      } catch (e) {}
+    }
+
+    /**
      * STAGING-100 — restore every per-slide swap (main carousel + thumbnails)
      * from the stash attributes. Mirror of swapVariantSlides for revert.
      * Safe to call multiple times (empties the stash on each run).
      */
     function revertVariantSlides() {
       var stash = state.inlineSlideStash || [];
-      var restored = 0;
+      var restoredImgs = 0;
+      var restoredSources = 0;
       for (var i = 0; i < stash.length; i++) {
-        var img = stash[i];
-        if (!img) continue;
+        var node = stash[i];
+        if (!node) continue;
         try {
-          if (img.hasAttribute('data-appai-my-pet-slide-original-src')) {
-            var origSrc = img.getAttribute('data-appai-my-pet-slide-original-src');
-            if (origSrc != null && origSrc !== '') img.src = origSrc;
-            img.removeAttribute('data-appai-my-pet-slide-original-src');
+          // <img> restore
+          if (node.hasAttribute('data-appai-my-pet-slide-original-src')) {
+            var origSrc = node.getAttribute('data-appai-my-pet-slide-original-src');
+            if (origSrc != null && origSrc !== '') node.src = origSrc;
+            node.removeAttribute('data-appai-my-pet-slide-original-src');
+            restoredImgs++;
           }
-          if (img.hasAttribute('data-appai-my-pet-slide-original-srcset')) {
-            var origSrcset = img.getAttribute('data-appai-my-pet-slide-original-srcset');
-            if (origSrcset) img.setAttribute('srcset', origSrcset);
-            img.removeAttribute('data-appai-my-pet-slide-original-srcset');
+          if (node.hasAttribute('data-appai-my-pet-slide-original-srcset')) {
+            var origSrcset = node.getAttribute('data-appai-my-pet-slide-original-srcset');
+            if (origSrcset) node.setAttribute('srcset', origSrcset);
+            node.removeAttribute('data-appai-my-pet-slide-original-srcset');
           }
-          img.removeAttribute('data-appai-my-pet-slide');
-          restored++;
+          node.removeAttribute('data-appai-my-pet-slide');
+          // STAGING-101 — <source> restore (<picture><source srcset>…)
+          if (node.hasAttribute('data-appai-my-pet-source-original-srcset')) {
+            var origSrcSrcset = node.getAttribute('data-appai-my-pet-source-original-srcset');
+            if (origSrcSrcset) node.setAttribute('srcset', origSrcSrcset);
+            else node.removeAttribute('srcset');
+            node.removeAttribute('data-appai-my-pet-source-original-srcset');
+            restoredSources++;
+          }
+          if (node.hasAttribute('data-appai-my-pet-source-original-data-srcset')) {
+            var origDataSrcset = node.getAttribute('data-appai-my-pet-source-original-data-srcset');
+            if (origDataSrcset) node.setAttribute('data-srcset', origDataSrcset);
+            node.removeAttribute('data-appai-my-pet-source-original-data-srcset');
+          }
         } catch (e) {}
       }
       state.inlineSlideStash = [];
-      console.log(TAG, 'slide revert: restored', restored, 'nodes');
+      console.log(TAG, 'slide revert: restored', restoredImgs, 'img(s) +', restoredSources, 'source(s)');
     }
 
     /**
