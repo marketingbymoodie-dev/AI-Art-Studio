@@ -235,7 +235,7 @@ import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { renderTermsOfUseHtml } from "./terms-of-use";
 import { getTermsContent, requestLooksLikeStagingHost } from "./creator-config";
-import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canActivateDesignProductEffective, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
   getActiveCatalogue,
@@ -22316,8 +22316,11 @@ ${orientationExtra}
         .from(designProducts)
         .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
       const activeCount = Number(activeCountRows[0]?.count ?? 0);
-      const plan = getEffectivePlan(installation as any, shop);
-      const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+      // Honour per-shop override + owner-shop bypass — see
+      // getEffectiveDesignProductLimit in customizer-plans.ts. Owner / demo
+      // shops and shops with design_product_limit_override = -1 return
+      // Infinity here so `allowed` is always true.
+      const { allowed, limit } = canActivateDesignProductEffective(installation as any, shop, activeCount);
       if (!allowed) {
         return res.status(402).json({
           error: `You've reached your plan's limit of ${limit} active product design${limit === 1 ? "" : "s"}. Deactivate one or upgrade your plan.`,

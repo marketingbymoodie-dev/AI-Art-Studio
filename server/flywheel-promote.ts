@@ -31,7 +31,7 @@ import { catalogueCandidateChoices, customizerPages, designCandidates, designPro
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import { normalizeVariantKeyLoose, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
-import { getDesignProductLimit, getEffectivePlan } from "./customizer-plans";
+import { getEffectiveDesignProductLimit } from "./customizer-plans";
 import { db } from "./db";
 import { uploadPrintFileToPrintify } from "./flat-print-file";
 import { resolvePanelColour, type PanelColour } from "./mockup-library";
@@ -491,8 +491,11 @@ export async function promoteCatalogueCandidate(args: {
 
   let capMessage: string | null = null;
   if (args.publishNow && installation) {
-    const plan = getEffectivePlan(installation as any, shop);
-    const limit = getDesignProductLimit(plan.planName);
+    // Honour per-shop override + owner-shop bypass — see
+    // getEffectiveDesignProductLimit in customizer-plans.ts. Owner / demo
+    // shops and shops with design_product_limit_override = -1 return
+    // Infinity here, which makes capRefusal return null (unlimited slots).
+    const limit = getEffectiveDesignProductLimit(installation as any, shop);
     const occupants = await db
       .select({ title: designProducts.title, promotedAt: designProducts.createdAt })
       .from(designProducts)
@@ -661,6 +664,24 @@ export async function promoteCatalogueCandidate(args: {
   const orderedVariantMeta = variantOrder.map((index) => variantMeta[index]);
   if (orderedShopifyVariants.length > 100) {
     throw new PromoteRefusal([`Too many variants (${shopifyVariants.length}). Shopify allows 100 on this create.`]);
+  }
+  // Belt-and-braces guard: refuse when the (colours × sizes × variantMap)
+  // intersection produced zero sellable variants. Without this,
+  // buildProductSetInput silently substitutes a single "Default Title /
+  // Default Title" placeholder when `variants` is empty (see its fallback at
+  // `restVariants = p.variants?.length > 0 ? p.variants : [{price:"0.00"}]`),
+  // and Shopify happily creates a one-variant "product" with no size/colour
+  // matrix. That product then gets a designProducts row inserted below with
+  // an empty variantMap, HOLDING a cap slot despite being unsellable — which
+  // is exactly how "Love what you've done with the place" ended up as a
+  // placeholder-only listing holding the Petposterous demo's cap slot.
+  // Upstream refusals (empty tickedColours, every colour hits colorRefusals)
+  // should also catch this, but a defence-in-depth check here means no
+  // future refactor can slip through and silently mint an empty listing.
+  if (!orderedShopifyVariants.length) {
+    throw new PromoteRefusal([
+      `${typeRow.name} produced no sellable variants from the ticked colours and offered sizes. Nothing was created.`,
+    ]);
   }
   if (args.checkOnly) {
     return { shopifyProductId: "", printifyProductId: "", status: catalogueVisibility(args.publishNow) };

@@ -266,6 +266,17 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * shadow-direct = today's synchronous resolve; base-first = Branch C; no-shadow = Branch B.
    */
   atcMode: text("atc_mode").notNull().default("shadow-direct"),
+  /**
+   * Per-shop override for the active-design-product cap (see
+   * PLAN_DESIGN_PRODUCT_LIMITS). Null (default) means "use the plan tier".
+   * -1 means unlimited (used for owner / demo / long-horizon beta shops that
+   * shouldn't be constrained by a merchant-facing tier). A positive integer
+   * sets an explicit per-shop cap (e.g. 100 for a beta tester). Only the
+   * platform operator should write this; getEffectiveDesignProductLimit in
+   * server/customizer-plans.ts is the single reader so every caller (promote,
+   * design-products PATCH) honours it uniformly.
+   */
+  designProductLimitOverride: integer("design_product_limit_override"),
 });
 
 /** Versioned SaaS plan catalogue (commit ≠ activate). */

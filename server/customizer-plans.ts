@@ -276,3 +276,46 @@ export function canActivateDesignProduct(
   const limit = getDesignProductLimit(planName);
   return { allowed: currentActiveCount < limit, limit, currentCount: currentActiveCount };
 }
+
+/**
+ * Single reader for the active-design-product cap, layered as:
+ *
+ *   1. **Owner / demo shops** (OWNER_SHOP_DOMAIN + BUILTIN_OWNER_SHOP_DOMAINS)
+ *      → unlimited. Keeps the app operator's own catalogue from hitting the
+ *      same merchant-tier cap they sell to customers.
+ *   2. **Per-shop override** (shopify_installations.design_product_limit_override)
+ *      → -1 means unlimited; a positive integer sets an explicit per-shop
+ *      cap. Platform-operator writes only — used for beta testers / internal
+ *      shops that need a non-default cap without changing their plan tier.
+ *   3. **Plan tier** (PLAN_DESIGN_PRODUCT_LIMITS) → fallback for every other
+ *      shop. This is what paying merchants see.
+ *
+ * Returns `Number.POSITIVE_INFINITY` for unlimited so `currentActiveCount <
+ * limit` always evaluates true without any special-casing at call sites.
+ * capRefusal in @shared/flywheelPromote honours this the same way.
+ */
+export function getEffectiveDesignProductLimit(
+  installation: { planName?: string | null; designProductLimitOverride?: number | null },
+  shopDomain?: string | null,
+): number {
+  if (isOwnerQuotaBypassShop(shopDomain)) return Number.POSITIVE_INFINITY;
+  const override = installation.designProductLimitOverride;
+  if (override === -1) return Number.POSITIVE_INFINITY;
+  if (typeof override === "number" && override >= 0) return override;
+  return getDesignProductLimit(installation.planName ?? null);
+}
+
+/**
+ * Effective-limit-aware version of canActivateDesignProduct. Prefer this at
+ * every call site that enforces the cap (design-products activate, promote
+ * flow). Pre-existing canActivateDesignProduct is kept for tests that
+ * exercise the plan-only math in isolation.
+ */
+export function canActivateDesignProductEffective(
+  installation: { planName?: string | null; designProductLimitOverride?: number | null },
+  shopDomain: string | null | undefined,
+  currentActiveCount: number,
+): { allowed: boolean; limit: number; currentCount: number } {
+  const limit = getEffectiveDesignProductLimit(installation, shopDomain);
+  return { allowed: currentActiveCount < limit, limit, currentCount: currentActiveCount };
+}

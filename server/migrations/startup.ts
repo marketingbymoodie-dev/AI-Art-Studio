@@ -171,6 +171,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "refresh_token_expires_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "theme_snapshot", type: "JSONB" },
   { table: "shopify_installations", column: "atc_mode", type: "TEXT NOT NULL DEFAULT 'shadow-direct'" },
+  // Per-shop design-product cap override: NULL = plan tier (default); -1 =
+  // unlimited (owner/demo/internal); positive int = explicit per-shop cap.
+  // Platform-operator-only writes. See getEffectiveDesignProductLimit.
+  { table: "shopify_installations", column: "design_product_limit_override", type: "INTEGER" },
   { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
   { table: "design_candidates", column: "print_file_path", type: "TEXT" },
