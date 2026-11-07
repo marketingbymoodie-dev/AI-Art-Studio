@@ -1186,6 +1186,324 @@
       return null;
     }
 
+    function urlTail(url) {
+      return String(url || '').split('?')[0].split('/').pop();
+    }
+
+    function urlsMatch(a, b) {
+      if (!a || !b) return false;
+      if (a === b) return true;
+      var ta = urlTail(a);
+      var tb = urlTail(b);
+      return ta.length > 8 && ta === tb;
+    }
+
+    function nodeStamp(el) {
+      if (!el) return '(none)';
+      if (!el.__appaiMyPetNodeId) {
+        state._heroNodeSeq = (state._heroNodeSeq || 0) + 1;
+        try { el.__appaiMyPetNodeId = 'n' + state._heroNodeSeq; } catch (e) { return 'anon'; }
+      }
+      var id = el.id ? '#' + el.id : '';
+      var cls = (el.className && typeof el.className === 'string')
+        ? '.' + String(el.className).trim().split(/\s+/).slice(0, 2).join('.')
+        : '';
+      return el.__appaiMyPetNodeId + '<' + String(el.tagName || '?').toLowerCase() + id + cls + '>';
+    }
+
+    function sourceSummary(img) {
+      var picture = img && img.closest ? img.closest('picture') : null;
+      if (!picture) return 'picture=false';
+      var sources = picture.querySelectorAll('source');
+      var withSrcset = 0;
+      for (var i = 0; i < sources.length; i++) {
+        if (sources[i].getAttribute('srcset')) withSrcset++;
+      }
+      return 'picture=true sources=' + sources.length + ' srcsetSources=' + withSrcset;
+    }
+
+    function describeImg(el) {
+      if (!el) return '(none)';
+      var srcset = el.getAttribute ? (el.getAttribute('srcset') || '') : '';
+      var sizes = el.getAttribute ? (el.getAttribute('sizes') || '') : '';
+      var connected = false;
+      try { connected = !!(el.isConnected || document.body.contains(el)); } catch (e) {}
+      return nodeStamp(el) +
+        ' connected=' + connected +
+        ' src=' + urlTail(el.getAttribute ? el.getAttribute('src') : '') +
+        ' currentSrc=' + urlTail(el.currentSrc || el.src || '') +
+        ' srcsetLen=' + srcset.length +
+        ' sizes=' + (sizes ? String(sizes).slice(0, 80) : '(none)') +
+        ' ' + sourceSummary(el);
+    }
+
+    function productSectionScope() {
+      var cur = root.parentNode;
+      while (cur && cur !== document.body && cur.nodeType === 1) {
+        var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+        if (tag === 'main' || tag === 'section' ||
+            cur.hasAttribute('data-section-type') ||
+            cur.hasAttribute('data-section-id') ||
+            cur.hasAttribute('data-product-id')) return cur;
+        cur = cur.parentNode;
+      }
+      return document;
+    }
+
+    function findVisibleHeroImg() {
+      var scope = productSectionScope();
+      var imgs;
+      try { imgs = scope.querySelectorAll('img'); } catch (e) { return null; }
+      var best = null;
+      var bestArea = 0;
+      var vw = window.innerWidth || 0;
+      var vh = window.innerHeight || 0;
+      for (var i = 0; i < imgs.length; i++) {
+        var img = imgs[i];
+        if (img.closest && img.closest('.appai-my-pet')) continue;
+        var rect;
+        try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
+        if (rect.width < 160 || rect.height < 160) continue;
+        var ix = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
+        var iy = Math.max(0, Math.min(rect.bottom, vh) - Math.max(rect.top, 0));
+        var area = ix * iy;
+        if (area > bestArea) { bestArea = area; best = img; }
+      }
+      return best;
+    }
+
+    function findActiveSlideImg() {
+      var scope = productSectionScope();
+      var SELECTORS = [
+        '.product__media-item.is-active img',
+        '.product__media.is-active img',
+        'media-gallery .is-active img',
+        '[data-media-id].is-active img',
+        '.swiper-slide-active img',
+        '.is-selected img',
+      ];
+      var best = null;
+      var bestArea = 0;
+      for (var s = 0; s < SELECTORS.length; s++) {
+        var nodes;
+        try { nodes = scope.querySelectorAll(SELECTORS[s]); } catch (e) { continue; }
+        for (var i = 0; i < nodes.length; i++) {
+          var img = nodes[i];
+          if (!img || img.tagName !== 'IMG') continue;
+          if (img.closest && img.closest('.appai-my-pet')) continue;
+          var rect;
+          try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
+          var area = Math.max(0, rect.width) * Math.max(0, rect.height);
+          if (area > bestArea) { bestArea = area; best = img; }
+        }
+        if (best && bestArea >= 160 * 160) return best;
+      }
+      return best;
+    }
+
+    function responsiveLeftovers(img) {
+      if (!img || !img.getAttribute) return false;
+      if (img.getAttribute('srcset') || img.getAttribute('sizes')) return true;
+      var picture = img.closest ? img.closest('picture') : null;
+      if (!picture) return false;
+      var sources = picture.querySelectorAll('source');
+      for (var i = 0; i < sources.length; i++) {
+        if (sources[i].getAttribute('srcset') || sources[i].getAttribute('sizes')) return true;
+      }
+      return false;
+    }
+
+    function previewWinning(img, url) {
+      if (!img || !url) return false;
+      var cur = img.currentSrc || img.src || '';
+      return urlsMatch(cur, url) && !responsiveLeftovers(img);
+    }
+
+    // STAGING-105 — <picture><source srcset> wins over <img src>. Clearing the
+    // attribute is not enough on a freshly inserted theme node: the browser
+    // keeps the already-chosen candidate. Detach the <source> nodes (stashed
+    // on the img so revert can put them back) and drop srcset + sizes.
+    function detachPictureSources(img) {
+      var picture = img && img.closest ? img.closest('picture') : null;
+      if (!picture) return 0;
+      var sources = picture.querySelectorAll('source');
+      if (!sources.length) return 0;
+      if (!img.__appaiDetachedSources) img.__appaiDetachedSources = [];
+      var list = [];
+      for (var i = 0; i < sources.length; i++) list.push(sources[i]);
+      var n = 0;
+      for (var j = 0; j < list.length; j++) {
+        var src = list[j];
+        if (src.__appaiDetached) continue;
+        if (!src.hasAttribute('data-appai-my-pet-source-original-srcset')) {
+          src.setAttribute('data-appai-my-pet-source-original-srcset', src.getAttribute('srcset') || '');
+          var dataSrcset = src.getAttribute('data-srcset');
+          if (dataSrcset != null) src.setAttribute('data-appai-my-pet-source-original-data-srcset', dataSrcset);
+          var srcSizes = src.getAttribute('sizes');
+          if (srcSizes != null) src.setAttribute('data-appai-my-pet-source-original-sizes', srcSizes);
+        }
+        src.__appaiDetached = true;
+        src.__appaiDetachedParent = picture;
+        src.__appaiDetachedNext = src.nextSibling;
+        try { picture.removeChild(src); } catch (e) { continue; }
+        img.__appaiDetachedSources.push(src);
+        n++;
+      }
+      return n;
+    }
+
+    function restoreDetachedSources(img) {
+      var list = img && img.__appaiDetachedSources;
+      if (!list || !list.length) return 0;
+      var n = 0;
+      for (var i = 0; i < list.length; i++) {
+        var src = list[i];
+        if (!src) continue;
+        var parent = src.__appaiDetachedParent;
+        try {
+          if (parent && !src.parentNode) parent.insertBefore(src, src.__appaiDetachedNext || null);
+        } catch (e) {}
+        if (src.hasAttribute('data-appai-my-pet-source-original-srcset')) {
+          var orig = src.getAttribute('data-appai-my-pet-source-original-srcset');
+          if (orig) src.setAttribute('srcset', orig);
+          else src.removeAttribute('srcset');
+          src.removeAttribute('data-appai-my-pet-source-original-srcset');
+        }
+        if (src.hasAttribute('data-appai-my-pet-source-original-data-srcset')) {
+          var origData = src.getAttribute('data-appai-my-pet-source-original-data-srcset');
+          if (origData) src.setAttribute('data-srcset', origData);
+          src.removeAttribute('data-appai-my-pet-source-original-data-srcset');
+        }
+        if (src.hasAttribute('data-appai-my-pet-source-original-sizes')) {
+          var origSizes = src.getAttribute('data-appai-my-pet-source-original-sizes');
+          if (origSizes) src.setAttribute('sizes', origSizes);
+          src.removeAttribute('data-appai-my-pet-source-original-sizes');
+        }
+        src.__appaiDetached = false;
+        n++;
+      }
+      img.__appaiDetachedSources = [];
+      return n;
+    }
+
+    function stashHeroOriginals(img) {
+      if (!img || img.hasAttribute('data-appai-my-pet-original-src') || img.hasAttribute('data-appai-my-pet-slide-original-src')) return;
+      img.setAttribute('data-appai-my-pet-original-src', img.getAttribute('src') || '');
+      var origSrcset = img.getAttribute('srcset');
+      if (origSrcset) img.setAttribute('data-appai-my-pet-original-srcset', origSrcset);
+      var origSizes = img.getAttribute('sizes');
+      if (origSizes) img.setAttribute('data-appai-my-pet-original-sizes', origSizes);
+    }
+
+    function applyPreviewSrc(img, url) {
+      if (!img || !url) return;
+      stashHeroOriginals(img);
+      if (img.getAttribute('sizes') && !img.hasAttribute('data-appai-my-pet-original-sizes') && !img.hasAttribute('data-appai-my-pet-slide-original-sizes')) {
+        img.setAttribute('data-appai-my-pet-original-sizes', img.getAttribute('sizes'));
+      }
+      try { img.removeAttribute('srcset'); } catch (e) {}
+      try { img.removeAttribute('sizes'); } catch (e) {}
+      if (img.dataset) {
+        try { delete img.dataset.src; } catch (e) {}
+        try { delete img.dataset.srcset; } catch (e) {}
+      }
+      detachPictureSources(img);
+      try { img.src = url; } catch (e) {}
+      img.__appaiAssertUrl = url;
+      img.__appaiAssertAt = Date.now();
+      img.setAttribute('data-appai-my-pet-preview', 'true');
+    }
+
+    function heroAssertTargets() {
+      var raw = [state.inlineHero, findProductHeroImg(), findVisibleHeroImg(), findActiveSlideImg()];
+      var out = [];
+      for (var i = 0; i < raw.length; i++) {
+        var el = raw[i];
+        if (!el || out.indexOf(el) !== -1) continue;
+        try { if (!document.body.contains(el)) continue; } catch (e) { continue; }
+        out.push(el);
+      }
+      return out;
+    }
+
+    function logHeroNodes(reason, colorName, expectedUrl) {
+      var guard = state.inlineHero;
+      var visible = findVisibleHeroImg();
+      var active = findActiveSlideImg();
+      console.log(TAG, 'hero-assert', reason,
+        'colour=' + (colorName || '?'),
+        'expected=' + urlTail(expectedUrl));
+      console.log(TAG, '  guard', describeImg(guard));
+      console.log(TAG, '  visible', describeImg(visible), 'sameAsGuard=' + (visible === guard));
+      console.log(TAG, '  activeSlide', describeImg(active),
+        'sameAsGuard=' + (active === guard),
+        'sameAsVisible=' + (active === visible));
+    }
+
+    function scheduleHeroVerify(colorName, expectedUrl) {
+      var token = (state._heroVerifyToken = (state._heroVerifyToken || 0) + 1);
+      setTimeout(function () {
+        if (token !== state._heroVerifyToken || !state.inlineApplied) return;
+        logHeroNodes('verify+300ms', colorName, expectedUrl);
+        var targets = heroAssertTargets();
+        var fixed = 0;
+        for (var i = 0; i < targets.length; i++) {
+          if (previewWinning(targets[i], expectedUrl)) continue;
+          applyPreviewSrc(targets[i], expectedUrl);
+          fixed++;
+        }
+        if (!fixed) return;
+        console.warn(TAG, 'hero-assert verify+300ms MISMATCH — re-asserted',
+          colorName, 'nodes=' + fixed, 'expected=' + urlTail(expectedUrl));
+        setTimeout(function () {
+          if (token !== state._heroVerifyToken || !state.inlineApplied) return;
+          logHeroNodes('verify+300ms after re-assert', colorName, expectedUrl);
+        }, 300);
+      }, 300);
+    }
+
+    // Colour-change entry point. Writes the preview onto the guard node AND
+    // the visible hero AND the active carousel slide — those can be three
+    // different <img>s after a theme gallery rebuild — then checks currentSrc
+    // 300ms later in case srcset/sizes/<source> won the first paint.
+    function reassertColourPreview(reason, colorName, url) {
+      if (!url) return;
+      var targets = heroAssertTargets();
+      if (!targets.length) {
+        var fresh = findProductHeroImg();
+        if (fresh) {
+          state.inlineHero = fresh;
+          targets = [fresh];
+        }
+      }
+      var now = Date.now();
+      var wrote = 0;
+      for (var i = 0; i < targets.length; i++) {
+        var el = targets[i];
+        // Skip a node we just wrote. currentSrc lags the attribute write, so
+        // the guard observer would otherwise re-enter until the stack melts.
+        // A different node (theme replacement) still gets written.
+        if (el.__appaiAssertUrl === url && (now - (el.__appaiAssertAt || 0)) < 250) continue;
+        if (previewWinning(el, url)) {
+          el.__appaiAssertUrl = url;
+          el.__appaiAssertAt = now;
+          continue;
+        }
+        el.__appaiAssertUrl = url;
+        el.__appaiAssertAt = now;
+        applyPreviewSrc(el, url);
+        wrote++;
+      }
+      if (targets.length && state.inlineHero && !document.body.contains(state.inlineHero)) {
+        state.inlineHero = targets[0];
+      }
+      var colourChanged = !!(colorName && colorName !== state._lastLoggedColour);
+      if (!wrote && !colourChanged) return;
+      state._lastLoggedColour = colorName || state._lastLoggedColour;
+      logHeroNodes(reason + (wrote ? '' : ' (no write)'), colorName, url);
+      scheduleHeroVerify(colorName, url);
+    }
+
     function swapInlineHero(hero, url) {
       if (!url) return;
       // Theme section re-renders (Shopify Section Rendering API, Horizon's
@@ -1197,21 +1515,7 @@
         if (!hero) return;
         state.inlineHero = hero;
       }
-      // Preserve the original blank so a later "Try another photo" abort or a
-      // theme section re-render can reset to the merchant's own hero image.
-      if (!hero.hasAttribute('data-appai-my-pet-original-src')) {
-        hero.setAttribute('data-appai-my-pet-original-src', hero.getAttribute('src') || '');
-        var origSrcset = hero.getAttribute('srcset');
-        if (origSrcset) hero.setAttribute('data-appai-my-pet-original-srcset', origSrcset);
-      }
-      try { hero.src = url; } catch (e) {}
-      try { hero.removeAttribute('srcset'); } catch (e) {}
-      // Clear theme lazy-loaders so they don't overwrite our src on next scroll.
-      if (hero.dataset) {
-        try { delete hero.dataset.src; } catch (e) {}
-        try { delete hero.dataset.srcset; } catch (e) {}
-      }
-      hero.setAttribute('data-appai-my-pet-preview', 'true');
+      applyPreviewSrc(hero, url);
     }
 
     /**
@@ -1316,31 +1620,20 @@
         if (origSrcset) img.setAttribute('data-appai-my-pet-slide-original-srcset', origSrcset);
         stash.push(img);
       }
-      try { if (img.src !== url) img.src = url; } catch (e) {}
+      if (img.getAttribute('sizes') && !img.hasAttribute('data-appai-my-pet-slide-original-sizes')) {
+        img.setAttribute('data-appai-my-pet-slide-original-sizes', img.getAttribute('sizes'));
+      }
       try { img.removeAttribute('srcset'); } catch (e) {}
+      try { img.removeAttribute('sizes'); } catch (e) {}
       if (img.dataset) {
         try { delete img.dataset.src; } catch (e) {}
         try { delete img.dataset.srcset; } catch (e) {}
       }
-      // <picture><source srcset>: clear every sibling source so the browser
-      // falls back to <img src>. Stash the originals for revert.
+      // STAGING-105 — detach <source> siblings. Clearing srcset left the
+      // browser on the CDN candidate it had already selected.
       var picture = img.closest ? img.closest('picture') : null;
-      var sourceCount = 0;
-      if (picture) {
-        var sources = picture.querySelectorAll('source');
-        for (var s = 0; s < sources.length; s++) {
-          var src = sources[s];
-          if (!src.hasAttribute('data-appai-my-pet-source-original-srcset')) {
-            src.setAttribute('data-appai-my-pet-source-original-srcset', src.getAttribute('srcset') || '');
-            var dataSrcset = src.getAttribute('data-srcset');
-            if (dataSrcset != null) src.setAttribute('data-appai-my-pet-source-original-data-srcset', dataSrcset);
-            stash.push(src);
-          }
-          try { src.removeAttribute('srcset'); } catch (e) {}
-          if (src.dataset) { try { delete src.dataset.srcset; } catch (e) {} }
-          sourceCount++;
-        }
-      }
+      var sourceCount = detachPictureSources(img);
+      try { img.src = url; } catch (e) {}
       img.setAttribute('data-appai-my-pet-slide', mediaId);
 
       // Diagnostic — container context + delayed render check
@@ -1350,20 +1643,20 @@
           ? String(container.className).split(/\s+/).slice(0, 3).join('.')
           : '(no class)';
         var visible = img.offsetParent !== null;
-        var urlTail = String(url).split('?')[0].split('/').pop();
+        var setTail = urlTail(url);
         console.log(TAG, 'slide swap img:', color,
           'media=' + mediaId,
           'container=' + cls,
           'visible=' + visible,
           'picture=' + !!picture,
           'sources=' + sourceCount,
-          'setSrc tail=' + urlTail);
+          'setSrc tail=' + setTail);
         // Capture closure refs
-        (function (capturedImg, capturedColor, capturedCls, capturedTail) {
+        (function (capturedImg, capturedColor, capturedCls, capturedUrl, capturedTail) {
           setTimeout(function () {
             try {
-              var rc = String(capturedImg.currentSrc || capturedImg.src || '').split('?')[0].split('/').pop();
-              var ok = rc === capturedTail;
+              var rc = urlTail(capturedImg.currentSrc || capturedImg.src || '');
+              var ok = rc === capturedTail && !responsiveLeftovers(capturedImg);
               if (ok) {
                 console.log(TAG, 'slide swap check (+300ms):', capturedColor,
                   'container=' + capturedCls, '✓ currentSrc matches');
@@ -1371,11 +1664,13 @@
                 console.warn(TAG, 'slide swap check (+300ms):', capturedColor,
                   'container=' + capturedCls,
                   '✗ MISMATCH currentSrc tail=' + rc,
-                  'expected=' + capturedTail);
+                  'expected=' + capturedTail,
+                  describeImg(capturedImg));
+                applyPreviewSrc(capturedImg, capturedUrl);
               }
             } catch (e) {}
           }, 300);
-        })(img, color, cls, urlTail);
+        })(img, color, cls, url, setTail);
       } catch (e) {}
     }
 
@@ -1404,7 +1699,13 @@
             if (origSrcset) node.setAttribute('srcset', origSrcset);
             node.removeAttribute('data-appai-my-pet-slide-original-srcset');
           }
+          if (node.hasAttribute('data-appai-my-pet-slide-original-sizes')) {
+            var origSlideSizes = node.getAttribute('data-appai-my-pet-slide-original-sizes');
+            if (origSlideSizes) node.setAttribute('sizes', origSlideSizes);
+            node.removeAttribute('data-appai-my-pet-slide-original-sizes');
+          }
           node.removeAttribute('data-appai-my-pet-slide');
+          restoredSources += restoreDetachedSources(node);
           // STAGING-101 — <source> restore (<picture><source srcset>…)
           if (node.hasAttribute('data-appai-my-pet-source-original-srcset')) {
             var origSrcSrcset = node.getAttribute('data-appai-my-pet-source-original-srcset');
@@ -1656,6 +1957,13 @@
           if (origSrcset) live.setAttribute('srcset', origSrcset);
           else live.removeAttribute('srcset');
         } catch (_) {}
+        var origSizes = live.getAttribute('data-appai-my-pet-original-sizes') || '';
+        try {
+          if (origSizes) live.setAttribute('sizes', origSizes);
+          else live.removeAttribute('sizes');
+        } catch (_) {}
+        live.removeAttribute('data-appai-my-pet-original-sizes');
+        restoreDetachedSources(live);
         live.removeAttribute('data-appai-my-pet-preview');
         // Keep the original-src attrs around so a re-activate followed by
         // another revert still has them (swapInlineHero won't re-capture
@@ -1736,13 +2044,12 @@
           ? swColor
           : (info.colorName || swColor || null);
         var expected = colorName ? state.previewUrlByColor[colorName] : null;
-        // Compare resolved absolute URLs; `hero.src` returns absolute.
-        var currentSrc = hero.src || '';
-        if (expected && currentSrc === expected) return; // already ours
+        // STAGING-105 — hero.src matching is not enough. currentSrc follows
+        // srcset / <source>, so a node whose src we already set can still
+        // paint the Shopify CDN variant image.
+        if (expected && previewWinning(hero, expected) && previewWinning(findVisibleHeroImg(), expected)) return;
         if (expected) {
-          hero.src = expected;
-          try { hero.removeAttribute('srcset'); } catch (e) {}
-          hero.setAttribute('data-appai-my-pet-preview', 'true');
+          reassertColourPreview('guard', colorName, expected);
           console.log(TAG, 'inline hero guard re-asserted', colorName);
         } else if (colorName && state.previewUrl) {
           // Colour not pre-composited — stop the stock flash immediately with
@@ -1757,9 +2064,7 @@
           // often the race loses in the field. If this fires often after the
           // STAGING-104 deploy, follow up with the data-url-placeholder + spinner
           // "Option A" or the catalogue-mockup swap "Option B" from the audit.
-          hero.src = state.previewUrl;
-          try { hero.removeAttribute('srcset'); } catch (e) {}
-          hero.setAttribute('data-appai-my-pet-preview', 'true');
+          reassertColourPreview('guard-fallback', colorName, state.previewUrl);
           console.warn('[appai-my-pet] hero-guard fallback: no cached preview for colour', colorName,
             '- showing chosen-colour preview while /recomposite runs. available:',
             Object.keys(state.previewUrlByColor || {}));
@@ -1774,13 +2079,13 @@
       var observer = new MutationObserver(function (mutations) {
         for (var i = 0; i < mutations.length; i++) {
           var m = mutations[i];
-          if (m.attributeName === 'src' || m.attributeName === 'srcset') {
+          if (m.attributeName === 'src' || m.attributeName === 'srcset' || m.attributeName === 'sizes') {
             assert();
             return;
           }
         }
       });
-      observer.observe(hero, { attributes: true, attributeFilter: ['src', 'srcset'] });
+      observer.observe(hero, { attributes: true, attributeFilter: ['src', 'srcset', 'sizes'] });
       hero.__appaiMyPetObserver = observer;
 
       // Element-replacement backup: themes that re-render the gallery via
@@ -1805,7 +2110,8 @@
             ? pollSw
             : (info.colorName || pollSw || null);
           var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
-          if (expected) swapInlineHero(fresh, expected);
+          state.inlineHero = fresh;
+          if (expected) reassertColourPreview('node-replaced', colorName, expected);
           installHeroGuard(fresh);
           console.log(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
         }
@@ -1990,8 +2296,8 @@
         var expected = state.previewUrlByColor[info.colorName];
         if (expected) {
           console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', info.colorName);
-          swapInlineHero(state.inlineHero, expected);
           state.previewUrl = expected;
+          reassertColourPreview('variant-evt', info.colorName, expected);
         } else {
           console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', info.colorName, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(info.colorName);
@@ -2072,8 +2378,8 @@
         var expected = state.previewUrlByColor[effectiveColor];
         if (expected) {
           console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor);
-          swapInlineHero(state.inlineHero, expected);
           state.previewUrl = expected;
+          reassertColourPreview('form-poll', effectiveColor, expected);
         } else {
           console.log(TAG, 'inline form poll: no cached URL for', effectiveColor, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(effectiveColor);
@@ -2088,8 +2394,8 @@
       if (!state.inlineHero || !state.renderId || !colorName || !state.inlineApplied) return;
       var cached = state.previewUrlByColor[colorName];
       if (cached) {
-        swapInlineHero(state.inlineHero, cached);
         state.previewUrl = cached;
+        reassertColourPreview('swap-inline', colorName, cached);
         console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
         return;
       }
@@ -2098,10 +2404,10 @@
           // Issue 7 — re-check inlineApplied after the awaited round-trip
           // so a revert that happened during /recomposite doesn't get
           // undone by this late success writing back to the hero.
-          if (res && res.ok && res.previewUrl && state.inlineHero && state.inlineApplied) {
-            swapInlineHero(state.inlineHero, res.previewUrl);
+          if (res && res.ok && res.previewUrl && state.inlineApplied) {
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor[colorName] = res.previewUrl;
+            reassertColourPreview('recomposite', colorName, res.previewUrl);
             // STAGING-100 — also apply to the per-variant slide for this
             // colour so the carousel shows OUR image next time the theme
             // scrolls to it (or now, if it's already the active slide).
