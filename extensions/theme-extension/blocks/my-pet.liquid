@@ -26,9 +26,18 @@
     <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
       {{ button_label | escape }}
     </button>
-    {% if button_subtitle != blank %}
-      <p class="appai-my-pet__caption">{{ button_subtitle | escape }}</p>
-    {% endif %}
+    {% comment %}
+      Single caption slot that swaps between two messages at different moments:
+      — Pre-first-generation (perListingCount === 0): the theme-setting subtitle
+        ("See your pet on this design") — sells the button to a new shopper.
+      — Post-first-generation: the cap caption ("X of Y free designs remaining")
+        — informs a shopper who has already used attempts.
+      JS reads data-subtitle to restore the subtitle on cap-status refresh; the
+      initial inline text is the pre-JS / no-JS fallback. :empty in the <style>
+      block collapses the element entirely when neither message applies (subtitle
+      blank + no cap data yet).
+    {% endcomment %}
+    <p class="appai-my-pet__caption" data-subtitle="{{ button_subtitle | escape }}">{{ button_subtitle | escape }}</p>
   </div>
   <script src="{{ 'appai-my-pet.js' | asset_url }}" defer></script>
 {% endif %}
@@ -110,6 +119,12 @@
        (e.g. white-on-white inside product-info) can't hide the caption. */
     color: var(--appai-my-pet-caption-fg, #666666) !important;
     opacity: 1 !important;
+  }
+  /* Collapse the caption slot entirely when neither the theme subtitle nor the
+     cap caption has anything to say (prevents an empty line of padding when a
+     merchant blanks the subtitle AND the shopper hasn't generated yet). */
+  .appai-my-pet__caption:empty {
+    display: none;
   }
   /*
    * Polish 9 — shimmer sweep on the "X free designs remaining" caption, using

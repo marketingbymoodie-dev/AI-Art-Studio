@@ -412,6 +412,13 @@
     var pageUrl = root.getAttribute('data-page-url') || window.location.href;
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
+    // Theme-setting subtitle ("See your pet on this design") captured once at
+    // init, so refreshCapStatus can restore it whenever the shopper hasn't
+    // generated on this product yet. Falls back to the current text content
+    // for older liquid versions that don't emit the data-subtitle attribute.
+    var defaultSubtitle = caption
+      ? (caption.getAttribute('data-subtitle') || caption.textContent || '')
+      : '';
     if (!openBtn) return;
 
     // UX 4 — run once on init, before anything else reads the form's variant.
@@ -478,6 +485,19 @@
 
     function renderAttemptsCaption(capStatus) {
       if (!caption || !capStatus) return;
+      // Subtitle-vs-cap-caption swap: show the theme-setting subtitle to
+      // anyone who hasn't generated on this product yet (selling copy for a
+      // fresh visitor), and the cap caption only once an attempt has actually
+      // been used (status copy for a returning/already-tried shopper). Both
+      // messages matter, but to different audiences — never both at once,
+      // never one overwriting the other.
+      var hasGenerated = typeof capStatus.perListingCount === 'number' && capStatus.perListingCount > 0;
+      if (!hasGenerated) {
+        caption.textContent = defaultSubtitle;
+        caption.classList.remove('appai-shimmer');
+        openBtn.removeAttribute('aria-disabled');
+        return;
+      }
       caption.textContent = formatAttemptsMessage(capStatus);
       if (capStatus.allowed === false) {
         openBtn.setAttribute('aria-disabled', 'true');
