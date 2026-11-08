@@ -881,6 +881,9 @@
       jobId: null,
       previewUrl: null,
       dismissedRenderIds: {},
+      emailedRenderIds: {},
+      inCartRenderIds: {},
+      leaveGuardShown: {},
       emailModalOpen: false,
       capStatus: null,
       // Bugs B/C — the modal tracks its own swatch selection independently of
@@ -937,6 +940,74 @@
     }
     function isDismissed(renderId) {
       return !!(renderId && state.dismissedRenderIds[renderId]);
+    }
+    function markEmailed(renderId) {
+      if (!renderId) return;
+      state.emailedRenderIds[renderId] = true;
+      try { window.localStorage.setItem('appai_my_pet_emailed_v1:' + renderId, '1'); } catch (e) {}
+    }
+    function renderWasEmailed(renderId) {
+      if (!renderId) return false;
+      if (state.emailedRenderIds[renderId]) return true;
+      try {
+        if (window.localStorage.getItem('appai_my_pet_emailed_v1:' + renderId) === '1') {
+          state.emailedRenderIds[renderId] = true;
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+    function markInCart(renderId) {
+      if (renderId) state.inCartRenderIds[renderId] = true;
+    }
+    function renderInCart(renderId) {
+      return !!(renderId && state.inCartRenderIds[renderId]);
+    }
+    function markLeaveGuardShown(renderId) {
+      if (!renderId) return;
+      state.leaveGuardShown[renderId] = true;
+      try { window.sessionStorage.setItem('appai_my_pet_leave_shown_v1:' + renderId, '1'); } catch (e) {}
+    }
+    function leaveGuardAlreadyShown(renderId) {
+      if (!renderId) return false;
+      if (state.leaveGuardShown[renderId]) return true;
+      try {
+        if (window.sessionStorage.getItem('appai_my_pet_leave_shown_v1:' + renderId) === '1') {
+          state.leaveGuardShown[renderId] = true;
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+    function probeCartForRender(renderId) {
+      if (!renderId) return;
+      fetch('/cart.js', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (cart) {
+          var items = (cart && cart.items) || [];
+          for (var i = 0; i < items.length; i++) {
+            var props = items[i].properties || {};
+            var id = props._appai_my_pet_render_id;
+            if (id && String(id) === String(renderId)) markInCart(renderId);
+          }
+        })
+        .catch(function () {});
+    }
+    function leaveGuardDestination(link) {
+      if (!link || !link.getAttribute) return '';
+      var raw = link.getAttribute('href') || '';
+      if (!raw || raw.charAt(0) === '#') return '';
+      var lower = raw.trim().toLowerCase();
+      if (lower.indexOf('javascript:') === 0 || lower.indexOf('mailto:') === 0 || lower.indexOf('tel:') === 0) return '';
+      var url;
+      try { url = new URL(link.href, window.location.href); } catch (e) { return ''; }
+      if (url.origin !== window.location.origin) return '';
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      var path = url.pathname.toLowerCase();
+      if (path === '/cart' || path.indexOf('/cart/') === 0) return '';
+      if (path === '/checkout' || path.indexOf('/checkout') === 0 || path.indexOf('/checkouts/') !== -1) return '';
+      if (link.closest && link.closest('.appai-my-pet, .appai-my-pet-modal, .appai-my-pet-modal__overlay, .appai-zoom-overlay, cart-drawer, cart-drawer-component, cart-notification, .cart-drawer, #cart-drawer, #CartDrawer, [data-cart-drawer]')) return '';
+      return url.href;
     }
 
     function showMessage(body, message) {
@@ -1030,6 +1101,7 @@
             state.renderId = res.renderId;
             state.jobId = res.jobId;
             state.previewUrl = res.previewUrl;
+            probeCartForRender(res.renderId);
             // STAGING-96 restore-path bug fix: previewUrlsByColor is now
             // rebuilt server-side from the deterministic {renderId}-{slug}
             // storage paths generate wrote, so swatch clicks on a restored
@@ -3111,6 +3183,7 @@
         .then(function (added) {
           if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
           markDismissed(state.renderId);
+          markInCart(state.renderId);
           refreshAndOpenCartDrawer();
           if (atcBtn) atcBtn.disabled = false;
         })
@@ -3208,6 +3281,7 @@
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
+            probeCartForRender(genRes.renderId);
             picker.overlay.remove();
             // Bugs 3 + 11 — await the refresh before opening the preview so
             // the modal subtitle never renders the pre-generation count. The
@@ -3608,6 +3682,7 @@
         })
         .then(function (added) {
           if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
+          markInCart(state.renderId);
           if (status) {
             status.innerHTML = 'Added to cart! <a href="/cart">View cart</a>';
             // Queued — the modal is max-height:92vh; overflow:auto, so on
@@ -3714,6 +3789,12 @@
       var primaryLabel = isCapGate && !alreadyConsented
         ? "Unlock 2 more designs"
         : "Email me this design";
+      var leaveHref = trigger === 'leave-guard' ? String(opts.leaveHref || '') : '';
+      if (leaveHref) {
+        headline = 'Keep your design?';
+        bodyCopy = "We'll email it to you so you don't lose it.";
+        primaryLabel = 'Email me this design';
+      }
       var consentRowHtml = alreadyConsented
         ? ''
         : '<label class="appai-my-pet-consent">' +
@@ -3731,6 +3812,7 @@
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
         consentRowHtml +
         '<button type="button" class="appai-primary" data-action="send-email">' + primaryLabel + '</button>' +
+        (leaveHref ? '<button type="button" class="appai-secondary" data-action="leave-anyway">Leave anyway</button>' : '') +
         footnoteHtml +
         '<p id="appai-my-pet-email-status" class="appai-my-pet-msg"></p>';
       var thumb = modal.body.querySelector('img.appai-thumb');
@@ -3755,6 +3837,14 @@
         postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl })
           .then(function (res) {
             if (res && res.ok) {
+              markEmailed(renderIdAtOpen);
+              if (leaveHref) {
+                writeStoredEmail(email);
+                markDismissed(renderIdAtOpen);
+                console.log(TAG, 'leave-guard saved');
+                window.location.assign(leaveHref);
+                return;
+              }
               // Confirmation copy:
               //   State A+checked / State B+checked   → "You're in!" (just joined)
               //   State A+unchecked / State B+unchecked / State C → "Sent!"
@@ -3778,6 +3868,15 @@
             if (sendBtn) sendBtn.disabled = false;
           });
       });
+      var leaveBtn = modal.body.querySelector('[data-action="leave-anyway"]');
+      if (leaveBtn && leaveHref) {
+        leaveBtn.addEventListener('click', function () {
+          console.log(TAG, 'leave-guard left');
+          state.emailModalOpen = false;
+          modal.overlay.remove();
+          window.location.assign(leaveHref);
+        });
+      }
     }
 
     // Desktop exit-intent (mouse leaving toward the browser chrome). Mobile has
@@ -3786,6 +3885,29 @@
     document.addEventListener('mouseleave', function (e) {
       if (e.clientY <= 0) maybePromptEmailSave();
     });
+
+    function onLeaveGuardClick(event) {
+      var renderId = state.renderId;
+      if (!renderId || renderWasEmailed(renderId) || renderInCart(renderId) || leaveGuardAlreadyShown(renderId)) return;
+      if (event.defaultPrevented) return;
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      var node = event.target;
+      if (!node || !node.closest) return;
+      var link = node.closest('a[href]');
+      if (!link) return;
+      var href = leaveGuardDestination(link);
+      if (!href) return;
+      event.preventDefault();
+      event.stopPropagation();
+      markLeaveGuardShown(renderId);
+      console.log(TAG, 'leave-guard shown');
+      maybePromptEmailSave({ force: true, trigger: 'leave-guard', leaveHref: href });
+    }
+    if (window.__appaiMyPetLeaveGuardClick) {
+      document.removeEventListener('click', window.__appaiMyPetLeaveGuardClick, true);
+    }
+    window.__appaiMyPetLeaveGuardClick = onLeaveGuardClick;
+    document.addEventListener('click', onLeaveGuardClick, true);
 
     // Email-saved link resume: ?my_pet_token=... loads that render directly,
     // cross-device, no re-upload (valid 30 days).
@@ -3796,6 +3918,8 @@
           if (res && res.ok) {
             state.renderId = res.renderId;
             state.previewUrl = res.previewUrl;
+            markEmailed(res.renderId);
+            probeCartForRender(res.renderId);
             // STAGING-96 — email-token restore now receives the same
             // previewUrlsByColor map as fresh generate, so colour swaps
             // after following the save-link are instant CLIENT CACHE HITs.
