@@ -843,10 +843,40 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
 // signed preview URL (the one on the job row may have expired by now).
 // ─────────────────────────────────────────────────────────────────────────
 
-export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey: string; renderId: string }): Promise<{
+/** Shadow reuse key: job + catalog variant + this render's colour and size. */
+export function myPetShadowDesignId(
+  jobId: string,
+  variantId: string,
+  renderId: string,
+  colorName: string,
+  sizeName: string,
+): string {
+  const slug = (raw: string) =>
+    String(raw || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "x";
+  const vid = String(variantId || "").replace(/\D/g, "");
+  return `${jobId}::${vid}::${renderId}-${slug(colorName)}-${slug(sizeName)}`;
+}
+
+function myPetUrlTail(url: string): string {
+  return String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+}
+
+export async function getMyPetRenderForAddToCart(args: {
+  shop: string;
+  deviceKey: string;
+  renderId: string;
+  colorName?: string | null;
+  sizeName?: string | null;
+  variantId?: string | null;
+}): Promise<{
   jobId: string;
   previewUrl: string;
   renderId: string;
+  colorName: string;
+  designId: string;
   /** Human-readable line-item label (e.g. "My Pet — Vintage Engraving"). */
   designLabel: string;
 }> {
@@ -854,7 +884,43 @@ export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey || !render.jobId) {
     throw new Error("Design not found");
   }
-  const previewUrl = await signedMyPetUrl(render.previewPath);
+  const colorName = String(args.colorName || "").trim();
+  const sizeName = String(args.sizeName || "").trim();
+  let previewPath = render.previewPath;
+  let previewUrl = "";
+  if (colorName) {
+    const colourPath = myPetPreviewPathForColor(render.id, colorName);
+    const exists = await myPetObjectExists(colourPath).catch(() => false);
+    if (exists) {
+      previewPath = colourPath;
+    } else {
+      try {
+        const composed = await recompositeMyPetRender({
+          shop: args.shop,
+          deviceKey: args.deviceKey,
+          renderId: render.id,
+          colorName,
+        });
+        if (composed.previewUrl) {
+          previewUrl = composed.previewUrl;
+          previewPath = myPetPreviewPathForColor(render.id, composed.colorName || colorName);
+          console.log(
+            `[my-pet] atc recomposite colour=${composed.colorName || colorName} mockupTail=${myPetUrlTail(previewUrl)}`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[my-pet] atc colour file missing and recomposite failed colour=${colorName}:`,
+          (err as Error)?.message || err,
+        );
+      }
+    }
+  }
+  if (!previewUrl) previewUrl = await signedMyPetUrl(previewPath);
+  console.log(
+    `[my-pet] atc colour=${colorName || "generation"} size=${sizeName || "?"} ` +
+      `mockupTail=${myPetUrlTail(previewUrl)} path=${previewPath}`,
+  );
   // Enrich the label with the candidate's art style for cart readability.
   // Fallback to a plain "My Pet" if the candidate was later unpromoted.
   let designLabel = "My Pet";
@@ -872,7 +938,20 @@ export async function getMyPetRenderForAddToCart(args: { shop: string; deviceKey
       designLabel = `My Pet — ${pretty}`;
     }
   } catch { /* label is cosmetic — never block ATC on it */ }
-  return { jobId: render.jobId, previewUrl, renderId: render.id, designLabel };
+  return {
+    jobId: render.jobId,
+    previewUrl,
+    renderId: render.id,
+    colorName,
+    designId: myPetShadowDesignId(
+      render.jobId,
+      String(args.variantId || ""),
+      render.id,
+      colorName,
+      sizeName,
+    ),
+    designLabel,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

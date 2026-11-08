@@ -63,6 +63,16 @@ describe("print-config suffix", () => {
     expect(reusableShadowDesignId("job-1::4617::bgA", "4617")).toBe("job-1::4617::bgA");
     expect(shadowJobPrefix("job-1::4617::bgA")).toBe("job-1");
   });
+
+  it("keeps a My Pet render + colour + size key off the bare-job fallback", () => {
+    const sage = "job-1::46501561663722::renderabc-sage-m";
+    const red = "job-1::46501561729258::renderabc-red-xl";
+    expect(hasPrintConfigSuffix(sage)).toBe(true);
+    expect(shadowLookupKeys(sage, "https://cdn.example/sage.png", "46501561663722")).toEqual([sage]);
+    expect(shadowLookupKeys(red, "https://cdn.example/red.png", "46501561729258")).toEqual([red]);
+    expect(reusableShadowDesignId(sage, "46501561663722")).toBe(sage);
+    expect(sage).not.toBe(red);
+  });
 });
 
 describe("shadowMatchesBaseVariant", () => {

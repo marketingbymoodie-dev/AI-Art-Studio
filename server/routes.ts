@@ -11693,7 +11693,9 @@ ${orientationExtra}
         productTypeId: productTypeIdRaw,
         sizeId,
         colorId,
+        source: sourceRaw,
       } = req.body;
+      const source = String(sourceRaw || "");
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -11889,10 +11891,12 @@ ${orientationExtra}
         step(`reuse price synced written=${synced?.written ?? "none"}`);
         // Exact cfg-keyed reuse only. A different print snapshot is a new
         // persistDesignId, so this refresh cannot overwrite another cart line.
+        let shadowImage: string | null = null;
         if (existing.shopifyProductId && existing.shopifyVariantId) {
           const reusedProductId = existing.shopifyProductId;
           const reusedVariantId = existing.shopifyVariantId;
-          (async () => {
+          const refreshReusedShadow = async () => {
+            let setSrc = mockupUrl;
             try {
               const imgRes = await shadowFetch(
                 `${apiBase}/products/${reusedProductId}/images.json`,
@@ -11914,6 +11918,13 @@ ${orientationExtra}
                   `[ShadowProduct] Failed to refresh reused shadow image:`,
                   imgRes.status,
                   t.substring(0, 200),
+                );
+              } else {
+                const imgBody = (await imgRes.json().catch(() => ({}))) as { image?: { src?: string } };
+                setSrc = imgBody?.image?.src || mockupUrl;
+                const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+                console.log(
+                  `[ShadowProduct] image set product=${reusedProductId} variant=${reusedVariantId} shopifyTail=${tail(setSrc)} mockupTail=${tail(mockupUrl)} source=${source || "customizer"}`,
                 );
               }
             } catch (imgErr: any) {
@@ -11947,7 +11958,14 @@ ${orientationExtra}
                 titleErr?.message || titleErr,
               );
             }
-          })();
+            return setSrc;
+          };
+          // My Pet cart thumbnails are the shadow variant image. Wait until
+          // Shopify has that image before the storefront adds the line.
+          // Customizer reuse stays fire-and-forget so a slow image POST
+          // cannot miss the cart/add deadline.
+          if (source === "my-pet") shadowImage = await refreshReusedShadow();
+          else void refreshReusedShadow();
         }
         return res.json({
           success: true,
@@ -11955,6 +11973,7 @@ ${orientationExtra}
           reused: true,
           designId: persistDesignId,
           matchedKey: existingKey,
+          shadowImage: shadowImage || mockupUrl,
           price: synced?.written ?? null,
           priceSource: synced?.source ?? null,
           liveFrontPrice: synced?.front ?? null,
@@ -12217,13 +12236,21 @@ ${orientationExtra}
       step("created purchasable ok");
 
       // 6. Assign the mockup image to the variant
+      let createdShadowImage = mockupUrl;
       if (shadowProduct.images && shadowProduct.images.length > 0) {
         const imgId = shadowProduct.images[0].id;
+        createdShadowImage = shadowProduct.images[0].src || mockupUrl;
         await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
           method: 'PUT',
           headers,
           body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
         }).catch(() => { /* non-fatal */ });
+      }
+      {
+        const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+        console.log(
+          `[ShadowProduct] image set product=${shadowProduct.id} variant=${shadowVariant.id} shopifyTail=${tail(createdShadowImage)} mockupTail=${tail(mockupUrl)} source=${source || "customizer"}`,
+        );
       }
 
       try {
@@ -12262,6 +12289,7 @@ ${orientationExtra}
         variantId: String(shadowVariant.id),
         created: true,
         designId: persistDesignId,
+        shadowImage: createdShadowImage,
         price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
         priceSource: overridePriceFormatted ? "both" : "front",
         liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,

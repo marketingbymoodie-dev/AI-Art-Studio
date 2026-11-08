@@ -4928,88 +4928,212 @@
         .catch(function () { /* leave hero as-is */ });
     }
 
-    function installInlineATCIntercept() {
-      var form = findMainProductForm(root);
-      if (!form) return;
-      // Capture-phase listeners beat any theme handler (which almost always
-      // attaches in bubble phase). stopImmediatePropagation keeps the theme
-      // from running its own cart/add after us.
-      // Issue 7 (post-staging-93): guard on inlineApplied, not just
-      // inlineHero — revertToOriginalDesign sets inlineApplied=false
-      // without clearing the intercept, so these guards let the theme's
-      // own cart/add run unmodified when the shopper chose "Buy the
-      // original design instead". No _appai_* / _design_id / _mockup_url
-      // properties get attached to the stock-product ATC.
-      form.addEventListener('submit', function (e) {
-        if (!state.renderId || !state.inlineHero || !state.inlineApplied) return;
-        e.preventDefault();
-        e.stopPropagation();
-        try { e.stopImmediatePropagation(); } catch (_) {}
-        runInlineATC();
-      }, true);
-      // Some themes bypass form submit via a direct button click handler.
-      // Intercepting click too is belt-and-braces; the submit intercept above
-      // handles keyboard "enter" in the quantity input etc.
-      var atc = form.querySelector('[type="submit"], [name="add"], button.product-form__submit, .shopify-payment-button');
-      if (atc) {
-        atc.addEventListener('click', function (e) {
-          if (!state.renderId || !state.inlineHero || !state.inlineApplied) return;
-          if (e.target.closest('.shopify-payment-button')) return; // skip dynamic checkout — no My Pet support on express checkout
-          e.preventDefault();
-          e.stopPropagation();
-          try { e.stopImmediatePropagation(); } catch (_) {}
-          runInlineATC();
-        }, true);
+    function inlineOn() {
+      return !!(state.renderId && state.inlineHero && state.inlineApplied);
+    }
+
+    function mockupForColour(colour) {
+      var url = urlForColourMap(state.previewUrlByColor, colour);
+      if (url) return Promise.resolve(url);
+      if (!colour || !state.renderId) return Promise.resolve('');
+      return postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colour })
+        .then(function (res) {
+          if (res && res.ok && res.previewUrl) {
+            state.previewUrlByColor[colour] = res.previewUrl;
+            mergeColourMap(res.previewUrlsByColor);
+            return urlForColourMap(state.previewUrlByColor, colour) || res.previewUrl;
+          }
+          return '';
+        })
+        .catch(function () { return ''; });
+    }
+
+    function paintFlyImage(url) {
+      if (!url || String(url).indexOf('https://') !== 0) return;
+      var section = mainProductSection();
+      var nodes = document.querySelectorAll('add-to-cart-component');
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        if (!node || !node.closest) continue;
+        if (node.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
+        var inSection = section && section.contains(node);
+        var inSticky = node.closest('sticky-add-to-cart, .sticky-add-to-cart');
+        if (!inSection && !inSticky) continue;
+        node.dataset.productVariantMedia = url;
+      }
+      var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
+      if (stickyImg && (!section || !section.contains(stickyImg))) {
+        stickyImg.src = url;
+        stickyImg.removeAttribute('srcset');
       }
     }
 
-    function runInlineATC() {
-      // Read the current variant directly from the PDP form — the native
-      // swatch logic already keeps form.input[name=id] in sync, so we trust
-      // it as the source of truth in inline mode (modal mode has its own
-      // state.swatchColor/Size because the modal duplicates swatches).
+    function setFormProperty(form, name, value) {
+      var input = form.querySelector('input[data-appai-prop="' + name + '"]');
+      if (!value) {
+        if (input) input.remove();
+        return;
+      }
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'properties[' + name + ']';
+        input.setAttribute('data-appai-prop', name);
+        form.appendChild(input);
+      }
+      input.value = value;
+    }
+
+    function isOurCartForm(form) {
+      if (!form || !form.matches || !form.matches('form[action*="/cart/add"]')) return false;
+      if (form.closest && form.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) return false;
+      var section = mainProductSection();
+      if (section && section.contains(form)) return true;
+      if (form.closest && form.closest('sticky-add-to-cart, .sticky-add-to-cart')) return true;
+      return form === findMainProductForm(root);
+    }
+
+    function cartLineProperties(res, colorName, sizeName) {
+      var properties = {
+        '_design_id': res.designLabel || 'My Pet',
+        '_appai_my_pet_render_id': res.renderId || state.renderId || '',
+      };
+      if (res.jobId) properties['_appai_job_id'] = res.jobId;
+      if (res.previewUrl && String(res.previewUrl).indexOf('https://') === 0) properties['_mockup_url'] = res.previewUrl;
+      if (colorName) properties['_color'] = colorName;
+      if (sizeName) properties['_size'] = sizeName;
+      return properties;
+    }
+
+    function handOffToTheme(form, shadowVariantId, properties) {
+      if (!form || !shadowVariantId) return false;
+      var idInput = form.querySelector('input[name="id"], select[name="id"]');
+      var catalogId = idInput ? idInput.value : '';
+      if (idInput) idInput.value = String(shadowVariantId);
+      var keys = Object.keys(properties);
+      for (var i = 0; i < keys.length; i++) setFormProperty(form, keys[i], properties[keys[i]]);
+      var component = form.closest('product-form-component');
+      var handed = false;
+      if (component && typeof component.handleSubmit === 'function') {
+        try {
+          component.handleSubmit(new Event('submit', { bubbles: false, cancelable: true }));
+          handed = true;
+        } catch (err) {
+          console.warn(TAG, 'theme handleSubmit failed', err && err.message);
+        }
+      }
+      if (idInput && catalogId) idInput.value = catalogId;
+      for (var j = 0; j < keys.length; j++) setFormProperty(form, keys[j], '');
+      return handed;
+    }
+
+    function fallbackCartAdd(res, properties) {
+      return fetch('/cart/add.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1, properties: properties }] }),
+      }).then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, json: j }; });
+      }).then(function (added) {
+        if (!added.ok) throw new Error((added.json && (added.json.description || added.json.message)) || 'Could not add to cart');
+        refreshAndOpenCartDrawer();
+      });
+    }
+
+    function installInlineATCIntercept() {
+      if (state.atcBound) return;
+      state.atcBound = true;
+      // Leave the button click alone when it will submit the product form,
+      // so Horizon's add-to-cart-component can play fly-to-cart. The submit
+      // listener below swaps in the shadow variant and then calls the
+      // theme's own handleSubmit. A type=button sticky control never
+      // submits, so that click runs the same path itself.
+      // Revert (inlineApplied false) returns before any of this, so the
+      // theme adds the catalog variant with no AppAI properties.
+      document.addEventListener('click', function (e) {
+        if (!inlineOn()) return;
+        var t = e.target;
+        if (!t || !t.closest) return;
+        if (t.closest('.shopify-payment-button')) return;
+        var btn = t.closest('button[name="add"], button.product-form__submit');
+        if (!btn) return;
+        if (btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) return;
+        var section = mainProductSection();
+        var inSection = !!(section && section.contains(btn));
+        var inSticky = !!btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
+        if (!inSection && !inSticky) return;
+        var info = currentVariantInfo(root);
+        var colour = currentColourName() || info.colorName || '';
+        var cached = urlForColourMap(state.previewUrlByColor, colour);
+        if (cached) paintFlyImage(cached);
+        var type = (btn.getAttribute('type') || 'submit').toLowerCase();
+        var form = btn.form || btn.closest('form');
+        if (type === 'submit' && isOurCartForm(form)) return;
+        // Horizon's sticky bar is type=button. Its handler clicks the main
+        // submit button (and plays the sticky fly-to-cart). Let that through;
+        // the submit listener adds the shadow variant.
+        if (inSticky) return;
+        e.preventDefault();
+        e.stopPropagation();
+        try { e.stopImmediatePropagation(); } catch (_) {}
+        runInlineATC(findMainProductForm(root) || form);
+      }, true);
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (!inlineOn() || !isOurCartForm(form)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        try { e.stopImmediatePropagation(); } catch (_) {}
+        runInlineATC(form);
+      }, true);
+    }
+
+    function runInlineATC(form) {
+      if (state.atcBusy) return;
+      var targetForm = form || findMainProductForm(root);
+      var addBtn = targetForm ? targetForm.querySelector('button[name="add"], button.product-form__submit') : null;
+      if (addBtn && addBtn.disabled) return;
       var info = currentVariantInfo(root);
       var variantId = info.variantId;
       if (!variantId) {
         console.warn(TAG, 'inline ATC: no variant id on form, aborting');
         return;
       }
-      // STAGING-99 — scope to the main product form so sticky/quick-add
-      // ATC buttons on Ritual don't get disabled mid-request.
-      var mainForm = findMainProductForm(root);
-      var atcBtn = mainForm ? mainForm.querySelector('[type="submit"], button.product-form__submit, [name="add"]') : null;
-      if (atcBtn) atcBtn.disabled = true;
-      attemptResolveVariant(String(variantId), info.price, 0)
-        .then(function (res) {
-          var properties = {
-            '_design_id': res.designLabel || 'My Pet',
-            '_appai_my_pet_render_id': res.renderId || state.renderId || '',
-          };
-          if (res.jobId) properties['_appai_job_id'] = res.jobId;
-          if (res.previewUrl && res.previewUrl.indexOf('https://') === 0) {
-            properties['_mockup_url'] = res.previewUrl;
-          }
-          if (info.colorName != null) properties['_color'] = info.colorName;
-          if (info.sizeId != null) properties['_size'] = info.sizeId;
-          return fetch('/cart/add.js', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1, properties: properties }] }),
-          }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); });
-        })
-        .then(function (added) {
-          if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
-          markDismissed(state.renderId);
-          markInCart(state.renderId);
-          refreshAndOpenCartDrawer();
-          if (atcBtn) atcBtn.disabled = false;
+      var colour = currentColourName() || info.colorName || '';
+      var sizeName = currentSizeName() || info.sizeId || '';
+      state.atcBusy = true;
+      mockupForColour(colour)
+        .then(function (localUrl) {
+          paintFlyImage(localUrl);
+          console.log(TAG, 'atc colour=' + colour, 'size=' + sizeName, 'mockupTail=' + srcTail(localUrl));
+          return attemptResolveVariant(String(variantId), info.price, 0, {
+            colorName: colour,
+            sizeName: sizeName,
+            mockupUrl: localUrl,
+          }).then(function (res) {
+            console.log(
+              TAG,
+              'atc sentTail=' + srcTail(res.previewUrl),
+              'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl),
+            );
+            var properties = cartLineProperties(res, colour, sizeName);
+            var target = form || findMainProductForm(root);
+            if (handOffToTheme(target, res.variantId, properties)) {
+              markDismissed(state.renderId);
+              markInCart(state.renderId);
+              return;
+            }
+            return fallbackCartAdd(res, properties).then(function () {
+              markDismissed(state.renderId);
+              markInCart(state.renderId);
+            });
+          });
         })
         .catch(function (err) {
-          if (atcBtn) atcBtn.disabled = false;
           console.warn(TAG, 'inline ATC failed:', err && err.message);
-          // Surface error in the caption so the shopper sees something.
           if (caption) caption.textContent = (err && err.message) || 'Could not add to cart. Please try again.';
-        });
+        })
+        .then(function () { state.atcBusy = false; });
     }
 
     function openUploadStep() {
@@ -5436,8 +5560,14 @@
      * Shopify-side variant just has not propagated yet. Retry with backoff;
      * show other `!success` responses as their actual error (Bug #3 fix).
      */
-    function attemptResolveVariant(variantId, price, attempt) {
-      return postJson('my-pet/resolve-variant', { renderId: state.renderId, variantId: variantId, price: price })
+    function attemptResolveVariant(variantId, price, attempt, extra) {
+      var body = { renderId: state.renderId, variantId: variantId, price: price };
+      if (extra) {
+        if (extra.colorName) body.colorName = extra.colorName;
+        if (extra.sizeName) body.sizeName = extra.sizeName;
+        if (extra.mockupUrl) body.mockupUrl = extra.mockupUrl;
+      }
+      return postJson('my-pet/resolve-variant', body)
         .then(function (res) {
           if (res && res.success && res.variantId) return res;
           var code = res && res.code;
@@ -5448,7 +5578,7 @@
             if (attempt < backoffs.length) {
               return new Promise(function (resolve, reject) {
                 setTimeout(function () {
-                  attemptResolveVariant(variantId, price, attempt + 1).then(resolve, reject);
+                  attemptResolveVariant(variantId, price, attempt + 1, extra).then(resolve, reject);
                 }, backoffs[attempt]);
               });
             }
@@ -5499,9 +5629,20 @@
 
       if (btn) btn.disabled = true;
       if (status) status.textContent = 'Setting up your cart line…';
-      attemptResolveVariant(exactVariantId, exactPrice, 0)
+      var modalColour = state.swatchColor || '';
+      var modalSize = state.swatchSize || '';
+      mockupForColour(modalColour)
+        .then(function (localUrl) {
+          console.log(TAG, 'atc colour=' + modalColour, 'size=' + modalSize, 'mockupTail=' + srcTail(localUrl));
+          return attemptResolveVariant(exactVariantId, exactPrice, 0, {
+            colorName: modalColour,
+            sizeName: modalSize,
+            mockupUrl: localUrl,
+          });
+        })
         .then(function (res) {
           if (status) status.textContent = 'Adding to cart…';
+          console.log(TAG, 'atc sentTail=' + srcTail(res.previewUrl), 'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl));
           // Issue 10: line-item properties that (a) let appai-cart-images.js
           // recognise this as an AppAI line and swap the thumbnail to the
           // composite mockup, (b) tie the line back to generationJobs for the
@@ -5511,29 +5652,15 @@
           // Underscore-prefixed keys are hidden from buyer-facing cart UI (per
           // Shopify convention + our cart-guard script) — merchant / support
           // sees them on the Shopify order page.
-          var properties = {
-            '_design_id': res.designLabel || 'My Pet',
-            '_appai_my_pet_render_id': res.renderId || state.renderId || '',
-          };
-          if (res.jobId) properties['_appai_job_id'] = res.jobId;
-          if (res.previewUrl && res.previewUrl.indexOf('https://') === 0) {
-            properties['_mockup_url'] = res.previewUrl;
-          }
           // Bugs B/C — write the shopper's ACTUAL selected colour/size, not
           // whatever happened to be on the PDP form when ATC was clicked.
-          // BUG A — only set when the option exists (single-variant products
-          // have no colour/size swatches; leaving undefined keeps the line
-          // properties clean).
-          if (state.swatchColor != null) properties['_color'] = state.swatchColor;
-          if (state.swatchSize != null) properties['_size'] = state.swatchSize;
-          return fetch('/cart/add.js', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: [{ id: res.variantId, quantity: 1, properties: properties }] }),
-          }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, json: j }; }); });
+          var properties = cartLineProperties(res, modalColour, modalSize);
+          var form = findMainProductForm(root);
+          if (handOffToTheme(form, res.variantId, properties)) return { ok: true, themed: true };
+          return fallbackCartAdd(res, properties).then(function () { return { ok: true, themed: false }; });
         })
         .then(function (added) {
-          if (!added.ok) throw new Error((added.json && added.json.description) || 'Could not add to cart');
+          if (!added || !added.ok) throw new Error('Could not add to cart');
           markInCart(state.renderId);
           if (status) {
             status.innerHTML = 'Added to cart! <a href="/cart">View cart</a>';
@@ -5547,10 +5674,7 @@
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
-          // Bug D — Section Rendering API refresh + theme-drawer open attempt.
-          // Replaces the previous single-event dispatch that only fed our own
-          // cart-images repaint, never the theme's drawer.
-          refreshAndOpenCartDrawer();
+          if (!added.themed) refreshAndOpenCartDrawer();
         })
         .catch(function (err) {
           if (btn) btn.disabled = false;

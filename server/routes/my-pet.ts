@@ -13,6 +13,7 @@ import {
   getEligibleCandidateForMyPet,
   getMyPetOrderDetails,
   getMyPetRenderForAddToCart,
+  myPetShadowDesignId,
   getMyPetSettings,
   recompositeMyPetRender,
   resolveMyPetEmailToken,
@@ -267,13 +268,35 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
   // the app's own domain (catalogue products carry no ai_art_studio.app_url meta).
   app.post("/api/proxy/my-pet/resolve-variant", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
-    const { renderId, variantId, price } = req.body || {};
+    const { renderId, variantId, price, colorName, sizeName, mockupUrl: clientMockupRaw } = req.body || {};
     if (!shop || !renderId || !variantId) {
       return res.status(400).json({ success: false, error: "renderId and variantId are required" });
     }
     const { deviceKey } = ensureMyPetDeviceKeyFromProxy(req, res);
     try {
-      const { jobId, previewUrl, designLabel } = await getMyPetRenderForAddToCart({ shop, deviceKey, renderId: String(renderId) });
+      const colour = colorName ? String(colorName) : "";
+      const size = sizeName ? String(sizeName) : "";
+      const { jobId, previewUrl, designLabel, designId } = await getMyPetRenderForAddToCart({
+        shop,
+        deviceKey,
+        renderId: String(renderId),
+        colorName: colour,
+        sizeName: size,
+        variantId: String(variantId),
+      });
+      const clientMockup = typeof clientMockupRaw === "string" ? clientMockupRaw.trim() : "";
+      const clientPath = clientMockup.split("?")[0].split("#")[0];
+      const clientIsGeneration = clientPath.endsWith(`/${String(renderId)}.png`);
+      const clientColourUrl = clientMockup.startsWith("https://") && !clientIsGeneration ? clientMockup : "";
+      // Click-time gallery URL wins. The signed colour file is the fallback
+      // when that map entry was not ready yet.
+      const mockupUrl = clientColourUrl || previewUrl;
+      const shadowDesignId = designId || myPetShadowDesignId(jobId, String(variantId), String(renderId), colour, size);
+      const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+      console.log(
+        `[my-pet] resolve-variant colour=${colour || "?"} size=${size || "?"} ` +
+          `clientTail=${tail(clientMockup) || "none"} mockupTail=${tail(mockupUrl)} designId=${shadowDesignId}`,
+      );
       const base = (process.env.PUBLIC_APP_URL || process.env.APP_URL || "").replace(/\/$/, "");
       if (!base) return res.status(500).json({ success: false, error: "App URL is not configured" });
       const upstream = await fetch(`${base}/api/storefront/resolve-design-variant`, {
@@ -282,8 +305,9 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         body: JSON.stringify({
           shop,
           variantId: String(variantId),
-          designId: jobId,
-          mockupUrl: previewUrl,
+          designId: shadowDesignId,
+          mockupUrl,
+          source: "my-pet",
           // Matches generationJobs.sessionId set at generate time — satisfies
           // resolve-design-variant's ownership check for this anonymous device.
           sessionId: deviceKey,
@@ -298,9 +322,15 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
       // _appai_my_pet_render_id / _design_id without a second round-trip.
       if (data && data.success) {
         data.jobId = jobId;
-        data.previewUrl = previewUrl;
+        data.previewUrl = mockupUrl;
+        data.colorName = colour;
         data.renderId = String(renderId);
         data.designLabel = designLabel;
+        if (!data.shadowImage) data.shadowImage = mockupUrl;
+        console.log(
+          `[my-pet] resolve-variant image colour=${colour || "?"} mockupTail=${tail(mockupUrl)} ` +
+            `shadowTail=${tail(String(data.shadowImage || ""))} shadowVariant=${data.variantId}`,
+        );
       } else {
         // Bug 1a: "Shop not authorized" / "not_design_owner" surfaced to the
         // shopper as a bare string with no trace of *why*. Log loudly here —
