@@ -146,6 +146,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
   { table: "design_products",       column: "my_pet_enabled",              type: "BOOLEAN NOT NULL DEFAULT TRUE" },
+  { table: "design_products",       column: "default_size_backfilled",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
   { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
   { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
@@ -3502,6 +3503,16 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED catalog styles for all merchants: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillDefaultSizeMedium } = await import("../default-size-medium");
+    const n = await backfillDefaultSizeMedium();
+    applied++;
+    console.log(`${tag} default size M backfill updated=${n.updated} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED default size M backfill: ${err.message ?? err}`);
   }
 
   try {

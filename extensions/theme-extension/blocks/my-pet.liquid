@@ -18,6 +18,7 @@
   {% endif %}
 {% endif %}
 
+<script src="{{ 'appai-default-size.js' | asset_url }}" defer></script>
 {% if show_my_pet %}
   {% assign button_label = block.settings.button_label | default: "My Pet" %}
   {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}

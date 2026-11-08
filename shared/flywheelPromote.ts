@@ -232,12 +232,30 @@ export function initialTickedColours<T extends { name: string; hex: string }>(
   return ordered.filter((colour) => wanted.has(colour.name.toLowerCase()));
 }
 
-/** Shopify variant positions: catalogue colour order, then XS–3XL inside each colour. */
+/**
+ * Index of size M in the first catalogue colour that this product actually sells.
+ * -1 when that colour has no M. Display order of the size option is separate.
+ */
+export function indexOfDefaultMedium<T extends { size: string; colour: string }>(
+  variants: readonly T[],
+  colourOrder: readonly string[],
+): number {
+  const present = new Set(variants.map((row) => row.colour.trim().toLowerCase()));
+  const named = colourOrder.find((name) => present.has(name.trim().toLowerCase()));
+  const defaultColour = (named || variants[0]?.colour || "").trim().toLowerCase();
+  if (!defaultColour) return -1;
+  return variants.findIndex((row) =>
+    row.size.trim().toUpperCase() === "M" && row.colour.trim().toLowerCase() === defaultColour,
+  );
+}
+
+/** Shopify variant positions: M in the default colour is first, then catalogue colour, then XS–3XL. */
 export function catalogueVariantPositions(
   variants: Array<{ id: string; colour: string; size: string }>,
 ): Array<{ id: string; position: number }> {
   const colourOrder: string[] = [];
   for (const variant of sortCatalogueColours(variants.map((row) => ({ name: row.colour })))) {
+    if (!variant.name) continue;
     if (colourOrder.some((name) => name.toLowerCase() === variant.name.toLowerCase())) continue;
     colourOrder.push(variant.name);
   }
@@ -246,6 +264,11 @@ export function catalogueVariantPositions(
     { colour: b.colour, size: b.size },
     colourOrder,
   ));
+  const mediumIndex = indexOfDefaultMedium(sorted, colourOrder);
+  if (mediumIndex > 0) {
+    const [medium] = sorted.splice(mediumIndex, 1);
+    sorted.unshift(medium);
+  }
   return sorted.map((variant, index) => ({ id: variant.id, position: index + 1 }));
 }
 

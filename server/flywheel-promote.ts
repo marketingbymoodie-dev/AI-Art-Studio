@@ -15,6 +15,7 @@ import {
   catalogueTags,
   catalogueVisibility,
   compareColourThenSize,
+  indexOfDefaultMedium,
   sortApparelSizeNames,
   sortCatalogueColours,
   mockupAlt,
@@ -761,7 +762,18 @@ export async function promoteCatalogueCandidate(args: {
       { name: "Size", values: sortApparelSizeNames(orderedShopifyVariants.map((variant) => variant.option1)) },
       { name: "Color", values: colourOrder },
     ],
-    variants: orderedShopifyVariants,
+    variants: (() => {
+      const mediumIndex = indexOfDefaultMedium(
+        orderedShopifyVariants.map((variant) => ({ size: variant.option1, colour: variant.option2 })),
+        colourOrder,
+      );
+      if (mediumIndex <= 0) return orderedShopifyVariants;
+      return [
+        orderedShopifyVariants[mediumIndex],
+        ...orderedShopifyVariants.slice(0, mediumIndex),
+        ...orderedShopifyVariants.slice(mediumIndex + 1),
+      ];
+    })(),
     metafields: [
       {
         namespace: "ai_art_studio",
@@ -863,6 +875,7 @@ export async function promoteCatalogueCandidate(args: {
     title,
     status: status === "active" ? "active" : "inactive",
     myPetEnabled: true,
+    defaultSizeBackfilled: true,
     variantMap: variantMapOut,
     mockupUrls: images.map((image) => image.filename),
   }).returning({ id: designProducts.id });

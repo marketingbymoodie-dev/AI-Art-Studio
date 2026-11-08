@@ -1563,6 +1563,8 @@ export const designProducts = pgTable("design_products", {
   status: text("status").notNull().default("active"), // active | inactive
   /** Storefront My Pet button. New rows default on. False hides the button. */
   myPetEnabled: boolean("my_pet_enabled").notNull().default(true),
+  /** Set once the Shopify default variant is M in the default colour. */
+  defaultSizeBackfilled: boolean("default_size_backfilled").notNull().default(false),
   /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
   variantMap: json("variant_map"),
   mockupUrls: json("mockup_urls"),

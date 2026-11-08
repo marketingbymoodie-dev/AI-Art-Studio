@@ -1889,6 +1889,7 @@
       state.swatchPreemptInstalled = true;
       installProductMediaObserver();
       var handler = function (event) {
+        if (window.__appaiSelectingDefaultSize) return;
         if (!state.inlineApplied || !state.renderId) return;
         var scope = productSectionScope();
         if (scope && scope !== document && event.target && event.target.nodeType === 1 && !scope.contains(event.target)) return;

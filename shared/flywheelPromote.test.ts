@@ -7,6 +7,7 @@ import {
   catalogueVisibility,
   colorPatternMetaobjectFields,
   catalogueVariantPositions,
+  indexOfDefaultMedium,
   compareColourThenSize,
   formatSizeRange,
   initialTickedColours,
@@ -176,6 +177,20 @@ describe("flywheel promote decisions", () => {
     ]);
     expect(positions.map((row) => row.id)).toEqual(["bxs", "bs", "sage", "p"]);
     expect(positions.map((row) => row.position)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("makes M in the default colour the first variant and keeps the other sizes behind it", () => {
+    const positions = catalogueVariantPositions([
+      { id: "wxs", colour: "White", size: "XS" },
+      { id: "ws", colour: "White", size: "S" },
+      { id: "wm", colour: "White", size: "M" },
+      { id: "bxs", colour: "Black", size: "XS" },
+    ]);
+    expect(positions.map((row) => row.id)).toEqual(["wm", "wxs", "ws", "bxs"]);
+    expect(indexOfDefaultMedium([
+      { size: "XS", colour: "White" },
+      { size: "M", colour: "White" },
+    ], ["White", "Black"])).toBe(1);
   });
 
   it("puts XS before S, and keeps colour groups in the given order", () => {
