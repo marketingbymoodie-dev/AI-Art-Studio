@@ -509,6 +509,24 @@
     return exact || sizeOnly;
   }
 
+  function setModalLocked(overlay, locked) {
+    if (!overlay) return;
+    var closeBtn = overlay.querySelector('.appai-my-pet-modal__close');
+    if (locked) {
+      overlay.classList.add('appai-my-pet-modal--locked');
+      if (closeBtn) {
+        closeBtn.hidden = true;
+        closeBtn.disabled = true;
+      }
+      return;
+    }
+    overlay.classList.remove('appai-my-pet-modal--locked');
+    if (closeBtn) {
+      closeBtn.hidden = false;
+      closeBtn.disabled = false;
+    }
+  }
+
   function buildModal(opts) {
     var options = opts || {};
     var overlay = document.createElement('div');
@@ -519,16 +537,49 @@
       '  <div class="appai-my-pet-modal__body"></div>' +
       '</div>';
     document.body.appendChild(overlay);
-    overlay.querySelector('.appai-my-pet-modal__close').addEventListener('click', function () {
+    function dismiss() {
+      if (overlay.classList.contains('appai-my-pet-modal--locked')) return;
+      document.removeEventListener('keydown', onKey, true);
       overlay.remove();
       if (typeof options.onClose === 'function') options.onClose();
+    }
+    overlay.querySelector('.appai-my-pet-modal__close').addEventListener('click', function (e) {
+      e.preventDefault();
+      dismiss();
     });
     overlay.addEventListener('click', function (e) {
-      if (e.target === overlay) {
-        overlay.remove();
-        if (typeof options.onClose === 'function') options.onClose();
+      if (e.target !== overlay) return;
+      if (overlay.classList.contains('appai-my-pet-modal--locked')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
       }
+      dismiss();
     });
+    function onKey(e) {
+      if (e.key !== 'Escape' && e.key !== 'Esc') return;
+      if (!document.body.contains(overlay)) {
+        document.removeEventListener('keydown', onKey, true);
+        return;
+      }
+      if (overlay.classList.contains('appai-my-pet-modal--locked')) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      e.preventDefault();
+      dismiss();
+    }
+    document.addEventListener('keydown', onKey, true);
+    function swallowBackdropGesture(e) {
+      if (!overlay.classList.contains('appai-my-pet-modal--locked')) return;
+      if (e.target !== overlay) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    overlay.addEventListener('touchstart', swallowBackdropGesture, { passive: false });
+    overlay.addEventListener('touchmove', swallowBackdropGesture, { passive: false });
+    overlay.addEventListener('touchend', swallowBackdropGesture, { passive: false });
     return { overlay: overlay, body: overlay.querySelector('.appai-my-pet-modal__body') };
   }
 
@@ -540,6 +591,7 @@
       '.appai-my-pet-modal__overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:1rem;}' +
       '.appai-my-pet-modal{background:#fff;border-radius:8px;max-width:460px;width:100%;max-height:92vh;overflow:auto;position:relative;padding:1.5rem;}' +
       '.appai-my-pet-modal__close{position:absolute;top:0.5rem;right:0.75rem;background:none;border:none;font-size:1.5rem;cursor:pointer;line-height:1;z-index:2;}' +
+      '.appai-my-pet-modal--locked .appai-my-pet-modal__close{display:none;}' +
       '.appai-my-pet-modal__body img.appai-preview-img{width:100%;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
       // UX 5 — instant visual feedback the moment a colour swatch is tapped,
       // before the recomposite round-trip even starts.
@@ -3232,6 +3284,37 @@
         if (ctaFilename) ctaFilename.textContent = file.name;
         if (changeBtn) changeBtn.hidden = false;
         showGeneratingProgress(picker.body);
+        setModalLocked(picker.overlay, true);
+        var generationSettled = false;
+        var slowTimer = setTimeout(function () {
+          if (generationSettled || !document.body.contains(picker.overlay)) return;
+          var slowCopy = picker.body.querySelector('.appai-progress-copy');
+          if (slowCopy) slowCopy.textContent = 'This is taking longer than usual';
+          picker.body.setAttribute('data-appai-slow', '1');
+          setModalLocked(picker.overlay, false);
+          if (!picker.body.querySelector('[data-action="close-slow"]')) {
+            var slowBtn = document.createElement('button');
+            slowBtn.type = 'button';
+            slowBtn.className = 'appai-secondary';
+            slowBtn.setAttribute('data-action', 'close-slow');
+            slowBtn.textContent = 'Close';
+            slowBtn.addEventListener('click', function () { picker.overlay.remove(); });
+            picker.body.appendChild(slowBtn);
+          }
+        }, 90000);
+        function settleGeneration() {
+          generationSettled = true;
+          clearTimeout(slowTimer);
+        }
+        function showGenerationError(message) {
+          if (!document.body.contains(picker.overlay)) return;
+          setModalLocked(picker.overlay, false);
+          picker.body.innerHTML =
+            '<p class="appai-my-pet-msg">' + message + '</p>' +
+            '<button type="button" class="appai-secondary" data-action="close-error">Close</button>';
+          var closeErr = picker.body.querySelector('[data-action="close-error"]');
+          if (closeErr) closeErr.addEventListener('click', function () { picker.overlay.remove(); });
+        }
         fileToDataUrl(file)
           .then(function (dataUrl) { return postJson('my-pet/upload-photo', { imageData: dataUrl }); })
           .then(function (uploadRes) {
@@ -3246,8 +3329,9 @@
             });
           })
           .then(function (genRes) {
+            settleGeneration();
             if (!genRes || !genRes.ok) {
-              showMessage(picker.body, (genRes && genRes.message) || (genRes && genRes.error) || 'We could not create this design. Please try again.');
+              showGenerationError((genRes && genRes.message) || (genRes && genRes.error) || 'We could not create this design. Please try again.');
               return;
             }
             state.renderId = genRes.renderId;
@@ -3298,7 +3382,8 @@
             });
           })
           .catch(function (err) {
-            showMessage(picker.body, err && err.message ? err.message : 'Something went wrong. Please try again.');
+            settleGeneration();
+            showGenerationError(err && err.message ? err.message : 'Something went wrong. Please try again.');
           });
       });
     }
@@ -3311,7 +3396,7 @@
     function showGeneratingProgress(body) {
       body.innerHTML =
         '<h3>Creating your design…</h3>' +
-        '<p class="appai-my-pet-msg appai-progress-copy">Usually takes 25 to 30 seconds.</p>' +
+        '<p class="appai-my-pet-msg appai-progress-copy">Creating your design… about 30 seconds</p>' +
         '<div class="appai-progress"><span></span></div>';
       var bar = body.querySelector('.appai-progress > span');
       var copy = body.querySelector('.appai-progress-copy');
@@ -3324,6 +3409,7 @@
         elapsed += 500;
         var pct = Math.min(90, (elapsed / 27000) * 90);
         if (bar) bar.style.width = pct + '%';
+        if (body.hasAttribute('data-appai-slow')) return;
         if (copy && elapsed >= 26000 && elapsed < 45000) copy.textContent = 'Almost there…';
         if (copy && elapsed >= 45000) copy.textContent = 'Taking longer than usual — hang on…';
       }, 500);
