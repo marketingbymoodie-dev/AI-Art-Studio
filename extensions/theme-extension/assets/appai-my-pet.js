@@ -2866,6 +2866,9 @@
           try { delete img.dataset.srcset; } catch (e) {}
         }
         detachPictureSources(img);
+        // The theme's fly-to-cart clones this image. A CORS-less load paints
+        // on the page but fails that clone.
+        try { img.crossOrigin = 'anonymous'; } catch (e) {}
         if (!same) {
           try { img.src = url; } catch (e) {}
         }
@@ -3317,6 +3320,19 @@
         // The new node is painted when the theme inserts it.
         holdFrameOn(colorName);
         if (!url && intent.kind === 'color') swapInlineColor(colorName);
+        if (intent.kind !== 'size' && colorName) {
+          var sized = currentSizeName() || '';
+          var picked = variantForColor(root, colorName, sized);
+          if (picked) {
+            prepareShadowFor({
+              catalogId: String(picked.id),
+              colour: String(colorName),
+              sizeName: sized,
+              price: picked.price != null ? (picked.price / 100).toFixed(2) : null,
+            }, 'swatch');
+          }
+        }
+        prepareShadowSoon(intent.kind === 'size' ? 'size' : 'swatch');
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
@@ -4296,7 +4312,7 @@
       // tearing down the one-time installs below.
       state.inlineApplied = true;
       scheduleGallerySync('activate');
-      prepareShadow('activate');
+      prepareShadowSoon('activate');
       installInlineFormPollFallback();
       // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
@@ -4798,7 +4814,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
-        prepareShadow('variant');
+        prepareShadowSoon('variant');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -4869,7 +4885,7 @@
           last.__size = sizeNow;
           rememberVariantChoice();
           scheduleGallerySync('size');
-          prepareShadow('size');
+          prepareShadowSoon('size');
         }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
@@ -4890,7 +4906,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
-        prepareShadow('colour');
+        prepareShadowSoon('colour');
       }, 500);
     }
 
@@ -4954,7 +4970,7 @@
     }
 
     function paintFlyImage(url) {
-      if (!url || String(url).indexOf('https://') !== 0) return;
+      if (!url || String(url).indexOf('http') !== 0) return;
       var section = mainProductSection();
       var nodes = document.querySelectorAll('add-to-cart-component');
       for (var i = 0; i < nodes.length; i++) {
@@ -4968,9 +4984,64 @@
       }
       var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
       if (stickyImg && (!section || !section.contains(stickyImg))) {
+        try { stickyImg.crossOrigin = 'anonymous'; } catch (e) {}
         stickyImg.src = url;
         stickyImg.removeAttribute('srcset');
       }
+    }
+
+    function flyImageUrl() {
+      var img = findVisibleHeroImg();
+      if (!img && state.inlineHero && document.body.contains(state.inlineHero)) img = state.inlineHero;
+      if (!img) img = findProductHeroImg();
+      if (!img) return '';
+      try { img.crossOrigin = 'anonymous'; } catch (e) {}
+      var url = img.currentSrc || img.src || '';
+      if (url.indexOf('//') === 0) url = 'https:' + url;
+      if (url.indexOf('http') !== 0) return '';
+      return url;
+    }
+
+    function mainAddToCartComponent() {
+      var section = mainProductSection();
+      var atc = section && section.querySelector ? section.querySelector('add-to-cart-component') : null;
+      if (atc && atc.closest && atc.closest('product-recommendations, product-card, quick-add-modal')) return null;
+      return atc;
+    }
+
+    function triggerThemeFly() {
+      var atc = mainAddToCartComponent();
+      var btn = atc && atc.querySelector ? atc.querySelector('button[name="add"], [ref="addToCartButton"]') : null;
+      var image = flyImageUrl();
+      if (atc && image) atc.dataset.productVariantMedia = image;
+      var before = document.querySelectorAll('fly-to-cart').length;
+      if (atc && btn && typeof atc.handleClick === 'function') {
+        try {
+          atc.handleClick({ target: btn, preventDefault: function () {}, stopPropagation: function () {} });
+        } catch (e) {}
+      }
+      if (document.querySelectorAll('fly-to-cart').length === before && btn && image) {
+        var cartIcon = document.querySelector('.header-actions__cart-icon');
+        if (cartIcon) {
+          var fly = document.createElement('fly-to-cart');
+          fly.classList.add('fly-to-cart--main');
+          fly.style.setProperty('background-image', 'url("' + String(image).replace(/"/g, '') + '")');
+          fly.style.setProperty('--start-opacity', '0');
+          fly.source = btn;
+          fly.destination = cartIcon;
+          document.body.appendChild(fly);
+        }
+      }
+      console.log(TAG, 'fly-to-cart triggered');
+    }
+
+    function armThemeFly(btn) {
+      triggerThemeFly();
+      if (!btn) return;
+      btn.dataset.puppet = 'true';
+      setTimeout(function () {
+        try { delete btn.dataset.puppet; } catch (e) { btn.removeAttribute('data-puppet'); }
+      }, 0);
     }
 
     function setFormProperty(form, name, value) {
@@ -5024,15 +5095,13 @@
       return [state.renderId || '', sel.catalogId, sel.colour, sel.sizeName].join('|');
     }
 
-    function prepareShadow(reason) {
-      if (!inlineOn()) return Promise.resolve(null);
-      var sel = atcSelection();
-      if (!sel.catalogId) return Promise.resolve(null);
+    function prepareShadowFor(sel, reason) {
+      if (!inlineOn() || !sel || !sel.catalogId) return Promise.resolve(null);
       var key = shadowCacheKey(sel);
       if (state.shadowByKey && state.shadowByKey[key]) return Promise.resolve(state.shadowByKey[key]);
-      if (state.shadowPending && state.shadowPending.key === key) return state.shadowPending.promise;
+      state.shadowFlight = state.shadowFlight || {};
+      if (state.shadowFlight[key]) return state.shadowFlight[key];
       var promise = mockupForColour(sel.colour).then(function (localUrl) {
-        if (localUrl) paintFlyImage(localUrl);
         return attemptResolveVariant(sel.catalogId, sel.price, 0, {
           colorName: sel.colour,
           sizeName: sel.sizeName,
@@ -5061,12 +5130,57 @@
           return entry;
         });
       });
-      state.shadowPending = { key: key, promise: promise };
+      state.shadowFlight[key] = promise;
       var clear = function () {
-        if (state.shadowPending && state.shadowPending.key === key) state.shadowPending = null;
+        if (state.shadowFlight && state.shadowFlight[key] === promise) delete state.shadowFlight[key];
       };
       promise.then(clear, clear);
       return promise;
+    }
+
+    function prepareShadow(reason) {
+      var entry = prepareShadowFor(atcSelection(), reason);
+      if (reason !== 'prefetch') scheduleSiblingWarm();
+      return entry;
+    }
+
+    function prepareShadowSoon(reason) {
+      prepareShadow(reason);
+      setTimeout(function () {
+        if (inlineOn()) prepareShadow(reason);
+      }, 80);
+    }
+
+    function scheduleSiblingWarm() {
+      if (!inlineOn()) return;
+      var sel = atcSelection();
+      if (!sel.catalogId || !sel.sizeName) return;
+      var token = (state.renderId || '') + '|' + sel.sizeName;
+      if (state.warmToken === token) return;
+      state.warmToken = token;
+      var colours = allColorOptions(root);
+      var index = 0;
+      function step() {
+        if (state.warmToken !== token || !inlineOn()) return;
+        if (index >= colours.length) return;
+        var colour = colours[index++];
+        if (String(colour).trim().toLowerCase() === String(sel.colour || '').trim().toLowerCase()) {
+          step();
+          return;
+        }
+        var variant = variantForColor(root, colour, sel.sizeName);
+        if (!variant || variant.available === false) {
+          step();
+          return;
+        }
+        prepareShadowFor({
+          catalogId: String(variant.id),
+          colour: String(colour),
+          sizeName: sel.sizeName,
+          price: variant.price != null ? (variant.price / 100).toFixed(2) : sel.price,
+        }, 'prefetch').then(function () { setTimeout(step, 300); }, function () { setTimeout(step, 300); });
+      }
+      setTimeout(step, 150);
     }
 
     function stampForm(form, entry) {
@@ -5080,7 +5194,6 @@
       var keys = Object.keys(props);
       for (var i = 0; i < keys.length; i++) setFormProperty(form, keys[i], props[keys[i]]);
       form.setAttribute('data-appai-theme-pass', '1');
-      if (entry.mockupUrl) paintFlyImage(entry.mockupUrl);
     }
 
     function restoreForm(form, catalogId) {
@@ -5191,7 +5304,16 @@
         var inSticky = !!btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) return;
         var form = (btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root);
-        if (state.atcRelease && form && form.getAttribute('data-appai-theme-pass') === '1') return;
+        if (state.atcRelease && form && form.getAttribute('data-appai-theme-pass') === '1') {
+          if (inSticky) {
+            var heldHero = flyImageUrl();
+            if (heldHero) paintFlyImage(heldHero);
+            console.log(TAG, 'fly-to-cart triggered');
+          } else {
+            armThemeFly(btn);
+          }
+          return;
+        }
         if (form && form.getAttribute('data-appai-theme-pass') === '1') {
           restoreForm(form, form.getAttribute('data-appai-catalog-id'));
         }
@@ -5200,6 +5322,13 @@
         if (entry && form && String(entry.shadowId) !== String(sel.catalogId)) {
           stampForm(form, entry);
           noteAtcClick(entry);
+          if (inSticky) {
+            var readyHero = flyImageUrl();
+            if (readyHero) paintFlyImage(readyHero);
+            console.log(TAG, 'fly-to-cart triggered');
+          } else {
+            armThemeFly(btn);
+          }
           return;
         }
         e.preventDefault();
