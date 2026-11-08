@@ -93,6 +93,7 @@
     for (var v = 0; v < variants.length; v++) {
       if (!sameOption(optionValue(variants[v], ['color', 'colour']), colorName)) continue;
       if (!sameOption(optionValue(variants[v], ['size']), sizeName)) continue;
+      if (variants[v].available === false) continue;
       return String(variants[v].id);
     }
     return '';
@@ -106,7 +107,11 @@
       all[i].removeAttribute('data-current-checked');
     }
     radio.checked = true;
-    if (variantId) radio.setAttribute('data-variant-id', variantId);
+    if (variantId) {
+      radio.setAttribute('data-variant-id', variantId);
+      radio.setAttribute('data-option-available', 'true');
+      radio.removeAttribute('aria-disabled');
+    }
     radio.setAttribute('data-current-checked', 'true');
   }
 
@@ -117,23 +122,26 @@
     return true;
   }
 
-  function findOptionRadio(picker, kind, value) {
+  function findOptionRadio(picker, kind, value, force) {
     var radios = picker.querySelectorAll('input[type="radio"]');
     for (var i = 0; i < radios.length; i++) {
       var radio = radios[i];
       if (kind === 'size' ? !isSizeRadio(radio) : !isColourRadio(radio)) continue;
       if (!sameOption(radio.value, value)) continue;
-      if (!radioAvailable(radio)) continue;
+      if (radio.disabled) continue;
+      // A colour can look sold out only because the size on the page has no
+      // variant (Sage has no XS). When the saved combo exists, select it.
+      if (!force && !radioAvailable(radio)) continue;
       return radio;
     }
     return null;
   }
 
   function selectSavedPet(picker, stored) {
-    var sizeRadio = findOptionRadio(picker, 'size', stored.sizeName);
-    var colourRadio = findOptionRadio(picker, 'colour', stored.colorName);
-    if (!sizeRadio || !colourRadio) return false;
     var variantId = variantIdFor(stored.colorName, stored.sizeName);
+    var sizeRadio = findOptionRadio(picker, 'size', stored.sizeName, !!variantId);
+    var colourRadio = findOptionRadio(picker, 'colour', stored.colorName, !!variantId);
+    if (!sizeRadio || !colourRadio) return false;
     var section = picker.closest ? picker.closest('.shopify-section') : null;
     var scope = section || document;
     var idInput = scope.querySelector('form input[name="id"]');

@@ -1206,7 +1206,7 @@
       var nodes;
       try {
         nodes = document.querySelectorAll(
-          'button[name="add"], form[action*="/cart/add"] button[type="submit"], .shopify-payment-button, .shopify-payment-button__button, shopify-buy-it-now-button, shopify-accelerated-checkout, [data-appai-my-pet-open]'
+          'button[name="add"], form[action*="/cart/add"] button[type="submit"], button.sticky-add-to-cart__button, .sticky-add-to-cart__button, .shopify-payment-button, .shopify-payment-button__button, shopify-buy-it-now-button, shopify-accelerated-checkout, [data-appai-my-pet-open]'
         );
       } catch (e) { return; }
       for (var i = 0; i < nodes.length; i++) {
@@ -1242,6 +1242,7 @@
     }
 
     function lockRestoreButtons() {
+      if (!state.restorePending) return;
       eachRestoreControl(lockRestoreControl);
       noteRestoreLockOnOpenBtn();
     }
@@ -1440,13 +1441,17 @@
         return null;
       }
 
-      function findKindRadio(picker, kind, value) {
+      function findKindRadio(picker, kind, value, force) {
         if (!picker || !value) return null;
         var radios = picker.querySelectorAll('input[type="radio"]');
         for (var i = 0; i < radios.length; i++) {
           if (radioKind(radios[i]) !== kind) continue;
           if (!sameOption(radios[i].value, value)) continue;
-          if (!radioAvailable(radios[i])) continue;
+          if (radios[i].disabled) continue;
+          // The theme marks a colour sold out for the size currently on the
+          // page (Sage has no XS). The variant we already resolved is the
+          // real combo, so select it anyway.
+          if (!force && !radioAvailable(radios[i])) continue;
           return radios[i];
         }
         return null;
@@ -1460,7 +1465,11 @@
           all[i].removeAttribute('data-current-checked');
         }
         radio.checked = true;
-        if (variantId) radio.setAttribute('data-variant-id', variantId);
+        if (variantId) {
+          radio.setAttribute('data-variant-id', variantId);
+          radio.setAttribute('data-option-available', 'true');
+          radio.removeAttribute('aria-disabled');
+        }
         radio.setAttribute('data-current-checked', 'true');
       }
 
@@ -1489,8 +1498,8 @@
         var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
         window.__appaiSelectingDefaultSize = true;
         try {
-          var sizeRadio = findKindRadio(picker, 'size', actualSize);
-          var colourRadio = findKindRadio(picker, 'colour', actualColor);
+          var sizeRadio = findKindRadio(picker, 'size', actualSize, true);
+          var colourRadio = findKindRadio(picker, 'colour', actualColor, true);
           if (sizeRadio) markRadio(sizeRadio, id);
           if (colourRadio) markRadio(colourRadio, id);
           if (idInput) idInput.value = id;
