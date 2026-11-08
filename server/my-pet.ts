@@ -739,7 +739,7 @@ async function recordMyPetGenerationEvent(args: {
 // Recomposite on colour change — no model call
 // ─────────────────────────────────────────────────────────────────────────
 
-export async function recompositeMyPetRender(args: { shop: string; deviceKey: string; renderId: string; colorName: string }): Promise<{ previewUrl: string; colorName: string }> {
+export async function recompositeMyPetRender(args: { shop: string; deviceKey: string; renderId: string; colorName: string }): Promise<{ previewUrl: string; colorName: string; previewUrlsByColor: Record<string, string> }> {
   // UX 5: timing breakdown so a slow colour-swap smoke test tells us whether
   // the lag is compose, storage write, signing, or job update — not a guess.
   const started = Date.now();
@@ -775,12 +775,20 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       } as any);
     }
     const afterJobUpdate = Date.now();
+    const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+      shop: args.shop,
+      renderId: render.id,
+      candidateId: render.candidateId,
+      chosenColorName: color.name,
+      chosenPreviewPath: previewPath,
+    });
     console.log(
       `[my-pet] recomposite CACHE HIT renderId=${render.id.slice(0, 8)} color=${color.name} ` +
         `lookup=${afterLookup - started}ms sign=${afterSign - afterLookup}ms ` +
-        `jobUpdate=${afterJobUpdate - afterSign}ms total=${afterJobUpdate - started}ms`,
+        `jobUpdate=${afterJobUpdate - afterSign}ms total=${afterJobUpdate - started}ms ` +
+        `mapSize=${Object.keys(previewUrlsByColor).length}`,
     );
-    return { previewUrl, colorName: color.name };
+    return { previewUrl, colorName: color.name, previewUrlsByColor };
   }
 
   const productType = await softstyleType();
@@ -810,14 +818,22 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   }
   const afterJobUpdate = Date.now();
 
+  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+    shop: args.shop,
+    renderId: render.id,
+    candidateId: render.candidateId,
+    chosenColorName: color.name,
+    chosenPreviewPath: previewPath,
+  });
   console.log(
     `[my-pet] recomposite FRESH renderId=${render.id.slice(0, 8)} color=${color.name} ` +
       `lookup=${afterLookup - started}ms compose=${afterCompose - afterLookup}ms ` +
       `storage=${afterStorage - afterCompose}ms jobUpdate=${afterJobUpdate - afterStorage}ms ` +
-      `total=${afterJobUpdate - started}ms`,
+      `total=${afterJobUpdate - started}ms ` +
+      `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
 
-  return { previewUrl, colorName: color.name };
+  return { previewUrl, colorName: color.name, previewUrlsByColor };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

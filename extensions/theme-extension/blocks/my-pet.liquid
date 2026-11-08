@@ -401,8 +401,27 @@
       background: #fff;
       border: 2px solid #1a1a1a;
       box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
-      pointer-events: none;
+      pointer-events: auto;
     }
+  }
+  .appai-my-pet-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.84);
+    pointer-events: none;
+  }
+  .appai-my-pet-veil::before {
+    content: "";
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(0, 0, 0, 0.18);
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: appai-my-pet-restore-spin 0.8s linear infinite;
   }
   @media (max-width: 749px) {
     .appai-my-pet__meta {

@@ -106,15 +106,33 @@
     };
     if (own && own.colorName) next.colorName = own.colorName;
     if (own && own.sizeName) next.sizeName = own.sizeName;
-    if (prev.reverted) next.reverted = true;
+    if (revertedFlagOn(shopifyProductId)) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
   }
-  function persistReverted(shopifyProductId, on) {
+  function revertedStorageKey(shopifyProductId) {
+    var deviceKey = readStoredDeviceKey();
+    var shortKey = deviceKey ? deviceKey.slice(0, 16) : 'anon';
+    return 'appai_my_pet_reverted_v1:' + shopifyProductId + ':' + shortKey;
+  }
+  function revertedFlagOn(shopifyProductId) {
     var prev = readStoredRecord(shopifyProductId);
-    if (!prev || !prev.renderId) return;
+    if (prev && prev.reverted) return true;
+    try { return window.localStorage.getItem(revertedStorageKey(shopifyProductId)) === '1'; } catch (e) { return false; }
+  }
+  function persistReverted(shopifyProductId, on) {
+    try {
+      if (on) window.localStorage.setItem(revertedStorageKey(shopifyProductId), '1');
+      else window.localStorage.removeItem(revertedStorageKey(shopifyProductId));
+    } catch (e) {}
+    var prev = readStoredRecord(shopifyProductId);
+    if (!prev || !prev.renderId) {
+      console.log(TAG, on ? 'revert stored' : 'revert cleared', 'side-key only');
+      return;
+    }
     if (on) prev.reverted = true;
     else delete prev.reverted;
     writeStoredRecord(shopifyProductId, prev);
+    console.log(TAG, on ? 'revert stored' : 'revert cleared', renderStorageKey(shopifyProductId));
   }
   function writeStoredVariantChoice(shopifyProductId, colorName, sizeName) {
     var prev = readStoredRecord(shopifyProductId);
@@ -144,6 +162,7 @@
     };
     if (colorName) next.colorName = colorName;
     if (sizeName) next.sizeName = sizeName;
+    if (revertedFlagOn(shopifyProductId)) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
     return { colorName: colorName, sizeName: sizeName, hadOwn: hadOwn };
   }
@@ -1505,14 +1524,37 @@
           current.textContent = 'Current';
           btn.appendChild(current);
         }
+        btn.addEventListener('pointerdown', (function (chosen) {
+          return function (event) {
+            if (event.button != null && event.button !== 0) return;
+            var targetName = '';
+            try {
+              targetName = (event.target && event.target.className)
+                ? String(event.target.className).split(/\s+/)[0]
+                : (event.target && event.target.tagName);
+            } catch (e) {}
+            clearTimeout(state.hoverTimer);
+            selectListedDesign(chosen, targetName || 'pointerdown');
+          };
+        })(item));
         btn.addEventListener('click', (function (chosen) {
-          return function () { selectListedDesign(chosen); };
+          return function (event) {
+            var targetName = '';
+            try { targetName = event.target && event.target.tagName; } catch (e) {}
+            selectListedDesign(chosen, targetName || 'click');
+          };
         })(item));
         if (isFineHover()) {
           btn.addEventListener('mouseenter', (function (chosen) {
-            return function () { previewDesignHover(chosen); };
+            return function () {
+              clearTimeout(state.hoverTimer);
+              state.hoverTimer = setTimeout(function () { previewDesignHover(chosen); }, 180);
+            };
           })(item));
-          btn.addEventListener('mouseleave', function () { cancelDesignHover(true); });
+          btn.addEventListener('mouseleave', function () {
+            clearTimeout(state.hoverTimer);
+            cancelDesignHover(true);
+          });
         }
         row.appendChild(btn);
       }
@@ -1623,12 +1665,11 @@
     }
 
     function paintHeroUrl(url) {
-      if (!url) return;
-      var hero = state.inlineHero || findProductHeroImg();
-      if (!hero) return;
+      if (!url || state.reverted) return;
+      var hero = findVisibleHeroImg() || findProductHeroImg();
+      if (!hero || !galleryImgAllowed(hero)) return;
       state.inlineHero = hero;
       swapInlineHero(hero, url);
-      if (state.previewUrlByColor) swapVariantSlides(state.previewUrlByColor);
     }
 
     function cancelDesignHover(restore) {
@@ -1664,12 +1705,8 @@
         if (state.designHoverId !== item.renderId || !state.designHovering) return;
         if (!res || !res.ok || !res.previewUrl) return;
         writeResolveCache(res);
-        state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
-          ? Object.assign({}, res.previewUrlsByColor)
-          : {};
-        var url = urlForColourMap(state.previewUrlByColor, colour) || res.previewUrl;
-        state.previewUrl = url;
-        state.holdColour = colour;
+        var map = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object') ? res.previewUrlsByColor : {};
+        var url = urlForColourMap(map, colour) || res.previewUrl;
         paintHeroUrl(url);
       });
     }
@@ -1749,6 +1786,7 @@
     }
 
     function showResolvedDesign(res, colourOverride, recompositeMissing) {
+      if (state.reverted || revertedFlagOn(shopifyProductId)) return null;
       if (!res || !res.ok || !res.previewUrl) return null;
       writeResolveCache(res);
       state.renderId = res.renderId;
@@ -1758,6 +1796,7 @@
       state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
         ? Object.assign({}, res.previewUrlsByColor)
         : {};
+      logColourMap('resolved');
       preloadPreviewUrls(state.previewUrlByColor);
       writeStoredRender(shopifyProductId, res.renderId, res.jobId);
       if (previewMode !== 'inline') return res.previewUrl;
@@ -1766,6 +1805,7 @@
       var mapped = (key && state.previewUrlByColor[key]) || (colour && state.previewUrlByColor[colour]) || '';
       var activationUrl = mapped || res.previewUrl;
       activateInlinePreviewWithRetry(activationUrl);
+      fillMissingColours(res.renderId, state.renderGeneration || 0);
       if (recompositeMissing && !mapped && colour) swapInlineColor(colour);
       return activationUrl;
     }
@@ -1775,20 +1815,35 @@
       console.log(TAG, 're-apply');
       state.reverted = false;
       persistReverted(shopifyProductId, false);
+      var gen = bumpRenderGeneration('re-apply');
       var colour = currentInlineColour() || (currentVariantInfo(root).colorName || '');
       var url = urlForColourMap(state.previewUrlByColor, colour) || state.previewUrl;
       if (url) {
         activateInlinePreviewWithRetry(url);
+        fillMissingColours(state.renderId, gen);
         return;
       }
       getJson('my-pet/resolve-render', { renderId: state.renderId }).then(function (res) {
         if (!res || !res.ok || !res.previewUrl || state.reverted) return;
+        if (!generationCurrent(gen, state.renderId)) return;
         showResolvedDesign(res, colour);
       }).catch(function () {});
     }
 
-    function selectListedDesign(item) {
-      if (!item || state.restorePending) return;
+    function selectListedDesign(item, fromTarget) {
+      var targetLabel = fromTarget || 'click';
+      if (!item || state.restorePending) {
+        console.log(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=pending');
+        return;
+      }
+      if (state.designSelectId === item.renderId && Date.now() - (state.designSelectAt || 0) < 500) {
+        console.log(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=duplicate');
+        return;
+      }
+      state.designSelectId = item.renderId;
+      state.designSelectAt = Date.now();
+      console.log(TAG, 'design click', 'target=' + targetLabel, 'render=' + String(item.renderId).slice(0, 8), 'handled=true');
+      clearTimeout(state.hoverTimer);
       cancelDesignHover(false);
       if (!isDesignSheet()) closeDesigns();
       var saved = storedChoiceFor(shopifyProductId, item.renderId);
@@ -1799,12 +1854,14 @@
       var same = item.renderId === state.renderId
         && namesMatch(colorName, fallbackColor)
         && namesMatch(sizeName, fallbackSize);
-      var wasReverted = !!state.reverted;
+      var wasReverted = !!state.reverted || revertedFlagOn(shopifyProductId);
       if (wasReverted) {
         state.reverted = false;
         persistReverted(shopifyProductId, false);
+        console.log(TAG, 're-apply');
       }
-      if (same) {
+      var gen = bumpRenderGeneration('select');
+      if (same && !wasReverted) {
         if (!saved.colorName && !saved.sizeName && state.renderId) {
           writeStoredVariantChoice(shopifyProductId, fallbackColor, fallbackSize);
         }
@@ -1815,25 +1872,34 @@
           'selected size=' + (fallbackSize || '(none)'));
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
-        if (wasReverted) {
-          var again = urlForColourMap(state.previewUrlByColor, fallbackColor) || state.previewUrl;
-          if (again) {
-            console.log(TAG, 're-apply');
-            activateInlinePreviewWithRetry(again);
-          } else {
-            reapplyActiveDesign();
-          }
-        }
+        if (state.previewUrlByColor) swapVariantSlides(state.previewUrlByColor);
+        fillMissingColours(state.renderId, gen);
         return;
       }
-      if (wasReverted) console.log(TAG, 're-apply');
+      state.renderId = item.renderId;
+      var cachedNow = readResolveCache(item.renderId);
+      if (cachedNow && cachedNow.previewUrl) {
+        state.previewUrl = cachedNow.previewUrl;
+        state.previewUrlByColor = (cachedNow.previewUrlsByColor && typeof cachedNow.previewUrlsByColor === 'object')
+          ? Object.assign({}, cachedNow.previewUrlsByColor)
+          : {};
+        state.inlineApplied = true;
+        swapVariantSlides(state.previewUrlByColor);
+      } else {
+        state.previewUrlByColor = {};
+        state.previewUrl = '';
+        state.inlineApplied = true;
+        holdMissingColours();
+      }
       var token = armDesignSwitch();
-      var cached = readResolveCache(item.renderId);
-      var pending = cached
-        ? Promise.resolve(cached)
+      var pending = cachedNow
+        ? Promise.resolve(cachedNow)
         : getJson('my-pet/resolve-render', { renderId: item.renderId });
       pending.then(function (res) {
-        if (token !== designSwitchToken) return;
+        if (token !== designSwitchToken || !generationCurrent(gen, item.renderId)) {
+          finishDesignSwitch(token);
+          return;
+        }
         if (!res || !res.ok || !res.previewUrl) {
           finishDesignSwitch(token);
           return;
@@ -2010,6 +2076,8 @@
     }, false);
 
     function blockRestoreAction(event) {
+      var surface = logCapture('restore-lock', event);
+      if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
       if (!state.restorePending) return;
       var node = event.target;
       if (!node) return;
@@ -2029,7 +2097,8 @@
       state.applyExactVariant = applyExactVariant;
       var stored = readStoredRender(shopifyProductId);
       if (!stored || !stored.renderId) return;
-      if (stored.reverted) {
+      if (stored.reverted || revertedFlagOn(shopifyProductId)) {
+        console.log(TAG, 'restore skipped, reverted');
         state.reverted = true;
         state.renderId = stored.renderId;
         state.jobId = stored.jobId || null;
@@ -2254,7 +2323,7 @@
       }
 
       function applyResolved(res, fromCache) {
-        if (finished) return;
+        if (finished || state.reverted || revertedFlagOn(shopifyProductId)) return;
         if (!res || !res.ok || !res.previewUrl) {
           if (fromCache) { fetchFresh(); return; }
           clearStoredRender(shopifyProductId);
@@ -2352,6 +2421,7 @@
       var attempts = 0;
       var MAX = 5;
       function tryOnce() {
+        if (state.reverted || revertedFlagOn(shopifyProductId)) return;
         attempts++;
         var ok = activateInlinePreview(url);
         if (ok) {
@@ -2371,7 +2441,10 @@
     function findProductHeroImg() {
       // Priority list: most-specific (is-active media item) → broad
       // (product section <img>). Skip anything inside our own block so we
-      // don't accidentally swap our own thumbnail.
+      // don't accidentally swap our own thumbnail. Only the main gallery —
+      // the zoom dialog's copy of the same markup is hidden and must not
+      // win, or Add My Pet relabels while the visible hero stays stock.
+      var scope = mainMediaGallery() || productSectionScope();
       var SELECTORS = [
         '.product__media-item.is-active img',
         '.product__media.is-active img',
@@ -2392,9 +2465,15 @@
         '.product-images img',
       ];
       for (var i = 0; i < SELECTORS.length; i++) {
-        var el;
-        try { el = document.querySelector(SELECTORS[i]); } catch (e) { continue; }
-        if (el && el.tagName === 'IMG' && !el.closest('.appai-my-pet') && !(el.classList && el.classList.contains('appai-my-pet-cover'))) return el;
+        var nodes = [];
+        try { nodes = scope.querySelectorAll ? scope.querySelectorAll(SELECTORS[i]) : []; } catch (e) { continue; }
+        for (var n = 0; n < nodes.length; n++) {
+          var el = nodes[n];
+          if (!el || el.tagName !== 'IMG') continue;
+          if (!galleryImgAllowed(el)) continue;
+          if (el.closest && el.closest('dialog, zoom-dialog')) continue;
+          return el;
+        }
       }
       return null;
     }
@@ -2450,21 +2529,85 @@
         ' ' + sourceSummary(el);
     }
 
+    function closestProductSection(node) {
+      if (!node || !node.closest) return null;
+      return node.closest('.shopify-section, [data-section-id]');
+    }
+
+    function mainProductSection() {
+      return closestProductSection(root);
+    }
+
+    // The product block lives in a div.shopify-section, not a <section>.
+    // Walking up to <main> also contains recommendations, so every image
+    // query stops at this product's own section.
     function productSectionScope() {
-      var cur = root.parentNode;
-      while (cur && cur !== document.body && cur.nodeType === 1) {
-        var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
-        if (tag === 'main' || tag === 'section' ||
-            cur.hasAttribute('data-section-type') ||
-            cur.hasAttribute('data-section-id') ||
-            cur.hasAttribute('data-product-id')) return cur;
-        cur = cur.parentNode;
+      return mainProductSection() || root.parentNode || document;
+    }
+
+    function mainMediaGallery() {
+      var section = mainProductSection();
+      var scope = section || root.parentNode;
+      if (!scope || !scope.querySelector) return null;
+      try { return scope.querySelector('media-gallery, product-media-gallery'); } catch (e) { return null; }
+    }
+
+    function mainZoomDialog() {
+      var gallery = mainMediaGallery();
+      var zoom = gallery && gallery.querySelector
+        ? gallery.querySelector('zoom-dialog, dialog.dialog-zoomed-gallery__dialog')
+        : null;
+      if (zoom) return zoom;
+      var section = mainProductSection();
+      if (!section || !section.querySelector) return null;
+      try { return section.querySelector('zoom-dialog, dialog.dialog-zoomed-gallery__dialog'); } catch (e) { return null; }
+    }
+
+    function galleryImgAllowed(img) {
+      if (!img || img.tagName !== 'IMG') return false;
+      if (img.closest && img.closest('.appai-my-pet, .appai-my-pet-designs, .appai-my-pet-modal, .appai-my-pet-modal__overlay, .appai-zoom-overlay')) return false;
+      var gallery = mainMediaGallery();
+      var zoom = mainZoomDialog();
+      var inGallery = !!(gallery && gallery.contains && gallery.contains(img));
+      var inZoom = !!(zoom && zoom.contains && zoom.contains(img));
+      var banned = img.closest && img.closest('product-recommendations, product-card, cart-drawer, cart-drawer-component, .cart-drawer, #cart-drawer, #CartDrawer, quick-add-dialog, quick-add-modal, [data-quick-add]');
+      var mainSec = mainProductSection();
+      var sec = closestProductSection(img);
+      var otherSection = !!(mainSec && sec && sec !== mainSec);
+      if (banned || otherSection || (!inGallery && !inZoom)) {
+        if (!img.__appaiSkipLogged) {
+          img.__appaiSkipLogged = true;
+          var why = banned ? 'related/cart/quick-add' : (otherSection ? 'other product section' : 'not in main gallery');
+          console.log(TAG, 'skip img outside main gallery', why, String(img.getAttribute('alt') || img.className || '').slice(0, 60));
+        }
+        return false;
       }
-      return document;
+      return true;
+    }
+
+    function bumpRenderGeneration(reason) {
+      state.renderGeneration = (state.renderGeneration || 0) + 1;
+      state.gallerySyncGeneration = (state.gallerySyncGeneration || 0) + 1;
+      state.gallerySyncTimers = false;
+      console.log(TAG, 'render generation', state.renderGeneration, reason || '');
+      return state.renderGeneration;
+    }
+
+    function generationCurrent(gen, renderId) {
+      if (gen != null && gen !== (state.renderGeneration || 0)) return false;
+      if (renderId && state.renderId && renderId !== state.renderId) return false;
+      if (state.reverted) return false;
+      return true;
+    }
+
+    function logColourMap(reason) {
+      var keys = [];
+      try { keys = Object.keys(state.previewUrlByColor || {}); } catch (e) {}
+      console.log(TAG, 'colour map', reason || '', keys.join(', ') || '(empty)');
     }
 
     function findVisibleHeroImg() {
-      var scope = productSectionScope();
+      var scope = mainMediaGallery() || productSectionScope();
       var imgs;
       try { imgs = scope.querySelectorAll('img'); } catch (e) { return null; }
       var best = null;
@@ -2473,8 +2616,8 @@
       var vh = window.innerHeight || 0;
       for (var i = 0; i < imgs.length; i++) {
         var img = imgs[i];
-        if (img.closest && img.closest('.appai-my-pet')) continue;
-        if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
+        if (!galleryImgAllowed(img)) continue;
+        if (img.closest && img.closest('dialog, zoom-dialog')) continue;
         var rect;
         try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
         if (rect.width < 160 || rect.height < 160) continue;
@@ -2487,7 +2630,7 @@
     }
 
     function findActiveSlideImg() {
-      var scope = productSectionScope();
+      var scope = mainMediaGallery() || productSectionScope();
       var SELECTORS = [
         '.product__media-item.is-active img',
         '.product__media.is-active img',
@@ -2504,8 +2647,8 @@
         for (var i = 0; i < nodes.length; i++) {
           var img = nodes[i];
           if (!img || img.tagName !== 'IMG') continue;
-          if (img.closest && img.closest('.appai-my-pet')) continue;
-          if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
+          if (!galleryImgAllowed(img)) continue;
+          if (img.closest && img.closest('dialog, zoom-dialog')) continue;
           var rect;
           try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
           var area = Math.max(0, rect.width) * Math.max(0, rect.height);
@@ -2672,6 +2815,7 @@
 
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
+      if (!galleryImgAllowed(img)) return;
       var same = srcAlready(img, url);
       var dirty = !!(img.getAttribute('srcset') || img.getAttribute('sizes'));
       if (same && !dirty) return;
@@ -2867,9 +3011,10 @@
     // The product section and media-gallery survive Horizon's inner swap.
     // Never document.body — a background there paints the whole storefront.
     function mediaHoldContainer(hero) {
+      var gallery = mainMediaGallery();
+      if (gallery) return gallery;
       var section = productSectionScope();
       var scope = section && section !== document ? section : document;
-      var gallery = null;
       try { gallery = scope.querySelector('media-gallery, .media-gallery, product-media-gallery'); } catch (e) {}
       if (gallery) return gallery;
       if (hero && hero.parentElement && hero.parentElement !== document.body) return hero.parentElement;
@@ -2955,7 +3100,7 @@
     // Only the newly inserted hero for the selected colour. Other slides
     // keep the colour swapVariantSlides wrote from their own media id.
     function paintProductMediaImage(img, colorName) {
-      if (!img || img.tagName !== 'IMG') return false;
+      if (!img || img.tagName !== 'IMG' || !galleryImgAllowed(img)) return false;
       if (isCoverImg(img)) return false;
       if (!img.classList || !img.classList.contains('product-media__image')) return false;
       if (img.closest && img.closest('.appai-my-pet')) return false;
@@ -3008,9 +3153,8 @@
     // before paint, and writes the cached preview onto that new node.
     function installProductMediaObserver() {
       if (state.productMediaObserver) return;
-      var container = productSectionScope();
-      if (!container || container === document) container = mediaHoldContainer(null);
-      if (!container || container === document.body) return;
+      var container = mainMediaGallery() || mediaHoldContainer(null);
+      if (!container || container === document || container === document.body) return;
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
@@ -3024,6 +3168,7 @@
               var node = m.addedNodes[n];
               if (!node || node.nodeType !== 1) continue;
               if (isCoverImg(node)) continue;
+              if (node.classList && node.classList.contains('appai-my-pet-veil')) continue;
               var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img.product-media__image') : []);
               for (var k = 0; k < imgs.length; k++) {
                 if (!paintProductMediaImage(imgs[k], colorName)) continue;
@@ -3102,6 +3247,8 @@
       state.swatchPreemptInstalled = true;
       installProductMediaObserver();
       var handler = function (event) {
+        var surface = logCapture('swatch', event);
+        if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
         if (window.__appaiSelectingDefaultSize) return;
         if (!state.inlineApplied || !state.renderId) return;
         var hit = event.target && event.target.closest
@@ -3199,7 +3346,7 @@
     }
 
     function pageGallerySlides() {
-      var gallery = document.querySelector('media-gallery, product-media-gallery');
+      var gallery = mainMediaGallery();
       var scope = gallery || productSectionScope() || document;
       var all = [];
       try { all = scope.querySelectorAll('slideshow-slide'); } catch (e) { return []; }
@@ -3291,12 +3438,11 @@
     // and the zoom dialog, not only the first media-gallery.
     function swapLooseThumbnails(scope) {
       var roots = [];
-      if (scope && scope.querySelectorAll) roots.push(scope);
-      var section = productSectionScope();
-      if (section && section.querySelectorAll && roots.indexOf(section) === -1) roots.push(section);
-      var zoom = zoomObserveTarget();
-      if (zoom && roots.indexOf(zoom) === -1 && (!section || !section.contains || !section.contains(zoom))) roots.push(zoom);
-      if (!roots.length) roots.push(document);
+      var gallery = mainMediaGallery();
+      var zoom = mainZoomDialog();
+      if (gallery) roots.push(gallery);
+      if (zoom && roots.indexOf(zoom) === -1) roots.push(zoom);
+      if (scope && scope.querySelectorAll && roots.indexOf(scope) === -1 && gallery && gallery.contains && gallery.contains(scope)) roots.push(scope);
       var seen = [];
       for (var r = 0; r < roots.length; r++) {
         var buttons = [];
@@ -3357,21 +3503,53 @@
       scheduleGallerySync('thumbnail');
     }
 
+    function clickSurface(event) {
+      var t = event && event.target;
+      if (!t || !t.closest) return '';
+      var gallery = mainMediaGallery();
+      if (!gallery || !gallery.contains(t)) return '';
+      if (t.closest('button.dialog-thumbnails-list__thumbnail')) return 'zoom-thumb';
+      if (t.closest('button.slideshow-controls__thumbnail')) return 'page-thumb';
+      if (t.closest('dialog, zoom-dialog')) return 'zoom-chrome';
+      if (t.closest('slideshow-slide, .product-media, img')) return 'main-image';
+      return '';
+    }
+
+    function logCapture(name, event) {
+      var surface = clickSurface(event);
+      if (surface !== 'main-image' && surface !== 'zoom-chrome') return surface;
+      var t = event.target;
+      var label = '';
+      try { label = (t && t.getAttribute && (t.getAttribute('aria-label') || t.tagName)) || ''; } catch (e) {}
+      console.log(TAG, 'capture', name, 'surface=' + surface, 'target=' + (t && t.tagName), String(label).slice(0, 80));
+      return surface;
+    }
+
     function installThumbnailSync() {
       if (state.thumbnailSyncInstalled) return;
       state.thumbnailSyncInstalled = true;
       document.addEventListener('click', function (event) {
-        if (!state.inlineApplied || !state.renderId) return;
+        var surface = logCapture('thumbnail', event);
+        if (surface === 'main-image' || surface === 'zoom-chrome') return;
+        if (!state.inlineApplied || !state.renderId || state.reverted) return;
         var t = event.target;
         if (!t || !t.closest) return;
         var btn = t.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
         if (!btn) return;
         var colour = colourForThumbButton(btn);
         if (!colour) return;
+        var isZoom = surface === 'zoom-thumb' || (btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail'));
+        var zoomOpen = zoomDialogOpen(zoomObserveTarget());
+        if (isZoom || zoomOpen) {
+          console.log(TAG, 'zoom thumb', colour, 'stay in zoom');
+          state.zoomSlideColour = colour;
+          var zoom = mainZoomDialog();
+          if (zoom) swapZoomDialog(zoom);
+          return;
+        }
         setTimeout(function () {
-          if (!state.inlineApplied) return;
-          var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
-          var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
+          if (!state.inlineApplied || state.reverted || zoomDialogOpen(zoomObserveTarget())) return;
+          var sel = 'button.slideshow-controls__thumbnail';
           var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
           var index = -1;
           for (var i = 0; i < list.length; i++) if (list[i] === btn) { index = i; break; }
@@ -3383,16 +3561,14 @@
           }
           var thumbImg = btn.querySelector('img');
           if (thumbImg) applyOwnPreview(thumbImg);
-          // The theme's thumbnail click only moves the slideshow. The
-          // variant still has to follow, without focusing the swatch
-          // (focus scrolls a phone page off the photo).
           selectGalleryColour(colour);
         }, 0);
       }, true);
     }
 
     function zoomObserveTarget() {
-      return document.querySelector('zoom-dialog')
+      return mainZoomDialog()
+        || document.querySelector('zoom-dialog')
         || document.querySelector('dialog.dialog-zoomed-gallery__dialog');
     }
 
@@ -3455,14 +3631,29 @@
       }
       var observer = new MutationObserver(function () {
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
-        // A mutation delivered while we are writing is the theme's stock
-        // src landing in the same turn. Re-apply after our write finishes
-        // instead of dropping it.
-        if (state.mediaWriting) {
-          if (!state.gallerySyncTimers) scheduleGallerySync('zoom-after-write');
+        var live = zoomObserveTarget();
+        var open = !!(live && zoomDialogOpen(live));
+        if (open && !state.zoomWasOpen) {
+          state.zoomWasOpen = true;
+          state.zoomOpenColour = currentInlineColour();
+          state.zoomOpenLogged = true;
+          console.log(TAG, 'zoom open', zoomSelector(live), 'mutation');
+          if (!state.mediaWriting) swapZoomDialog(live);
           return;
         }
-        syncZoom('mutation');
+        if (!open && state.zoomWasOpen) {
+          state.zoomWasOpen = false;
+          state.zoomOpenLogged = false;
+          var nowColour = currentInlineColour();
+          if (nowColour && state.zoomOpenColour && !namesMatch(nowColour, state.zoomOpenColour)) {
+            scheduleGallerySync('zoom-close');
+          }
+          state.zoomOpenColour = null;
+          state.zoomSlideColour = null;
+          return;
+        }
+        if (!open || state.mediaWriting) return;
+        swapZoomDialog(live);
       });
       observer.observe(target, {
         childList: true,
@@ -3475,14 +3666,7 @@
       if (!state.zoomClickHook) {
         state.zoomClickHook = true;
         document.addEventListener('click', function (event) {
-          if (!state.inlineApplied || !state.renderId) return;
-          var node = event.target;
-          if (!node || !node.closest) return;
-          if (!node.closest('media-gallery, product-media-gallery, zoom-dialog, dialog.dialog-zoomed-gallery__dialog')) return;
-          setTimeout(function () {
-            installZoomSwap();
-            syncZoom('click');
-          }, 60);
+          logCapture('zoom-hook', event);
         }, true);
       }
       if (zoomDialogOpen(target)) syncZoom('install');
@@ -3523,22 +3707,141 @@
       });
     }
 
+    function colourHosts() {
+      var hosts = [];
+      var gallery = mainMediaGallery();
+      var zoom = mainZoomDialog();
+      if (gallery) hosts.push(gallery);
+      if (zoom && hosts.indexOf(zoom) === -1) hosts.push(zoom);
+      return hosts;
+    }
+
+    function nodesForColour(colour) {
+      var nodes = [];
+      var mediaIdByColor = getMediaIdByColor(root);
+      var key = canonicalPreviewColor(colour) || colour;
+      var mediaId = (key && mediaIdByColor[key]) || mediaIdByColor[colour] || '';
+      var hosts = colourHosts();
+      var h;
+      if (mediaId) {
+        for (h = 0; h < hosts.length; h++) {
+          var slides = [];
+          try { slides = hosts[h].querySelectorAll('[data-media-id="' + mediaId + '"]'); } catch (e) {}
+          for (var i = 0; i < slides.length; i++) nodes.push(slides[i]);
+        }
+      }
+      for (h = 0; h < hosts.length; h++) {
+        var buttons = [];
+        try {
+          buttons = hosts[h].querySelectorAll('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
+        } catch (e2) { continue; }
+        for (var b = 0; b < buttons.length; b++) {
+          if (namesMatch(colourForThumbButton(buttons[b]), colour)) nodes.push(buttons[b]);
+        }
+      }
+      return nodes;
+    }
+
+    function clearColourPending(colour) {
+      var nodes = nodesForColour(colour);
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        if (node.classList) node.classList.remove('appai-my-pet-colour-pending');
+        var veils = node.querySelectorAll ? node.querySelectorAll('.appai-my-pet-veil') : [];
+        for (var v = 0; v < veils.length; v++) {
+          if (veils[v].parentNode === node) veils[v].parentNode.removeChild(veils[v]);
+        }
+        var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img') : []);
+        for (var k = 0; k < imgs.length; k++) {
+          if (imgs[k].getAttribute('data-appai-my-pet-pending') === '1') {
+            imgs[k].style.visibility = '';
+            imgs[k].removeAttribute('data-appai-my-pet-pending');
+          }
+        }
+      }
+    }
+
+    function markColourPending(colour) {
+      var nodes = nodesForColour(colour);
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var host = node.tagName === 'IMG' ? (node.parentElement || node) : node;
+        if (!host || host === document.body || host === document.documentElement) continue;
+        if (host.classList) host.classList.add('appai-my-pet-colour-pending');
+        var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img') : []);
+        for (var k = 0; k < imgs.length; k++) {
+          if (!galleryImgAllowed(imgs[k])) continue;
+          imgs[k].setAttribute('data-appai-my-pet-pending', '1');
+          imgs[k].style.visibility = 'hidden';
+        }
+        var existingVeil = false;
+        if (host.querySelectorAll) {
+          var have = host.querySelectorAll('.appai-my-pet-veil');
+          for (var hv = 0; hv < have.length; hv++) if (have[hv].parentNode === host) existingVeil = true;
+        }
+        if (!existingVeil) {
+          try {
+            if (window.getComputedStyle(host).position === 'static') host.style.position = 'relative';
+          } catch (e) {}
+          var veil = document.createElement('span');
+          veil.className = 'appai-my-pet-veil';
+          veil.setAttribute('aria-hidden', 'true');
+          host.appendChild(veil);
+        }
+      }
+    }
+
+    function holdMissingColours() {
+      var colours = allColorOptions(root);
+      for (var i = 0; i < colours.length; i++) {
+        if (urlForColourMap(state.previewUrlByColor, colours[i])) clearColourPending(colours[i]);
+        else markColourPending(colours[i]);
+      }
+    }
+
+    function mergeColourMap(extra) {
+      if (!extra || typeof extra !== 'object') return;
+      state.previewUrlByColor = state.previewUrlByColor || {};
+      var keys = Object.keys(extra);
+      for (var i = 0; i < keys.length; i++) {
+        if (extra[keys[i]] && !state.previewUrlByColor[keys[i]]) state.previewUrlByColor[keys[i]] = extra[keys[i]];
+      }
+    }
+
+    function fillMissingColours(renderId, gen) {
+      if (!renderId || state.reverted) return;
+      var colours = allColorOptions(root);
+      var missing = [];
+      for (var i = 0; i < colours.length; i++) {
+        if (!urlForColourMap(state.previewUrlByColor, colours[i])) missing.push(colours[i]);
+      }
+      logColourMap('render=' + String(renderId).slice(0, 8) + ' missing=' + (missing.join(', ') || '(none)'));
+      for (var m = 0; m < missing.length; m++) {
+        (function (colour) {
+          postJson('my-pet/recomposite', { renderId: renderId, colorName: colour }).then(function (res) {
+            if (!generationCurrent(gen, renderId)) return;
+            if (!res || !res.ok || !res.previewUrl) return;
+            var name = res.colorName || colour;
+            state.previewUrlByColor[name] = res.previewUrl;
+            mergeColourMap(res.previewUrlsByColor);
+            clearColourPending(name);
+            var one = {};
+            one[name] = res.previewUrl;
+            swapVariantSlides(one);
+            console.log(TAG, 'colour map arrived', name);
+          }).catch(function () {});
+        })(missing[m]);
+      }
+    }
+
     function swapVariantSlides(urlsByColor) {
       if (!urlsByColor) return;
+      if (state.reverted) return;
       pauseMediaObservers(state.inlineHero);
       try {
       var mediaIdByColor = getMediaIdByColor(root);
-      var scope = null;
-      var cur = root.parentNode;
-      while (cur && cur !== document.body && cur.nodeType === 1) {
-        var tag = cur.tagName ? cur.tagName.toLowerCase() : '';
-        if (tag === 'main' || tag === 'section' ||
-            cur.hasAttribute('data-section-type') ||
-            cur.hasAttribute('data-section-id') ||
-            cur.hasAttribute('data-product-id')) { scope = cur; break; }
-        cur = cur.parentNode;
-      }
-      if (!scope) scope = document;
+      var scope = mainMediaGallery() || mainProductSection();
+      if (!scope) return;
       var totalMatched = 0;
       var stash = state.inlineSlideStash || [];
       for (var color in urlsByColor) {
@@ -3573,6 +3876,7 @@
       }
       state.inlineSlideStash = stash;
       swapLooseThumbnails();
+      holdMissingColours();
       console.log(TAG, 'slide swap: total nodes swapped =', totalMatched, 'colours in map =', Object.keys(urlsByColor).length);
       } finally {
         resumeMediaObservers(state.inlineHero);
@@ -3607,6 +3911,7 @@
      *   restoring it, …) is immediately visible in the console.
      */
     function swapOneSlideImage(img, url, color, mediaId, stash) {
+      if (!galleryImgAllowed(img)) return;
       if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes') && !responsiveLeftovers(img)) return;
       if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
         img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
@@ -3646,9 +3951,10 @@
           'sources=' + sourceCount,
           'setSrc tail=' + setTail);
         // Capture closure refs
-        (function (capturedImg, capturedColor, capturedCls, capturedUrl, capturedTail) {
+        (function (capturedImg, capturedColor, capturedCls, capturedUrl, capturedTail, capturedGen, capturedRender) {
           setTimeout(function () {
             try {
+              if (!generationCurrent(capturedGen, capturedRender)) return;
               var rc = urlTail(capturedImg.currentSrc || capturedImg.src || '');
               var ok = rc === capturedTail && !responsiveLeftovers(capturedImg);
               if (ok) {
@@ -3664,7 +3970,7 @@
               }
             } catch (e) {}
           }, 300);
-        })(img, color, cls, url, setTail);
+        })(img, color, cls, url, setTail, state.renderGeneration || 0, state.renderId);
       } catch (e) {}
     }
 
@@ -3808,7 +4114,11 @@
     }
 
     function activateInlinePreview(previewUrl) {
-      var hero = state.inlineHero || findProductHeroImg();
+      if (state.reverted || revertedFlagOn(shopifyProductId)) {
+        console.log(TAG, 'inline activate skipped, reverted');
+        return false;
+      }
+      var hero = findVisibleHeroImg() || findProductHeroImg();
       if (!hero) {
         console.log(TAG, 'inline activate: no hero found (gallery may not be rendered yet)');
         return false;
@@ -4221,32 +4531,22 @@
         'product-media-gallery',
         '[data-media-gallery]',
       ];
-      // STAGING-99/100 — scope to the main product section so we don't
-      // end up observing a related-products carousel or store-wide
-      // trending strip whose nodes aren't the ones the shopper is
-      // looking at. Fall back to document scope only if we can't find
-      // a product section to walk up to.
-      var galleryScope = null;
-      var cur2 = root.parentNode;
-      while (cur2 && cur2 !== document.body && cur2.nodeType === 1) {
-        var tag2 = cur2.tagName ? cur2.tagName.toLowerCase() : '';
-        if (tag2 === 'main' || tag2 === 'section' ||
-            cur2.hasAttribute('data-section-type') ||
-            cur2.hasAttribute('data-section-id') ||
-            cur2.hasAttribute('data-product-id')) { galleryScope = cur2; break; }
-        cur2 = cur2.parentNode;
+      // Watch the main product media-gallery only. The shopify section is a
+      // div, so the old walk landed on <main> and repainted recommendation cards.
+      var galleryScope = mainMediaGallery();
+      var searchRoot = mainProductSection() || document;
+      var container = galleryScope;
+      if (!container) {
+        for (var i = 0; i < GALLERY_SELECTORS.length; i++) {
+          try { container = searchRoot.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
+          if (container) break;
+        }
       }
-      var searchRoot = galleryScope || document;
-      var container = null;
-      for (var i = 0; i < GALLERY_SELECTORS.length; i++) {
-        try { container = searchRoot.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
-        if (container) break;
-      }
-      if (!container && !galleryScope) {
+      if (!container) {
         console.log(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
         return;
       }
-      var watch = (galleryScope && galleryScope !== document) ? galleryScope : container;
+      var watch = container;
       state.galleryGuardRoot = watch;
       if (!state.sectionLoadHook) {
         state.sectionLoadHook = true;
@@ -4267,7 +4567,15 @@
         // slides in <media-gallery> custom elements.
         var sawAdded = false;
         for (var m = 0; m < mutations.length; m++) {
-          if (mutations[m].addedNodes && mutations[m].addedNodes.length) { sawAdded = true; break; }
+          var addedNodes = mutations[m].addedNodes;
+          if (!addedNodes || !addedNodes.length) continue;
+          for (var a = 0; a < addedNodes.length; a++) {
+            var addedNode = addedNodes[a];
+            if (addedNode && addedNode.classList && addedNode.classList.contains('appai-my-pet-veil')) continue;
+            sawAdded = true;
+            break;
+          }
+          if (sawAdded) break;
         }
         if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
           if (!state.gallerySyncing) swapVariantSlides(state.previewUrlByColor);
@@ -4288,7 +4596,8 @@
               : (node.querySelectorAll ? node.querySelectorAll('img') : []);
             for (var k = 0; k < imgs.length; k++) {
               var img = imgs[k];
-              if (img.closest && img.closest('.appai-my-pet')) continue;
+              if (!galleryImgAllowed(img)) continue;
+              if (img.closest && img.closest('dialog, zoom-dialog')) continue;
               if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
               if (looksLikeThumb(img)) continue;
               if (!isHeroCandidate(img)) continue;
@@ -4404,7 +4713,7 @@
       var last = currentVariantInfo(root);
       var tickCount = 0;
       state.inlineFormPollTimer = setInterval(function () {
-        if (!state.inlineApplied || !state.inlineHero || !state.renderId) return;
+        if (state.reverted || !state.inlineApplied || !state.inlineHero || !state.renderId) return;
         tickCount++;
         // Heartbeat every 5s (10 × 500ms) so if the form id is frozen the
         // value it's reading is still visible in the console. Strip after
@@ -4470,14 +4779,19 @@
         console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
         return;
       }
+      var composeGen = state.renderGeneration || 0;
+      var composeRender = state.renderId;
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
           // Issue 7 — re-check inlineApplied after the awaited round-trip
           // so a revert that happened during /recomposite doesn't get
           // undone by this late success writing back to the hero.
+          if (!generationCurrent(composeGen, composeRender)) return;
           if (res && res.ok && res.previewUrl && state.inlineApplied) {
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor[colorName] = res.previewUrl;
+            mergeColourMap(res.previewUrlsByColor);
+            clearColourPending(res.colorName || colorName);
             reassertColourPreview('recomposite', colorName, res.previewUrl);
             // STAGING-100 — also apply to the per-variant slide for this
             // colour so the carousel shows OUR image next time the theme
@@ -5311,6 +5625,8 @@
     });
 
     function onLeaveGuardClick(event) {
+      var surface = logCapture('leave-guard', event);
+      if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
       var renderId = state.renderId;
       if (!renderId || renderWasEmailed(renderId) || renderInCart(renderId) || leaveGuardAlreadyShown(renderId)) return;
       if (event.defaultPrevented) return;
@@ -5378,16 +5694,19 @@
     } catch (e) {}
 
     openBtn.addEventListener('click', function () {
+      // A reverted design must come back before "Try another photo". The
+      // button still says Add My Pet, and inlineApplied can be stuck true
+      // if a late activate relabelled without a visible swap.
+      if (previewMode === 'inline' && state.renderId && (state.reverted || revertedFlagOn(shopifyProductId))) {
+        reapplyActiveDesign();
+        return;
+      }
       // UX 7 inline mode — when inline preview is CURRENTLY applied, the My
       // Pet button acts as "Try another photo" and routes through the
       // shared tryAnotherPhoto() so cap-at + save-modal + terminal-message
       // branches all behave the same as the modal-mode change-photo button.
       if (previewMode === 'inline' && state.inlineApplied) {
         tryAnotherPhoto();
-        return;
-      }
-      if (previewMode === 'inline' && state.reverted && state.renderId) {
-        reapplyActiveDesign();
         return;
       }
       // Issue 7 (post-staging-93) — reverted-but-already-generated state in
