@@ -862,6 +862,7 @@ export async function promoteCatalogueCandidate(args: {
     handle,
     title,
     status: status === "active" ? "active" : "inactive",
+    myPetEnabled: true,
     variantMap: variantMapOut,
     mockupUrls: images.map((image) => image.filename),
   }).returning({ id: designProducts.id });

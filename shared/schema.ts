@@ -1561,6 +1561,8 @@ export const designProducts = pgTable("design_products", {
   handle: text("handle"),
   title: text("title").notNull(),
   status: text("status").notNull().default("active"), // active | inactive
+  /** Storefront My Pet button. New rows default on. False hides the button. */
+  myPetEnabled: boolean("my_pet_enabled").notNull().default(true),
   /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
   variantMap: json("variant_map"),
   mockupUrls: json("mockup_urls"),

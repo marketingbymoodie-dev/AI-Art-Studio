@@ -22438,6 +22438,41 @@ ${orientationExtra}
     res.json({ success: true, designProduct: updated });
   }));
 
+  /** PATCH /api/appai/design-products/:id/my-pet — storefront button on this listing. */
+  app.patch("/api/appai/design-products/:id/my-pet", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be true or false" });
+    }
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+    if (!row.shopifyProductId) {
+      return res.status(409).json({ error: "This listing has no Shopify product yet." });
+    }
+    const tokenReady = await ensureValidOfflineAccessToken(installation);
+    const token = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+    const { setProductMyPetEnabled } = await import("./my-pet-metafields");
+    try {
+      await setProductMyPetEnabled(shop, token, row.shopifyProductId, enabled);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: message });
+    }
+    const [updated] = await db
+      .update(designProducts)
+      .set({ myPetEnabled: enabled, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+    res.json({ designProduct: updated });
+  }));
+
   /** DELETE /api/appai/design-products/:id — unpublish: remove the Shopify product + the listing. */
   app.delete("/api/appai/design-products/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveInstallation(req);

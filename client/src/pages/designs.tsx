@@ -52,6 +52,7 @@ interface DesignProduct {
   handle: string | null;
   title: string;
   status: "active" | "inactive";
+  myPetEnabled?: boolean;
   mockupUrls: string[] | null;
 }
 
@@ -163,6 +164,27 @@ export default function DesignsPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/design-products"] });
     },
     onError: (err: any) => toast({ title: "Update failed", description: err.message, variant: "destructive" }),
+    onSettled: () => setBusyProductId(null),
+  });
+
+  const myPetMutation = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
+      setBusyProductId(id);
+      const res = await fetch(`/api/appai/design-products/${id}/my-pet`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to update My Pet");
+      return data;
+    },
+    onSuccess: (_data, vars) => {
+      toast({ title: vars.enabled ? "My Pet on" : "My Pet off" });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/design-products"] });
+    },
+    onError: (err: any) => toast({ title: "My Pet update failed", description: err.message, variant: "destructive" }),
     onSettled: () => setBusyProductId(null),
   });
 
@@ -393,6 +415,17 @@ export default function DesignsPage() {
                         </Button>
                       ) : (
                         <div className="space-y-1.5 pt-1 border-t">
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={product.myPetEnabled !== false}
+                              disabled={isBusy}
+                              aria-label={`My Pet for ${product.title}`}
+                              data-testid={`checkbox-my-pet-${design.id}`}
+                              onChange={(e) => myPetMutation.mutate({ id: product.id, enabled: e.target.checked })}
+                            />
+                            My Pet
+                          </label>
                           <div className="flex gap-2">
                             {product.shopifyProductId && (
                               <a

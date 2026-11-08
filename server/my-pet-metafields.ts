@@ -34,6 +34,113 @@ async function adminGql(shop: string, token: string, query: string, variables: R
   }
 }
 
+function productGid(shopifyProductId: string): string {
+  const numeric = String(shopifyProductId).replace(/\D/g, "");
+  if (!numeric) throw new Error("Missing Shopify product id");
+  return `gid://shopify/Product/${numeric}`;
+}
+
+/** Writes the product boolean. Does not change the database row. */
+export async function setProductMyPetEnabled(
+  shop: string,
+  token: string,
+  shopifyProductId: string,
+  enabled: boolean,
+): Promise<void> {
+  await ensureMyPetMetafieldDefinition(shop, token);
+  const data = await adminGql(shop, token, `
+    mutation($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { message }
+      }
+    }
+  `, {
+    metafields: [{
+      ownerId: productGid(shopifyProductId),
+      namespace: "ai_art_studio",
+      key: "my_pet_enabled",
+      type: "boolean",
+      value: enabled ? "true" : "false",
+    }],
+  });
+  const errors = data?.metafieldsSet?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
+  }
+}
+
+/** null when the product has no value yet. */
+export async function readProductMyPetEnabled(
+  shop: string,
+  token: string,
+  shopifyProductId: string,
+): Promise<boolean | null> {
+  const data = await adminGql(shop, token, `
+    query($id: ID!) {
+      product(id: $id) {
+        metafield(namespace: "ai_art_studio", key: "my_pet_enabled") { value }
+      }
+    }
+  `, { id: productGid(shopifyProductId) });
+  const value = data?.product?.metafield?.value;
+  if (value == null || value === "") return null;
+  return String(value) === "true";
+}
+
+/**
+ * Existing Petposterous listings were created before the storefront required
+ * an explicit true. Set the metafield only where it is still unset, so an
+ * admin false is left alone on later boots.
+ */
+export async function backfillUnsetMyPetEnabled(): Promise<{ set: number; skipped: number; failed: number }> {
+  const { and, isNotNull, ne } = await import("drizzle-orm");
+  const { designProducts } = await import("@shared/schema");
+  const { db } = await import("./db");
+  const { normalizeMyshopifyShopDomain } = await import("./shopDomain");
+  const { storage } = await import("./storage");
+  const rows = await db
+    .select({
+      shop: designProducts.shop,
+      shopifyProductId: designProducts.shopifyProductId,
+    })
+    .from(designProducts)
+    .where(and(isNotNull(designProducts.shopifyProductId), ne(designProducts.shopifyProductId, "")));
+  const tokens = new Map<string, string | null>();
+  let set = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const productId = String(row.shopifyProductId || "");
+    const shop = normalizeMyshopifyShopDomain(row.shop);
+    if (!productId || !shop) {
+      skipped += 1;
+      continue;
+    }
+    if (!tokens.has(shop)) {
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      tokens.set(shop, installation?.accessToken || null);
+    }
+    const token = tokens.get(shop);
+    if (!token) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      const current = await readProductMyPetEnabled(shop, token, productId);
+      if (current != null) {
+        skipped += 1;
+        continue;
+      }
+      await setProductMyPetEnabled(shop, token, productId, true);
+      set += 1;
+    } catch (err) {
+      failed += 1;
+      console.warn(`[my-pet-metafields] backfill ${productId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return { set, skipped, failed };
+}
+
 /** Idempotent — safe to call on every product publish. Never throws on "already exists". */
 export async function ensureMyPetMetafieldDefinition(shop: string, token: string): Promise<void> {
   try {

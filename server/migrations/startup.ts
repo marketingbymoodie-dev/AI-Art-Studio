@@ -145,6 +145,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "fabric_weave_texture",     type: "BOOLEAN" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
+  { table: "design_products",       column: "my_pet_enabled",              type: "BOOLEAN NOT NULL DEFAULT TRUE" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
   { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
   { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
@@ -3501,6 +3502,16 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED catalog styles for all merchants: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillUnsetMyPetEnabled } = await import("../my-pet-metafields");
+    const n = await backfillUnsetMyPetEnabled();
+    applied++;
+    console.log(`${tag} my pet metafield backfill set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED my pet metafield backfill: ${err.message ?? err}`);
   }
 
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;

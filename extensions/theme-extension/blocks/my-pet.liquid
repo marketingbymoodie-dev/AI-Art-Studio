@@ -1,14 +1,24 @@
 {% comment %}
-  My Pet — storefront pet-swap on a published Petposterous catalogue design.
-  Shows only when ai_art_studio.my_pet_enabled is true AND the product carries
-  ai_art_studio.design_candidate_id (set by the flywheel catalogue promote step).
+  My Pet — storefront pet-swap on a published design.
+  Renders when ai_art_studio.my_pet_enabled is true, or when that metafield
+  is unset and the product has the ai-art-studio-design tag.
+  An explicit false hides the block. False is blank in Liquid, so the unset
+  check is nil, not blank.
   Default placement: below colour swatches, above Add to cart, full width.
 {% endcomment %}
 
 {% assign candidate_id = product.metafields.ai_art_studio.design_candidate_id.value %}
-{% assign my_pet_enabled = product.metafields.ai_art_studio.my_pet_enabled.value %}
+{% assign my_pet_flag = product.metafields.ai_art_studio.my_pet_enabled.value %}
+{% assign show_my_pet = false %}
+{% if my_pet_flag == true or my_pet_flag == 'true' %}
+  {% assign show_my_pet = true %}
+{% elsif my_pet_flag == nil %}
+  {% if product.tags contains 'ai-art-studio-design' %}
+    {% assign show_my_pet = true %}
+  {% endif %}
+{% endif %}
 
-{% if candidate_id != blank and my_pet_enabled != false %}
+{% if show_my_pet %}
   {% assign button_label = block.settings.button_label | default: "My Pet" %}
   {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
   {% assign preview_mode = block.settings.preview_mode | default: "modal" %}

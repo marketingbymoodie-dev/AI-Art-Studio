@@ -7,7 +7,7 @@ import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { catalogueCandidateChoices, customizerPages, designCandidates, merchants, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, merchants, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
 import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
@@ -647,6 +647,67 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json({ ok: true, ...result });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.get("/api/platform/catalogue-studio/products", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const { db } = await import("../db");
+      const { asc } = await import("drizzle-orm");
+      const rows = await db
+        .select({
+          id: designProducts.id,
+          title: designProducts.title,
+          shopifyProductId: designProducts.shopifyProductId,
+          myPetEnabled: designProducts.myPetEnabled,
+        })
+        .from(designProducts)
+        .where(eq(designProducts.shop, STAGING_SHOP))
+        .orderBy(asc(designProducts.title));
+      res.json({ products: rows });
+    } catch (e: any) {
+      res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/my-pet", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Catalogue studio changes are staging only." });
+      return;
+    }
+    const enabled = req.body?.enabled;
+    const designProductId = String(req.body?.designProductId || "");
+    if (typeof enabled !== "boolean" || !designProductId) {
+      res.status(400).json({ error: "designProductId and enabled are required." });
+      return;
+    }
+    try {
+      const { db } = await import("../db");
+      const [row] = await db
+        .select()
+        .from(designProducts)
+        .where(and(eq(designProducts.id, designProductId), eq(designProducts.shop, STAGING_SHOP)))
+        .limit(1);
+      if (!row?.shopifyProductId) {
+        res.status(404).json({ error: "That catalogue product is not listed." });
+        return;
+      }
+      const installation = await storage.getShopifyInstallationByShop(STAGING_SHOP);
+      if (!installation?.accessToken) {
+        res.status(409).json({ error: "Staging Shopify token is not stored." });
+        return;
+      }
+      const { setProductMyPetEnabled } = await import("../my-pet-metafields");
+      await setProductMyPetEnabled(STAGING_SHOP, installation.accessToken, row.shopifyProductId, enabled);
+      await db.update(designProducts).set({
+        myPetEnabled: enabled,
+        updatedAt: new Date(),
+      }).where(eq(designProducts.id, row.id));
+      res.json({ ok: true, id: row.id, myPetEnabled: enabled });
+    } catch (e: any) {
+      res.status(502).json({ error: String(e?.message || e) });
     }
   });
 
