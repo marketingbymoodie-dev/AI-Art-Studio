@@ -240,7 +240,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
 
   app.post("/api/proxy/my-pet/email-save", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
-    const { renderId, email, marketingConsent, pageUrl } = req.body || {};
+    const { renderId, email, marketingConsent, pageUrl, colorName } = req.body || {};
     if (!shop || !renderId || !email || !pageUrl) {
       return res.status(400).json({ error: "renderId, email and pageUrl are required" });
     }
@@ -253,6 +253,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         email: String(email),
         marketingConsent: !!marketingConsent,
         pageUrl: String(pageUrl),
+        colorName: colorName ? String(colorName) : undefined,
       });
       res.json({ ok: true, deviceKey: signed });
     } catch (err: any) {

@@ -4204,6 +4204,14 @@
      * ("Sign up to get 2 more" instead of "Save your design?") so the
      * mechanic (consent → +2 bonus) reads honestly at the cap-gate moment.
      */
+    function selectedDesignPreview() {
+      var colour = currentInlineColour();
+      var key = colour ? canonicalPreviewColor(colour) : '';
+      var map = state.previewUrlByColor || {};
+      var url = (key && map[key]) || (colour && map[colour]) || state.previewUrl || '';
+      return { colour: key || colour || '', url: url };
+    }
+
     function maybePromptEmailSave(opts) {
       opts = opts || {};
       var force = !!opts.force;
@@ -4212,14 +4220,15 @@
       if (!force && isDismissed(state.renderId)) return;
       state.emailModalOpen = true;
       var renderIdAtOpen = state.renderId;
+      var selectedPreview = selectedDesignPreview();
       var modal = buildModal({
         onClose: function () {
           state.emailModalOpen = false;
           markDismissed(renderIdAtOpen); // closed without sending — don't re-ask for this design
         },
       });
-      var thumbHtml = state.previewUrl
-        ? '<img src="' + state.previewUrl + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
+      var thumbHtml = selectedPreview.url
+        ? '<img src="' + selectedPreview.url + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
         : '';
       // Save modal state machine:
       //   State A (no consent, under cap, exit-intent)       → "Save your design?" + opt-in checkbox
@@ -4315,7 +4324,7 @@
         var sendBtn = modal.body.querySelector('[data-action="send-email"]');
         if (sendBtn) sendBtn.disabled = true;
         if (status) status.textContent = 'Sending…';
-        postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl })
+        postJson('my-pet/email-save', { renderId: state.renderId, email: email, marketingConsent: withConsent, pageUrl: pageUrl, colorName: selectedPreview.colour })
           .then(function (res) {
             if (res && res.ok) {
               markEmailed(renderIdAtOpen);

@@ -1000,6 +1000,7 @@ export async function sendMyPetEmailSave(args: {
   email: string;
   marketingConsent: boolean;
   pageUrl: string;
+  colorName?: string;
 }): Promise<{ ok: true }> {
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) {
@@ -1051,7 +1052,16 @@ export async function sendMyPetEmailSave(args: {
   // works for as long as the saved link itself is valid. Already-sent emails
   // with the old 1hr URL cannot be fixed retroactively (the URL is static
   // text in a delivered email) — this only fixes emails sent from here on.
-  const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
+  // The leave-guard (and any other save) emails the colour the shopper is
+  // looking at, not the colour chosen when the design was first generated.
+  let previewPath = render.previewPath;
+  const colour = args.colorName?.trim();
+  if (colour) {
+    const colourPath = myPetPreviewPathForColor(render.id, colour);
+    const exists = await myPetObjectExists(colourPath).catch(() => false);
+    if (exists) previewPath = colourPath;
+  }
+  const previewUrl = await signedMyPetUrl(previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
   const link = withTokenParam(args.pageUrl, token);
   await sendMyPetSaveEmail(email, previewUrl, link);
   // Shopify customer upsert is skipped on repeat consents (effectiveConsent
