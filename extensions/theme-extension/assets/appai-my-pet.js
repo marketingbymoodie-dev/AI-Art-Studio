@@ -2066,10 +2066,8 @@
         if (String(radios[i].value || '').trim().toLowerCase() !== want) continue;
         if (radios[i].disabled) return;
         if (radios[i].checked) return;
-        var label = radios[i].closest ? radios[i].closest('label') : null;
-        if (!label && radios[i].id) label = document.querySelector('label[for="' + radios[i].id + '"]');
-        if (label) label.click();
-        else radios[i].click();
+        radios[i].checked = true;
+        radios[i].dispatchEvent(new Event('change', { bubbles: true }));
         return;
       }
     }
@@ -2105,8 +2103,14 @@
           }
           // Stock thumbnail clicks on this theme only scroll the slide.
           // The shopper still needs the variant to match the picture, so
-          // select that colour's swatch after the theme has moved the slide.
+          // check that colour's swatch after the theme has moved the slide.
+          // Checking the radio must not focus it: focus scrolls the swatches
+          // up and pushes the hero off a phone screen.
+          var scrollY = window.scrollY;
           selectSwatch(colour);
+          requestAnimationFrame(function () {
+            if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
+          });
         }, 0);
       }, true);
     }
