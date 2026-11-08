@@ -78,6 +78,39 @@
     try { window.localStorage.removeItem(renderStorageKey(shopifyProductId)); } catch (e) {}
   }
 
+  // Same-tab speed-up for the restore round-trip. Signed URLs live much
+  // longer than this; 15 minutes is enough for a revisit in this tab and
+  // short enough that a swept render doesn't linger.
+  var RESOLVE_CACHE_PREFIX = 'appai_my_pet_resolve_v1:';
+  var RESOLVE_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+  function readResolveCache(renderId) {
+    try {
+      var raw = window.sessionStorage.getItem(RESOLVE_CACHE_PREFIX + renderId);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!parsed || parsed.renderId !== renderId || !parsed.previewUrl || !parsed.expiresAt) return null;
+      if (Date.now() > parsed.expiresAt) {
+        window.sessionStorage.removeItem(RESOLVE_CACHE_PREFIX + renderId);
+        return null;
+      }
+      return parsed;
+    } catch (e) { return null; }
+  }
+  function writeResolveCache(res) {
+    if (!res || !res.ok || !res.renderId || !res.previewUrl) return;
+    try {
+      window.sessionStorage.setItem(RESOLVE_CACHE_PREFIX + res.renderId, JSON.stringify({
+        ok: true,
+        renderId: res.renderId,
+        jobId: res.jobId || null,
+        previewUrl: res.previewUrl,
+        previewUrlsByColor: res.previewUrlsByColor || {},
+        colorName: res.colorName || '',
+        expiresAt: Date.now() + RESOLVE_CACHE_MAX_AGE_MS,
+      }));
+    } catch (e) { /* sessionStorage disabled or full */ }
+  }
+
   function proxyPath(path) {
     return '/apps/appai/' + path.replace(/^\//, '');
   }
@@ -960,6 +993,7 @@
       // so we don't double-install. inlineGuardBackupTimer re-finds the hero
       // every 1.5s when the theme replaces the <img> node outright.
       inlineHero: null,
+      restorePending: false,
       // Issue 4 (post-staging-92) — childList observer on the gallery
       // container; swaps opacity:0 + runs installHeroGuard before paint so
       // Ritual's "replace hero <img> on variant change" never flashes the
@@ -1097,6 +1131,14 @@
       return (typeof limit === 'number' ? remaining + ' of ' + limit : remaining) + noun + bonusSuffix + '.';
     }
 
+    function noteRestoreLockOnOpenBtn() {
+      if (!state.restorePending || !openBtn) return;
+      openBtn.setAttribute('aria-disabled', 'true');
+      openBtn.setAttribute('title', 'Loading your design…');
+      openBtn.classList.add('appai-my-pet-restore-locked');
+      openBtn.setAttribute('data-appai-restore-locked', '1');
+    }
+
     function renderAttemptsCaption(capStatus) {
       if (!caption || !capStatus) return;
       // Subtitle-vs-cap-caption swap: show the theme-setting subtitle to
@@ -1110,15 +1152,18 @@
         caption.textContent = defaultSubtitle;
         caption.classList.remove('appai-shimmer');
         openBtn.removeAttribute('aria-disabled');
+        noteRestoreLockOnOpenBtn();
         return;
       }
       caption.textContent = formatAttemptsMessage(capStatus);
       if (capStatus.allowed === false) {
         openBtn.setAttribute('aria-disabled', 'true');
         caption.classList.remove('appai-shimmer');
+        noteRestoreLockOnOpenBtn();
         return;
       }
       openBtn.removeAttribute('aria-disabled');
+      noteRestoreLockOnOpenBtn();
       var remaining = capStatus.perListingRemaining;
       // Polish 9 — shimmer only on the inviting "you have tries left" state;
       // not on "no more tries" (that's a stop, not a draw-the-eye moment).
@@ -1139,62 +1184,242 @@
         .catch(function () { return null; });
     }
 
+    function restoreControlInCart(el) {
+      return !!(el && el.closest && el.closest('cart-drawer, cart-drawer-component, cart-notification, .cart-drawer, #cart-drawer, #CartDrawer, [data-cart-drawer]'));
+    }
+
+    function eachRestoreControl(fn) {
+      var nodes;
+      try {
+        nodes = document.querySelectorAll(
+          'button[name="add"], form[action*="/cart/add"] button[type="submit"], .shopify-payment-button, .shopify-payment-button__button, shopify-buy-it-now-button, shopify-accelerated-checkout, [data-appai-my-pet-open]'
+        );
+      } catch (e) { return; }
+      for (var i = 0; i < nodes.length; i++) {
+        if (restoreControlInCart(nodes[i])) continue;
+        fn(nodes[i]);
+      }
+    }
+
+    function lockRestoreControl(el) {
+      if (!el || el.getAttribute('data-appai-restore-locked') === '1') return;
+      el.setAttribute('data-appai-restore-locked', '1');
+      el.setAttribute('data-appai-restore-had-aria', el.hasAttribute('aria-disabled') ? '1' : '0');
+      el.setAttribute('data-appai-restore-aria', el.getAttribute('aria-disabled') || '');
+      el.setAttribute('data-appai-restore-had-title', el.hasAttribute('title') ? '1' : '0');
+      el.setAttribute('data-appai-restore-title', el.getAttribute('title') || '');
+      el.setAttribute('aria-disabled', 'true');
+      el.setAttribute('title', 'Loading your design…');
+      if (el.classList) el.classList.add('appai-my-pet-restore-locked');
+    }
+
+    function unlockRestoreControl(el) {
+      if (!el || el.getAttribute('data-appai-restore-locked') !== '1') return;
+      if (el.classList) el.classList.remove('appai-my-pet-restore-locked');
+      if (el.getAttribute('data-appai-restore-had-aria') === '1') el.setAttribute('aria-disabled', el.getAttribute('data-appai-restore-aria') || '');
+      else el.removeAttribute('aria-disabled');
+      if (el.getAttribute('data-appai-restore-had-title') === '1') el.setAttribute('title', el.getAttribute('data-appai-restore-title') || '');
+      else el.removeAttribute('title');
+      el.removeAttribute('data-appai-restore-locked');
+      el.removeAttribute('data-appai-restore-had-aria');
+      el.removeAttribute('data-appai-restore-aria');
+      el.removeAttribute('data-appai-restore-had-title');
+      el.removeAttribute('data-appai-restore-title');
+    }
+
+    function lockRestoreButtons() {
+      eachRestoreControl(lockRestoreControl);
+      noteRestoreLockOnOpenBtn();
+    }
+
+    function unlockRestoreButtons() {
+      eachRestoreControl(unlockRestoreControl);
+      var leftovers;
+      try { leftovers = document.querySelectorAll('[data-appai-restore-locked="1"]'); } catch (e) { leftovers = []; }
+      for (var i = 0; i < leftovers.length; i++) unlockRestoreControl(leftovers[i]);
+    }
+
+    function showRestoreBadge() {
+      var hero = findProductHeroImg() || findVisibleHeroImg();
+      if (!hero || !hero.parentNode) return false;
+      var host = hero.parentNode;
+      var existing = document.querySelector('.appai-my-pet-restore');
+      if (existing && existing.parentNode === host) return true;
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var pos = '';
+      try { pos = window.getComputedStyle(host).position; } catch (e) {}
+      if ((!pos || pos === 'static') && !host.getAttribute('data-appai-restore-host')) {
+        host.setAttribute('data-appai-restore-host', '1');
+        host.style.position = 'relative';
+      }
+      var badge = document.createElement('div');
+      badge.className = 'appai-my-pet-restore';
+      badge.setAttribute('role', 'status');
+      badge.setAttribute('aria-live', 'polite');
+      var spin = document.createElement('span');
+      spin.className = 'appai-my-pet-restore__spin';
+      spin.setAttribute('aria-hidden', 'true');
+      badge.appendChild(spin);
+      badge.appendChild(document.createTextNode('Loading your design…'));
+      host.appendChild(badge);
+      return true;
+    }
+
+    function clearRestoreChrome() {
+      var badge = document.querySelector('.appai-my-pet-restore');
+      if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+      var hosts;
+      try { hosts = document.querySelectorAll('[data-appai-restore-host]'); } catch (e) { hosts = []; }
+      for (var i = 0; i < hosts.length; i++) {
+        hosts[i].style.position = '';
+        hosts[i].removeAttribute('data-appai-restore-host');
+      }
+      unlockRestoreButtons();
+    }
+
+    function blockRestoreAction(event) {
+      if (!state.restorePending) return;
+      var node = event.target;
+      if (!node) return;
+      if (node.nodeType !== 1) node = node.parentElement;
+      if (!node || !node.closest) return;
+      if (!node.closest('[data-appai-restore-locked="1"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
     // UX 6 — restore a same-device, cross-session render on page load so
     // "Add My Pet" reopens the existing preview instead of offering a fresh
-    // (cap-consuming) generation. Async; if the shopper clicks the button
-    // before this resolves, the normal upload flow runs instead — acceptable,
-    // low-likelihood race, next click will have it.
+    // (cap-consuming) generation. The loading badge goes up as soon as a
+    // stored render is found, before resolve-render returns, so the shopper
+    // can't buy the stock design during the wait.
     (function restoreStoredRender() {
       var stored = readStoredRender(shopifyProductId);
-      if (!stored) return;
-      getJson('my-pet/resolve-render', { renderId: stored.renderId })
-        .then(function (res) {
-          if (res && res.ok && res.previewUrl) {
-            state.renderId = res.renderId;
-            state.jobId = res.jobId;
-            state.previewUrl = res.previewUrl;
-            probeCartForRender(res.renderId);
-            // STAGING-96 restore-path bug fix: previewUrlsByColor is now
-            // rebuilt server-side from the deterministic {renderId}-{slug}
-            // storage paths generate wrote, so swatch clicks on a restored
-            // render are CLIENT CACHE HITs just like fresh-generate. Seed
-            // the map and preload the URLs the same way renderPreviewBody
-            // does on generate success. Missing / failed-precompose colours
-            // are silently absent from the map; client falls back to the
-            // existing /recomposite lazy path on first click for those.
-            state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
-              ? Object.assign({}, res.previewUrlsByColor)
-              : {};
-            console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
-            logPreviewUrlTails('restore', state.previewUrlByColor);
-            preloadPreviewUrls(state.previewUrlByColor);
-            // UX 7 — restore the inline hero swap on return visits so the
-            // shopper sees "their" product straight away without having to
-            // click the button again. STAGING-98 fix: prefer the CURRENT
-            // selected colour's cached URL over res.previewUrl (which is
-            // whatever the shopper chose when they first generated —
-            // Shopify may restore a different variant on hard refresh).
-            // Retry up to 5 × 500ms if the hero isn't in the DOM yet
-            // (section may still be rendering when restore resolves).
-            if (previewMode === 'inline') {
-              var restoreInfo = currentVariantInfo(root);
-              var restoreSw = readSwatchColor(root);
-              var restoreColor = (restoreSw && restoreInfo.colorName && restoreSw !== restoreInfo.colorName)
-                ? restoreSw
-                : (restoreInfo.colorName || restoreSw || null);
-              var restoreColorUrl = restoreColor ? state.previewUrlByColor[restoreColor] : null;
-              var activationUrl = restoreColorUrl || res.previewUrl;
-              console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
-                ' formColor=' + (restoreInfo.colorName || '(none)') +
-                ' swatchColor=' + (restoreSw || '(none)') +
-                ' usingCached=' + !!restoreColorUrl);
-              activateInlinePreviewWithRetry(activationUrl);
-            }
-          } else {
-            clearStoredRender(shopifyProductId);
+      if (!stored || !stored.renderId) return;
+      state.restorePending = true;
+      var finished = false;
+      var badgeTimer = null;
+      function armBadge() {
+        if (finished) return;
+        if (showRestoreBadge()) return;
+        badgeTimer = setTimeout(armBadge, 80);
+      }
+      lockRestoreButtons();
+      armBadge();
+      setTimeout(lockRestoreButtons, 300);
+      setTimeout(lockRestoreButtons, 1000);
+      if (!state._restoreBlocker) {
+        state._restoreBlocker = blockRestoreAction;
+        document.addEventListener('click', blockRestoreAction, true);
+        document.addEventListener('submit', blockRestoreAction, true);
+        document.addEventListener('keydown', function (event) {
+          if (!state.restorePending) return;
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          blockRestoreAction(event);
+        }, true);
+      }
+      function finishRestore(ok) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        if (badgeTimer) clearTimeout(badgeTimer);
+        var apply = function () {
+          state.restorePending = false;
+          if (!ok && state.inlineApplied) revertToOriginalDesign();
+          clearRestoreChrome();
+          if (state.capStatus) renderAttemptsCaption(state.capStatus);
+        };
+        if (ok && window.requestAnimationFrame) {
+          window.requestAnimationFrame(function () { window.requestAnimationFrame(apply); });
+        } else {
+          apply();
+        }
+      }
+      var timer = setTimeout(function () { finishRestore(false); }, 8000);
+
+      function restoredColour() {
+        var restoreInfo = currentVariantInfo(root);
+        var restoreSw = readSwatchColor(root);
+        if (restoreSw && restoreInfo.colorName && restoreSw !== restoreInfo.colorName) return restoreSw;
+        return restoreInfo.colorName || restoreSw || null;
+      }
+
+      function waitForHero(url, fromCache) {
+        function tick() {
+          if (finished) return;
+          showRestoreBadge();
+          lockRestoreButtons();
+          var hero = state.inlineHero || findProductHeroImg() || findVisibleHeroImg();
+          var src = hero ? String(hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '') : '';
+          var ready = hero && (urlsMatch(src, url) || urlsMatch(hero.__appaiAssertUrl, url));
+          if (!ready) {
+            setTimeout(tick, 100);
+            return;
           }
-        })
-        .catch(function () { /* leave stored entry; try again next load */ });
+          var pass = function () { finishRestore(true); };
+          var miss = function () {
+            if (finished) return;
+            if (fromCache) fetchFresh();
+            else finishRestore(false);
+          };
+          if (hero.decode) {
+            hero.decode().then(pass).catch(function () {
+              if (hero.naturalWidth > 0) pass();
+              else miss();
+            });
+          } else if (hero.complete && hero.naturalWidth > 0) pass();
+          else {
+            hero.addEventListener('load', pass, { once: true });
+            hero.addEventListener('error', miss, { once: true });
+          }
+        }
+        tick();
+      }
+
+      function applyResolved(res, fromCache) {
+        if (finished) return;
+        if (!res || !res.ok || !res.previewUrl) {
+          if (fromCache) { fetchFresh(); return; }
+          clearStoredRender(shopifyProductId);
+          finishRestore(false);
+          return;
+        }
+        if (!fromCache) writeResolveCache(res);
+        state.renderId = res.renderId;
+        state.jobId = res.jobId;
+        state.previewUrl = res.previewUrl;
+        probeCartForRender(res.renderId);
+        state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+          ? Object.assign({}, res.previewUrlsByColor)
+          : {};
+        console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+        logPreviewUrlTails('restore', state.previewUrlByColor);
+        preloadPreviewUrls(state.previewUrlByColor);
+        if (previewMode !== 'inline') {
+          finishRestore(true);
+          return;
+        }
+        var restoreColor = restoredColour();
+        var restoreColorUrl = restoreColor ? state.previewUrlByColor[restoreColor] : null;
+        var activationUrl = restoreColorUrl || res.previewUrl;
+        console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
+          ' usingCached=' + !!restoreColorUrl + ' fromSession=' + !!fromCache);
+        activateInlinePreviewWithRetry(activationUrl);
+        waitForHero(activationUrl, fromCache);
+      }
+
+      var refreshing = false;
+      function fetchFresh() {
+        if (finished || refreshing) return;
+        refreshing = true;
+        getJson('my-pet/resolve-render', { renderId: stored.renderId })
+          .then(function (res) { refreshing = false; applyResolved(res, false); })
+          .catch(function () { refreshing = false; if (!finished) finishRestore(false); });
+      }
+
+      var cached = readResolveCache(stored.renderId);
+      if (cached) applyResolved(cached, true);
+      else fetchFresh();
     })();
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2624,6 +2849,7 @@
         openBtn.textContent = 'Try another photo';
         openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
         openBtn.removeAttribute('aria-disabled');
+        noteRestoreLockOnOpenBtn();
       }
       showRevertLink();
       if (state.inlineAttached) {

@@ -183,5 +183,42 @@
       color: var(--appai-my-pet-caption-fg, #666666) !important;
       background: none !important;
     }
+    .appai-my-pet-restore__spin { animation: none; }
+  }
+  .appai-my-pet-restore {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: calc(100% - 1.5rem);
+    padding: 0.55rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #1a1a1a;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.2;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+  }
+  .appai-my-pet-restore__spin {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 2px solid rgba(0, 0, 0, 0.18);
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: appai-my-pet-restore-spin 0.8s linear infinite;
+  }
+  @keyframes appai-my-pet-restore-spin {
+    to { transform: rotate(360deg); }
+  }
+  .appai-my-pet-restore-locked {
+    opacity: 0.45 !important;
+    cursor: not-allowed !important;
   }
 </style>
