@@ -16,6 +16,7 @@ import {
   getMyPetSettings,
   recompositeMyPetRender,
   resolveMyPetEmailToken,
+  listMyPetRendersForDevice,
   resolveMyPetRenderById,
   sendMyPetEmailSave,
   startMyPetSweepInterval,
@@ -325,6 +326,21 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
   // in an hour) and calls this on return visits to get a fresh signed URL, or
   // a clean not_found if the render was swept or belongs to a different
   // device_key since.
+  // This device's successful renders for one product, newest first.
+  // Thumbnails only — choosing one goes through resolve-render for the colour map.
+  app.get("/api/proxy/my-pet/renders", myPetProxyAuth, async (req: Request, res: Response) => {
+    const shop = (req as any).proxyShop as string;
+    const shopifyProductId = String(req.query.productId || "");
+    if (!shop || !shopifyProductId) return res.status(400).json({ ok: false, error: "productId is required" });
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
+    try {
+      const renders = await listMyPetRendersForDevice({ shop, deviceKey, shopifyProductId });
+      res.json({ ok: true, renders, deviceKey: signed });
+    } catch (err: any) {
+      res.json({ ok: false, error: err?.message || "Could not list designs", deviceKey: signed });
+    }
+  });
+
   app.get("/api/proxy/my-pet/resolve-render", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
     const renderId = String(req.query.renderId || "");

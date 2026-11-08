@@ -84,6 +84,19 @@ export async function signedMyPetUrl(path: string, expiresInSec = 60 * 60): Prom
   return data.signedUrl;
 }
 
+/** Square thumb for the designs picker. Falls back to the full preview when image transforms are off. */
+export async function signedMyPetThumbnail(path: string, expiresInSec = 60 * 60): Promise<string> {
+  try {
+    const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, expiresInSec, {
+      transform: { width: 128, height: 128, resize: "cover" },
+    });
+    if (!error && data?.signedUrl) return data.signedUrl;
+  } catch {
+    /* transformations disabled — full preview is fine at 64px */
+  }
+  return signedMyPetUrl(path, expiresInSec);
+}
+
 export function decodeDataUrlOrBase64Image(raw: string): Buffer {
   const str = String(raw || "");
   const match = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(str);

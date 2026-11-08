@@ -66,30 +66,89 @@
       return parsed;
     } catch (e) { return null; }
   }
-  function writeStoredRender(shopifyProductId, renderId, jobId) {
-    var prev = {};
+  function readStoredRecord(shopifyProductId) {
     try {
       var raw = window.localStorage.getItem(renderStorageKey(shopifyProductId));
-      prev = raw ? JSON.parse(raw) : {};
-    } catch (e) { prev = {}; }
-    var next = { renderId: renderId, jobId: jobId, savedAt: Date.now() };
-    if (prev && prev.colorName) next.colorName = prev.colorName;
-    if (prev && prev.sizeName) next.sizeName = prev.sizeName;
-    try {
-      window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(next));
-    } catch (e) { /* localStorage disabled */ }
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  // One record per product. choices[renderId] is that design's own colour
+  // and size. The top-level pair is the active design, which restore and the
+  // default-size script already read.
+  function choicesFromRecord(prev) {
+    var choices = {};
+    var raw = prev && prev.choices;
+    if (raw && typeof raw === 'object') {
+      var keys = Object.keys(raw);
+      for (var i = 0; i < keys.length; i++) {
+        var entry = raw[keys[i]];
+        if (!entry || (!entry.colorName && !entry.sizeName)) continue;
+        choices[keys[i]] = { colorName: entry.colorName || '', sizeName: entry.sizeName || '' };
+      }
+    }
+    if (prev && prev.renderId && (prev.colorName || prev.sizeName) && !choices[prev.renderId]) {
+      choices[prev.renderId] = { colorName: prev.colorName || '', sizeName: prev.sizeName || '' };
+    }
+    return choices;
+  }
+  function writeStoredRecord(shopifyProductId, next) {
+    try { window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(next)); } catch (e) {}
+  }
+  function writeStoredRender(shopifyProductId, renderId, jobId) {
+    var prev = readStoredRecord(shopifyProductId) || {};
+    var choices = choicesFromRecord(prev);
+    var own = choices[renderId];
+    var next = {
+      renderId: renderId,
+      jobId: jobId || (prev.renderId === renderId ? prev.jobId : null) || null,
+      savedAt: Date.now(),
+      choices: choices,
+    };
+    if (own && own.colorName) next.colorName = own.colorName;
+    if (own && own.sizeName) next.sizeName = own.sizeName;
+    writeStoredRecord(shopifyProductId, next);
   }
   function writeStoredVariantChoice(shopifyProductId, colorName, sizeName) {
-    var prev = readStoredRender(shopifyProductId);
+    var prev = readStoredRecord(shopifyProductId);
     if (!prev || !prev.renderId) return;
+    var choices = choicesFromRecord(prev);
+    choices[prev.renderId] = { colorName: colorName || '', sizeName: sizeName || '' };
+    prev.choices = choices;
     if (colorName) prev.colorName = colorName;
     if (sizeName) prev.sizeName = sizeName;
-    try {
-      window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(prev));
-    } catch (e) { /* localStorage disabled */ }
+    writeStoredRecord(shopifyProductId, prev);
+  }
+  // Make renderId active. Use its saved colour and size, or the pair on
+  // screen when this design has never saved one. Returns the pair to select.
+  function activateStoredDesign(shopifyProductId, renderId, jobId, fallbackColor, fallbackSize) {
+    var prev = readStoredRecord(shopifyProductId) || {};
+    var choices = choicesFromRecord(prev);
+    var own = choices[renderId];
+    var hadOwn = !!(own && (own.colorName || own.sizeName));
+    var colorName = hadOwn && own.colorName ? own.colorName : (fallbackColor || '');
+    var sizeName = hadOwn && own.sizeName ? own.sizeName : (fallbackSize || '');
+    if (colorName || sizeName) choices[renderId] = { colorName: colorName, sizeName: sizeName };
+    var next = {
+      renderId: renderId,
+      jobId: jobId || null,
+      savedAt: Date.now(),
+      choices: choices,
+    };
+    if (colorName) next.colorName = colorName;
+    if (sizeName) next.sizeName = sizeName;
+    writeStoredRecord(shopifyProductId, next);
+    return { colorName: colorName, sizeName: sizeName, hadOwn: hadOwn };
   }
   function clearStoredRender(shopifyProductId) {
-    try { window.localStorage.removeItem(renderStorageKey(shopifyProductId)); } catch (e) {}
+    var prev = readStoredRecord(shopifyProductId);
+    var choices = choicesFromRecord(prev);
+    if (prev && prev.renderId) delete choices[prev.renderId];
+    var remaining = Object.keys(choices);
+    if (!remaining.length) {
+      try { window.localStorage.removeItem(renderStorageKey(shopifyProductId)); } catch (e) {}
+      return;
+    }
+    writeStoredRecord(shopifyProductId, { savedAt: Date.now(), choices: choices });
   }
 
   // Same-tab speed-up for the restore round-trip. Signed URLs live much
@@ -921,6 +980,7 @@
     var previewMode = (root.getAttribute('data-preview-mode') || 'modal').toLowerCase();
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
+    var designsBtn = root.querySelector('[data-appai-my-pet-designs]');
     // Issue 7 (post-staging-93) — snapshot the merchant-configured button
     // label before we relabel it to "Try another photo" on activate, so
     // revertToOriginalDesign can restore it exactly. Falls back to "My Pet"
@@ -1193,9 +1253,158 @@
         .then(function (status) {
           state.capStatus = status || null;
           renderAttemptsCaption(state.capStatus);
+          refreshDesignList();
           return state.capStatus;
         })
         .catch(function () { return null; });
+    }
+
+    var designSwitchToken = 0;
+    var designsPop = null;
+
+    function refreshDesignList() {
+      if (!designsBtn) return;
+      var count = state.capStatus && state.capStatus.perListingCount;
+      if (typeof count !== 'number' || count < 2) {
+        designsBtn.hidden = true;
+        return;
+      }
+      getJson('my-pet/renders', { productId: shopifyProductId }).then(function (res) {
+        var list = res && res.ok && Array.isArray(res.renders) ? res.renders : [];
+        state.designs = list;
+        if (list.length < 2) {
+          designsBtn.hidden = true;
+          closeDesigns();
+          return;
+        }
+        designsBtn.hidden = false;
+        designsBtn.textContent = 'Your designs (' + list.length + ')';
+        if (designsPop && !designsPop.hidden) fillDesigns(list);
+      }).catch(function () { designsBtn.hidden = true; });
+    }
+
+    function closeDesigns() {
+      if (!designsPop) return;
+      designsPop.hidden = true;
+      if (designsBtn) designsBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function fillDesigns(list) {
+      var row = designsPop.querySelector('.appai-my-pet-designs__row');
+      if (!row) return;
+      row.innerHTML = '';
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'appai-my-pet-designs__thumb';
+        btn.setAttribute('aria-pressed', item.renderId === state.renderId ? 'true' : 'false');
+        btn.setAttribute('aria-label', 'Design ' + (i + 1));
+        var img = document.createElement('img');
+        img.alt = '';
+        img.src = item.thumbnailUrl || '';
+        btn.appendChild(img);
+        btn.addEventListener('click', (function (chosen) {
+          return function () { selectListedDesign(chosen); };
+        })(item));
+        row.appendChild(btn);
+      }
+    }
+
+    function placeDesigns() {
+      if (!designsPop || !designsBtn) return;
+      var sheet = window.matchMedia('(max-width: 749px)').matches;
+      designsPop.classList.toggle('appai-my-pet-designs--sheet', sheet);
+      var panel = designsPop.querySelector('.appai-my-pet-designs');
+      if (!panel) return;
+      if (sheet) {
+        panel.style.left = '';
+        panel.style.bottom = '';
+        panel.style.width = '';
+        return;
+      }
+      var rect = designsBtn.getBoundingClientRect();
+      var width = Math.min(280, window.innerWidth - 16);
+      var left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      panel.style.width = width + 'px';
+      panel.style.left = left + 'px';
+      panel.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+    }
+
+    function openDesigns() {
+      if (!designsBtn || designsBtn.hidden || state.restorePending) return;
+      if (!designsPop) {
+        designsPop = document.createElement('div');
+        designsPop.className = 'appai-my-pet-designs-backdrop';
+        designsPop.hidden = true;
+        designsPop.innerHTML = '<div class="appai-my-pet-designs" role="dialog" aria-label="Your designs"><div class="appai-my-pet-designs__row"></div></div>';
+        document.body.appendChild(designsPop);
+        designsPop.addEventListener('click', function (event) {
+          if (event.target === designsPop) closeDesigns();
+        });
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape') closeDesigns();
+        });
+        window.addEventListener('resize', function () { if (designsPop && !designsPop.hidden) placeDesigns(); });
+      }
+      fillDesigns(state.designs || []);
+      placeDesigns();
+      designsPop.hidden = false;
+      designsBtn.setAttribute('aria-expanded', 'true');
+    }
+
+    function showResolvedDesign(res, colourOverride, recompositeMissing) {
+      if (!res || !res.ok || !res.previewUrl) return null;
+      writeResolveCache(res);
+      state.renderId = res.renderId;
+      state.jobId = res.jobId;
+      state.previewUrl = res.previewUrl;
+      probeCartForRender(res.renderId);
+      state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+        ? Object.assign({}, res.previewUrlsByColor)
+        : {};
+      preloadPreviewUrls(state.previewUrlByColor);
+      writeStoredRender(shopifyProductId, res.renderId, res.jobId);
+      if (previewMode !== 'inline') return res.previewUrl;
+      var colour = colourOverride || currentInlineColour();
+      var key = colour ? canonicalPreviewColor(colour) : '';
+      var mapped = (key && state.previewUrlByColor[key]) || (colour && state.previewUrlByColor[colour]) || '';
+      var activationUrl = mapped || res.previewUrl;
+      activateInlinePreviewWithRetry(activationUrl);
+      if (recompositeMissing && !mapped && colour) swapInlineColor(colour);
+      return activationUrl;
+    }
+
+    function selectListedDesign(item) {
+      if (!item || state.restorePending) return;
+      closeDesigns();
+      if (item.renderId === state.renderId) return;
+      var token = ++designSwitchToken;
+      var cached = readResolveCache(item.renderId);
+      var pending = cached
+        ? Promise.resolve(cached)
+        : getJson('my-pet/resolve-render', { renderId: item.renderId });
+      pending.then(function (res) {
+        if (token !== designSwitchToken) return;
+        if (!res || !res.ok || !res.previewUrl) return;
+        var fallbackColor = checkedProductOption('colour') || currentInlineColour() || '';
+        var fallbackSize = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
+        var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
+        var applied = null;
+        if (picked.hadOwn && picked.colorName && state.applyExactVariant) {
+          applied = state.applyExactVariant(picked.colorName, picked.sizeName || fallbackSize || 'M');
+        }
+        showResolvedDesign(res, applied || picked.colorName || fallbackColor, true);
+        if (!picked.hadOwn || applied) rememberVariantChoice();
+      });
+    }
+
+    if (designsBtn) {
+      designsBtn.setAttribute('aria-expanded', 'false');
+      designsBtn.addEventListener('click', function () {
+        if (designsPop && !designsPop.hidden) closeDesigns();
+        else openDesigns();
+      });
     }
 
     function restoreControlInCart(el) {
@@ -1352,6 +1561,7 @@
     // stored render is found, before resolve-render returns, so the shopper
     // can't buy the stock design during the wait.
     (function restoreStoredRender() {
+      state.applyExactVariant = applyExactVariant;
       var stored = readStoredRender(shopifyProductId);
       if (!stored || !stored.renderId) return;
       state.restorePending = true;
@@ -1561,28 +1771,14 @@
           finishRestore(false);
           return;
         }
-        if (!fromCache) writeResolveCache(res);
-        state.renderId = res.renderId;
-        state.jobId = res.jobId;
-        state.previewUrl = res.previewUrl;
-        probeCartForRender(res.renderId);
-        state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
-          ? Object.assign({}, res.previewUrlsByColor)
-          : {};
-        console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
-        logPreviewUrlTails('restore', state.previewUrlByColor);
-        preloadPreviewUrls(state.previewUrlByColor);
         var restoreColor = selectRestoredVariant(stored, res);
+        var activationUrl = showResolvedDesign(res, restoreColor);
+        console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
+          ' fromSession=' + !!fromCache);
         if (previewMode !== 'inline') {
           finishRestore(true);
           return;
         }
-        var mappedColour = canonicalPreviewColor(restoreColor);
-        var restoreColorUrl = (mappedColour && state.previewUrlByColor[mappedColour]) || (restoreColor && state.previewUrlByColor[restoreColor]) || null;
-        var activationUrl = restoreColorUrl || res.previewUrl;
-        console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
-          ' usingCached=' + !!restoreColorUrl + ' fromSession=' + !!fromCache);
-        activateInlinePreviewWithRetry(activationUrl);
         waitForHero(activationUrl, fromCache);
       }
 
@@ -3769,6 +3965,7 @@
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
+            rememberVariantChoice();
             probeCartForRender(genRes.renderId);
             picker.overlay.remove();
             // Bugs 3 + 11 — await the refresh before opening the preview so

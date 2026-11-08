@@ -11,7 +11,7 @@
  * print file from the stored edited artwork.
  */
 import { createHash, randomUUID } from "crypto";
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import {
   designCandidates,
   generationEvents,
@@ -41,7 +41,7 @@ import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from 
 import { generationErrorCategory } from "./generation-events";
 import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 import { softstyleType } from "./mockup-library-store";
-import { decodeDataUrlOrBase64Image, getMyPetObject, myPetObjectExists, putMyPetObject, removeMyPetObjects, signedMyPetUrl } from "./my-pet-storage";
+import { decodeDataUrlOrBase64Image, getMyPetObject, myPetObjectExists, putMyPetObject, removeMyPetObjects, signedMyPetThumbnail, signedMyPetUrl } from "./my-pet-storage";
 import { renderReplicateImageEdit } from "./replit_integrations/image/client";
 import { storage } from "./storage";
 
@@ -983,6 +983,71 @@ export async function resolveMyPetRenderById(args: {
       `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
   return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId, previewUrlsByColor };
+}
+
+/**
+ * Designs this device already generated for one product, newest first.
+ * The colour map is not included — selecting a row reuses resolve-render.
+ * Retention matches the sweep: 7 days, or 30 days when the design was emailed.
+ * Rows whose preview file is already gone are skipped.
+ */
+export async function listMyPetRendersForDevice(args: {
+  shop: string;
+  deviceKey: string;
+  shopifyProductId: string;
+}): Promise<Array<{
+  renderId: string;
+  jobId: string | null;
+  createdAt: string;
+  thumbnailUrl: string;
+  colorName: string | null;
+}>> {
+  const rows = await db
+    .select()
+    .from(myPetRenders)
+    .where(and(
+      eq(myPetRenders.shopDomain, args.shop),
+      eq(myPetRenders.deviceKey, args.deviceKey),
+      eq(myPetRenders.shopifyProductId, args.shopifyProductId),
+    ))
+    .orderBy(desc(myPetRenders.createdAt));
+  if (!rows.length) return [];
+
+  const plainCutoff = Date.now() - PHOTO_RETENTION_MS;
+  const emailCutoff = Date.now() - EMAIL_PREVIEW_RETENTION_MS;
+  const olderIds = rows.filter((row) => row.createdAt.getTime() < plainCutoff).map((row) => row.id);
+  const emailed = new Set<string>();
+  if (olderIds.length) {
+    const captures = await db
+      .select({ renderId: myPetEmailCaptures.renderId })
+      .from(myPetEmailCaptures)
+      .where(inArray(myPetEmailCaptures.renderId, olderIds));
+    for (const capture of captures) emailed.add(capture.renderId);
+  }
+
+  const kept = rows.filter((row) => {
+    const at = row.createdAt.getTime();
+    if (at >= plainCutoff) return true;
+    return emailed.has(row.id) && at >= emailCutoff;
+  });
+
+  const listed = await Promise.all(kept.map(async (row) => {
+    const exists = await myPetObjectExists(row.previewPath).catch(() => false);
+    if (!exists) return null;
+    try {
+      const thumbnailUrl = await signedMyPetThumbnail(row.previewPath);
+      return {
+        renderId: row.id,
+        jobId: row.jobId,
+        createdAt: row.createdAt.toISOString(),
+        thumbnailUrl,
+        colorName: row.colorId,
+      };
+    } catch {
+      return null;
+    }
+  }));
+  return listed.filter((row): row is NonNullable<typeof row> => !!row);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
