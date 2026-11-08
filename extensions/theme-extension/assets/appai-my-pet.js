@@ -1367,6 +1367,7 @@
       try {
         var img = new Image();
         img.decoding = 'async';
+        if (previewNeedsCors(url)) img.crossOrigin = 'anonymous';
         img.src = url;
       } catch (e) {}
     }
@@ -1379,6 +1380,7 @@
 
     function refreshDesignList() {
       if (!designsBtn) return;
+      warmCachedDesignThumbs();
       var count = state.capStatus && state.capStatus.perListingCount;
       if (typeof count !== 'number' || count < 2) {
         designsBtn.hidden = true;
@@ -1394,6 +1396,7 @@
         }
         designsBtn.hidden = false;
         designsBtn.textContent = 'Your designs (' + list.length + ')';
+        preloadDesignThumbs(list);
         if (designsPop && !designsPop.hidden) fillDesigns(list);
       }).catch(function () { designsBtn.hidden = true; });
     }
@@ -1500,14 +1503,14 @@
         frame.style.backgroundColor = shirt;
         var img = document.createElement('img');
         img.alt = '';
-        img.src = item.thumbnailUrl || '';
+        assignImgSrc(img, item.thumbnailUrl || '');
         frame.appendChild(img);
         var zoom = document.createElement('span');
         zoom.className = 'appai-my-pet-designs__zoom';
         zoom.style.backgroundColor = shirt;
         var zoomImg = document.createElement('img');
         zoomImg.alt = '';
-        zoomImg.src = item.thumbnailUrl || '';
+        assignImgSrc(zoomImg, item.thumbnailUrl || '');
         zoom.appendChild(zoomImg);
         var title = document.createElement('span');
         title.className = 'appai-my-pet-designs__name';
@@ -1598,6 +1601,35 @@
         ? y + rect.top - pad
         : y + rect.bottom - (limit - pad);
       window.scrollTo({ top: Math.max(0, next), behavior: 'smooth' });
+    }
+
+    function warmCachedDesignThumbs() {
+      try {
+        var raw = window.sessionStorage.getItem('appai_my_pet_thumbs_v1:' + shopifyProductId);
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        var urls = parsed && parsed.urls;
+        if (!urls) return;
+        var ids = Object.keys(urls);
+        for (var i = 0; i < ids.length; i++) preloadUrl(urls[ids[i]]);
+      } catch (e) {}
+    }
+
+    function preloadDesignThumbs(list) {
+      if (!list || !list.length) return;
+      var key = 'appai_my_pet_thumbs_v1:' + shopifyProductId;
+      var urls = {};
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var url = item && item.thumbnailUrl;
+        if (!url) continue;
+        urls[item.renderId] = url;
+        preloadUrl(url);
+      }
+      try {
+        window.sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), urls: urls }));
+      } catch (e) {}
+      console.log(TAG, 'design thumbs preloaded', Object.keys(urls).length);
     }
 
     function prefetchDesigns(list) {
@@ -1742,6 +1774,7 @@
       clearTimeout(state.designSwitchTimer);
       state.designSwitchTimer = null;
       clearDesignSwitchBadge();
+      clearDesignCover();
       releaseDesignSwitch(token, true);
     }
 
@@ -1774,7 +1807,18 @@
         var done = function () {
           if (token !== designSwitchToken) return;
           clearDesignSwitchBadge();
-          releaseDesignSwitch(token, false);
+          setTimeout(function () {
+            if (token !== designSwitchToken) return;
+            var still = state.inlineHero || findProductHeroImg() || findVisibleHeroImg();
+            var stillSrc = still ? String(still.currentSrc || (still.getAttribute && still.getAttribute('src')) || '') : '';
+            if (url && still && still.naturalWidth > 0 && (urlsMatch(stillSrc, url) || urlsMatch(still.currentSrc, url))) {
+              clearDesignCover();
+              releaseDesignSwitch(token, false);
+              return;
+            }
+            paintDesignCover();
+            setTimeout(tick, 150);
+          }, 400);
         };
         if (hero.decode) hero.decode().then(done).catch(done);
         else if (hero.complete && hero.naturalWidth > 0) done();
@@ -1862,6 +1906,19 @@
         console.log(TAG, 're-apply');
       }
       var gen = bumpRenderGeneration('select');
+      if (!(same && !wasReverted)) {
+        var outgoing = findVisibleHeroImg() || state.inlineHero;
+        state.designCoverUrl = outgoing
+          ? (outgoing.currentSrc || (outgoing.getAttribute && outgoing.getAttribute('src')) || '')
+          : (state.previewUrl || '');
+        state.designSwitchColour = colorName || '';
+        state.designSwitchSize = sizeName || '';
+        showDesignCover();
+        if (state.applyExactVariant && colorName) {
+          state.applyExactVariant(colorName, sizeName || fallbackSize || 'M');
+        }
+        showDesignCover();
+      }
       if (same && !wasReverted) {
         if (!saved.colorName && !saved.sizeName && state.renderId) {
           writeStoredVariantChoice(shopifyProductId, fallbackColor, fallbackSize);
@@ -1885,12 +1942,14 @@
           ? Object.assign({}, cachedNow.previewUrlsByColor)
           : {};
         state.inlineApplied = true;
-        swapVariantSlides(state.previewUrlByColor);
+        if (generationCurrent(gen, item.renderId)) swapVariantSlides(state.previewUrlByColor);
+        showDesignCover();
       } else {
         state.previewUrlByColor = {};
         state.previewUrl = '';
         state.inlineApplied = true;
         holdMissingColours();
+        showDesignCover();
       }
       var token = armDesignSwitch();
       var pending = cachedNow
@@ -2438,6 +2497,7 @@
         try {
           var img = new Image();
           img.decoding = 'async';
+          if (previewNeedsCors(urls[i])) img.crossOrigin = 'anonymous';
           img.src = urls[i];
         } catch (e) {}
       }
@@ -2613,6 +2673,7 @@
 
     function galleryImgAllowed(img) {
       if (!img || img.tagName !== 'IMG') return false;
+      if (isCoverImg(img)) return false;
       if (img.closest && img.closest('.appai-my-pet, .appai-my-pet-designs, .appai-my-pet-modal, .appai-my-pet-modal__overlay, .appai-zoom-overlay')) return false;
       var gallery = mainMediaGallery();
       var zoom = mainZoomDialog();
@@ -2883,6 +2944,84 @@
       }
     }
 
+    function previewNeedsCors(url) {
+      var u = String(url || '');
+      if (u.indexOf('http') !== 0) return false;
+      if (u.indexOf('blob:') === 0 || u.indexOf('data:') === 0) return false;
+      if (u.indexOf('myshopify.com') !== -1 || u.indexOf('cdn.shopify') !== -1 || u.indexOf('shopifycdn') !== -1) return false;
+      return true;
+    }
+
+    function assignImgSrc(img, url) {
+      if (!img || !url) return;
+      if (previewNeedsCors(url)) {
+        try { img.crossOrigin = 'anonymous'; } catch (e) {}
+      }
+      try { img.src = url; } catch (e2) {}
+    }
+
+    function bitmapObjectUrl(img) {
+      var w = img.naturalWidth || img.width || 0;
+      var h = img.naturalHeight || img.height || 0;
+      if (!w || !h) throw new Error('empty');
+      var scale = Math.min(1, 320 / Math.max(w, h));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      var ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('no canvas');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      var data = canvas.toDataURL('image/jpeg', 0.82);
+      var comma = data.indexOf(',');
+      var bin = atob(data.slice(comma + 1));
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+    }
+
+    function logPreviewCors(url) {
+      if (state.corsLogged || !previewNeedsCors(url)) return;
+      state.corsLogged = true;
+      fetch(url, { mode: 'cors' }).then(function (r) {
+        console.log(TAG, 'preview cors', 'status=' + r.status, 'acao=' + (r.headers.get('access-control-allow-origin') || '(not exposed)'));
+      }).catch(function () {
+        console.warn(TAG, 'preview cors blocked');
+      });
+    }
+
+    function prepareFlyBitmap(url) {
+      if (!previewNeedsCors(url)) return;
+      var tail = urlTail(url);
+      if (state.flyBitmapTail === tail && state.flyBitmap) return;
+      if (state.flyBitmapLoading === tail) return;
+      state.flyBitmapLoading = tail;
+      logPreviewCors(url);
+      var probe = new Image();
+      probe.crossOrigin = 'anonymous';
+      probe.onload = function () {
+        if (state.flyBitmapLoading === tail) state.flyBitmapLoading = '';
+        console.log(TAG, 'fly bitmap decode', 'crossorigin=anonymous', 'naturalWidth=' + (probe.naturalWidth || 0), 'tail=' + tail);
+        try {
+          var blobUrl = bitmapObjectUrl(probe);
+          if (state.flyBitmap && String(state.flyBitmap).indexOf('blob:') === 0) {
+            try { URL.revokeObjectURL(state.flyBitmap); } catch (e) {}
+          }
+          state.flyBitmap = blobUrl;
+          state.flyBitmapTail = tail;
+          console.log(TAG, 'fly bitmap ready', 'naturalWidth=' + probe.naturalWidth);
+        } catch (err) {
+          console.warn(TAG, 'fly bitmap failed', err && err.name, err && err.message);
+        }
+      };
+      probe.onerror = function () {
+        if (state.flyBitmapLoading === tail) state.flyBitmapLoading = '';
+        console.warn(TAG, 'preview cors failed', 'tail=' + tail);
+      };
+      probe.src = url;
+    }
+
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
       if (!galleryImgAllowed(img)) return;
@@ -2902,12 +3041,8 @@
           try { delete img.dataset.srcset; } catch (e) {}
         }
         detachPictureSources(img);
-        // The theme's fly-to-cart clones this image. A CORS-less load paints
-        // on the page but fails that clone.
-        try { img.crossOrigin = 'anonymous'; } catch (e) {}
-        if (!same) {
-          try { img.src = url; } catch (e) {}
-        }
+        assignImgSrc(img, url);
+        prepareFlyBitmap(url);
         img.__appaiAssertUrl = url;
         img.__appaiAssertAt = Date.now();
         img.setAttribute('data-appai-my-pet-preview', 'true');
@@ -3102,6 +3237,42 @@
       }
       var colour = currentInlineColour();
       return previewUrlForColour(colour) || state.previewUrl || '';
+    }
+
+    function showDesignCover() {
+      state.designCover = true;
+      paintDesignCover();
+    }
+
+    function paintDesignCover() {
+      if (!state.designCover) return;
+      var host = mainMediaGallery() || mediaHoldContainer(findVisibleHeroImg());
+      if (!host) return;
+      try {
+        if (window.getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      } catch (e) {}
+      var cover = host.querySelector('.appai-my-pet-switch-cover');
+      if (!cover) {
+        cover = document.createElement('img');
+        cover.className = 'appai-my-pet-cover appai-my-pet-switch-cover';
+        cover.alt = '';
+        cover.setAttribute('aria-hidden', 'true');
+        host.appendChild(cover);
+      }
+      var url = state.designCoverUrl || '';
+      if (url && cover.getAttribute('src') !== url) {
+        try { cover.src = url; } catch (e2) {}
+      }
+    }
+
+    function clearDesignCover() {
+      state.designCover = false;
+      state.designCoverUrl = '';
+      var nodes = [];
+      try { nodes = document.querySelectorAll('.appai-my-pet-switch-cover'); } catch (e) {}
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i]);
+      }
     }
 
     function holdFrameOn(colorName) {
@@ -3860,6 +4031,7 @@
       try {
         if (!state.galleryGuardRoot || !document.contains(state.galleryGuardRoot)) installGalleryGuard();
         swapVariantSlides(state.previewUrlByColor);
+        if (state.designCover) paintDesignCover();
         installZoomSwap();
         syncZoom(reason);
       } finally {
@@ -4112,7 +4284,8 @@
       // browser on the CDN candidate it had already selected.
       var picture = img.closest ? img.closest('picture') : null;
       var sourceCount = detachPictureSources(img);
-      try { img.src = url; } catch (e) {}
+      assignImgSrc(img, url);
+      if (img.offsetWidth > 160) prepareFlyBitmap(url);
       img.setAttribute('data-appai-my-pet-slide', mediaId);
 
       // Diagnostic — container context + delayed render check
@@ -4794,7 +4967,7 @@
           if (!addedNodes || !addedNodes.length) continue;
           for (var a = 0; a < addedNodes.length; a++) {
             var addedNode = addedNodes[a];
-            if (addedNode && addedNode.classList && addedNode.classList.contains('appai-my-pet-veil')) continue;
+            if (addedNode && addedNode.classList && (addedNode.classList.contains('appai-my-pet-veil') || addedNode.classList.contains('appai-my-pet-switch-cover'))) continue;
             sawAdded = true;
             break;
           }
@@ -4805,6 +4978,7 @@
           if (!state.gallerySyncing) swapped = swapVariantSlides(state.previewUrlByColor) || 0;
           if (swapped) scheduleGallerySync('gallery');
         }
+        if (state.designCover) paintDesignCover();
         // Legacy single-hero fallback: themes without per-variant slides
         // (Dawn simple products) still need the opacity-hide + hero-src
         // trick for added <img> nodes. Scoped to hero-sized candidates
@@ -5052,8 +5226,15 @@
         .catch(function () { return ''; });
     }
 
+    function bitmapForUrl(url) {
+      var tail = urlTail(url);
+      if (state.flyBitmap && tail && state.flyBitmapTail === tail) return state.flyBitmap;
+      return '';
+    }
+
     function paintFlyImage(url) {
       if (!url || String(url).indexOf('http') !== 0) return;
+      var media = bitmapForUrl(url) || url;
       var section = mainProductSection();
       var nodes = document.querySelectorAll('add-to-cart-component');
       for (var i = 0; i < nodes.length; i++) {
@@ -5063,7 +5244,7 @@
         var inSection = section && section.contains(node);
         var inSticky = node.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) continue;
-        node.dataset.productVariantMedia = url;
+        node.dataset.productVariantMedia = media;
       }
       var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
       if (stickyImg && (!section || !section.contains(stickyImg))) {
@@ -5071,19 +5252,33 @@
           stickyImg.setAttribute('data-appai-my-pet-sticky-original-src', stickyImg.getAttribute('src') || '');
         }
         try { stickyImg.crossOrigin = 'anonymous'; } catch (e) {}
-        stickyImg.src = url;
+        assignImgSrc(stickyImg, media);
       }
     }
 
-    function flyImageUrl() {
+    function flySourceImg() {
       var img = findVisibleHeroImg();
       if (!img && state.inlineHero && document.body.contains(state.inlineHero)) img = state.inlineHero;
       if (!img) img = findProductHeroImg();
+      if (img && img.classList && !img.classList.contains('product-media__image')) {
+        var scope = mainMediaGallery() || productSectionScope();
+        var media = null;
+        try { media = scope.querySelector('img.product-media__image'); } catch (e) {}
+        if (media && galleryImgAllowed(media)) {
+          var rect = null;
+          try { rect = media.getBoundingClientRect(); } catch (e2) {}
+          if (rect && rect.width > 160 && rect.height > 160) img = media;
+        }
+      }
+      return img;
+    }
+
+    function flyImageUrl() {
+      var img = flySourceImg();
       if (!img) return '';
-      try { img.crossOrigin = 'anonymous'; } catch (e) {}
       var url = img.currentSrc || img.src || '';
       if (url.indexOf('//') === 0) url = 'https:' + url;
-      if (url.indexOf('http') !== 0) return '';
+      if (url.indexOf('http') !== 0 && url.indexOf('blob:') !== 0) return '';
       return url;
     }
 
@@ -5094,11 +5289,66 @@
       return atc;
     }
 
+    function logFlyElement(when) {
+      var fly = document.querySelector('fly-to-cart.fly-to-cart--main') || document.querySelector('fly-to-cart');
+      if (!fly) {
+        console.log(TAG, 'fly element', when, 'missing');
+        return;
+      }
+      var anims = fly.getAnimations ? fly.getAnimations() : [];
+      var bg = '';
+      try { bg = fly.style.backgroundImage || ''; } catch (e) {}
+      console.log(TAG, 'fly element', when,
+        'class=' + fly.className,
+        'naturalPaint=' + (bg.indexOf('blob:') !== -1 ? 'blob' : (bg ? 'url' : 'none')),
+        'anims=' + anims.length,
+        'started=' + (anims.length > 0),
+        'w=' + (fly.offsetWidth || 0),
+        'startX=' + (fly.style.getPropertyValue('--start-x') || '(unset)'),
+        'travelX=' + (fly.style.getPropertyValue('--travel-x') || '(unset)'));
+    }
+
     function primeThemeFly() {
-      var image = flyImageUrl();
+      var img = flySourceImg();
+      var natural = img ? (img.naturalWidth || 0) : 0;
+      var cross = img ? (img.crossOrigin || '(none)') : '(no img)';
+      var cls = img && img.className ? String(img.className).split(/\s+/).slice(0, 3).join('.') : '';
+      var isMedia = !!(img && img.classList && img.classList.contains('product-media__image'));
+      console.log(TAG, 'fly source',
+        'tag=' + (img ? img.tagName : '(none)'),
+        'class=' + cls,
+        'product-media__image=' + isMedia,
+        'crossorigin=' + cross,
+        'naturalWidth=' + natural,
+        'complete=' + (img ? !!img.complete : false));
+      var heroUrl = flyImageUrl();
+      var tail = urlTail(heroUrl);
+      var media = '';
+      var via = 'none';
+      if (bitmapForUrl(heroUrl)) {
+        media = bitmapForUrl(heroUrl);
+        via = 'cached-blob';
+      }
+      if (!media && img && natural > 0) {
+        try {
+          media = bitmapObjectUrl(img);
+          via = 'hero-blob';
+        } catch (err) {
+          via = 'tainted';
+          console.warn(TAG, 'fly hero canvas failed', err && err.name, err && err.message);
+        }
+      }
+      if (!media) {
+        media = heroUrl;
+        via = heroUrl ? 'url' : 'none';
+        if (heroUrl) prepareFlyBitmap(heroUrl);
+      }
       var atc = mainAddToCartComponent();
-      if (atc && image) atc.dataset.productVariantMedia = image;
+      if (atc && media) atc.dataset.productVariantMedia = media;
+      console.log(TAG, 'fly media', 'via=' + via, 'tail=' + (String(media).indexOf('blob:') === 0 ? 'blob' : srcTail(media)));
       console.log(TAG, 'fly-to-cart triggered');
+      if (window.requestAnimationFrame) requestAnimationFrame(function () { logFlyElement('frame'); });
+      setTimeout(function () { logFlyElement('80ms'); }, 80);
     }
 
     function setFormProperty(form, name, value) {
@@ -5852,7 +6102,7 @@
       // composited in this modal session is a zero-network, single-paint swap.
       var cached = state.previewUrlByColor[colorName];
       if (cached && img) {
-        img.src = cached;
+        assignImgSrc(img, cached);
         state.previewUrl = cached;
         clearLoadingState();
         if (status) status.textContent = '';
@@ -5872,17 +6122,19 @@
         .then(function (res) {
           if (res && res.ok && img) {
             var preload = new Image();
+            preload.crossOrigin = 'anonymous';
             preload.onload = function () {
-              img.src = res.previewUrl;
+              assignImgSrc(img, res.previewUrl);
               clearLoadingState();
               if (status) status.textContent = '';
               console.log(TAG, 'colour swap total', Date.now() - swapStarted, 'ms');
             };
             preload.onerror = function () {
-              img.src = res.previewUrl;
+              assignImgSrc(img, res.previewUrl);
               clearLoadingState();
               if (status) status.textContent = '';
             };
+            preload.crossOrigin = 'anonymous';
             preload.src = res.previewUrl;
             state.previewUrl = res.previewUrl;
             state.previewUrlByColor[colorName] = res.previewUrl; // Bug A: populate cache
