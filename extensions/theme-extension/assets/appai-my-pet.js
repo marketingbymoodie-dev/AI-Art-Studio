@@ -1799,33 +1799,27 @@
         if (token !== designSwitchToken) return;
         var hero = state.inlineHero || findProductHeroImg() || findVisibleHeroImg();
         var src = hero ? String(hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '') : '';
-        var ready = hero && url && (urlsMatch(src, url) || urlsMatch(hero.__appaiAssertUrl, url));
+        var ready = hero && url && hero.naturalWidth > 0 && urlsMatch(src, url);
         if (!ready) {
-          setTimeout(tick, 100);
+          paintDesignCover();
+          setTimeout(tick, 60);
           return;
         }
         var done = function () {
           if (token !== designSwitchToken) return;
           clearDesignSwitchBadge();
-          setTimeout(function () {
-            if (token !== designSwitchToken) return;
-            var still = state.inlineHero || findProductHeroImg() || findVisibleHeroImg();
-            var stillSrc = still ? String(still.currentSrc || (still.getAttribute && still.getAttribute('src')) || '') : '';
-            if (url && still && still.naturalWidth > 0 && (urlsMatch(stillSrc, url) || urlsMatch(still.currentSrc, url))) {
-              clearDesignCover();
-              releaseDesignSwitch(token, false);
-              return;
-            }
-            paintDesignCover();
-            setTimeout(tick, 150);
-          }, 400);
+          var still = findVisibleHeroImg() || state.inlineHero || findProductHeroImg();
+          var stillSrc = still ? String(still.currentSrc || (still.getAttribute && still.getAttribute('src')) || '') : '';
+          if (url && still && still.naturalWidth > 0 && urlsMatch(stillSrc, url)) {
+            clearDesignCover();
+            releaseDesignSwitch(token, false);
+            return;
+          }
+          paintDesignCover();
+          setTimeout(tick, 60);
         };
         if (hero.decode) hero.decode().then(done).catch(done);
-        else if (hero.complete && hero.naturalWidth > 0) done();
-        else {
-          hero.addEventListener('load', done, { once: true });
-          hero.addEventListener('error', done, { once: true });
-        }
+        else done();
       }
       tick();
     }
@@ -1842,7 +1836,7 @@
         ? Object.assign({}, res.previewUrlsByColor)
         : {};
       logColourMap('resolved');
-      preloadPreviewUrls(state.previewUrlByColor);
+      if (state.selectionOnce !== (state.renderGeneration || 0)) preloadPreviewUrls(state.previewUrlByColor);
       writeStoredRender(shopifyProductId, res.renderId, res.jobId);
       if (previewMode !== 'inline') return res.previewUrl;
       var colour = colourOverride || currentInlineColour();
@@ -1906,6 +1900,7 @@
         console.log(TAG, 're-apply');
       }
       var gen = bumpRenderGeneration('select');
+      if (!(same && !wasReverted)) state.selectionOnce = gen;
       if (!(same && !wasReverted)) {
         var outgoing = findVisibleHeroImg() || state.inlineHero;
         state.designCoverUrl = outgoing
@@ -1942,7 +1937,7 @@
           ? Object.assign({}, cachedNow.previewUrlsByColor)
           : {};
         state.inlineApplied = true;
-        if (generationCurrent(gen, item.renderId)) swapVariantSlides(state.previewUrlByColor);
+        if (generationCurrent(gen, item.renderId)) consumeSelectionSwap(state.previewUrlByColor);
         showDesignCover();
       } else {
         state.previewUrlByColor = {};
@@ -2381,9 +2376,10 @@
             window.__appaiSelectingDefaultSize = false;
           }
         });
-        // Horizon section-renders the gallery back to stock after this
-        // change. The colour map is applied again once that DOM lands.
-        scheduleGallerySync('variant');
+        // A design select swaps the gallery itself, once. Scheduling another
+        // pass here walks the same nodes again before the theme's own
+        // section render arrives.
+        if (state.selectionOnce !== (state.renderGeneration || 0)) scheduleGallerySync('variant');
         return actualColor;
       }
 
@@ -2960,68 +2956,6 @@
       try { img.src = url; } catch (e2) {}
     }
 
-    function bitmapObjectUrl(img) {
-      var w = img.naturalWidth || img.width || 0;
-      var h = img.naturalHeight || img.height || 0;
-      if (!w || !h) throw new Error('empty');
-      var scale = Math.min(1, 320 / Math.max(w, h));
-      var canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(w * scale));
-      canvas.height = Math.max(1, Math.round(h * scale));
-      var ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('no canvas');
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      var data = canvas.toDataURL('image/jpeg', 0.82);
-      var comma = data.indexOf(',');
-      var bin = atob(data.slice(comma + 1));
-      var bytes = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
-    }
-
-    function logPreviewCors(url) {
-      if (state.corsLogged || !previewNeedsCors(url)) return;
-      state.corsLogged = true;
-      fetch(url, { mode: 'cors' }).then(function (r) {
-        console.log(TAG, 'preview cors', 'status=' + r.status, 'acao=' + (r.headers.get('access-control-allow-origin') || '(not exposed)'));
-      }).catch(function () {
-        console.warn(TAG, 'preview cors blocked');
-      });
-    }
-
-    function prepareFlyBitmap(url) {
-      if (!previewNeedsCors(url)) return;
-      var tail = urlTail(url);
-      if (state.flyBitmapTail === tail && state.flyBitmap) return;
-      if (state.flyBitmapLoading === tail) return;
-      state.flyBitmapLoading = tail;
-      logPreviewCors(url);
-      var probe = new Image();
-      probe.crossOrigin = 'anonymous';
-      probe.onload = function () {
-        if (state.flyBitmapLoading === tail) state.flyBitmapLoading = '';
-        console.log(TAG, 'fly bitmap decode', 'crossorigin=anonymous', 'naturalWidth=' + (probe.naturalWidth || 0), 'tail=' + tail);
-        try {
-          var blobUrl = bitmapObjectUrl(probe);
-          if (state.flyBitmap && String(state.flyBitmap).indexOf('blob:') === 0) {
-            try { URL.revokeObjectURL(state.flyBitmap); } catch (e) {}
-          }
-          state.flyBitmap = blobUrl;
-          state.flyBitmapTail = tail;
-          console.log(TAG, 'fly bitmap ready', 'naturalWidth=' + probe.naturalWidth);
-        } catch (err) {
-          console.warn(TAG, 'fly bitmap failed', err && err.name, err && err.message);
-        }
-      };
-      probe.onerror = function () {
-        if (state.flyBitmapLoading === tail) state.flyBitmapLoading = '';
-        console.warn(TAG, 'preview cors failed', 'tail=' + tail);
-      };
-      probe.src = url;
-    }
-
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
       if (!galleryImgAllowed(img)) return;
@@ -3042,7 +2976,6 @@
         }
         detachPictureSources(img);
         assignImgSrc(img, url);
-        prepareFlyBitmap(url);
         img.__appaiAssertUrl = url;
         img.__appaiAssertAt = Date.now();
         img.setAttribute('data-appai-my-pet-preview', 'true');
@@ -3779,6 +3712,7 @@
         } catch (e) { continue; }
         for (var i = 0; i < buttons.length; i++) {
           if (seen.indexOf(buttons[i]) !== -1) continue;
+          if (inHiddenZoom(buttons[i])) continue;
           seen.push(buttons[i]);
           var imgs = buttons[i].querySelectorAll ? buttons[i].querySelectorAll('img') : [];
           for (var j = 0; j < imgs.length; j++) {
@@ -4185,6 +4119,23 @@
       }
     }
 
+    function inHiddenZoom(node) {
+      if (!node || !node.closest) return false;
+      var zoom = node.closest('zoom-dialog, dialog.dialog-zoomed-gallery__dialog');
+      if (!zoom) return false;
+      if (zoom.open || zoom.hasAttribute('open')) return false;
+      return true;
+    }
+
+    function consumeSelectionSwap(map) {
+      var gen = state.renderGeneration || 0;
+      if (state.selectionOnce === gen) {
+        if (state.selectionDidSwap === gen) return 0;
+        state.selectionDidSwap = gen;
+      }
+      return swapVariantSlides(map) || 0;
+    }
+
     function swapVariantSlides(urlsByColor) {
       if (!urlsByColor) return 0;
       if (state.reverted) return 0;
@@ -4195,6 +4146,7 @@
       var scope = mainMediaGallery() || mainProductSection();
       if (!scope) return 0;
       var stash = state.inlineSlideStash || [];
+      var seen = [];
       for (var color in urlsByColor) {
         if (!Object.prototype.hasOwnProperty.call(urlsByColor, color)) continue;
         var url = urlsByColor[color];
@@ -4206,14 +4158,18 @@
         var matched = 0;
         for (var i = 0; i < slides.length; i++) {
           var slide = slides[i];
+          if (inHiddenZoom(slide)) continue;
           var imgs = slide.tagName === 'IMG'
             ? [slide]
             : (slide.querySelectorAll ? slide.querySelectorAll('img') : []);
           for (var j = 0; j < imgs.length; j++) {
             var img = imgs[j];
+            if (seen.indexOf(img) !== -1) continue;
+            seen.push(img);
             if (img.closest && img.closest('.appai-my-pet')) continue;
             if (state.holdOldHero && img === state.holdOldHero) continue;
             if (isCoverImg(img)) continue;
+            if (inHiddenZoom(img)) continue;
             if (swapOneSlideImage(img, url, color, mediaId, stash)) matched++;
           }
         }
@@ -4285,7 +4241,6 @@
       var picture = img.closest ? img.closest('picture') : null;
       var sourceCount = detachPictureSources(img);
       assignImgSrc(img, url);
-      if (img.offsetWidth > 160) prepareFlyBitmap(url);
       img.setAttribute('data-appai-my-pet-slide', mediaId);
 
       // Diagnostic — container context + delayed render check
@@ -4505,7 +4460,8 @@
       // show OUR composite on whichever slide the native swatch handler
       // scrolls to. Idempotent — safe to call again on every activate /
       // every gallery mutation / every recomposite success.
-      swapVariantSlides(state.previewUrlByColor);
+      if (state.selectionOnce === (state.renderGeneration || 0)) consumeSelectionSwap(state.previewUrlByColor);
+      else swapVariantSlides(state.previewUrlByColor);
       // MutationObserver install/refresh on EVERY activation — even when
       // already attached, because the hero node may have been replaced since
       // the last activation (theme section re-render, "Try another photo"
@@ -4523,7 +4479,7 @@
       // intercept so revertToOriginalDesign can turn them off without
       // tearing down the one-time installs below.
       state.inlineApplied = true;
-      scheduleGallerySync('activate');
+      if (state.selectionOnce !== (state.renderGeneration || 0)) scheduleGallerySync('activate');
       prepareShadowSoon('activate');
       installInlineFormPollFallback();
       // Relabel + show revert link every activation (idempotent).
@@ -5226,62 +5182,6 @@
         .catch(function () { return ''; });
     }
 
-    function bitmapForUrl(url) {
-      var tail = urlTail(url);
-      if (state.flyBitmap && tail && state.flyBitmapTail === tail) return state.flyBitmap;
-      return '';
-    }
-
-    function paintFlyImage(url) {
-      if (!url || String(url).indexOf('http') !== 0) return;
-      var media = bitmapForUrl(url) || url;
-      var section = mainProductSection();
-      var nodes = document.querySelectorAll('add-to-cart-component');
-      for (var i = 0; i < nodes.length; i++) {
-        var node = nodes[i];
-        if (!node || !node.closest) continue;
-        if (node.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
-        var inSection = section && section.contains(node);
-        var inSticky = node.closest('sticky-add-to-cart, .sticky-add-to-cart');
-        if (!inSection && !inSticky) continue;
-        node.dataset.productVariantMedia = media;
-      }
-      var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
-      if (stickyImg && (!section || !section.contains(stickyImg))) {
-        if (!stickyImg.getAttribute('data-appai-my-pet-sticky-original-src')) {
-          stickyImg.setAttribute('data-appai-my-pet-sticky-original-src', stickyImg.getAttribute('src') || '');
-        }
-        try { stickyImg.crossOrigin = 'anonymous'; } catch (e) {}
-        assignImgSrc(stickyImg, media);
-      }
-    }
-
-    function flySourceImg() {
-      var img = findVisibleHeroImg();
-      if (!img && state.inlineHero && document.body.contains(state.inlineHero)) img = state.inlineHero;
-      if (!img) img = findProductHeroImg();
-      if (img && img.classList && !img.classList.contains('product-media__image')) {
-        var scope = mainMediaGallery() || productSectionScope();
-        var media = null;
-        try { media = scope.querySelector('img.product-media__image'); } catch (e) {}
-        if (media && galleryImgAllowed(media)) {
-          var rect = null;
-          try { rect = media.getBoundingClientRect(); } catch (e2) {}
-          if (rect && rect.width > 160 && rect.height > 160) img = media;
-        }
-      }
-      return img;
-    }
-
-    function flyImageUrl() {
-      var img = flySourceImg();
-      if (!img) return '';
-      var url = img.currentSrc || img.src || '';
-      if (url.indexOf('//') === 0) url = 'https:' + url;
-      if (url.indexOf('http') !== 0 && url.indexOf('blob:') !== 0) return '';
-      return url;
-    }
-
     function mainAddToCartComponent() {
       var section = mainProductSection();
       var atc = section && section.querySelector ? section.querySelector('add-to-cart-component') : null;
@@ -5289,66 +5189,68 @@
       return atc;
     }
 
-    function logFlyElement(when) {
-      var fly = document.querySelector('fly-to-cart.fly-to-cart--main') || document.querySelector('fly-to-cart');
-      if (!fly) {
-        console.log(TAG, 'fly element', when, 'missing');
-        return;
+    function storeMarkUrl() {
+      if (state.storeMark) return state.storeMark;
+      var icon = null;
+      try {
+        icon = document.querySelector('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]');
+      } catch (e) {}
+      var href = icon && icon.getAttribute('href');
+      if (href) {
+        try { href = new URL(href, window.location.href).href; } catch (e2) {}
+        state.storeMark = href;
+        return href;
       }
-      var anims = fly.getAnimations ? fly.getAnimations() : [];
-      var bg = '';
-      try { bg = fly.style.backgroundImage || ''; } catch (e) {}
-      console.log(TAG, 'fly element', when,
-        'class=' + fly.className,
-        'naturalPaint=' + (bg.indexOf('blob:') !== -1 ? 'blob' : (bg ? 'url' : 'none')),
-        'anims=' + anims.length,
-        'started=' + (anims.length > 0),
-        'w=' + (fly.offsetWidth || 0),
-        'startX=' + (fly.style.getPropertyValue('--start-x') || '(unset)'),
-        'travelX=' + (fly.style.getPropertyValue('--travel-x') || '(unset)'));
+      state.storeMark = 'data:image/svg+xml,' + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#111"/><text x="32" y="46" text-anchor="middle" font-family="Georgia,serif" font-size="42" fill="#fff">P</text></svg>'
+      );
+      return state.storeMark;
     }
 
-    function primeThemeFly() {
-      var img = flySourceImg();
-      var natural = img ? (img.naturalWidth || 0) : 0;
-      var cross = img ? (img.crossOrigin || '(none)') : '(no img)';
-      var cls = img && img.className ? String(img.className).split(/\s+/).slice(0, 3).join('.') : '';
-      var isMedia = !!(img && img.classList && img.classList.contains('product-media__image'));
-      console.log(TAG, 'fly source',
-        'tag=' + (img ? img.tagName : '(none)'),
-        'class=' + cls,
-        'product-media__image=' + isMedia,
-        'crossorigin=' + cross,
-        'naturalWidth=' + natural,
-        'complete=' + (img ? !!img.complete : false));
-      var heroUrl = flyImageUrl();
-      var tail = urlTail(heroUrl);
-      var media = '';
-      var via = 'none';
-      if (bitmapForUrl(heroUrl)) {
-        media = bitmapForUrl(heroUrl);
-        via = 'cached-blob';
-      }
-      if (!media && img && natural > 0) {
-        try {
-          media = bitmapObjectUrl(img);
-          via = 'hero-blob';
-        } catch (err) {
-          via = 'tainted';
-          console.warn(TAG, 'fly hero canvas failed', err && err.name, err && err.message);
-        }
-      }
-      if (!media) {
-        media = heroUrl;
-        via = heroUrl ? 'url' : 'none';
-        if (heroUrl) prepareFlyBitmap(heroUrl);
-      }
+    function silenceThemeFly(btn) {
+      var buttons = [];
+      if (btn) buttons.push(btn);
       var atc = mainAddToCartComponent();
-      if (atc && media) atc.dataset.productVariantMedia = media;
-      console.log(TAG, 'fly media', 'via=' + via, 'tail=' + (String(media).indexOf('blob:') === 0 ? 'blob' : srcTail(media)));
-      console.log(TAG, 'fly-to-cart triggered');
-      if (window.requestAnimationFrame) requestAnimationFrame(function () { logFlyElement('frame'); });
-      setTimeout(function () { logFlyElement('80ms'); }, 80);
+      var mainBtn = atc && atc.querySelector ? atc.querySelector('button[name="add"], button[type="submit"]') : null;
+      if (mainBtn && buttons.indexOf(mainBtn) === -1) buttons.push(mainBtn);
+      for (var i = 0; i < buttons.length; i++) buttons[i].dataset.puppet = 'true';
+      setTimeout(function () {
+        for (var j = 0; j < buttons.length; j++) {
+          if (buttons[j].dataset.puppet === 'true') delete buttons[j].dataset.puppet;
+        }
+        var stickyFlies = [];
+        try { stickyFlies = document.querySelectorAll('fly-to-cart.fly-to-cart--sticky'); } catch (e) {}
+        for (var k = 0; k < stickyFlies.length; k++) {
+          if (stickyFlies[k].parentNode) stickyFlies[k].parentNode.removeChild(stickyFlies[k]);
+        }
+      }, 0);
+    }
+
+    function flyStoreMark(btn) {
+      var now = Date.now();
+      if (state.flyAt && now - state.flyAt < 500) return;
+      var hero = findVisibleHeroImg() || (state.inlineHero && document.body.contains(state.inlineHero) ? state.inlineHero : null) || findProductHeroImg();
+      var rect = null;
+      try { rect = hero && hero.getBoundingClientRect(); } catch (e) {}
+      var dest = document.querySelector('.header-actions__cart-icon') || document.querySelector('a[href*="/cart"]');
+      if (!hero || !rect || rect.width < 2 || rect.height < 2 || !dest) {
+        console.log(TAG, 'fly mark skipped', 'hero=' + !!hero, 'dest=' + !!dest);
+        return;
+      }
+      state.flyAt = now;
+      var mark = storeMarkUrl();
+      var fly = document.createElement('fly-to-cart');
+      fly.className = 'fly-to-cart--main';
+      fly.style.setProperty('background-image', 'url("' + String(mark).replace(/"/g, '') + '")');
+      fly.style.setProperty('background-color', 'transparent');
+      fly.style.setProperty('--start-opacity', '0');
+      fly.source = hero;
+      fly.destination = dest;
+      document.body.appendChild(fly);
+      silenceThemeFly(btn);
+      var startX = Math.round(rect.left + rect.width / 2);
+      var startY = Math.round(rect.top + rect.height / 2);
+      console.log(TAG, 'fly mark', 'fromHero', startX, startY, 'w=' + Math.round(rect.width));
     }
 
     function setFormProperty(form, name, value) {
@@ -5671,11 +5573,7 @@
         if (!inSection && !inSticky) return;
         var form = (btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root);
         if (state.atcRelease && form && form.getAttribute('data-appai-theme-pass') === '1') {
-          if (inSticky) {
-            var heldHero = flyImageUrl();
-            if (heldHero) paintFlyImage(heldHero);
-          }
-          primeThemeFly();
+          flyStoreMark(btn);
           return;
         }
         if (form && form.getAttribute('data-appai-theme-pass') === '1') {
@@ -5686,11 +5584,7 @@
         if (entry && form && String(entry.shadowId) !== String(sel.catalogId)) {
           stampForm(form, entry);
           noteAtcClick(entry);
-          if (inSticky) {
-            var readyHero = flyImageUrl();
-            if (readyHero) paintFlyImage(readyHero);
-          }
-          primeThemeFly();
+          flyStoreMark(btn);
           return;
         }
         e.preventDefault();
