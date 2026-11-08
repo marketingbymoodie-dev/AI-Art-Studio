@@ -588,10 +588,7 @@
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
-      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}' +
-      // STAGING-109 — opaque hero cover. Thumbnails stay visible; the
-      // gallery is never blanked with opacity:0.
-      '.appai-my-pet-cover{position:absolute;pointer-events:none;z-index:30;margin:0;padding:0;border:0;max-width:none;max-height:none;object-fit:cover;opacity:1;}';
+      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}';
     document.head.appendChild(style);
   }
 
@@ -1400,23 +1397,76 @@
       if (origSizes) img.setAttribute('data-appai-my-pet-original-sizes', origSizes);
     }
 
+    function srcAlready(img, url) {
+      if (!img || !url) return false;
+      var attr = img.getAttribute ? (img.getAttribute('src') || '') : '';
+      if (attr === url || img.src === url) return true;
+      return urlsMatch(attr, url) || urlsMatch(img.src || '', url);
+    }
+
+    // Disconnect before our own src/srcset writes so the hero and section
+    // observers do not see them. Nested calls share one pause.
+    function pauseMediaObservers(img) {
+      state.mediaWriting = (state.mediaWriting || 0) + 1;
+      if (state.mediaWriting !== 1) return;
+      state._pausedHeroObs = img && img.__appaiMyPetObserver;
+      state._pausedSectionObs = state.productMediaObserver;
+      try { if (state._pausedHeroObs) state._pausedHeroObs.disconnect(); } catch (e) {}
+      try { if (state._pausedSectionObs) state._pausedSectionObs.disconnect(); } catch (e2) {}
+    }
+
+    function resumeMediaObservers(img) {
+      state.mediaWriting = Math.max(0, (state.mediaWriting || 1) - 1);
+      if (state.mediaWriting !== 0) return;
+      var heroObs = state._pausedHeroObs;
+      var sectionObs = state._pausedSectionObs;
+      state._pausedHeroObs = null;
+      state._pausedSectionObs = null;
+      if (heroObs && img) {
+        try { heroObs.observe(img, { attributes: true, attributeFilter: ['src', 'srcset', 'sizes'] }); } catch (e) {}
+      }
+      if (sectionObs) {
+        var container = productSectionScope();
+        if (container && container !== document) {
+          try {
+            sectionObs.observe(container, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['src', 'srcset'],
+            });
+          } catch (e2) {}
+        }
+      }
+    }
+
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
-      stashHeroOriginals(img);
-      if (img.getAttribute('sizes') && !img.hasAttribute('data-appai-my-pet-original-sizes') && !img.hasAttribute('data-appai-my-pet-slide-original-sizes')) {
-        img.setAttribute('data-appai-my-pet-original-sizes', img.getAttribute('sizes'));
+      var same = srcAlready(img, url);
+      var dirty = !!(img.getAttribute('srcset') || img.getAttribute('sizes'));
+      if (same && !dirty) return;
+      pauseMediaObservers(img);
+      try {
+        stashHeroOriginals(img);
+        if (img.getAttribute('sizes') && !img.hasAttribute('data-appai-my-pet-original-sizes') && !img.hasAttribute('data-appai-my-pet-slide-original-sizes')) {
+          img.setAttribute('data-appai-my-pet-original-sizes', img.getAttribute('sizes'));
+        }
+        try { img.removeAttribute('srcset'); } catch (e) {}
+        try { img.removeAttribute('sizes'); } catch (e) {}
+        if (img.dataset) {
+          try { delete img.dataset.src; } catch (e) {}
+          try { delete img.dataset.srcset; } catch (e) {}
+        }
+        detachPictureSources(img);
+        if (!same) {
+          try { img.src = url; } catch (e) {}
+        }
+        img.__appaiAssertUrl = url;
+        img.__appaiAssertAt = Date.now();
+        img.setAttribute('data-appai-my-pet-preview', 'true');
+      } finally {
+        resumeMediaObservers(img);
       }
-      try { img.removeAttribute('srcset'); } catch (e) {}
-      try { img.removeAttribute('sizes'); } catch (e) {}
-      if (img.dataset) {
-        try { delete img.dataset.src; } catch (e) {}
-        try { delete img.dataset.srcset; } catch (e) {}
-      }
-      detachPictureSources(img);
-      try { img.src = url; } catch (e) {}
-      img.__appaiAssertUrl = url;
-      img.__appaiAssertAt = Date.now();
-      img.setAttribute('data-appai-my-pet-preview', 'true');
     }
 
     function heroAssertTargets() {
@@ -1485,6 +1535,8 @@
       var wrote = 0;
       for (var i = 0; i < targets.length; i++) {
         var el = targets[i];
+        // The outgoing hero stays on screen until the new img has decoded.
+        if (state.swapMaskWaiting && state.holdOldHero && el === state.holdOldHero) continue;
         // Skip a node we just wrote. currentSrc lags the attribute write, so
         // the guard observer would otherwise re-enter until the stack melts.
         // A different node (theme replacement) still gets written.
@@ -1576,115 +1628,76 @@
       return !!(img && img.classList && img.classList.contains('appai-my-pet-cover'));
     }
 
-    // The product section survives Horizon's hero-node swap. The cover is a
-    // child of that section (or media-gallery when the element itself stays),
-    // so it can sit over the hero for the whole section re-render.
-    function coverHost() {
+    // The product section and media-gallery survive Horizon's inner swap.
+    // Never document.body — a background there paints the whole storefront.
+    function mediaHoldContainer(hero) {
       var section = productSectionScope();
       var scope = section && section !== document ? section : document;
       var gallery = null;
       try { gallery = scope.querySelector('media-gallery, .media-gallery, product-media-gallery'); } catch (e) {}
       if (gallery) return gallery;
+      if (hero && hero.parentElement && hero.parentElement !== document.body) return hero.parentElement;
       if (section && section !== document) return section;
-      return document.body;
+      return null;
     }
 
-    function positionCover(cover, host, hero) {
-      if (!cover || !host) return;
-      var box = null;
-      if (hero && !isCoverImg(hero)) {
-        var hr;
-        try { hr = hero.getBoundingClientRect(); } catch (e) { hr = null; }
-        if (hr && hr.width >= 10 && hr.height >= 10) {
-          var fit = 'cover';
-          var objectPosition = 'center';
-          try {
-            var cs = window.getComputedStyle(hero);
-            if (cs.objectFit && cs.objectFit !== 'auto') fit = cs.objectFit;
-            if (cs.objectPosition) objectPosition = cs.objectPosition;
-          } catch (e2) {}
-          box = { left: hr.left, top: hr.top, width: hr.width, height: hr.height, fit: fit, objectPosition: objectPosition };
-          state.coverViewport = box;
-        }
+    function holdBackgroundUrl(hero) {
+      if (hero) {
+        var shown = hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '';
+        if (shown) return shown;
       }
-      if (!box) box = state.coverViewport;
-      if (!box) return;
-      var pos = 'static';
-      try { pos = window.getComputedStyle(host).position; } catch (e3) {}
-      if (pos === 'static') {
-        if (!state.coverHostPosSaved) {
-          state.coverHostEl = host;
-          state.coverHostPos = host.style.position || '';
-          state.coverHostPosSaved = true;
-        }
-        host.style.position = 'relative';
-      }
-      var br;
-      try { br = host.getBoundingClientRect(); } catch (e4) { return; }
-      cover.style.left = (box.left - br.left + host.scrollLeft) + 'px';
-      cover.style.top = (box.top - br.top + host.scrollTop) + 'px';
-      cover.style.width = box.width + 'px';
-      cover.style.height = box.height + 'px';
-      cover.style.objectFit = box.fit || 'cover';
-      cover.style.objectPosition = box.objectPosition || 'center';
+      var colour = currentInlineColour();
+      return previewUrlForColour(colour) || state.previewUrl || '';
     }
 
-    function coverOn(colorName, eventType) {
-      var url = previewUrlForColour(colorName);
+    function holdFrameOn(colorName) {
       var hero = visibleSlideImg();
       if (isCoverImg(hero)) hero = findProductHeroImg();
-      var already = !!(state.swapCoverEl && state.swapCoverEl.isConnected);
-      var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
-      if (!url || (!hero && !state.coverViewport)) {
-        console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'), 'skipped=no-url-or-hero');
+      var url = holdBackgroundUrl(hero);
+      var host = mediaHoldContainer(hero);
+      if (!url || !host) {
+        console.log(TAG, 'hold on skipped colour=' + (colorName || '?'));
         return;
       }
       if (!state.swapMaskStarted) state.swapMaskStarted = Date.now();
-      var host = coverHost();
-      var cover = state.swapCoverEl;
-      if (!cover) {
-        cover = document.createElement('img');
-        cover.className = 'appai-my-pet-cover';
-        cover.alt = '';
-        cover.setAttribute('aria-hidden', 'true');
-        cover.draggable = false;
-        cover.style.zIndex = '30';
-        cover.style.maxWidth = 'none';
-        cover.style.maxHeight = 'none';
-        cover.style.pointerEvents = 'none';
-        state.swapCoverEl = cover;
+      state.holdOldHero = hero || null;
+      var fit = 'cover';
+      var objectPosition = 'center';
+      try {
+        var sample = hero || host;
+        var cs = window.getComputedStyle(sample);
+        if (hero && cs.objectFit && cs.objectFit !== 'auto') fit = cs.objectFit;
+        if (hero && cs.objectPosition) objectPosition = cs.objectPosition;
+      } catch (e) {}
+      if (!state.holdBgSaved || state.holdBgSaved.el !== host) {
+        state.holdBgSaved = {
+          el: host,
+          image: host.style.backgroundImage || '',
+          size: host.style.backgroundSize || '',
+          position: host.style.backgroundPosition || '',
+          repeat: host.style.backgroundRepeat || '',
+        };
       }
-      if (cover.getAttribute('src') !== url) cover.src = url;
-      if (cover.parentNode !== host) host.appendChild(cover);
-      positionCover(cover, host, hero);
-      if (hero && !isCoverImg(hero)) applyHeroHold(hero);
-      console.log(TAG, 'cover on reason=' + eventType, 'elapsedMs=' + (already ? (Date.now() - state.swapMaskStarted) : 0), 'colour=' + (colorName || '?'));
+      host.style.backgroundImage = 'url("' + String(url).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '")';
+      host.style.backgroundSize = (fit === 'contain' || fit === 'scale-down') ? 'contain' : (fit === 'fill' ? '100% 100%' : 'cover');
+      host.style.backgroundPosition = objectPosition || 'center';
+      host.style.backgroundRepeat = 'no-repeat';
+      console.log(TAG, 'hold on colour=' + (colorName || '?'));
     }
 
-    function restoreHeldHeroes() {
-      var scope = productSectionScope();
-      var held = [];
-      try { held = scope.querySelectorAll('[data-appai-my-pet-held]'); } catch (e) {}
-      for (var i = 0; i < held.length; i++) {
-        held[i].style.visibility = held[i].__appaiHeldVisibility || '';
-        held[i].removeAttribute('data-appai-my-pet-held');
-      }
-    }
-
-    function coverOff(why, colorName) {
+    function clearHoldBackground(why, colorName) {
       var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
-      var cover = state.swapCoverEl;
-      if (cover && cover.parentNode) cover.parentNode.removeChild(cover);
-      state.swapCoverEl = null;
-      state.swapMaskStarted = 0;
-      state.coverViewport = null;
-      if (state.coverHostPosSaved && state.coverHostEl) {
-        state.coverHostEl.style.position = state.coverHostPos || '';
-        state.coverHostPosSaved = false;
-        state.coverHostEl = null;
+      var saved = state.holdBgSaved;
+      if (saved && saved.el) {
+        saved.el.style.backgroundImage = saved.image || '';
+        saved.el.style.backgroundSize = saved.size || '';
+        saved.el.style.backgroundPosition = saved.position || '';
+        saved.el.style.backgroundRepeat = saved.repeat || '';
       }
-      restoreHeldHeroes();
-      console.log(TAG, 'cover off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
+      state.holdBgSaved = null;
+      state.holdOldHero = null;
+      state.swapMaskStarted = 0;
+      if (why) console.log(TAG, 'hold off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
     }
 
     function previewUrlForColour(colorName) {
@@ -1694,30 +1707,53 @@
       return state.previewUrl || null;
     }
 
-    function paintProductMediaImage(img) {
+    function looksLikeThumb(img) {
+      return !!(img && img.closest && img.closest('.thumbnail, .thumbnails, .product-thumbnails, [class*="thumbnail"]'));
+    }
+
+    function slideMediaId(img) {
+      var node = img && img.closest ? img.closest('[data-media-id]') : null;
+      return node ? String(node.getAttribute('data-media-id') || '') : '';
+    }
+
+    // Only the newly inserted hero for the selected colour. Other slides
+    // keep the colour swapVariantSlides wrote from their own media id.
+    function paintProductMediaImage(img, colorName) {
       if (!img || img.tagName !== 'IMG') return false;
+      if (isCoverImg(img)) return false;
       if (!img.classList || !img.classList.contains('product-media__image')) return false;
       if (img.closest && img.closest('.appai-my-pet')) return false;
-      var colorName = currentInlineColour();
-      var url = previewUrlForColour(colorName);
+      if (looksLikeThumb(img)) return false;
+      if (state.holdOldHero && img === state.holdOldHero) return false;
+      var colour = colorName || state.holdColour || currentInlineColour();
+      var url = previewUrlForColour(colour);
       if (!url) return false;
-      if (img.__appaiAssertUrl === url && !img.getAttribute('srcset') && !img.getAttribute('sizes') && (Date.now() - (img.__appaiAssertAt || 0)) < 400) {
-        return true;
-      }
+      var mediaId = slideMediaId(img);
+      var expectedMedia = '';
+      try {
+        var map = getMediaIdByColor(root);
+        if (colour && map && map[colour]) expectedMedia = String(map[colour]);
+      } catch (e) {}
+      if (mediaId && expectedMedia && mediaId !== expectedMedia) return false;
+      if (!mediaId && !isHeroCandidate(img)) return false;
+      if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
       applyPreviewSrc(img, url);
-      if (isHeroCandidate(img)) state.inlineHero = img;
+      state.inlineHero = img;
       return true;
     }
 
     function endSwapMask(why, colorName) {
-      if (!state.swapMaskWaiting) return;
+      if (!state.swapMaskWaiting) {
+        clearHoldBackground('', colorName);
+        return;
+      }
       state.swapMaskWaiting = 0;
       state.swapMaskEndedAt = Date.now();
       if (state.swapMaskTimer) {
         clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = null;
       }
-      coverOff(why, colorName || currentInlineColour());
+      clearHoldBackground(why, colorName || state.holdColour || currentInlineColour());
     }
 
     function noteReplacementDecoded(img, colorName) {
@@ -1737,11 +1773,12 @@
     function installProductMediaObserver() {
       if (state.productMediaObserver) return;
       var container = productSectionScope();
-      if (!container || container === document) container = coverHost();
-      if (!container) return;
+      if (!container || container === document) container = mediaHoldContainer(null);
+      if (!container || container === document.body) return;
       var observer = new MutationObserver(function (mutations) {
+        if (state.mediaWriting) return;
         if (!state.renderId || !state.inlineApplied) return;
-        var colorName = currentInlineColour();
+        var colorName = state.holdColour || currentInlineColour();
         var replaced = null;
         var replacedArea = -1;
         for (var i = 0; i < mutations.length; i++) {
@@ -1753,8 +1790,7 @@
               if (isCoverImg(node)) continue;
               var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img.product-media__image') : []);
               for (var k = 0; k < imgs.length; k++) {
-                if (isCoverImg(imgs[k])) continue;
-                if (!paintProductMediaImage(imgs[k])) continue;
+                if (!paintProductMediaImage(imgs[k], colorName)) continue;
                 var area = 0;
                 try {
                   var rect = imgs[k].getBoundingClientRect();
@@ -1767,13 +1803,12 @@
               }
             }
           } else if (m.type === 'attributes' && m.target && m.target.tagName === 'IMG' && !isCoverImg(m.target)) {
-            paintProductMediaImage(m.target);
+            if (state.holdOldHero && m.target === state.holdOldHero) continue;
+            if (m.attributeName === 'src' && srcAlready(m.target, m.target.__appaiAssertUrl || '')) continue;
+            paintProductMediaImage(m.target, colorName);
           }
         }
-        if (state.swapMaskWaiting && (!state.swapCoverEl || !state.swapCoverEl.isConnected)) {
-          coverOn(colorName, 'reattach');
-        }
-        if (replaced) noteReplacementDecoded(replaced, colorName);
+        if (replaced && state.swapMaskWaiting) noteReplacementDecoded(replaced, colorName);
       });
       observer.observe(container, {
         childList: true,
@@ -1818,12 +1853,12 @@
       }
       state.heroHoldToken = 0;
       state.swapMaskWaiting = 0;
+      state.holdColour = null;
       if (state.swapMaskTimer) {
         clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = null;
       }
-      if (state.swapCoverEl) coverOff('cleared', currentInlineColour());
-      else restoreHeldHeroes();
+      clearHoldBackground('cleared', currentInlineColour());
     }
 
     function installSwatchPreempt() {
@@ -1840,27 +1875,22 @@
         // click then change is one gesture. Re-arming on change either
         // resets the wait or, if the replacement already landed, hides
         // the gallery until the 1500ms safety with nothing left to replace.
-        if (state.swapMaskWaiting) {
-          coverOn(colorName, event.type + ':' + intent.kind);
-          return;
-        }
+        if (state.swapMaskWaiting) return;
         if (event.type === 'change' && state.swapMaskEndedAt && (Date.now() - state.swapMaskEndedAt) < 500) return;
         var url = previewUrlForColour(colorName);
+        state.holdColour = colorName;
+        if (url) state.previewUrl = url;
         var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
         state.swapMaskWaiting = token;
         if (state.swapMaskTimer) clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = setTimeout(function () {
           if (state.swapMaskWaiting !== token) return;
           endSwapMask('timeout', colorName);
-        }, 2000);
-        coverOn(colorName, event.type + ':' + intent.kind);
-        if (url) {
-          state.previewUrl = url;
-          var slide = visibleSlideImg();
-          if (slide) applyPreviewSrc(slide, url);
-        } else if (intent.kind === 'color') {
-          swapInlineColor(colorName);
-        }
+        }, 1500);
+        // Previous frame stays on the old hero and on the gallery background.
+        // The new node is painted when the theme inserts it.
+        holdFrameOn(colorName);
+        if (!url && intent.kind === 'color') swapInlineColor(colorName);
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
@@ -1936,6 +1966,8 @@
           for (var j = 0; j < imgs.length; j++) {
             var img = imgs[j];
             if (img.closest && img.closest('.appai-my-pet')) continue;
+            if (state.holdOldHero && img === state.holdOldHero) continue;
+            if (isCoverImg(img)) continue;
             swapOneSlideImage(img, url, color, mediaId, stash);
             matched++;
           }
@@ -2389,6 +2421,10 @@
      */
     function installHeroGuard(hero) {
       if (!hero) return;
+      if (state.holdOldHero && state.holdOldHero !== hero && state.holdOldHero.__appaiMyPetObserver) {
+        try { state.holdOldHero.__appaiMyPetObserver.disconnect(); } catch (e0) {}
+        state.holdOldHero.__appaiMyPetObserver = null;
+      }
       if (hero.__appaiMyPetObserver) {
         try { hero.__appaiMyPetObserver.disconnect(); } catch (e) {}
       }
@@ -2398,20 +2434,22 @@
       // (not inlineAttached) so revertToOriginalDesign can stop re-assert
       // without tearing down the whole intercept.
       var assert = function () {
+        if (state.mediaWriting) return;
+        if (state.holdOldHero && hero === state.holdOldHero) return;
         if (!state.renderId || !state.inlineApplied) return;
         var info = currentVariantInfo(root);
         // STAGING-99 — swatch cross-check. If the form is the wrong one
         // (Ritual multi-form PDP), info.colorName will be frozen on the
         // wrong variant; the checked swatch is the shopper's actual intent.
         var swColor = readSwatchColor(root);
-        var colorName = (swColor && info.colorName && swColor !== info.colorName)
-          ? swColor
-          : (info.colorName || swColor || null);
+        var colorName = state.holdColour
+          || ((swColor && info.colorName && swColor !== info.colorName)
+            ? swColor
+            : (info.colorName || swColor || null));
         var expected = colorName ? state.previewUrlByColor[colorName] : null;
-        // STAGING-105 — hero.src matching is not enough. currentSrc follows
-        // srcset / <source>, so a node whose src we already set can still
-        // paint the Shopify CDN variant image.
-        if (expected && previewWinning(hero, expected) && previewWinning(findVisibleHeroImg(), expected)) return;
+        // Src already matches: no write, no log. srcset leftovers are
+        // stripped inside applyPreviewSrc with the observers paused.
+        if (expected && srcAlready(hero, expected) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes')) return;
         if (expected) {
           reassertColourPreview('guard', colorName, expected);
           console.log(TAG, 'inline hero guard re-asserted', colorName);
@@ -2441,9 +2479,11 @@
       // trigger.
       assert();
       var observer = new MutationObserver(function (mutations) {
+        if (state.mediaWriting) return;
         for (var i = 0; i < mutations.length; i++) {
           var m = mutations[i];
           if (m.attributeName === 'src' || m.attributeName === 'srcset' || m.attributeName === 'sizes') {
+            if (m.attributeName === 'src' && srcAlready(hero, hero.__appaiAssertUrl || '')) return;
             assert();
             return;
           }
@@ -2571,46 +2611,13 @@
               var img = imgs[k];
               if (img.closest && img.closest('.appai-my-pet')) continue;
               if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
-              // STAGING-109 — the hero cover is the visual during a swatch.
-              // Zeroing opacity here blanks the hero for a frame after the
-              // cover comes off.
-              if (state.swapMaskWaiting) continue;
-              // STAGING-100 — skip anything already swapped by
-              // swapVariantSlides (data-media-id matched); re-applying
-              // the hero-opacity trick on an already-correct slide only
-              // adds an unnecessary flash.
-              if (img.hasAttribute('data-appai-my-pet-slide')) continue;
-              // Only touch what looks like the hero (ignore thumbnails /
-              // zoom previews / decorative icons).
+              if (looksLikeThumb(img)) continue;
               if (!isHeroCandidate(img)) continue;
-              // STAGING-106 — a swatch click already hid the outgoing hero.
-              // A node the theme inserts in the same turn must stay hidden
-              // too, or the stock variant paints for one frame. The decode
-              // / 600ms reveal clears the hold.
-              if (state.heroHoldToken) applyHeroHold(img);
-              // Hide BEFORE paint — the browser batches style writes with
-              // layout so setting opacity now takes effect same-frame.
-              var prevTransition = img.style.transition;
-              img.style.transition = '';
-              img.style.opacity = '0';
-              // Promote this to our inlineHero reference + run assert via
-              // installHeroGuard synchronously before we hand control back
-              // to the browser, so the first paint shows OUR src at opacity:0.
+              // Keep the outgoing hero visible. Point the guard at the new
+              // node only — never opacity 0, never remove the old img.
+              if (state.holdOldHero && img === state.holdOldHero) continue;
               state.inlineHero = img;
               installHeroGuard(img);
-              // Restore opacity next frame once the src is correct.
-              var el = img;
-              var restore = function () {
-                el.style.transition = 'opacity 100ms ease-out';
-                el.style.opacity = '1';
-                // Clean up the inline transition after it runs so we don't
-                // leak styles into the theme's own CSS.
-                setTimeout(function () {
-                  el.style.transition = prevTransition || '';
-                }, 150);
-              };
-              if (typeof requestAnimationFrame === 'function') requestAnimationFrame(restore);
-              else setTimeout(restore, 0);
             }
           }
         }
