@@ -67,11 +67,25 @@
     } catch (e) { return null; }
   }
   function writeStoredRender(shopifyProductId, renderId, jobId) {
+    var prev = {};
     try {
-      window.localStorage.setItem(
-        renderStorageKey(shopifyProductId),
-        JSON.stringify({ renderId: renderId, jobId: jobId, savedAt: Date.now() }),
-      );
+      var raw = window.localStorage.getItem(renderStorageKey(shopifyProductId));
+      prev = raw ? JSON.parse(raw) : {};
+    } catch (e) { prev = {}; }
+    var next = { renderId: renderId, jobId: jobId, savedAt: Date.now() };
+    if (prev && prev.colorName) next.colorName = prev.colorName;
+    if (prev && prev.sizeName) next.sizeName = prev.sizeName;
+    try {
+      window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(next));
+    } catch (e) { /* localStorage disabled */ }
+  }
+  function writeStoredVariantChoice(shopifyProductId, colorName, sizeName) {
+    var prev = readStoredRender(shopifyProductId);
+    if (!prev || !prev.renderId) return;
+    if (colorName) prev.colorName = colorName;
+    if (sizeName) prev.sizeName = sizeName;
+    try {
+      window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(prev));
     } catch (e) { /* localStorage disabled */ }
   }
   function clearStoredRender(shopifyProductId) {
@@ -1277,6 +1291,49 @@
       unlockRestoreButtons();
     }
 
+    function checkedProductOption(kind) {
+      var pickers;
+      try { pickers = document.querySelectorAll('variant-picker'); } catch (e) { return ''; }
+      var picker = null;
+      for (var p = 0; p < pickers.length; p++) {
+        if (pickers[p].getAttribute('data-template-product-match') !== 'true') continue;
+        if (pickers[p].closest && (pickers[p].closest('product-card') || pickers[p].closest('quick-add-dialog'))) continue;
+        picker = pickers[p];
+        break;
+      }
+      if (!picker) return '';
+      var radios = picker.querySelectorAll('input[type="radio"]:checked');
+      for (var i = 0; i < radios.length; i++) {
+        var ctx = String(radios[i].name || '').toLowerCase();
+        var box = radios[i].closest ? radios[i].closest('fieldset, [data-option-name]') : null;
+        if (box) ctx += ' ' + String(box.getAttribute('data-option-name') || box.getAttribute('data-option') || '').toLowerCase();
+        var isSize = ctx.indexOf('size') !== -1 && ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1;
+        var isColour = ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
+        if (kind === 'size' && isSize) return String(radios[i].value || '').trim();
+        if (kind === 'colour' && isColour) return String(radios[i].value || '').trim();
+      }
+      return '';
+    }
+
+    function rememberVariantChoice() {
+      if (state.restorePending || window.__appaiSelectingDefaultSize) return;
+      if (!state.renderId) return;
+      var info = currentVariantInfo(root);
+      var color = checkedProductOption('colour') || currentInlineColour() || info.colorName;
+      var size = checkedProductOption('size') || info.sizeId;
+      if (!color && !size) return;
+      writeStoredVariantChoice(shopifyProductId, color, size);
+    }
+
+    document.addEventListener('change', function (event) {
+      if (window.__appaiSelectingDefaultSize || state.restorePending) return;
+      if (!state.renderId) return;
+      var node = event.target;
+      if (!node || node.nodeType !== 1 || !node.closest) return;
+      if (!node.closest('variant-picker, form[action*="/cart/add"], .appai-my-pet-modal')) return;
+      rememberVariantChoice();
+    }, false);
+
     function blockRestoreAction(event) {
       if (!state.restorePending) return;
       var node = event.target;
@@ -1327,6 +1384,7 @@
           state.restorePending = false;
           if (!ok && state.inlineApplied) revertToOriginalDesign();
           clearRestoreChrome();
+          if (ok && !window.__appaiVariantOnLoad) rememberVariantChoice();
           if (state.capStatus) renderAttemptsCaption(state.capStatus);
         };
         if (ok && window.requestAnimationFrame) {
@@ -1342,6 +1400,116 @@
         var restoreSw = readSwatchColor(root);
         if (restoreSw && restoreInfo.colorName && restoreSw !== restoreInfo.colorName) return restoreSw;
         return restoreInfo.colorName || restoreSw || null;
+      }
+
+      function sameOption(a, b) {
+        return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+      }
+
+      function radioAvailable(radio) {
+        if (!radio || radio.disabled) return false;
+        if (radio.getAttribute('aria-disabled') === 'true') return false;
+        if (radio.getAttribute('data-option-available') === 'false') return false;
+        return true;
+      }
+
+      function optionContext(radio) {
+        var ctx = String(radio.name || '').toLowerCase();
+        var box = radio.closest ? radio.closest('fieldset, [data-option-name]') : null;
+        if (box) ctx += ' ' + String(box.getAttribute('data-option-name') || box.getAttribute('data-option') || '').toLowerCase();
+        var legend = box && box.querySelector ? box.querySelector('legend') : null;
+        if (legend) ctx += ' ' + String(legend.textContent || '').toLowerCase();
+        return ctx;
+      }
+
+      function radioKind(radio) {
+        var ctx = optionContext(radio);
+        if (ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1) return 'colour';
+        if (ctx.indexOf('size') !== -1) return 'size';
+        return '';
+      }
+
+      function productPicker() {
+        var pickers;
+        try { pickers = document.querySelectorAll('variant-picker'); } catch (e) { return null; }
+        for (var p = 0; p < pickers.length; p++) {
+          if (pickers[p].getAttribute('data-template-product-match') !== 'true') continue;
+          if (pickers[p].closest && (pickers[p].closest('product-card') || pickers[p].closest('quick-add-dialog'))) continue;
+          return pickers[p];
+        }
+        return null;
+      }
+
+      function findKindRadio(picker, kind, value) {
+        if (!picker || !value) return null;
+        var radios = picker.querySelectorAll('input[type="radio"]');
+        for (var i = 0; i < radios.length; i++) {
+          if (radioKind(radios[i]) !== kind) continue;
+          if (!sameOption(radios[i].value, value)) continue;
+          if (!radioAvailable(radios[i])) continue;
+          return radios[i];
+        }
+        return null;
+      }
+
+      function markRadio(radio, variantId) {
+        var all;
+        try { all = document.querySelectorAll('input[type="radio"]'); } catch (e) { all = []; }
+        for (var i = 0; i < all.length; i++) {
+          if (all[i].name !== radio.name || all[i] === radio) continue;
+          all[i].removeAttribute('data-current-checked');
+        }
+        radio.checked = true;
+        if (variantId) radio.setAttribute('data-variant-id', variantId);
+        radio.setAttribute('data-current-checked', 'true');
+      }
+
+      function applyExactVariant(colorName, sizeName) {
+        if (!colorName) return null;
+        var colours = allColorOptions(root);
+        var sizes = allSizeOptions(root);
+        var color = colorName;
+        var size = sizeName;
+        for (var c = 0; c < colours.length; c++) if (sameOption(colours[c], colorName)) color = colours[c];
+        for (var s = 0; s < sizes.length; s++) if (sameOption(sizes[s], sizeName)) size = sizes[s];
+        var names = [];
+        try { names = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
+        var variant = variantForColor(root, color, size);
+        var variantSize = variant ? findOptionValue(variant, names, ['size']) : null;
+        if (!variant || (size && !sameOption(variantSize, size))) {
+          var medium = variantForColor(root, color, 'M');
+          if (medium) variant = medium;
+        }
+        if (!variant) return null;
+        var actualColor = findOptionValue(variant, names, ['color', 'colour']) || colorName;
+        var actualSize = findOptionValue(variant, names, ['size']) || sizeName;
+        var picker = productPicker();
+        var id = String(variant.id);
+        var form = findMainProductForm(root);
+        var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
+        window.__appaiSelectingDefaultSize = true;
+        try {
+          var sizeRadio = findKindRadio(picker, 'size', actualSize);
+          var colourRadio = findKindRadio(picker, 'colour', actualColor);
+          if (sizeRadio) markRadio(sizeRadio, id);
+          if (colourRadio) markRadio(colourRadio, id);
+          if (idInput) idInput.value = id;
+          var fire = colourRadio || sizeRadio || idInput;
+          if (fire) fire.dispatchEvent(new Event('change', { bubbles: true }));
+        } finally {
+          window.__appaiSelectingDefaultSize = false;
+        }
+        return actualColor;
+      }
+
+      function selectRestoredVariant(storedRender, res) {
+        if (window.__appaiVariantOnLoad) return restoredColour();
+        var color = (storedRender && storedRender.colorName) || (res && res.colorName) || '';
+        var size = (storedRender && storedRender.sizeName) || 'M';
+        if (!color) return applyExactVariant(restoredColour(), 'M') || restoredColour();
+        var info = currentVariantInfo(root);
+        if (sameOption(info.colorName, color) && sameOption(info.sizeId, size)) return info.colorName;
+        return applyExactVariant(color, size) || restoredColour();
       }
 
       function waitForHero(url, fromCache) {
@@ -1395,12 +1563,13 @@
         console.log(TAG, 'restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
         logPreviewUrlTails('restore', state.previewUrlByColor);
         preloadPreviewUrls(state.previewUrlByColor);
+        var restoreColor = selectRestoredVariant(stored, res);
         if (previewMode !== 'inline') {
           finishRestore(true);
           return;
         }
-        var restoreColor = restoredColour();
-        var restoreColorUrl = restoreColor ? state.previewUrlByColor[restoreColor] : null;
+        var mappedColour = canonicalPreviewColor(restoreColor);
+        var restoreColorUrl = (mappedColour && state.previewUrlByColor[mappedColour]) || (restoreColor && state.previewUrlByColor[restoreColor]) || null;
         var activationUrl = restoreColorUrl || res.previewUrl;
         console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
           ' usingCached=' + !!restoreColorUrl + ' fromSession=' + !!fromCache);

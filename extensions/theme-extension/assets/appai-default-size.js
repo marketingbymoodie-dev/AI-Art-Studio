@@ -8,10 +8,15 @@
  * so the next page is right before this script runs.
  */
 (function () {
+  if (typeof window.__appaiVariantOnLoad === 'undefined') {
+    window.__appaiVariantOnLoad = /(?:^|[?&])variant=/.test(window.location.search);
+  }
   if (window.__appaiDefaultSizeM) return;
   window.__appaiDefaultSizeM = true;
 
   var CACHE_KEY = 'appai_m_variant_v1';
+  var PET_RENDER_PREFIX = 'appai_my_pet_render_v1:';
+  var PET_RENDER_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
   function variantInUrl() {
     return /(?:^|[?&])variant=/.test(window.location.search);
@@ -29,6 +34,122 @@
     return ctx.indexOf('size') !== -1;
   }
 
+  function sameOption(a, b) {
+    return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  }
+
+  function isColourRadio(radio) {
+    var name = String(radio.name || '').toLowerCase();
+    if (name.indexOf('color') !== -1 || name.indexOf('colour') !== -1) return true;
+    var box = radio.closest ? radio.closest('fieldset, [data-option-name]') : null;
+    if (!box) return false;
+    var ctx = String(box.getAttribute('data-option-name') || box.getAttribute('data-option') || '').toLowerCase();
+    var legend = box.querySelector ? box.querySelector('legend') : null;
+    if (legend) ctx += ' ' + String(legend.textContent || '').toLowerCase();
+    if (ctx.indexOf('size') !== -1 && ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) return false;
+    return ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
+  }
+
+  function pageProductId(picker) {
+    var pet = document.querySelector('.appai-my-pet[data-product-id]');
+    if (pet && pet.getAttribute('data-product-id')) return pet.getAttribute('data-product-id');
+    return picker && picker.getAttribute('data-product-id') ? picker.getAttribute('data-product-id') : '';
+  }
+
+  function readStoredPet(productId) {
+    if (!productId) return null;
+    var prefix = PET_RENDER_PREFIX + productId + ':';
+    var best = null;
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var key = localStorage.key(i);
+        if (!key || key.indexOf(prefix) !== 0) continue;
+        var parsed = JSON.parse(localStorage.getItem(key) || 'null');
+        if (!parsed || !parsed.renderId || !parsed.savedAt) continue;
+        if (Date.now() - parsed.savedAt > PET_RENDER_MAX_AGE_MS) continue;
+        if (!best || parsed.savedAt > best.savedAt) best = parsed;
+      }
+    } catch (e) { return null; }
+    return best;
+  }
+
+  function variantIdFor(colorName, sizeName) {
+    var root = document.querySelector('.appai-my-pet[data-variants]');
+    if (!root) return '';
+    var variants = [];
+    var names = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) { return ''; }
+    try { names = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) { return ''; }
+    function optionValue(variant, wanted) {
+      for (var i = 0; i < names.length; i++) {
+        var n = String(names[i] || '').toLowerCase();
+        var hit = false;
+        for (var w = 0; w < wanted.length; w++) if (n.indexOf(wanted[w]) !== -1) hit = true;
+        if (!hit) continue;
+        return variant['option' + (i + 1)];
+      }
+      return '';
+    }
+    for (var v = 0; v < variants.length; v++) {
+      if (!sameOption(optionValue(variants[v], ['color', 'colour']), colorName)) continue;
+      if (!sameOption(optionValue(variants[v], ['size']), sizeName)) continue;
+      return String(variants[v].id);
+    }
+    return '';
+  }
+
+  function markRadio(radio, variantId) {
+    var all;
+    try { all = document.querySelectorAll('input[type="radio"]'); } catch (e) { all = []; }
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].name !== radio.name || all[i] === radio) continue;
+      all[i].removeAttribute('data-current-checked');
+    }
+    radio.checked = true;
+    if (variantId) radio.setAttribute('data-variant-id', variantId);
+    radio.setAttribute('data-current-checked', 'true');
+  }
+
+  function radioAvailable(radio) {
+    if (!radio || radio.disabled) return false;
+    if (radio.getAttribute('aria-disabled') === 'true') return false;
+    if (radio.getAttribute('data-option-available') === 'false') return false;
+    return true;
+  }
+
+  function findOptionRadio(picker, kind, value) {
+    var radios = picker.querySelectorAll('input[type="radio"]');
+    for (var i = 0; i < radios.length; i++) {
+      var radio = radios[i];
+      if (kind === 'size' ? !isSizeRadio(radio) : !isColourRadio(radio)) continue;
+      if (!sameOption(radio.value, value)) continue;
+      if (!radioAvailable(radio)) continue;
+      return radio;
+    }
+    return null;
+  }
+
+  function selectSavedPet(picker, stored) {
+    var sizeRadio = findOptionRadio(picker, 'size', stored.sizeName);
+    var colourRadio = findOptionRadio(picker, 'colour', stored.colorName);
+    if (!sizeRadio || !colourRadio) return false;
+    var variantId = variantIdFor(stored.colorName, stored.sizeName);
+    var section = picker.closest ? picker.closest('.shopify-section') : null;
+    var scope = section || document;
+    var idInput = scope.querySelector('form input[name="id"]');
+    if (sizeRadio.checked && colourRadio.checked && (!variantId || !idInput || idInput.value === variantId)) return true;
+    window.__appaiSelectingDefaultSize = true;
+    try {
+      markRadio(sizeRadio, variantId);
+      markRadio(colourRadio, variantId);
+      if (variantId && idInput) idInput.value = variantId;
+      colourRadio.dispatchEvent(new Event('change', { bubbles: true }));
+    } finally {
+      window.__appaiSelectingDefaultSize = false;
+    }
+    return true;
+  }
+
   function selectMedium() {
     if (variantInUrl()) return;
     var pickers = document.querySelectorAll('variant-picker');
@@ -36,6 +157,12 @@
       var picker = pickers[p];
       if (picker.getAttribute('data-template-product-match') !== 'true') continue;
       if (picker.closest && (picker.closest('product-card') || picker.closest('quick-add-dialog'))) continue;
+      var storedPet = readStoredPet(pageProductId(picker));
+      if (storedPet && storedPet.colorName && storedPet.sizeName) {
+        selectSavedPet(picker, storedPet);
+        return;
+      }
+      if (storedPet) return;
       var radios = picker.querySelectorAll('input[type="radio"]');
       var target = null;
       for (var i = 0; i < radios.length; i++) {
