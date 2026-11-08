@@ -2034,6 +2034,9 @@
             window.__appaiSelectingDefaultSize = false;
           }
         });
+        // Horizon section-renders the gallery back to stock after this
+        // change. The colour map is applied again once that DOM lands.
+        scheduleGallerySync('variant');
         return actualColor;
       }
 
@@ -2930,6 +2933,10 @@
       var handler = function (event) {
         if (window.__appaiSelectingDefaultSize) return;
         if (!state.inlineApplied || !state.renderId) return;
+        var hit = event.target && event.target.closest
+          ? event.target.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail')
+          : null;
+        if (hit) return;
         var scope = productSectionScope();
         if (scope && scope !== document && event.target && event.target.nodeType === 1 && !scope.contains(event.target)) return;
         var intent = colorFromSwatchEvent(event);
@@ -2941,8 +2948,10 @@
         if (state.swapMaskWaiting) return;
         if (event.type === 'change' && state.swapMaskEndedAt && (Date.now() - state.swapMaskEndedAt) < 500) return;
         var url = previewUrlForColour(colorName);
+        state.thumbColour = null;
         state.holdColour = colorName;
         if (url) state.previewUrl = url;
+        scheduleGallerySync(intent.kind === 'size' ? 'size' : 'swatch');
         var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
         state.swapMaskWaiting = token;
         if (state.swapMaskTimer) clearTimeout(state.swapMaskTimer);
@@ -3025,10 +3034,30 @@
       try { all = scope.querySelectorAll('slideshow-slide'); } catch (e) { return []; }
       var out = [];
       for (var i = 0; i < all.length; i++) {
-        if (all[i].closest && all[i].closest('dialog, zoom-dialog')) continue;
+        if (all[i].closest && all[i].closest('dialog, zoom-dialog, .announcement-bar')) continue;
+        if (all[i].classList && all[i].classList.contains('announcement-bar__slide')) continue;
         out.push(all[i]);
       }
       return out;
+    }
+
+    function colourFromLabel(text) {
+      var m = String(text || '').match(/\bon\s+(.+)$/i);
+      if (!m) return null;
+      var raw = m[1].trim();
+      return canonicalPreviewColor(raw) || raw;
+    }
+
+    // Slides that actually belong to a colour. A leading slide with no
+    // media id (announcement bar, empty template) must not shift the
+    // thumbnail index off the colour it points at.
+    function colourSlides() {
+      var slides = pageGallerySlides();
+      var out = [];
+      for (var i = 0; i < slides.length; i++) {
+        if (colourForSlide(slides[i])) out.push(slides[i]);
+      }
+      return out.length ? out : slides;
     }
 
     function colourForSlide(slide) {
@@ -3043,22 +3072,28 @@
 
     function colourForThumbButton(btn) {
       if (!btn) return null;
+      var img = btn.querySelector ? btn.querySelector('img') : null;
+      var fromMedia = img ? mediaColourForImg(img) : mediaColourForImg(btn);
+      if (fromMedia) return fromMedia;
       var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
+      if (isZoom) {
+        var zoomLabel = (img && colourFromLabel(img.getAttribute('alt') || '')) || colourFromLabel(btn.getAttribute('aria-label') || '');
+        if (zoomLabel) return zoomLabel;
+      }
       var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
       var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
       var index = -1;
       for (var i = 0; i < list.length; i++) {
         if (list[i] === btn) { index = i; break; }
       }
-      var slides = pageGallerySlides();
+      var slides = colourSlides();
       if (index >= 0 && slides[index]) {
         var fromSlide = colourForSlide(slides[index]);
         if (fromSlide) return fromSlide;
       }
-      var aria = btn.getAttribute('aria-label') || '';
-      var m = aria.match(/\bon\s+(.+)$/i);
-      if (m) return canonicalPreviewColor(m[1].trim());
-      return null;
+      var fromAlt = img ? colourFromLabel(img.getAttribute('alt') || '') : null;
+      if (fromAlt) return fromAlt;
+      return colourFromLabel(btn.getAttribute('aria-label') || '');
     }
 
     function applyOwnPreview(img) {
@@ -3071,8 +3106,9 @@
         var btn = img.closest ? img.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail') : null;
         if (btn) colour = colourForThumbButton(btn);
       }
+      if (!colour) colour = colourFromLabel(img.getAttribute('alt') || '');
       if (!colour || !state.previewUrlByColor) return false;
-      var url = state.previewUrlByColor[colour];
+      var url = urlForColourMap(state.previewUrlByColor, colour);
       if (!url) return false;
       if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return false;
       applyPreviewSrc(img, url);
@@ -3080,16 +3116,28 @@
     }
 
     // Page thumbnail buttons and zoom thumbs are not inside [data-media-id],
-    // so the media-id pass never reaches them.
+    // so the media-id pass never reaches them. Search the product section
+    // and the zoom dialog, not only the first media-gallery.
     function swapLooseThumbnails(scope) {
-      var rootEl = scope || document.querySelector('media-gallery') || document;
-      var buttons = [];
-      try {
-        buttons = rootEl.querySelectorAll('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
-      } catch (e) { return; }
-      for (var i = 0; i < buttons.length; i++) {
-        var imgs = buttons[i].querySelectorAll ? buttons[i].querySelectorAll('img') : [];
-        for (var j = 0; j < imgs.length; j++) applyOwnPreview(imgs[j]);
+      var roots = [];
+      if (scope && scope.querySelectorAll) roots.push(scope);
+      var section = productSectionScope();
+      if (section && section.querySelectorAll && roots.indexOf(section) === -1) roots.push(section);
+      var zoom = zoomObserveTarget();
+      if (zoom && roots.indexOf(zoom) === -1 && (!section || !section.contains || !section.contains(zoom))) roots.push(zoom);
+      if (!roots.length) roots.push(document);
+      var seen = [];
+      for (var r = 0; r < roots.length; r++) {
+        var buttons = [];
+        try {
+          buttons = roots[r].querySelectorAll('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
+        } catch (e) { continue; }
+        for (var i = 0; i < buttons.length; i++) {
+          if (seen.indexOf(buttons[i]) !== -1) continue;
+          seen.push(buttons[i]);
+          var imgs = buttons[i].querySelectorAll ? buttons[i].querySelectorAll('img') : [];
+          for (var j = 0; j < imgs.length; j++) applyOwnPreview(imgs[j]);
+        }
       }
     }
 
@@ -3111,6 +3159,33 @@
       }
     }
 
+    function selectGalleryColour(colour) {
+      if (!colour) return;
+      var picked = canonicalPreviewColor(colour) || colour;
+      state.designSwitchColour = null;
+      state.thumbColour = picked;
+      state.holdColour = picked;
+      var current = currentInlineColour();
+      var same = current && String(current).trim().toLowerCase() === String(picked).trim().toLowerCase();
+      if (!same) {
+        var size = currentSizeName() || 'M';
+        if (state.applyExactVariant) state.applyExactVariant(picked, size);
+        else {
+          var scrollY = window.scrollY;
+          selectSwatch(picked);
+          if (window.requestAnimationFrame) {
+            requestAnimationFrame(function () {
+              if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
+            });
+          }
+        }
+      }
+      var url = urlForColourMap(state.previewUrlByColor, picked);
+      var visible = findVisibleHeroImg() || state.inlineHero;
+      if (visible && url) applyPreviewSrc(visible, url);
+      scheduleGallerySync('thumbnail');
+    }
+
     function installThumbnailSync() {
       if (state.thumbnailSyncInstalled) return;
       state.thumbnailSyncInstalled = true;
@@ -3118,38 +3193,29 @@
         if (!state.inlineApplied || !state.renderId) return;
         var t = event.target;
         if (!t || !t.closest) return;
-        var btn = t.closest('button.slideshow-controls__thumbnail');
-        if (!btn || (btn.closest && btn.closest('dialog, zoom-dialog'))) return;
+        var btn = t.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
+        if (!btn) return;
         var colour = colourForThumbButton(btn);
         if (!colour) return;
-        state.holdColour = colour;
-        var url = state.previewUrlByColor ? state.previewUrlByColor[colour] : null;
         setTimeout(function () {
           if (!state.inlineApplied) return;
-          var slides = pageGallerySlides();
-          var list = btn.parentElement ? btn.parentElement.querySelectorAll('button.slideshow-controls__thumbnail') : [];
+          var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
+          var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
+          var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
           var index = -1;
           for (var i = 0; i < list.length; i++) if (list[i] === btn) { index = i; break; }
+          var slides = colourSlides();
           var slide = index >= 0 ? slides[index] : null;
           if (slide) {
             var imgs = slide.querySelectorAll('img');
             for (var k = 0; k < imgs.length; k++) applyOwnPreview(imgs[k]);
           }
-          applyOwnPreview(btn.querySelector('img'));
-          if (url) {
-            var visible = findVisibleHeroImg();
-            if (visible && mediaColourForImg(visible) === colour) applyOwnPreview(visible);
-          }
-          // Stock thumbnail clicks on this theme only scroll the slide.
-          // The shopper still needs the variant to match the picture, so
-          // check that colour's swatch after the theme has moved the slide.
-          // Checking the radio must not focus it: focus scrolls the swatches
-          // up and pushes the hero off a phone screen.
-          var scrollY = window.scrollY;
-          selectSwatch(colour);
-          requestAnimationFrame(function () {
-            if (window.scrollY !== scrollY) window.scrollTo(window.scrollX, scrollY);
-          });
+          var thumbImg = btn.querySelector('img');
+          if (thumbImg) applyOwnPreview(thumbImg);
+          // The theme's thumbnail click only moves the slideshow. The
+          // variant still has to follow, without focusing the swatch
+          // (focus scrolls a phone page off the photo).
+          selectGalleryColour(colour);
         }, 0);
       }, true);
     }
@@ -3172,6 +3238,17 @@
       return false;
     }
 
+    function zoomSelector(target) {
+      if (!target) return '';
+      var dialog = target.tagName === 'DIALOG' ? target : (target.querySelector ? target.querySelector('dialog') : null);
+      if (dialog && (dialog.open || dialog.hasAttribute('open'))) {
+        var cls = String(dialog.className || '').trim().split(/\s+/).filter(Boolean);
+        if (cls.length) return 'dialog.' + cls.join('.');
+      }
+      var tag = String(target.tagName || '').toLowerCase();
+      return tag || 'zoom-dialog';
+    }
+
     function swapZoomDialog(target) {
       if (!target || !state.inlineApplied || !state.previewUrlByColor) return;
       var dialog = target.tagName === 'DIALOG' ? target : (target.querySelector ? target.querySelector('dialog') : null);
@@ -3181,17 +3258,40 @@
       swapLooseThumbnails(scope);
     }
 
+    function syncZoom(reason) {
+      var target = zoomObserveTarget();
+      var open = !!(target && zoomDialogOpen(target));
+      if (!open) {
+        state.zoomOpenLogged = false;
+        return;
+      }
+      if (!state.zoomOpenLogged) {
+        state.zoomOpenLogged = true;
+        console.log(TAG, 'zoom open', zoomSelector(target), reason || '');
+      }
+      swapZoomDialog(target);
+    }
+
     // Ritual/Horizon zoom is <zoom-dialog> + dialog.dialog-zoomed-gallery__dialog.
     // The same element is what opens on a phone-width viewport.
     function installZoomSwap() {
-      if (state.zoomObserver) return;
       var target = zoomObserveTarget();
       if (!target) return;
+      if (state.zoomObserver && state.zoomObserverTarget && document.contains(state.zoomObserverTarget)) return;
+      if (state.zoomObserver) {
+        try { state.zoomObserver.disconnect(); } catch (e) {}
+        state.zoomObserver = null;
+      }
       var observer = new MutationObserver(function () {
-        if (state.mediaWriting) return;
         if (!state.renderId || !state.inlineApplied) return;
-        if (!zoomDialogOpen(target)) return;
-        swapZoomDialog(target);
+        // A mutation delivered while we are writing is the theme's stock
+        // src landing in the same turn. Re-apply after our write finishes
+        // instead of dropping it.
+        if (state.mediaWriting) {
+          if (!state.gallerySyncTimers) scheduleGallerySync('zoom-after-write');
+          return;
+        }
+        syncZoom('mutation');
       });
       observer.observe(target, {
         childList: true,
@@ -3200,10 +3300,54 @@
         attributeFilter: ['open', 'src', 'srcset'],
       });
       state.zoomObserver = observer;
-      if (zoomDialogOpen(target)) swapZoomDialog(target);
+      state.zoomObserverTarget = target;
+      if (!state.zoomClickHook) {
+        state.zoomClickHook = true;
+        document.addEventListener('click', function (event) {
+          if (!state.inlineApplied || !state.renderId) return;
+          var node = event.target;
+          if (!node || !node.closest) return;
+          if (!node.closest('media-gallery, product-media-gallery, zoom-dialog, dialog.dialog-zoomed-gallery__dialog')) return;
+          setTimeout(function () {
+            installZoomSwap();
+            syncZoom('click');
+          }, 60);
+        }, true);
+      }
+      if (zoomDialogOpen(target)) syncZoom('install');
+    }
+
+    function syncActiveGallery(reason) {
+      if (!state.previewUrlByColor || !Object.keys(state.previewUrlByColor).length) return;
+      if (!state.renderId) return;
+      if (state.gallerySyncing) return;
+      state.gallerySyncing = true;
+      try {
+        if (!state.galleryGuardRoot || !document.contains(state.galleryGuardRoot)) installGalleryGuard();
+        swapVariantSlides(state.previewUrlByColor);
+        installZoomSwap();
+        syncZoom(reason);
+      } finally {
+        state.gallerySyncing = false;
+      }
+    }
+
+    function scheduleGallerySync(reason) {
+      state.gallerySyncReason = reason || state.gallerySyncReason || '';
+      if (state.gallerySyncTimers) return;
+      state.gallerySyncTimers = true;
+      [0, 350, 900].forEach(function (ms) {
+        setTimeout(function () {
+          syncActiveGallery(state.gallerySyncReason);
+          if (ms === 900) state.gallerySyncTimers = false;
+        }, ms);
+      });
     }
 
     function swapVariantSlides(urlsByColor) {
+      if (!urlsByColor) return;
+      pauseMediaObservers(state.inlineHero);
+      try {
       var mediaIdByColor = getMediaIdByColor(root);
       var scope = null;
       var cur = root.parentNode;
@@ -3251,6 +3395,9 @@
       state.inlineSlideStash = stash;
       swapLooseThumbnails();
       console.log(TAG, 'slide swap: total nodes swapped =', totalMatched, 'colours in map =', Object.keys(urlsByColor).length);
+      } finally {
+        resumeMediaObservers(state.inlineHero);
+      }
     }
 
     /**
@@ -3281,6 +3428,7 @@
      *   restoring it, …) is immediately visible in the console.
      */
     function swapOneSlideImage(img, url, color, mediaId, stash) {
+      if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes') && !responsiveLeftovers(img)) return;
       if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
         img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
         var origSrcset = img.getAttribute('srcset');
@@ -3535,6 +3683,7 @@
       // intercept so revertToOriginalDesign can turn them off without
       // tearing down the one-time installs below.
       state.inlineApplied = true;
+      scheduleGallerySync('activate');
       // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
         openBtn.textContent = 'Try another photo';
@@ -3721,7 +3870,14 @@
         var swColor = readSwatchColor(root);
         var ownColour = mediaColourForImg(hero);
         var forced = state.designSwitchColour ? (canonicalPreviewColor(state.designSwitchColour) || state.designSwitchColour) : null;
-        var colorName = forced
+        var thumbPick = state.thumbColour ? (canonicalPreviewColor(state.thumbColour) || state.thumbColour) : null;
+        var visibleHero = findVisibleHeroImg();
+        var activeHero = hero === state.inlineHero || (!!visibleHero && hero === visibleHero);
+        // A thumbnail click names the colour the main image must show.
+        // A design switch names it only for that hero. Every other slide
+        // keeps the colour its own media id maps to.
+        var colorName = (activeHero && thumbPick)
+          || (activeHero && forced)
           || ownColour
           || state.holdColour
           || ((swColor && info.colorName && swColor !== info.colorName)
@@ -3791,13 +3947,16 @@
           var info = currentVariantInfo(root);
           // STAGING-99 — swatch cross-check (see assert() rationale).
           var pollSw = readSwatchColor(root);
-          var colorName = (pollSw && info.colorName && pollSw !== info.colorName)
-            ? pollSw
-            : (info.colorName || pollSw || null);
+          var colorName = state.thumbColour
+            || state.designSwitchColour
+            || ((pollSw && info.colorName && pollSw !== info.colorName)
+              ? pollSw
+              : (info.colorName || pollSw || null));
           var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
           state.inlineHero = fresh;
           if (expected) reassertColourPreview('node-replaced', colorName, expected);
           installHeroGuard(fresh);
+          scheduleGallerySync('node-replaced');
           console.log(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
         }
       }, 1500);
@@ -3856,11 +4015,21 @@
         try { container = searchRoot.querySelector(GALLERY_SELECTORS[i]); } catch (e) { continue; }
         if (container) break;
       }
-      if (!container) {
+      if (!container && !galleryScope) {
         console.log(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
         return;
       }
-      console.log(TAG, 'gallery guard: watching', container.tagName.toLowerCase() + (container.className ? '.' + String(container.className).split(' ').join('.') : ''));
+      var watch = (galleryScope && galleryScope !== document) ? galleryScope : container;
+      state.galleryGuardRoot = watch;
+      if (!state.sectionLoadHook) {
+        state.sectionLoadHook = true;
+        document.addEventListener('shopify:section:load', function () {
+          state.galleryGuardRoot = null;
+          if (!state.inlineApplied || !state.renderId) return;
+          scheduleGallerySync('section-load');
+        });
+      }
+      console.log(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
         if (!state.renderId || !state.inlineApplied) return;
         installZoomSwap();
@@ -3874,7 +4043,8 @@
           if (mutations[m].addedNodes && mutations[m].addedNodes.length) { sawAdded = true; break; }
         }
         if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
-          swapVariantSlides(state.previewUrlByColor);
+          if (!state.gallerySyncing) swapVariantSlides(state.previewUrlByColor);
+          scheduleGallerySync('gallery');
         }
         // Legacy single-hero fallback: themes without per-variant slides
         // (Dawn simple products) still need the opacity-hide + hero-src
@@ -3904,7 +4074,7 @@
           }
         }
       });
-      observer.observe(container, { childList: true, subtree: true });
+      observer.observe(watch, { childList: true, subtree: true });
       state.inlineGalleryObserver = observer;
     }
 
@@ -3966,6 +4136,7 @@
           swapInlineColor(info.colorName);
         }
         rememberVariantChoice();
+        scheduleGallerySync('colour');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -4035,6 +4206,7 @@
         if (sizeNow && sizeNow !== last.__size) {
           last.__size = sizeNow;
           rememberVariantChoice();
+          scheduleGallerySync('size');
         }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
@@ -4054,6 +4226,7 @@
           swapInlineColor(effectiveColor);
         }
         rememberVariantChoice();
+        scheduleGallerySync('colour');
       }, 500);
     }
 
@@ -4066,6 +4239,7 @@
       if (cached) {
         state.previewUrl = cached;
         reassertColourPreview('swap-inline', colorName, cached);
+        scheduleGallerySync('colour');
         console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
         return;
       }
@@ -4083,6 +4257,7 @@
             // scrolls to it (or now, if it's already the active slide).
             var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
             swapVariantSlides(singletonMap);
+            scheduleGallerySync('recomposite');
             writeStoredRender(shopifyProductId, state.renderId, state.jobId);
           }
         })
