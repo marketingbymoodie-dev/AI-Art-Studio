@@ -139,6 +139,15 @@
     writeStoredRecord(shopifyProductId, next);
     return { colorName: colorName, sizeName: sizeName, hadOwn: hadOwn };
   }
+  function storedChoiceFor(shopifyProductId, renderId) {
+    var prev = readStoredRecord(shopifyProductId);
+    var choices = choicesFromRecord(prev);
+    var own = renderId && choices[renderId];
+    if (own && (own.colorName || own.sizeName)) {
+      return { colorName: own.colorName || '', sizeName: own.sizeName || '' };
+    }
+    return { colorName: '', sizeName: '' };
+  }
   function clearStoredRender(shopifyProductId) {
     var prev = readStoredRecord(shopifyProductId);
     var choices = choicesFromRecord(prev);
@@ -1262,6 +1271,54 @@
     var designSwitchToken = 0;
     var designsPop = null;
 
+    function isDesignSheet() {
+      return window.matchMedia('(max-width: 749px)').matches;
+    }
+    function isFineHover() {
+      return window.matchMedia('(hover: hover) and (pointer: fine)').matches && !isDesignSheet();
+    }
+    function noteUserScroll() {
+      state.designUserScroll = true;
+      clearTimeout(state.designUserScrollTimer);
+      state.designUserScrollTimer = setTimeout(function () { state.designUserScroll = false; }, 800);
+    }
+    function holdPageScroll(fn) {
+      var x = window.scrollX || 0;
+      var y = window.scrollY || document.documentElement.scrollTop || 0;
+      var active = document.activeElement;
+      fn();
+      var next = document.activeElement;
+      if (next && next !== active && next !== document.body && next.blur) {
+        try { next.blur(); } catch (e) {}
+      }
+      window.scrollTo(x, y);
+      if (window.requestAnimationFrame) window.requestAnimationFrame(function () { window.scrollTo(x, y); });
+    }
+    function urlForColourMap(map, colour) {
+      if (!map || !colour) return '';
+      if (map[colour]) return map[colour];
+      var want = String(colour).trim().toLowerCase();
+      var keys = Object.keys(map);
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).trim().toLowerCase() === want) return map[keys[i]] || '';
+      }
+      return '';
+    }
+    function preloadUrl(url) {
+      if (!url || String(url).indexOf('http') !== 0) return;
+      try {
+        var img = new Image();
+        img.decoding = 'async';
+        img.src = url;
+      } catch (e) {}
+    }
+    function currentColourName() {
+      return checkedProductOption('colour') || currentInlineColour() || (currentVariantInfo(root).colorName || '') || '';
+    }
+    function currentSizeName() {
+      return checkedProductOption('size') || (currentVariantInfo(root).sizeId || '') || '';
+    }
+
     function refreshDesignList() {
       if (!designsBtn) return;
       var count = state.capStatus && state.capStatus.perListingCount;
@@ -1285,8 +1342,17 @@
 
     function closeDesigns() {
       if (!designsPop) return;
+      cancelDesignHover(true);
       designsPop.hidden = true;
       if (designsBtn) designsBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function designLabelPair(item) {
+      var saved = storedChoiceFor(shopifyProductId, item.renderId);
+      var color = saved.colorName || item.colorName || '';
+      var size = saved.sizeName || item.sizeName || '';
+      if (color && size) return color + ' · ' + size;
+      return color || size || '';
     }
 
     function fillDesigns(list) {
@@ -1295,25 +1361,58 @@
       row.innerHTML = '';
       for (var i = 0; i < list.length; i++) {
         var item = list[i];
+        var active = item.renderId === state.renderId;
+        var name = 'Design ' + (i + 1);
+        var pair = designLabelPair(item);
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'appai-my-pet-designs__thumb';
-        btn.setAttribute('aria-pressed', item.renderId === state.renderId ? 'true' : 'false');
-        btn.setAttribute('aria-label', 'Design ' + (i + 1));
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        btn.setAttribute('aria-label', name + (pair ? ', ' + pair : '') + (active ? ', current' : ''));
+        var frame = document.createElement('span');
+        frame.className = 'appai-my-pet-designs__frame';
         var img = document.createElement('img');
         img.alt = '';
         img.src = item.thumbnailUrl || '';
-        btn.appendChild(img);
+        frame.appendChild(img);
+        var zoom = document.createElement('span');
+        zoom.className = 'appai-my-pet-designs__zoom';
+        var zoomImg = document.createElement('img');
+        zoomImg.alt = '';
+        zoomImg.src = item.thumbnailUrl || '';
+        zoom.appendChild(zoomImg);
+        var title = document.createElement('span');
+        title.className = 'appai-my-pet-designs__name';
+        title.textContent = name;
+        var meta = document.createElement('span');
+        meta.className = 'appai-my-pet-designs__pair';
+        meta.textContent = pair;
+        btn.appendChild(frame);
+        btn.appendChild(zoom);
+        btn.appendChild(title);
+        if (pair) btn.appendChild(meta);
+        if (active) {
+          var current = document.createElement('span');
+          current.className = 'appai-my-pet-designs__current';
+          current.textContent = 'Current';
+          btn.appendChild(current);
+        }
         btn.addEventListener('click', (function (chosen) {
           return function () { selectListedDesign(chosen); };
         })(item));
+        if (isFineHover()) {
+          btn.addEventListener('mouseenter', (function (chosen) {
+            return function () { previewDesignHover(chosen); };
+          })(item));
+          btn.addEventListener('mouseleave', function () { cancelDesignHover(true); });
+        }
         row.appendChild(btn);
       }
     }
 
     function placeDesigns() {
       if (!designsPop || !designsBtn) return;
-      var sheet = window.matchMedia('(max-width: 749px)').matches;
+      var sheet = isDesignSheet();
       designsPop.classList.toggle('appai-my-pet-designs--sheet', sheet);
       var panel = designsPop.querySelector('.appai-my-pet-designs');
       if (!panel) return;
@@ -1323,12 +1422,50 @@
         panel.style.width = '';
         return;
       }
+      panel.style.width = 'max-content';
+      panel.style.maxWidth = (window.innerWidth - 16) + 'px';
       var rect = designsBtn.getBoundingClientRect();
-      var width = Math.min(280, window.innerWidth - 16);
+      var width = panel.offsetWidth || 360;
       var left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-      panel.style.width = width + 'px';
       panel.style.left = left + 'px';
       panel.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+    }
+
+    function revealHeroAboveSheet() {
+      if (!isDesignSheet() || state.designUserScroll || !designsPop || designsPop.hidden) return;
+      var hero = (state.inlineHero && document.body.contains(state.inlineHero) && state.inlineHero) || findProductHeroImg() || findVisibleHeroImg();
+      if (!hero || !hero.getBoundingClientRect) return;
+      var rect = hero.getBoundingClientRect();
+      var panel = designsPop.querySelector('.appai-my-pet-designs');
+      var limit = panel ? panel.getBoundingClientRect().top : window.innerHeight * 0.6;
+      var pad = 12;
+      if (rect.top >= pad && rect.bottom <= limit - pad) return;
+      var y = window.scrollY || document.documentElement.scrollTop || 0;
+      var available = limit - pad * 2;
+      var next = rect.height >= available || rect.top < pad
+        ? y + rect.top - pad
+        : y + rect.bottom - (limit - pad);
+      window.scrollTo({ top: Math.max(0, next), behavior: 'smooth' });
+    }
+
+    function prefetchDesigns(list) {
+      var colour = currentColourName();
+      for (var i = 0; i < list.length; i++) {
+        (function (item) {
+          var saved = storedChoiceFor(shopifyProductId, item.renderId);
+          var cached = readResolveCache(item.renderId);
+          var pending = cached
+            ? Promise.resolve(cached)
+            : getJson('my-pet/resolve-render', { renderId: item.renderId });
+          pending.then(function (res) {
+            if (!res || !res.ok || !res.previewUrl) return;
+            writeResolveCache(res);
+            var map = res.previewUrlsByColor || {};
+            preloadUrl(urlForColourMap(map, colour) || res.previewUrl);
+            if (saved.colorName && saved.colorName !== colour) preloadUrl(urlForColourMap(map, saved.colorName));
+          });
+        })(list[i]);
+      }
     }
 
     function openDesigns() {
@@ -1337,20 +1474,158 @@
         designsPop = document.createElement('div');
         designsPop.className = 'appai-my-pet-designs-backdrop';
         designsPop.hidden = true;
-        designsPop.innerHTML = '<div class="appai-my-pet-designs" role="dialog" aria-label="Your designs"><div class="appai-my-pet-designs__row"></div></div>';
+        designsPop.innerHTML = '<div class="appai-my-pet-designs" role="dialog" aria-label="Your designs"><div class="appai-my-pet-designs__row"></div><button type="button" class="appai-my-pet-designs__done">Done</button></div>';
         document.body.appendChild(designsPop);
         designsPop.addEventListener('click', function (event) {
           if (event.target === designsPop) closeDesigns();
         });
+        designsPop.querySelector('.appai-my-pet-designs__done').addEventListener('click', closeDesigns);
         document.addEventListener('keydown', function (event) {
           if (event.key === 'Escape') closeDesigns();
         });
         window.addEventListener('resize', function () { if (designsPop && !designsPop.hidden) placeDesigns(); });
+        window.addEventListener('wheel', noteUserScroll, { passive: true });
+        window.addEventListener('touchmove', noteUserScroll, { passive: true });
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'PageUp' || event.key === 'PageDown' || event.key === ' ') noteUserScroll();
+        });
       }
       fillDesigns(state.designs || []);
-      placeDesigns();
       designsPop.hidden = false;
+      placeDesigns();
       designsBtn.setAttribute('aria-expanded', 'true');
+      prefetchDesigns(state.designs || []);
+      if (window.requestAnimationFrame) {
+        window.requestAnimationFrame(function () { window.requestAnimationFrame(revealHeroAboveSheet); });
+      } else {
+        revealHeroAboveSheet();
+      }
+    }
+
+    function paintHeroUrl(url) {
+      if (!url) return;
+      var hero = state.inlineHero || findProductHeroImg();
+      if (!hero) return;
+      state.inlineHero = hero;
+      swapInlineHero(hero, url);
+      if (state.previewUrlByColor) swapVariantSlides(state.previewUrlByColor);
+    }
+
+    function cancelDesignHover(restore) {
+      var stash = state.hoverStash;
+      state.designHovering = false;
+      state.designHoverId = null;
+      state.hoverStash = null;
+      if (!restore || !stash || state.designSwitchColour) return;
+      state.previewUrlByColor = stash.map || {};
+      state.previewUrl = stash.previewUrl || state.previewUrl;
+      state.holdColour = null;
+      var colour = currentColourName();
+      paintHeroUrl(urlForColourMap(state.previewUrlByColor, colour) || state.previewUrl);
+    }
+
+    function previewDesignHover(item) {
+      if (!isFineHover() || !item || state.designSwitchColour) return;
+      if (item.renderId === state.renderId || state.designHoverId === item.renderId) return;
+      state.designHoverId = item.renderId;
+      state.designHovering = true;
+      if (!state.hoverStash) {
+        state.hoverStash = {
+          map: Object.assign({}, state.previewUrlByColor || {}),
+          previewUrl: state.previewUrl || '',
+        };
+      }
+      var colour = currentColourName();
+      var cached = readResolveCache(item.renderId);
+      var pending = cached
+        ? Promise.resolve(cached)
+        : getJson('my-pet/resolve-render', { renderId: item.renderId });
+      pending.then(function (res) {
+        if (state.designHoverId !== item.renderId || !state.designHovering) return;
+        if (!res || !res.ok || !res.previewUrl) return;
+        writeResolveCache(res);
+        state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+          ? Object.assign({}, res.previewUrlsByColor)
+          : {};
+        var url = urlForColourMap(state.previewUrlByColor, colour) || res.previewUrl;
+        state.previewUrl = url;
+        state.holdColour = colour;
+        paintHeroUrl(url);
+      });
+    }
+
+    function clearDesignSwitchBadge() {
+      if (state.restorePending) return;
+      var badge = document.querySelector('.appai-my-pet-restore');
+      if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+    }
+
+    function namesMatch(a, b) {
+      return String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+    }
+
+    function releaseDesignSwitch(token, force) {
+      if (token != null && token !== designSwitchToken) return;
+      var colourOk = !state.designSwitchColour || namesMatch(currentColourName(), state.designSwitchColour);
+      var sizeOk = !state.designSwitchSize || namesMatch(currentSizeName(), state.designSwitchSize);
+      var media = '';
+      try { if (state.inlineHero) media = mediaColourForImg(state.inlineHero) || ''; } catch (e) {}
+      var mediaOk = !media || !state.designSwitchColour || namesMatch(media, state.designSwitchColour);
+      if (!force && (!colourOk || !sizeOk || !mediaOk) && Date.now() < (state.designSwitchDeadline || 0)) {
+        setTimeout(function () { releaseDesignSwitch(token, false); }, 150);
+        return;
+      }
+      state.designSwitchColour = null;
+      state.designSwitchSize = null;
+    }
+
+    function finishDesignSwitch(token) {
+      if (token != null && token !== designSwitchToken) return;
+      clearTimeout(state.designSwitchTimer);
+      state.designSwitchTimer = null;
+      clearDesignSwitchBadge();
+      releaseDesignSwitch(token, true);
+    }
+
+    function armDesignSwitch() {
+      var token = ++designSwitchToken;
+      state.designSwitchDeadline = Date.now() + 8000;
+      clearTimeout(state.designSwitchTimer);
+      var tries = 0;
+      function arm() {
+        if (token !== designSwitchToken) return;
+        if (showRestoreBadge() || tries > 20) return;
+        tries++;
+        setTimeout(arm, 80);
+      }
+      arm();
+      state.designSwitchTimer = setTimeout(function () { finishDesignSwitch(token); }, 8000);
+      return token;
+    }
+
+    function waitForDesignHero(url, token) {
+      function tick() {
+        if (token !== designSwitchToken) return;
+        var hero = state.inlineHero || findProductHeroImg() || findVisibleHeroImg();
+        var src = hero ? String(hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '') : '';
+        var ready = hero && url && (urlsMatch(src, url) || urlsMatch(hero.__appaiAssertUrl, url));
+        if (!ready) {
+          setTimeout(tick, 100);
+          return;
+        }
+        var done = function () {
+          if (token !== designSwitchToken) return;
+          clearDesignSwitchBadge();
+          releaseDesignSwitch(token, false);
+        };
+        if (hero.decode) hero.decode().then(done).catch(done);
+        else if (hero.complete && hero.naturalWidth > 0) done();
+        else {
+          hero.addEventListener('load', done, { once: true });
+          hero.addEventListener('error', done, { once: true });
+        }
+      }
+      tick();
     }
 
     function showResolvedDesign(res, colourOverride, recompositeMissing) {
@@ -1377,26 +1652,60 @@
 
     function selectListedDesign(item) {
       if (!item || state.restorePending) return;
-      closeDesigns();
-      if (item.renderId === state.renderId) return;
-      var token = ++designSwitchToken;
+      cancelDesignHover(false);
+      if (!isDesignSheet()) closeDesigns();
+      var saved = storedChoiceFor(shopifyProductId, item.renderId);
+      var fallbackColor = currentColourName();
+      var fallbackSize = currentSizeName();
+      var colorName = saved.colorName || fallbackColor;
+      var sizeName = saved.sizeName || fallbackSize;
+      var same = item.renderId === state.renderId
+        && namesMatch(colorName, fallbackColor)
+        && namesMatch(sizeName, fallbackSize);
+      if (same) {
+        if (!saved.colorName && !saved.sizeName && state.renderId) {
+          writeStoredVariantChoice(shopifyProductId, fallbackColor, fallbackSize);
+        }
+        console.log(TAG, 'design select', item.renderId,
+          'stored colour=' + (saved.colorName || '(none)'),
+          'stored size=' + (saved.sizeName || '(none)'),
+          'selected colour=' + (fallbackColor || '(none)'),
+          'selected size=' + (fallbackSize || '(none)'));
+        if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
+        revealHeroAboveSheet();
+        return;
+      }
+      var token = armDesignSwitch();
       var cached = readResolveCache(item.renderId);
       var pending = cached
         ? Promise.resolve(cached)
         : getJson('my-pet/resolve-render', { renderId: item.renderId });
       pending.then(function (res) {
         if (token !== designSwitchToken) return;
-        if (!res || !res.ok || !res.previewUrl) return;
-        var fallbackColor = checkedProductOption('colour') || currentInlineColour() || '';
-        var fallbackSize = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
-        var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
-        var applied = null;
-        if (picked.hadOwn && picked.colorName && state.applyExactVariant) {
-          applied = state.applyExactVariant(picked.colorName, picked.sizeName || fallbackSize || 'M');
+        if (!res || !res.ok || !res.previewUrl) {
+          finishDesignSwitch(token);
+          return;
         }
-        showResolvedDesign(res, applied || picked.colorName || fallbackColor, true);
-        if (!picked.hadOwn || applied) rememberVariantChoice();
-      });
+        var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
+        state.designSwitchColour = picked.colorName || colorName || '';
+        state.designSwitchSize = picked.sizeName || sizeName || '';
+        if (state.applyExactVariant && state.designSwitchColour) {
+          state.applyExactVariant(state.designSwitchColour, state.designSwitchSize || fallbackSize || 'M');
+        }
+        var selectedColour = currentColourName();
+        var selectedSize = currentSizeName();
+        console.log(TAG, 'design select', item.renderId,
+          'stored colour=' + (saved.colorName || '(none)'),
+          'stored size=' + (saved.sizeName || '(none)'),
+          'selected colour=' + (selectedColour || '(none)'),
+          'selected size=' + (selectedSize || '(none)'));
+        writeStoredVariantChoice(shopifyProductId, state.designSwitchColour, state.designSwitchSize);
+        var url = showResolvedDesign(res, state.designSwitchColour || selectedColour, true);
+        if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
+        revealHeroAboveSheet();
+        if (url) waitForDesignHero(url, token);
+        else finishDesignSwitch(token);
+      }).catch(function () { finishDesignSwitch(token); });
     }
 
     if (designsBtn) {
@@ -1526,7 +1835,11 @@
     }
 
     function rememberVariantChoice() {
-      if (state.restorePending || window.__appaiSelectingDefaultSize) return;
+      if (state.restorePending || window.__appaiSelectingDefaultSize || state.designHovering) return;
+      if (state.designSwitchColour || state.designSwitchSize) {
+        writeStoredVariantChoice(shopifyProductId, state.designSwitchColour || '', state.designSwitchSize || '');
+        return;
+      }
       if (!state.renderId) return;
       var info = currentVariantInfo(root);
       var color = checkedProductOption('colour') || currentInlineColour() || info.colorName;
@@ -1706,18 +2019,21 @@
         var id = String(variant.id);
         var form = findMainProductForm(root);
         var idInput = form ? form.querySelector('input[name="id"], select[name="id"]') : null;
-        window.__appaiSelectingDefaultSize = true;
-        try {
-          var sizeRadio = findKindRadio(picker, 'size', actualSize, true);
-          var colourRadio = findKindRadio(picker, 'colour', actualColor, true);
-          if (sizeRadio) markRadio(sizeRadio, id);
-          if (colourRadio) markRadio(colourRadio, id);
-          if (idInput) idInput.value = id;
-          var fire = colourRadio || sizeRadio || idInput;
-          if (fire) fire.dispatchEvent(new Event('change', { bubbles: true }));
-        } finally {
-          window.__appaiSelectingDefaultSize = false;
-        }
+        holdPageScroll(function () {
+          window.__appaiSelectingDefaultSize = true;
+          try {
+            var sizeRadio = findKindRadio(picker, 'size', actualSize, true);
+            var colourRadio = findKindRadio(picker, 'colour', actualColor, true);
+            if (sizeRadio) markRadio(sizeRadio, id);
+            if (colourRadio) markRadio(colourRadio, id);
+            if (idInput) idInput.value = id;
+            if (sizeRadio) sizeRadio.dispatchEvent(new Event('change', { bubbles: true }));
+            if (colourRadio) colourRadio.dispatchEvent(new Event('change', { bubbles: true }));
+            else if (!sizeRadio && idInput) idInput.dispatchEvent(new Event('change', { bubbles: true }));
+          } finally {
+            window.__appaiSelectingDefaultSize = false;
+          }
+        });
         return actualColor;
       }
 
@@ -3183,9 +3499,10 @@
       // checked swatch input is the shopper's actual intent.
       var info = currentVariantInfo(root);
       var swatchColor = readSwatchColor(root);
-      var effectiveColor = (swatchColor && info.colorName && swatchColor !== info.colorName)
+      var forced = state.designSwitchColour ? (canonicalPreviewColor(state.designSwitchColour) || state.designSwitchColour) : null;
+      var effectiveColor = forced || ((swatchColor && info.colorName && swatchColor !== info.colorName)
         ? swatchColor
-        : (info.colorName || swatchColor || null);
+        : (info.colorName || swatchColor || null));
       if (swatchColor && info.colorName && swatchColor !== info.colorName) {
         console.warn(TAG, 'inline activate: COLOUR MISMATCH form=' + info.colorName + ' swatch=' + swatchColor + ' — using swatch');
       }
@@ -3403,7 +3720,9 @@
         // wrong variant; the checked swatch is the shopper's actual intent.
         var swColor = readSwatchColor(root);
         var ownColour = mediaColourForImg(hero);
-        var colorName = ownColour
+        var forced = state.designSwitchColour ? (canonicalPreviewColor(state.designSwitchColour) || state.designSwitchColour) : null;
+        var colorName = forced
+          || ownColour
           || state.holdColour
           || ((swColor && info.colorName && swColor !== info.colorName)
             ? swColor
@@ -3646,6 +3965,7 @@
           console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', info.colorName, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(info.colorName);
         }
+        rememberVariantChoice();
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -3711,6 +4031,11 @@
         var effectiveColor = (swColor && now.colorName && swColor !== now.colorName)
           ? swColor  // swatch is the shopper's actual intent
           : (now.colorName || swColor);
+        var sizeNow = checkedProductOption('size') || now.sizeId || '';
+        if (sizeNow && sizeNow !== last.__size) {
+          last.__size = sizeNow;
+          rememberVariantChoice();
+        }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
           last = now; last.__swatch = swColor; return;
@@ -3728,6 +4053,7 @@
           console.log(TAG, 'inline form poll: no cached URL for', effectiveColor, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(effectiveColor);
         }
+        rememberVariantChoice();
       }, 500);
     }
 

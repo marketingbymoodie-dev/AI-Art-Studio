@@ -287,40 +287,122 @@
   }
   .appai-my-pet-designs__row {
     display: flex;
-    gap: 0.5rem;
-    overflow-x: auto;
+    gap: 0.75rem;
+    align-items: flex-start;
   }
   .appai-my-pet-designs__thumb {
+    position: relative;
     flex: 0 0 auto;
-    width: 64px;
-    height: 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 112px;
     min-width: 44px;
     min-height: 44px;
+    margin: 0;
     padding: 0;
-    border: 2px solid transparent;
-    border-radius: 8px;
+    border: 0;
+    background: none;
+    color: #1a1a1a;
+    font: inherit;
+    cursor: pointer;
+    text-align: center;
+  }
+  .appai-my-pet-designs__frame {
+    width: 112px;
+    height: 112px;
+    border-radius: 10px;
     overflow: hidden;
     background: #f3f3f3;
-    cursor: pointer;
+    border: 2px solid transparent;
   }
-  .appai-my-pet-designs__thumb[aria-pressed="true"] {
+  .appai-my-pet-designs__thumb[aria-pressed="true"] .appai-my-pet-designs__frame {
     border-color: #1a1a1a;
   }
-  .appai-my-pet-designs__thumb img {
+  .appai-my-pet-designs__frame img,
+  .appai-my-pet-designs__zoom img {
     display: block;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
+  }
+  .appai-my-pet-designs__name,
+  .appai-my-pet-designs__pair,
+  .appai-my-pet-designs__current {
+    display: block;
+    max-width: 100%;
+    line-height: 1.2;
+  }
+  .appai-my-pet-designs__name {
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .appai-my-pet-designs__pair,
+  .appai-my-pet-designs__current {
+    font-size: 0.75rem;
+    color: #555;
+  }
+  .appai-my-pet-designs__current { font-weight: 700; color: #1a1a1a; }
+  .appai-my-pet-designs__zoom { display: none; }
+  .appai-my-pet-designs__done {
+    display: none;
+    width: 100%;
+    margin-top: 0.75rem;
+    min-height: 44px;
+    border: 0;
+    border-radius: 999px;
+    background: #1a1a1a;
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .appai-my-pet-designs__thumb:hover .appai-my-pet-designs__zoom,
+    .appai-my-pet-designs__thumb:focus-visible .appai-my-pet-designs__zoom {
+      display: block;
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      width: 180px;
+      height: 180px;
+      transform: translateX(-50%);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      border: 2px solid #1a1a1a;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+      pointer-events: none;
+    }
   }
   @media (max-width: 749px) {
-    .appai-my-pet-designs-backdrop { background: rgba(0, 0, 0, 0.35); }
+    .appai-my-pet-designs-backdrop { background: transparent; }
     .appai-my-pet-designs--sheet .appai-my-pet-designs {
       left: 0;
       right: 0;
       bottom: 0;
+      display: flex;
+      flex-direction: column;
       width: auto;
+      max-height: 40vh;
       border-radius: 16px 16px 0 0;
       padding: 0.75rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
     }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      overflow: auto;
+      min-height: 0;
+    }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__thumb { width: 100%; }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__frame {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 1;
+    }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__done { display: block; flex: 0 0 auto; }
   }
 </style>

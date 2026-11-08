@@ -1001,6 +1001,7 @@ export async function listMyPetRendersForDevice(args: {
   createdAt: string;
   thumbnailUrl: string;
   colorName: string | null;
+  sizeName: string | null;
 }>> {
   const rows = await db
     .select()
@@ -1035,13 +1036,21 @@ export async function listMyPetRendersForDevice(args: {
     const exists = await myPetObjectExists(row.previewPath).catch(() => false);
     if (!exists) return null;
     try {
-      const thumbnailUrl = await signedMyPetThumbnail(row.previewPath);
+      // The garment mockup makes the pet a few pixels tall. The edited
+      // artwork is the design itself; fall back to the mockup if it's gone.
+      let thumbnailUrl: string;
+      try {
+        thumbnailUrl = await signedLibraryUrl(`my-pet/edited/${row.id}.png`);
+      } catch {
+        thumbnailUrl = await signedMyPetThumbnail(row.previewPath);
+      }
       return {
         renderId: row.id,
         jobId: row.jobId,
         createdAt: row.createdAt.toISOString(),
         thumbnailUrl,
         colorName: row.colorId,
+        sizeName: row.sizeId,
       };
     } catch {
       return null;
