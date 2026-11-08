@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Loader2 } from "lucide-react";
-import { apiFetch, queryClient } from "@/lib/queryClient";
+import { apiFetch } from "@/lib/queryClient";
 import { MockupBulkImport } from "@/pages/admin/MockupBulkImport";
 
 type ColourReading = {
@@ -114,69 +114,6 @@ function Field({ label, children, id }: { label: string; children: ReactNode; id
       <Label>{label}</Label>
       {children}
     </label>
-  );
-}
-
-type CatalogueProductRow = {
-  id: string;
-  title: string;
-  shopifyProductId: string | null;
-  myPetEnabled: boolean;
-};
-
-function CatalogueMyPetList() {
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const products = useQuery<{ products: CatalogueProductRow[] }>({
-    queryKey: ["/api/platform/catalogue-studio/products"],
-  });
-  const rows = products.data?.products || [];
-  return (
-    <section className="space-y-1" data-testid="catalogue-my-pet-products">
-      <h2 className="font-medium">My Pet</h2>
-      {products.isLoading ? <p className="text-muted-foreground">Loading products…</p> : null}
-      {rows.length ? (
-        <ul className="space-y-1">
-          {rows.map((row) => (
-            <li key={row.id} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={row.myPetEnabled !== false}
-                disabled={busyId === row.id}
-                aria-label={`My Pet for ${row.title}`}
-                data-testid={`catalogue-my-pet-${row.id}`}
-                onChange={async (event) => {
-                  const enabled = event.target.checked;
-                  const key = ["/api/platform/catalogue-studio/products"];
-                  const previous = queryClient.getQueryData<{ products: CatalogueProductRow[] }>(key);
-                  queryClient.setQueryData(key, {
-                    products: (previous?.products || rows).map((item) => item.id === row.id ? { ...item, myPetEnabled: enabled } : item),
-                  });
-                  setBusyId(row.id);
-                  setError("");
-                  const res = await fetch("/api/platform/catalogue-studio/my-pet", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ designProductId: row.id, enabled }),
-                  });
-                  const body = await res.json().catch(() => ({}));
-                  setBusyId(null);
-                  if (!res.ok) {
-                    if (previous) queryClient.setQueryData(key, previous);
-                    setError(body.error || "Could not update My Pet");
-                  }
-                }}
-              />
-              <span className="truncate">{row.title}</span>
-            </li>
-          ))}
-        </ul>
-      ) : products.isLoading ? null : (
-        <p className="text-muted-foreground">No catalogue products yet.</p>
-      )}
-      {error ? <p className="text-xs">{error}</p> : null}
-    </section>
   );
 }
 
@@ -575,8 +512,6 @@ export default function CatalogueStudioPage() {
               <p className="font-medium">Candidate {candidate.data?.id || "pending-bed-etiquette"}</p>
               <p>Status: {verdict}</p>
             </div>
-            <CatalogueMyPetList />
-
             <section className="space-y-1" data-testid="catalogue-studio-queue">
               <h2 className="font-medium">Queue</h2>
               {queue.length ? (

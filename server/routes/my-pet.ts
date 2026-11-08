@@ -25,6 +25,12 @@ import {
 import { generationErrorCategory } from "../generation-events";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
 import { verifyAppProxySignature } from "../shopify-app-credentials";
+import { db } from "../db";
+import { and, asc, eq } from "drizzle-orm";
+import { designProducts } from "@shared/schema";
+import { storage } from "../storage";
+import { ensureValidOfflineAccessToken } from "../shopify-offline-token";
+import { setProductMyPetEnabled } from "../my-pet-metafields";
 
 function friendlyGenerateError(err: unknown): string {
   const category = generationErrorCategory(err);
@@ -71,6 +77,69 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     } catch (err: any) {
       res.status(400).json({ error: err?.message || "Could not save settings" });
     }
+  });
+
+  app.get("/api/admin/my-pet-settings/products", isAuthenticated, async (req: any, res: Response) => {
+    const shop = normalizeMyshopifyShopDomain(req.shopDomain);
+    if (!isMyPetSettingsShop(shop)) {
+      return res.status(403).json({ error: "My Pet settings are not available for this store" });
+    }
+    const products = await db
+      .select({
+        id: designProducts.id,
+        title: designProducts.title,
+        shopifyProductId: designProducts.shopifyProductId,
+        myPetEnabled: designProducts.myPetEnabled,
+        status: designProducts.status,
+      })
+      .from(designProducts)
+      .where(eq(designProducts.shop, shop))
+      .orderBy(asc(designProducts.title));
+    res.json({ products });
+  });
+
+  app.patch("/api/admin/my-pet-settings/products/:id", isAuthenticated, async (req: any, res: Response) => {
+    const shop = normalizeMyshopifyShopDomain(req.shopDomain);
+    if (!isMyPetSettingsShop(shop)) {
+      return res.status(403).json({ error: "My Pet settings are not available for this store" });
+    }
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be true or false" });
+    }
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, String(req.params.id || "")), eq(designProducts.shop, shop)))
+      .limit(1);
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+    if (!row.shopifyProductId) {
+      return res.status(409).json({ error: "This listing has no Shopify product yet." });
+    }
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation?.accessToken) {
+      return res.status(409).json({ error: "Shopify token is not stored for this store." });
+    }
+    const tokenReady = await ensureValidOfflineAccessToken(installation);
+    const token = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+    try {
+      await setProductMyPetEnabled(shop, token, row.shopifyProductId, enabled);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: message });
+    }
+    const [updated] = await db
+      .update(designProducts)
+      .set({ myPetEnabled: enabled, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning({
+        id: designProducts.id,
+        title: designProducts.title,
+        shopifyProductId: designProducts.shopifyProductId,
+        myPetEnabled: designProducts.myPetEnabled,
+        status: designProducts.status,
+      });
+    res.json({ product: updated });
   });
 
   // ── Storefront (App Proxy) ──────────────────────────────────────────────

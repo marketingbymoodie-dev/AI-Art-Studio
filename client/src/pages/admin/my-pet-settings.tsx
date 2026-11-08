@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, parseApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Save, Loader2, Search, ExternalLink } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import AdminLayout from "@/components/admin-layout";
 import {
   MY_PET_ART_STYLES,
@@ -26,6 +27,84 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+
+type MyPetProductRow = {
+  id: string;
+  title: string;
+  shopifyProductId: string | null;
+  myPetEnabled: boolean;
+  status: string;
+};
+
+function MyPetPerProduct() {
+  const { toast } = useToast();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const products = useQuery<{ products: MyPetProductRow[] }>({
+    queryKey: ["/api/admin/my-pet-settings/products"],
+  });
+  const rows = products.data?.products || [];
+  const key = ["/api/admin/my-pet-settings/products"];
+
+  async function setEnabled(row: MyPetProductRow, enabled: boolean) {
+    const previous = queryClient.getQueryData<{ products: MyPetProductRow[] }>(key);
+    queryClient.setQueryData(key, {
+      products: (previous?.products || rows).map((item) => item.id === row.id ? { ...item, myPetEnabled: enabled } : item),
+    });
+    setBusyId(row.id);
+    try {
+      const res = await apiRequest("PATCH", `/api/admin/my-pet-settings/products/${row.id}`, { enabled });
+      await res.json();
+    } catch (err) {
+      if (previous) queryClient.setQueryData(key, previous);
+      toast({
+        title: "Could not update My Pet",
+        description: parseApiErrorMessage(err),
+        variant: "destructive",
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <Card data-testid="my-pet-per-product">
+      <CardHeader>
+        <CardTitle>My Pet per product</CardTitle>
+        <CardDescription>
+          On or off for each design on this store. The switch writes the product record and the Shopify metafield.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {products.isLoading ? <p className="text-sm text-muted-foreground">Loading products…</p> : null}
+        {products.isError ? <p className="text-sm">Could not load design products.</p> : null}
+        {!products.isLoading && !products.isError && rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No design products on this store.</p>
+        ) : null}
+        {rows.length ? (
+          <ul className="divide-y">
+            {rows.map((row) => (
+              <li key={row.id} className="flex items-center justify-between gap-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{row.title}</p>
+                  {!row.shopifyProductId ? (
+                    <p className="text-xs text-muted-foreground">Not on Shopify yet</p>
+                  ) : null}
+                </div>
+                <Switch
+                  checked={row.myPetEnabled !== false}
+                  disabled={busyId === row.id || !row.shopifyProductId}
+                  aria-label={`My Pet for ${row.title}`}
+                  data-testid={`my-pet-product-${row.id}`}
+                  onCheckedChange={(enabled) => { void setEnabled(row, enabled); }}
+                />
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 const STYLE_LABELS: Record<MyPetArtStyle, string> = {
   woodcut: "Woodcut",
@@ -102,6 +181,8 @@ export default function MyPetSettingsPage() {
             immediately — no redeploy.
           </p>
         </div>
+
+        <MyPetPerProduct />
 
         {isLoading ? (
           <div className="space-y-4">
