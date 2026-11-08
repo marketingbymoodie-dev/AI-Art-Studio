@@ -3366,52 +3366,120 @@
       return canonicalPreviewColor(raw) || raw;
     }
 
-    // Slides that actually belong to a colour. A leading slide with no
-    // media id (announcement bar, empty template) must not shift the
-    // thumbnail index off the colour it points at.
-    function colourSlides() {
-      var slides = pageGallerySlides();
-      var out = [];
-      for (var i = 0; i < slides.length; i++) {
-        if (colourForSlide(slides[i])) out.push(slides[i]);
-      }
-      return out.length ? out : slides;
+    function fileKey(url) {
+      var path = String(url || '').split('?')[0].split('#')[0];
+      var file = path.split('/').pop() || '';
+      try { file = decodeURIComponent(file); } catch (e) {}
+      return file.toLowerCase();
     }
 
-    function colourForSlide(slide) {
-      if (!slide) return null;
-      var id = slide.getAttribute('slide-id') || '';
-      if (!id) {
-        var host = slide.querySelector ? slide.querySelector('[data-media-id]') : null;
-        if (host) id = host.getAttribute('data-media-id') || '';
+    function thumbImageFile(img) {
+      if (!img || !img.getAttribute) return '';
+      var raw = img.getAttribute('data-appai-my-pet-slide-original-src')
+        || img.getAttribute('data-appai-my-pet-original-src')
+        || img.getAttribute('src')
+        || '';
+      return fileKey(raw);
+    }
+
+    function attrMediaId(el) {
+      if (!el || !el.getAttribute) return '';
+      var names = ['data-media-id', 'data-media', 'slide-id', 'data-slide-id', 'data-appai-my-pet-slide'];
+      for (var i = 0; i < names.length; i++) {
+        var value = el.getAttribute(names[i]);
+        if (value) return String(value);
       }
-      return colourForMediaId(id);
+      return '';
+    }
+
+    // Colour comes from this thumbnail's own media, never from its index
+    // and never from whichever slide the theme currently calls active.
+    // Horizon's page thumbs have no data-media-id; the img (or the src we
+    // stashed before swapping it) matches a variant featured_media.
+    function mediaIdFromThumb(btn) {
+      if (!btn) return '';
+      var img = btn.querySelector ? btn.querySelector('img') : null;
+      var direct = attrMediaId(btn) || attrMediaId(img);
+      if (direct && colourForMediaId(direct)) return direct;
+      var controls = btn.getAttribute('aria-controls') || '';
+      if (controls && typeof document.getElementById === 'function') {
+        var target = document.getElementById(controls);
+        var fromTarget = attrMediaId(target);
+        if (fromTarget && colourForMediaId(fromTarget)) return fromTarget;
+      }
+      var file = thumbImageFile(img);
+      var alt = (img && img.getAttribute('alt')) || '';
+      var variants = [];
+      try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+      var fileHit = '';
+      var altHit = '';
+      for (var i = 0; i < variants.length; i++) {
+        var media = variants[i] && variants[i].featured_media;
+        if (!media || media.id == null) continue;
+        var id = String(media.id);
+        if (!colourForMediaId(id)) continue;
+        if (file && !fileHit) {
+          var src = '';
+          if (media.preview_image && media.preview_image.src) src = media.preview_image.src;
+          else if (media.src) src = media.src;
+          if (src && fileKey(src) === file) fileHit = id;
+        }
+        if (alt && !altHit && media.alt && String(media.alt).trim() === String(alt).trim()) altHit = id;
+      }
+      if (fileHit) return fileHit;
+      if (altHit) return altHit;
+      if (file) {
+        var slides = pageGallerySlides();
+        for (var s = 0; s < slides.length; s++) {
+          var simg = slides[s].querySelector ? slides[s].querySelector('img') : null;
+          if (!simg || thumbImageFile(simg) !== file) continue;
+          var sid = slides[s].getAttribute('slide-id') || attrMediaId(slides[s]);
+          if (sid && colourForMediaId(sid)) return String(sid);
+        }
+      }
+      var labelled = (img && colourFromLabel(img.getAttribute('alt') || ''))
+        || colourFromLabel(btn.getAttribute('aria-label') || '');
+      if (labelled) {
+        var map = getMediaIdByColor(root);
+        var want = String(labelled).trim().toLowerCase();
+        for (var color in map) {
+          if (!Object.prototype.hasOwnProperty.call(map, color)) continue;
+          if (String(color).trim().toLowerCase() === want) return String(map[color]);
+        }
+      }
+      return '';
+    }
+
+    function thumbIndex(btn) {
+      if (!btn) return -1;
+      var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
+      var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
+      var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
+      for (var i = 0; i < list.length; i++) if (list[i] === btn) return i;
+      return -1;
     }
 
     function colourForThumbButton(btn) {
-      if (!btn) return null;
-      var img = btn.querySelector ? btn.querySelector('img') : null;
-      var fromMedia = img ? mediaColourForImg(img) : mediaColourForImg(btn);
-      if (fromMedia) return fromMedia;
-      var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
-      if (isZoom) {
-        var zoomLabel = (img && colourFromLabel(img.getAttribute('alt') || '')) || colourFromLabel(btn.getAttribute('aria-label') || '');
-        if (zoomLabel) return zoomLabel;
+      return colourForMediaId(mediaIdFromThumb(btn));
+    }
+
+    function paintSlidesForMedia(mediaId) {
+      if (!mediaId) return;
+      var colour = colourForMediaId(mediaId);
+      var url = colour ? urlForColourMap(state.previewUrlByColor, colour) : null;
+      if (!url) return;
+      var id = String(mediaId);
+      var slides = pageGallerySlides();
+      for (var i = 0; i < slides.length; i++) {
+        var sid = slides[i].getAttribute('slide-id') || attrMediaId(slides[i]);
+        if (String(sid) !== id) continue;
+        var imgs = slides[i].querySelectorAll ? slides[i].querySelectorAll('img') : [];
+        for (var k = 0; k < imgs.length; k++) applyPreviewSrc(imgs[k], url);
       }
-      var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
-      var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
-      var index = -1;
-      for (var i = 0; i < list.length; i++) {
-        if (list[i] === btn) { index = i; break; }
-      }
-      var slides = colourSlides();
-      if (index >= 0 && slides[index]) {
-        var fromSlide = colourForSlide(slides[index]);
-        if (fromSlide) return fromSlide;
-      }
-      var fromAlt = img ? colourFromLabel(img.getAttribute('alt') || '') : null;
-      if (fromAlt) return fromAlt;
-      return colourFromLabel(btn.getAttribute('aria-label') || '');
+    }
+
+    function srcTail(url) {
+      return String(url || '').split('?')[0].split('#')[0].split('/').pop();
     }
 
     function applyOwnPreview(img) {
@@ -3536,33 +3604,48 @@
         if (!t || !t.closest) return;
         var btn = t.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
         if (!btn) return;
-        var colour = colourForThumbButton(btn);
-        if (!colour) return;
         var isZoom = surface === 'zoom-thumb' || (btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail'));
         var zoomOpen = zoomDialogOpen(zoomObserveTarget());
         if (isZoom || zoomOpen) {
-          console.log(TAG, 'zoom thumb', colour, 'stay in zoom');
-          state.zoomSlideColour = colour;
+          var zoomColour = colourForThumbButton(btn);
+          if (!zoomColour) return;
+          console.log(TAG, 'zoom thumb', zoomColour, 'stay in zoom');
+          state.zoomSlideColour = zoomColour;
           var zoom = mainZoomDialog();
           if (zoom) swapZoomDialog(zoom);
           return;
         }
-        setTimeout(function () {
+        // Theme's own click handler runs on the way back up. Sync on the
+        // next frame so we don't read or fight its slide change. Colour
+        // is taken from the clicked button, not from the active slide.
+        var afterTheme = window.requestAnimationFrame
+          ? function (fn) { requestAnimationFrame(fn); }
+          : function (fn) { setTimeout(fn, 16); };
+        afterTheme(function () {
           if (!state.inlineApplied || state.reverted || zoomDialogOpen(zoomObserveTarget())) return;
-          var sel = 'button.slideshow-controls__thumbnail';
-          var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
-          var index = -1;
-          for (var i = 0; i < list.length; i++) if (list[i] === btn) { index = i; break; }
-          var slides = colourSlides();
-          var slide = index >= 0 ? slides[index] : null;
-          if (slide) {
-            var imgs = slide.querySelectorAll('img');
-            for (var k = 0; k < imgs.length; k++) applyOwnPreview(imgs[k]);
+          if (!document.body.contains(btn)) return;
+          var mediaId = mediaIdFromThumb(btn);
+          var index = thumbIndex(btn);
+          var colour = colourForMediaId(mediaId);
+          var written = '';
+          if (colour) {
+            paintSlidesForMedia(mediaId);
+            var thumbImg = btn.querySelector('img');
+            written = urlForColourMap(state.previewUrlByColor, colour) || '';
+            if (thumbImg && written) applyPreviewSrc(thumbImg, written);
+            selectGalleryColour(colour);
           }
-          var thumbImg = btn.querySelector('img');
-          if (thumbImg) applyOwnPreview(thumbImg);
-          selectGalleryColour(colour);
-        }, 0);
+          var swatch = '';
+          try { swatch = readSwatchColor(root) || ''; } catch (e) {}
+          var hero = findVisibleHeroImg() || state.inlineHero;
+          var heroSrc = hero ? (hero.currentSrc || hero.getAttribute('src') || '') : '';
+          console.log(TAG, 'thumb click',
+            'media=' + (mediaId || ''),
+            'index=' + index,
+            'colour=' + (colour || ''),
+            'swatch=' + (swatch || ''),
+            'hero=' + srcTail(heroSrc || written));
+        });
       }, true);
     }
 
