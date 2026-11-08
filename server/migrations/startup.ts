@@ -36,6 +36,9 @@ import {
 // ── Column additions ──────────────────────────────────────────────────────────
 
 const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
+  { table: "flat_order_submissions", column: "print_file_paths", type: "JSONB" },
+  { table: "flat_order_submissions", column: "attempt_count", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "flat_order_submissions", column: "next_attempt_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "customizer_hub_url",          type: "TEXT" },
   { table: "shopify_installations", column: "plan_name",                   type: "TEXT" },
   { table: "shopify_installations", column: "plan_status",                 type: "TEXT" },

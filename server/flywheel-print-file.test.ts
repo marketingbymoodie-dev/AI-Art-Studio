@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { MY_PET_ART_STYLES } from "@shared/myPetSettings";
 import {
   buildFlywheelPrintFile,
   fittedPrintPixels,
@@ -27,6 +28,10 @@ describe("flywheel print file", () => {
     expect(printFilePathForStyle("pen-ink")).toBe("vectorize");
     expect(printFilePathForStyle("vintage-engraving")).toBe("upscale");
     expect(printFilePathForStyle("retro-character")).toBe("upscale");
+    expect(MY_PET_ART_STYLES).toHaveLength(6);
+    for (const style of MY_PET_ART_STYLES) {
+      expect(["vectorize", "upscale"]).toContain(printFilePathForStyle(style));
+    }
   });
 
   it("reads the front print area from the stored harvest and rejects a type with none", () => {

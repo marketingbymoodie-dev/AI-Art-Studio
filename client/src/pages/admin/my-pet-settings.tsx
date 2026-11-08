@@ -419,6 +419,15 @@ type MyPetOrderLookup = {
   orderId: string | null;
   orderName: string | null;
   renders: MyPetOrderRender[];
+  submission: {
+    status: string;
+    attempts: number;
+    lastError: string | null;
+    nextAttemptAt: string | null;
+    printifyOrderId: string | null;
+    canResubmit: boolean;
+    files: Array<{ key: string; path: string; previewUrl: string | null }>;
+  } | null;
 };
 
 function OrderLookupCard() {
@@ -426,6 +435,7 @@ function OrderLookupCard() {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<MyPetOrderLookup | null>(null);
   const [searching, setSearching] = useState(false);
+  const [resubmitting, setResubmitting] = useState(false);
 
   async function runLookup() {
     const trimmed = query.trim();
@@ -447,6 +457,20 @@ function OrderLookupCard() {
       toast({ title: "Lookup failed", description: err?.message, variant: "destructive" });
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function resubmit() {
+    if (!result?.orderId) return;
+    setResubmitting(true);
+    try {
+      await apiRequest("POST", "/api/admin/my-pet-orders/resubmit", { orderId: result.orderId });
+      toast({ title: "Resubmit started", description: "A fresh print-file URL is being sent to Printify." });
+      await runLookup();
+    } catch (err: any) {
+      toast({ title: "Resubmit failed", description: parseApiErrorMessage(err), variant: "destructive" });
+    } finally {
+      setResubmitting(false);
     }
   }
 
@@ -476,7 +500,49 @@ function OrderLookupCard() {
           </Button>
         </div>
 
-        {result?.found && result.renders.length > 0 && (
+        {result?.found && (
+          <div className="space-y-4">
+            <div className="border rounded-md p-3 space-y-2 text-sm">
+              <div className="font-medium">Printify submission</div>
+              {!result.submission ? (
+                <p className="text-muted-foreground">No Printify submission yet.</p>
+              ) : (
+                <>
+                  <div className="text-muted-foreground text-xs space-y-1">
+                    <div>status: <code>{result.submission.status}</code> · attempts: {result.submission.attempts}</div>
+                    {result.submission.printifyOrderId && <div>Printify order: <code>{result.submission.printifyOrderId}</code></div>}
+                    {result.submission.nextAttemptAt && <div>next attempt: {new Date(result.submission.nextAttemptAt).toLocaleString()}</div>}
+                    {result.submission.lastError && <div className="text-destructive break-all">last error: {result.submission.lastError}</div>}
+                  </div>
+                  {result.submission.files.length > 0 && (
+                    <div className="flex flex-wrap gap-3">
+                      {result.submission.files.map((file) => (
+                        <a key={file.key} href={file.previewUrl || undefined} target="_blank" rel="noreferrer" className="block">
+                          {file.previewUrl ? (
+                            <img src={file.previewUrl} alt={file.key} className="w-24 h-24 object-contain bg-muted rounded" />
+                          ) : (
+                            <div className="w-24 h-24 bg-muted rounded flex items-center justify-center text-xs text-muted-foreground">No preview</div>
+                          )}
+                          <div className="text-[10px] text-muted-foreground mt-1 break-all max-w-24">{file.path}</div>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                  {result.submission.canResubmit && result.orderId && (
+                    <Button
+                      variant="outline"
+                      onClick={resubmit}
+                      disabled={resubmitting}
+                      data-testid="button-my-pet-resubmit-printify"
+                    >
+                      {resubmitting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                      Resubmit to Printify
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+            {result.renders.length > 0 && (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               {result.renders.length} My Pet render{result.renders.length === 1 ? "" : "s"} on order{" "}
@@ -527,6 +593,8 @@ function OrderLookupCard() {
                 </div>
               </div>
             ))}
+          </div>
+            )}
           </div>
         )}
         {result && !result.found && (

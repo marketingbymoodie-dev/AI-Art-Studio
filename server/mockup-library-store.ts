@@ -173,8 +173,21 @@ export async function writeLibraryObject(path: string, body: Buffer, contentType
   await putObject(path, body, contentType);
 }
 
-export async function signedLibraryUrl(path: string): Promise<string> {
-  const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, 60 * 60);
+export async function libraryObjectExists(path: string): Promise<boolean> {
+  const idx = path.lastIndexOf("/");
+  const dir = idx >= 0 ? path.slice(0, idx) : "";
+  const name = idx >= 0 ? path.slice(idx + 1) : path;
+  try {
+    const { data, error } = await supabase().storage.from(BUCKET).list(dir, { limit: 1, search: name });
+    if (error || !data) return false;
+    return data.some((file) => file.name === name);
+  } catch {
+    return false;
+  }
+}
+
+export async function signedLibraryUrl(path: string, expiresSeconds = 60 * 60): Promise<string> {
+  const { data, error } = await supabase().storage.from(BUCKET).createSignedUrl(path, expiresSeconds);
   if (error || !data?.signedUrl) throw new Error(error?.message || "Could not sign the stored mockup");
   return data.signedUrl;
 }

@@ -4,6 +4,7 @@
  */
 import type { Express, Request, RequestHandler, Response } from "express";
 import { isMyPetSettingsShop } from "@shared/myPetSettings";
+import { resubmitMyPetPrintify } from "../my-pet-printify-retry";
 import { clientIpFromReq } from "../creator-rate-limit";
 import { ensureMyPetDeviceKeyFromProxy } from "../my-pet-device";
 import {
@@ -398,6 +399,20 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     if (!orderName && !orderId) return res.status(400).json({ error: "orderName or orderId is required" });
     const result = await getMyPetOrderDetails({ shop: req.shopDomain, orderName, orderId });
     res.json(result);
+  });
+
+  app.post("/api/admin/my-pet-orders/resubmit", isAuthenticated, async (req: any, res: Response) => {
+    if (!isMyPetSettingsShop(req.shopDomain)) {
+      return res.status(403).json({ error: "My Pet is not available for this store" });
+    }
+    const orderId = String(req.body?.orderId || "").trim();
+    if (!orderId) return res.status(400).json({ error: "orderId is required" });
+    const result = await resubmitMyPetPrintify(req.shopDomain, orderId);
+    if (!result.ok) {
+      const status = /another shop/i.test(result.error) ? 403 : /already submitted|no stored payload/i.test(result.error) ? 409 : 404;
+      return res.status(status).json({ error: result.error });
+    }
+    res.json({ ok: true });
   });
 
   app.get("/api/proxy/my-pet/resolve-token", myPetProxyAuth, async (req: Request, res: Response) => {

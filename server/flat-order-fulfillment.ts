@@ -89,6 +89,11 @@ import { flagOrderNeedsAttention, type AttentionLine } from "./fulfillment-atten
 import { PRINTIFY_FULL_BLEED } from "@shared/flywheelPromote";
 import { buildMyPetPrintArea } from "./my-pet-print-file";
 import { markMyPetPhotoPurchased } from "./my-pet";
+import {
+  alertMyPetHandoffFailed,
+  petFailureIsRetryable,
+  planMyPetRetry,
+} from "./my-pet-printify-retry";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
@@ -257,8 +262,8 @@ export type ResolveResult =
   | { ok: true; kind: "product_reference"; design: ResolvedProductReferenceDesign }
   | { ok: true; kind: "aop"; design: ResolvedAopDesign }
   | { ok: true; kind: "pet_design"; design: ResolvedPetDesign }
-  | { ok: false; skip: true; reason: string; attention?: boolean; unidentified?: boolean }
-  | { ok: false; skip: false; reason: string; attention?: boolean; unidentified?: boolean };
+  | { ok: false; skip: true; reason: string; attention?: boolean; unidentified?: boolean; pet?: boolean }
+  | { ok: false; skip: false; reason: string; attention?: boolean; unidentified?: boolean; pet?: boolean };
 
 /** Line properties that only AppAI writes — a line carrying any of them is ours. */
 const APPAI_LINE_KEYS = ["_appai_job_id", "_shadow_design_id", "_design_id"] as const;
@@ -588,6 +593,9 @@ async function resolveDesignForOrderLineInner(
     return { ok: false, skip: true, reason: `no generation job for design ${designId}` };
   }
 
+  const designState = parseJson<Record<string, any>>(job.designState, {});
+  const isPetJob = designState?.source === "my-pet";
+
   const tenancy = checkFulfillmentTenancy({
     orderShop: shop,
     jobShop: job.shop,
@@ -598,32 +606,30 @@ async function resolveDesignForOrderLineInner(
     console.error(
       `[fulfillment-tenancy] REFUSED line ${line.lineId} job=${designId} order shop=${shop || "(none)"}: ${tenancy.reason}`,
     );
-    return { ok: false, skip: false, attention: true, reason: `tenant check failed: ${tenancy.reason}` };
+    return { ok: false, skip: false, attention: true, pet: isPetJob || undefined, reason: `tenant check failed: ${tenancy.reason}` };
   }
-
-  const designState = parseJson<Record<string, any>>(job.designState, {});
 
   // My Pet designs never go through flat-calibration (the flywheel catalogue's
   // product type has none) — resolve and return before any of that logic runs.
   if (designState?.source === "my-pet") {
     const petProductTypeId = Number(job.productTypeId);
     if (!Number.isFinite(petProductTypeId)) {
-      return { ok: false, skip: false, reason: `my-pet design ${designId} has no productTypeId` };
+      return { ok: false, skip: false, pet: true, reason: `my-pet design ${designId} has no productTypeId` };
     }
     const petProductType = await storage.getProductType(petProductTypeId);
     if (!petProductType) {
-      return { ok: false, skip: true, reason: `product type ${petProductTypeId} not found` };
+      return { ok: false, skip: true, pet: true, reason: `product type ${petProductTypeId} not found` };
     }
     if (!petProductType.merchantId) {
-      return { ok: false, skip: false, reason: `product type ${petProductTypeId} has no merchant` };
+      return { ok: false, skip: false, pet: true, reason: `product type ${petProductTypeId} has no merchant` };
     }
     const petMerchant = await storage.getMerchant(petProductType.merchantId);
     if (!petMerchant || !petMerchant.printifyApiToken || !petMerchant.printifyShopId) {
-      return { ok: false, skip: false, reason: `merchant for product type ${petProductTypeId} missing Printify credentials` };
+      return { ok: false, skip: false, pet: true, reason: `merchant for product type ${petProductTypeId} missing Printify credentials` };
     }
     const editedArtworkPath = String(designState.editedArtworkPath || "");
     if (!editedArtworkPath) {
-      return { ok: false, skip: false, reason: `my-pet design ${designId} has no stored edited artwork` };
+      return { ok: false, skip: false, pet: true, reason: `my-pet design ${designId} has no stored edited artwork` };
     }
     const { sizeId, colorId } = pickFlatOrderSizeColor({
       designProductSizeId: designProductOverride?.sizeId,
@@ -1155,13 +1161,42 @@ async function buildToteFoldedPrintAreasForDesign(
 }
 
 // ── Idempotency ──────────────────────────────────────────────────────────────────
-async function findExistingSubmission(idempotencyKey: string): Promise<{ printifyOrderId: string | null; status: string } | null> {
-  const result = await pool.query<{ printify_order_id: string | null; status: string }>(
-    `SELECT printify_order_id, status FROM flat_order_submissions WHERE idempotency_key = $1 LIMIT 1`,
+function parseSubmissionMeta(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
+  }
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
+}
+
+async function findExistingSubmission(idempotencyKey: string): Promise<{
+  printifyOrderId: string | null;
+  status: string;
+  attemptCount: number;
+  error: string | null;
+  metadata: Record<string, unknown>;
+} | null> {
+  const result = await pool.query<{
+    printify_order_id: string | null;
+    status: string;
+    attempt_count: number | null;
+    error: string | null;
+    metadata: unknown;
+  }>(
+    `SELECT printify_order_id, status, attempt_count, error, metadata
+     FROM flat_order_submissions WHERE idempotency_key = $1 LIMIT 1`,
     [idempotencyKey],
   );
   const row = result.rows[0];
-  return row ? { printifyOrderId: row.printify_order_id, status: row.status } : null;
+  if (!row) return null;
+  return {
+    printifyOrderId: row.printify_order_id,
+    status: row.status,
+    attemptCount: Number(row.attempt_count) || 0,
+    error: row.error,
+    metadata: parseSubmissionMeta(row.metadata),
+  };
 }
 
 async function recordSubmission(row: {
@@ -1177,20 +1212,36 @@ async function recordSubmission(row: {
   sentToProduction: boolean;
   isTest: boolean;
   printFileUrls?: Record<string, string> | null;
+  /** Bucket paths. Signed print-file URLs are not stored. Null keeps the previous value on conflict. */
+  printFilePaths?: Record<string, string> | null;
+  /** Null keeps the previous attempt count on conflict. */
+  attemptCount?: number | null;
+  /** Null clears the next attempt. */
+  nextAttemptAt?: Date | null;
   error?: string | null;
   metadata?: Record<string, unknown> | null;
 }): Promise<void> {
+  const urlPayload = row.printFileUrls && Object.keys(row.printFileUrls).length > 0
+    ? JSON.stringify(row.printFileUrls)
+    : null;
+  const pathPayload = row.printFilePaths && Object.keys(row.printFilePaths).length > 0
+    ? JSON.stringify(row.printFilePaths)
+    : null;
   await pool.query(
     `INSERT INTO flat_order_submissions
        (idempotency_key, shop, shopify_order_id, shopify_line_id, design_id, product_type_id,
-        printify_shop_id, printify_order_id, status, sent_to_production, is_test, print_file_urls, error, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        printify_shop_id, printify_order_id, status, sent_to_production, is_test, print_file_urls, error,
+        print_file_paths, attempt_count, next_attempt_at, metadata)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15, 0),$16,$17)
      ON CONFLICT (idempotency_key) DO UPDATE SET
         printify_order_id = EXCLUDED.printify_order_id,
         status = EXCLUDED.status,
         sent_to_production = EXCLUDED.sent_to_production,
         print_file_urls = EXCLUDED.print_file_urls,
         error = EXCLUDED.error,
+        print_file_paths = COALESCE($14::jsonb, flat_order_submissions.print_file_paths),
+        attempt_count = COALESCE($15, flat_order_submissions.attempt_count),
+        next_attempt_at = $16,
         metadata = EXCLUDED.metadata,
         updated_at = NOW()`,
     [
@@ -1205,8 +1256,11 @@ async function recordSubmission(row: {
       row.status,
       row.sentToProduction,
       row.isTest,
-      row.printFileUrls ? JSON.stringify(row.printFileUrls) : null,
+      urlPayload,
       row.error ?? null,
+      pathPayload,
+      row.attemptCount ?? null,
+      row.nextAttemptAt ?? null,
       row.metadata ? JSON.stringify(row.metadata) : null,
     ],
   );
@@ -1229,16 +1283,20 @@ export type SubmitFlatOrderArgs = {
   /** Admin draft tests only — see checkFulfillmentTenancy. */
   allowShoplessOrder?: boolean;
   shippingMethod?: number;
+  /** Set by the retry poller. A webhook replay must not start a second submit. */
+  resumeRetry?: boolean;
 };
 
 export type SubmitFlatOrderResult = {
-  status: "submitted" | "skipped" | "duplicate" | "failed";
+  status: "submitted" | "skipped" | "duplicate" | "failed" | "retrying";
   printifyOrderId?: string | null;
   eligibleLines: number;
   skippedReasons: string[];
   /** AppAI lines that were NOT sent to Printify — the merchant must handle these. */
   needsAttention?: AttentionLine[];
   printFileUrls?: Record<string, string>;
+  /** Bucket paths for My Pet print files. Signed URLs are not logged. */
+  printFilePaths?: Record<string, string>;
   error?: string;
   sentToProduction: boolean;
 };
@@ -1257,7 +1315,8 @@ export async function submitFlatOrderToPrintify(
     args.shopifyOrder?.shop_domain || args.shopifyOrder?.__shop || "",
   );
 
-  // Idempotency: never re-submit the same key.
+  // Idempotency: a submitted order is never sent again. A retry that is already
+  // scheduled or in flight is left to the poller, unless this call IS the poller.
   const existing = await findExistingSubmission(args.idempotencyKey);
   if (existing && existing.status === "submitted") {
     return {
@@ -1266,6 +1325,26 @@ export async function submitFlatOrderToPrintify(
       eligibleLines: 0,
       skippedReasons: [],
       sentToProduction: sendToProduction,
+    };
+  }
+  if (existing && !args.resumeRetry && (existing.status === "retrying" || existing.status === "submitting")) {
+    return {
+      status: "retrying",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? undefined,
+      sentToProduction: false,
+    };
+  }
+  if (existing && !args.resumeRetry && existing.status === "failed") {
+    return {
+      status: "failed",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? undefined,
+      sentToProduction: false,
     };
   }
 
@@ -1287,6 +1366,19 @@ export async function submitFlatOrderToPrintify(
   };
   const lineItems: Array<BakedLineItem | ProductRefLineItem> = [];
   const allUrls: Record<string, string> = {};
+  const petPaths: Record<string, string> = {};
+  const petErrors: string[] = [];
+  let hadPetLine = false;
+  const handoffSnapshot = {
+    shopifyOrder: args.shopifyOrder,
+    lines: args.lines,
+    sendToProduction,
+    addressTo: args.addressTo,
+    idempotencyKey: args.idempotencyKey,
+    isTest: args.isTest === true,
+    allowShoplessOrder: args.allowShoplessOrder === true,
+    shippingMethod: args.shippingMethod ?? 1,
+  };
   let printifyShopId: string | null = null;
   let printifyToken: string | null = null;
   let firstDesignId: string | null = null;
@@ -1321,6 +1413,10 @@ export async function submitFlatOrderToPrintify(
       continue;
     }
     if (!resolved.ok) {
+      if (resolved.pet) {
+        hadPetLine = true;
+        petErrors.push(resolved.reason);
+      }
       if (resolved.attention) holdLine(line, resolved.reason);
       else skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
       continue;
@@ -1336,7 +1432,12 @@ export async function submitFlatOrderToPrintify(
       line.properties,
     );
     if (!target) {
-      holdLine(line, `no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
+      const reason = `no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`;
+      if (resolved.kind === "pet_design") {
+        hadPetLine = true;
+        petErrors.push(reason);
+      }
+      holdLine(line, reason);
       continue;
     }
     const lineQueued: AttentionLine = { lineId: line.lineId, variantId: line.variantId, quantity: line.quantity, reason: "" };
@@ -1411,6 +1512,7 @@ export async function submitFlatOrderToPrintify(
     // (built only now, on purchase — never at preview time) and submit it
     // full-bleed, same as a catalogue promote image.
     if (resolved.kind === "pet_design") {
+      hadPetLine = true;
       let printArea: { url: string; path: string };
       try {
         printArea = await buildMyPetPrintArea({
@@ -1421,11 +1523,13 @@ export async function submitFlatOrderToPrintify(
           productTypeName: productType.name,
         });
       } catch (e: any) {
-        holdLine(line, `my-pet print file failed: ${e?.message || e}`);
+        const reason = `my-pet print file failed: ${e?.message || e}`;
+        petErrors.push(reason);
+        holdLine(line, reason);
         continue;
       }
       queuedLines.push(lineQueued);
-      allUrls[`${designId}:front`] = printArea.url;
+      petPaths[`${designId}:front`] = printArea.path;
       lineItems.push({
         print_provider_id: target.providerId,
         blueprint_id: target.blueprintId,
@@ -1488,8 +1592,59 @@ export async function submitFlatOrderToPrintify(
     });
   }
 
+  async function recordPetHandoffFailure(
+    reasons: string[],
+    extra: Record<string, unknown>,
+  ): Promise<SubmitFlatOrderResult> {
+    const message = reasons.filter(Boolean).join("; ") || "My Pet order was not sent to Printify";
+    const retryable = reasons.some((reason) => petFailureIsRetryable(reason));
+    const plan = planMyPetRetry(existing?.attemptCount ?? 0, retryable);
+    let founderAlerted = existing?.metadata?.founderAlerted === true;
+    if (plan.status === "failed" && !founderAlerted) {
+      await alertMyPetHandoffFailed({
+        shop: resolvedShop || null,
+        shopifyOrderId: shopifyOrderId || null,
+        idempotencyKey: args.idempotencyKey,
+        attempts: plan.attempt,
+        error: message,
+        alreadyAlerted: false,
+      });
+      founderAlerted = true;
+    }
+    await recordSubmission({
+      idempotencyKey: args.idempotencyKey,
+      shop: resolvedShop,
+      shopifyOrderId,
+      designId: firstDesignId,
+      productTypeId: firstProductTypeId,
+      printifyShopId,
+      status: plan.status,
+      sentToProduction: false,
+      isTest: args.isTest === true,
+      printFileUrls: allUrls,
+      printFilePaths: petPaths,
+      attemptCount: plan.attempt,
+      nextAttemptAt: plan.delayMs != null ? new Date(Date.now() + plan.delayMs) : null,
+      error: message,
+      metadata: { ...extra, retry: handoffSnapshot, founderAlerted },
+    });
+    return {
+      status: plan.status,
+      eligibleLines: lineItems.length,
+      skippedReasons,
+      needsAttention,
+      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+      error: message,
+      sentToProduction: false,
+    };
+  }
+
   if (lineItems.length === 0 || !printifyToken || !printifyShopId) {
     const shopifyFlag = await flagAttention();
+    if (hadPetLine) {
+      const reasons = petErrors.length > 0 ? petErrors : ["My Pet order was not sent to Printify"];
+      return recordPetHandoffFailure(reasons, { skippedReasons, needsAttention, shopifyFlag });
+    }
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1535,6 +1690,18 @@ export async function submitFlatOrderToPrintify(
     }
 
     const shopifyFlag = await flagAttention();
+    let founderAlerted = existing?.metadata?.founderAlerted === true;
+    if (hadPetLine && petErrors.length > 0 && !founderAlerted) {
+      await alertMyPetHandoffFailed({
+        shop: resolvedShop || null,
+        shopifyOrderId: shopifyOrderId || null,
+        idempotencyKey: args.idempotencyKey,
+        attempts: existing?.attemptCount ?? 1,
+        error: `Submitted without every My Pet line: ${petErrors.join("; ")}`,
+        alreadyAlerted: false,
+      });
+      founderAlerted = true;
+    }
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1547,7 +1714,15 @@ export async function submitFlatOrderToPrintify(
       sentToProduction: sendToProduction,
       isTest: args.isTest === true,
       printFileUrls: allUrls,
-      metadata: { skippedReasons, lineCount: lineItems.length, needsAttention, shopifyFlag },
+      printFilePaths: petPaths,
+      nextAttemptAt: null,
+      metadata: {
+        skippedReasons,
+        lineCount: lineItems.length,
+        needsAttention,
+        shopifyFlag,
+        founderAlerted,
+      },
     });
 
     return {
@@ -1557,6 +1732,7 @@ export async function submitFlatOrderToPrintify(
       skippedReasons,
       needsAttention,
       printFileUrls: allUrls,
+      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
       sentToProduction: sendToProduction,
     };
   } catch (e: any) {
@@ -1565,6 +1741,9 @@ export async function submitFlatOrderToPrintify(
       needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
     }
     const shopifyFlag = await flagAttention();
+    if (hadPetLine) {
+      return recordPetHandoffFailure([error, ...petErrors], { skippedReasons, needsAttention, shopifyFlag });
+    }
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1577,6 +1756,7 @@ export async function submitFlatOrderToPrintify(
       isTest: args.isTest === true,
       printFileUrls: allUrls,
       error,
+      nextAttemptAt: null,
       metadata: { skippedReasons, needsAttention, shopifyFlag },
     });
     return {

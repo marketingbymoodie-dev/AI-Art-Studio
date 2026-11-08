@@ -1995,6 +1995,10 @@ export const flatOrderSubmissions = pgTable("flat_order_submissions", {
   sentToProduction: boolean("sent_to_production").notNull().default(false),
   isTest: boolean("is_test").notNull().default(false),
   printFileUrls: jsonb("print_file_urls"),
+  /** Bucket paths for My Pet print files. Signed URLs are minted at submit time and are not stored. */
+  printFilePaths: jsonb("print_file_paths"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at"),
   error: text("error"),
   metadata: jsonb("metadata"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

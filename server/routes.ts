@@ -13530,6 +13530,8 @@ ${orientationExtra}
               printifyOrderId: result.printifyOrderId,
               eligibleLines: result.eligibleLines,
               skippedReasons: result.skippedReasons,
+              printFilePaths: result.printFilePaths,
+              error: result.error,
             });
           } catch (e: any) {
             console.error("[Shopify Orders Paid] flat fulfillment error:", e?.message || e);

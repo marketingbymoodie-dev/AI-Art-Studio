@@ -470,5 +470,8 @@ app.use((req, res, next) => {
     void import("./flywheel-staging-run")
       .then(({ runStagingFlywheelOnce }) => runStagingFlywheelOnce())
       .catch((e: any) => console.warn("[flywheel] staging run failed:", e?.message || e));
+    void import("./my-pet-printify-retry")
+      .then(({ startMyPetPrintifyRetries }) => startMyPetPrintifyRetries())
+      .catch((e: any) => console.warn("[my-pet-printify] startup failed:", e?.message || e));
   });
 })();

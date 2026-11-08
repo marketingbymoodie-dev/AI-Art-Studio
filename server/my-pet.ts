@@ -37,6 +37,7 @@ import {
   type MyPetSettings,
 } from "@shared/myPetSettings";
 import { db } from "./db";
+import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
 import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from "./generation-providers";
 import { generationErrorCategory } from "./generation-events";
 import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
@@ -1636,13 +1637,16 @@ export async function getMyPetOrderDetails(args: { shop: string; orderId?: strin
     durationMs: number | null;
     estimatedCostUsd: string | null;
   }>;
+  submission: MyPetPrintifyCard | null;
 }> {
   const rows = args.orderId
     ? await db.select().from(myPetRenders).where(and(eq(myPetRenders.shopDomain, args.shop), eq(myPetRenders.shopifyOrderId, args.orderId)))
     : args.orderName
       ? await db.select().from(myPetRenders).where(and(eq(myPetRenders.shopDomain, args.shop), eq(myPetRenders.shopifyOrderName, args.orderName)))
       : [];
-  if (rows.length === 0) return { found: false, orderId: args.orderId ?? null, orderName: args.orderName ?? null, renders: [] };
+  if (rows.length === 0) {
+    return { found: false, orderId: args.orderId ?? null, orderName: args.orderName ?? null, renders: [], submission: null };
+  }
 
   const renders = await Promise.all(
     rows.map(async (row) => {
@@ -1677,10 +1681,12 @@ export async function getMyPetOrderDetails(args: { shop: string; orderId?: strin
       };
     }),
   );
+  const submission = await lookupMyPetPrintifySubmission(rows[0].shopifyOrderId);
   return {
     found: true,
     orderId: rows[0].shopifyOrderId,
     orderName: rows[0].shopifyOrderName,
     renders,
+    submission,
   };
 }
