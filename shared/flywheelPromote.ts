@@ -249,7 +249,7 @@ export function indexOfDefaultMedium<T extends { size: string; colour: string }>
   );
 }
 
-/** Shopify variant positions: M in the default colour is first, then catalogue colour, then XS–3XL. */
+/** Shopify variant positions: catalogue colour, then XS–3XL. M stays in that run. */
 export function catalogueVariantPositions(
   variants: Array<{ id: string; colour: string; size: string }>,
 ): Array<{ id: string; position: number }> {
@@ -264,11 +264,6 @@ export function catalogueVariantPositions(
     { colour: b.colour, size: b.size },
     colourOrder,
   ));
-  const mediumIndex = indexOfDefaultMedium(sorted, colourOrder);
-  if (mediumIndex > 0) {
-    const [medium] = sorted.splice(mediumIndex, 1);
-    sorted.unshift(medium);
-  }
   return sorted.map((variant, index) => ({ id: variant.id, position: index + 1 }));
 }
 

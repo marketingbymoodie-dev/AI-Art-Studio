@@ -1563,8 +1563,10 @@ export const designProducts = pgTable("design_products", {
   status: text("status").notNull().default("active"), // active | inactive
   /** Storefront My Pet button. New rows default on. False hides the button. */
   myPetEnabled: boolean("my_pet_enabled").notNull().default(true),
-  /** Set once the Shopify default variant is M in the default colour. */
+  /** Legacy marker from the short-lived hoist of M to variant position 1. */
   defaultSizeBackfilled: boolean("default_size_backfilled").notNull().default(false),
+  /** Size option values and variant positions are back in XS–3XL order. */
+  sizeOrderRestored: boolean("size_order_restored").notNull().default(false),
   /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
   variantMap: json("variant_map"),
   mockupUrls: json("mockup_urls"),

@@ -1,10 +1,11 @@
 /**
- * Existing catalogue products were created with XS as variant position 1.
- * Move size M in the default colour to position 1. Size option order stays
- * XS, S, M, L, XL, 2XL, 3XL — that order is the option values, not positions.
+ * Undo the short-lived hoist that put size M at variant position 1.
+ * That hoist also rewrote the Size option, so the buttons rendered
+ * M, XS, S, L… Restore XS, S, M, L, XL, 2XL, 3XL. The storefront
+ * script selects M when the URL has no ?variant=.
  */
 import { and, eq, isNotNull, ne } from "drizzle-orm";
-import { catalogueVariantPositions } from "@shared/flywheelPromote";
+import { apparelSizeRank, catalogueVariantPositions } from "@shared/flywheelPromote";
 import { designProducts } from "@shared/schema";
 import { db } from "./db";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
@@ -13,6 +14,8 @@ import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backo
 
 const SHOPIFY_API = "2025-10";
 
+type OptionValue = { id: string; name: string };
+type ProductOption = { id: string; name: string; optionValues: OptionValue[] };
 type VariantNode = {
   id: string;
   position: number;
@@ -42,6 +45,10 @@ async function adminGql(shop: string, token: string, query: string, variables: R
   }
 }
 
+function sameIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
 export async function backfillDefaultSizeMedium(): Promise<{ updated: number; skipped: number; failed: number }> {
   const rows = await db
     .select({
@@ -51,7 +58,8 @@ export async function backfillDefaultSizeMedium(): Promise<{ updated: number; sk
     })
     .from(designProducts)
     .where(and(
-      eq(designProducts.defaultSizeBackfilled, false),
+      eq(designProducts.sizeOrderRestored, false),
+      eq(designProducts.defaultSizeBackfilled, true),
       isNotNull(designProducts.shopifyProductId),
       ne(designProducts.shopifyProductId, ""),
     ));
@@ -80,13 +88,15 @@ export async function backfillDefaultSizeMedium(): Promise<{ updated: number; sk
       const data = await adminGql(shop, token, `
         query($id: ID!) {
           product(id: $id) {
+            options { id name optionValues { id name } }
             variants(first: 100) { nodes { id position selectedOptions { name value } } }
           }
         }
       `, { id: productGid });
+      const options = (data?.product?.options || []) as ProductOption[];
       const nodes = (data?.product?.variants?.nodes || []) as VariantNode[];
       if (!data?.product || !nodes.length) {
-        await db.update(designProducts).set({ defaultSizeBackfilled: true }).where(eq(designProducts.id, row.id));
+        await db.update(designProducts).set({ sizeOrderRestored: true }).where(eq(designProducts.id, row.id));
         skipped += 1;
         continue;
       }
@@ -95,29 +105,55 @@ export async function backfillDefaultSizeMedium(): Promise<{ updated: number; sk
         colour: variant.selectedOptions.find((option) => /^colou?r$/i.test(option.name))?.value || "",
         size: variant.selectedOptions.find((option) => option.name.toLowerCase() === "size")?.value || "",
       })));
-      const wantedFirst = positions.find((entry) => entry.position === 1)?.id;
-      const currentFirst = [...nodes].sort((a, b) => a.position - b.position)[0]?.id;
-      if (wantedFirst && wantedFirst === currentFirst) {
-        await db.update(designProducts).set({ defaultSizeBackfilled: true }).where(eq(designProducts.id, row.id));
-        skipped += 1;
-        continue;
-      }
-      const moved = await adminGql(shop, token, `
-        mutation($productId: ID!, $positions: [ProductVariantPositionInput!]!) {
-          productVariantsBulkReorder(productId: $productId, positions: $positions) {
-            userErrors { message }
+      const currentIds = [...nodes].sort((a, b) => a.position - b.position).map((variant) => variant.id);
+      const wantedIds = [...positions].sort((a, b) => a.position - b.position).map((variant) => variant.id);
+      let changed = false;
+      if (!sameIds(currentIds, wantedIds)) {
+        const moved = await adminGql(shop, token, `
+          mutation($productId: ID!, $positions: [ProductVariantPositionInput!]!) {
+            productVariantsBulkReorder(productId: $productId, positions: $positions) {
+              userErrors { message }
+            }
           }
+        `, { productId: productGid, positions });
+        const errors = moved?.productVariantsBulkReorder?.userErrors || [];
+        if (errors.length) {
+          throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
         }
-      `, { productId: productGid, positions });
-      const errors = moved?.productVariantsBulkReorder?.userErrors || [];
-      if (errors.length) {
-        throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
+        changed = true;
       }
-      await db.update(designProducts).set({ defaultSizeBackfilled: true }).where(eq(designProducts.id, row.id));
-      updated += 1;
+      const sizeOption = options.find((option) => option.name.toLowerCase() === "size");
+      const sortedSize = sizeOption
+        ? [...sizeOption.optionValues].sort((a, b) => apparelSizeRank(a.name) - apparelSizeRank(b.name) || a.name.localeCompare(b.name))
+        : [];
+      const sizeIds = sizeOption ? sizeOption.optionValues.map((value) => value.id) : [];
+      const wantedSizeIds = sortedSize.map((value) => value.id);
+      if (sizeOption && !sameIds(sizeIds, wantedSizeIds)) {
+        const reordered = await adminGql(shop, token, `
+          mutation($productId: ID!, $options: [OptionReorderInput!]!) {
+            productOptionsReorder(productId: $productId, options: $options) {
+              userErrors { message }
+            }
+          }
+        `, {
+          productId: productGid,
+          options: options.map((option) => {
+            const values = option.id === sizeOption.id ? sortedSize : option.optionValues;
+            return { id: option.id, values: values.map((value) => ({ id: value.id })) };
+          }),
+        });
+        const errors = reordered?.productOptionsReorder?.userErrors || [];
+        if (errors.length) {
+          throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
+        }
+        changed = true;
+      }
+      await db.update(designProducts).set({ sizeOrderRestored: true }).where(eq(designProducts.id, row.id));
+      if (changed) updated += 1;
+      else skipped += 1;
     } catch (err) {
       failed += 1;
-      console.warn(`[default-size] ${numeric}:`, err instanceof Error ? err.message : err);
+      console.warn(`[size-order] ${numeric}:`, err instanceof Error ? err.message : err);
     }
   }
   return { updated, skipped, failed };
