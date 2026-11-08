@@ -2075,7 +2075,41 @@
       rememberVariantChoice();
     }, false);
 
+    // Related-product colour chips are not the main product's swatches.
+    // Capture handlers log them and leave the click alone. A real card
+    // link still reaches the leave guard.
+    function relatedSwatchKind(event) {
+      var t = event && event.target;
+      if (!t || !t.closest) return '';
+      if (t.nodeType !== 1) t = t.parentElement;
+      if (!t || !t.closest) return '';
+      var host = t.closest('card-colour-swatches');
+      if (!host || !host.closest('product-recommendations, .product-recommendations')) return '';
+      if (t.closest('button[data-swatch-more], .card-colour-swatches__more')) return 'more';
+      if (t.closest('button[data-variant-id], .card-colour-swatches__swatch')) return 'chip';
+      return '';
+    }
+
+    function logRelatedSwatch(handler, event) {
+      var kind = relatedSwatchKind(event);
+      if (!kind) return '';
+      console.log(TAG, 'related ' + kind, 'handler=' + handler, 'defaultPrevented=' + !!(event && event.defaultPrevented));
+      return kind;
+    }
+
+    function clickInMainProduct(event) {
+      var t = event && event.target;
+      if (!t) return false;
+      if (t.nodeType !== 1) t = t.parentElement;
+      if (!t || !t.closest) return false;
+      var section = mainProductSection();
+      if (!section) return true;
+      return !!section.contains(t);
+    }
+
     function blockRestoreAction(event) {
+      if (logRelatedSwatch('restore-lock', event)) return;
+      if (!clickInMainProduct(event)) return;
       var surface = logCapture('restore-lock', event);
       if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
       if (!state.restorePending) return;
@@ -3247,6 +3281,8 @@
       state.swatchPreemptInstalled = true;
       installProductMediaObserver();
       var handler = function (event) {
+        if (logRelatedSwatch('swatch', event)) return;
+        if (!clickInMainProduct(event)) return;
         var surface = logCapture('swatch', event);
         if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
         if (window.__appaiSelectingDefaultSize) return;
@@ -3597,6 +3633,8 @@
       if (state.thumbnailSyncInstalled) return;
       state.thumbnailSyncInstalled = true;
       document.addEventListener('click', function (event) {
+        if (logRelatedSwatch('thumbnail', event)) return;
+        if (!clickInMainProduct(event)) return;
         var surface = logCapture('thumbnail', event);
         if (surface === 'main-image' || surface === 'zoom-chrome') return;
         if (!state.inlineApplied || !state.renderId || state.reverted) return;
@@ -3749,6 +3787,8 @@
       if (!state.zoomClickHook) {
         state.zoomClickHook = true;
         document.addEventListener('click', function (event) {
+          if (logRelatedSwatch('zoom-hook', event)) return;
+          if (!clickInMainProduct(event)) return;
           logCapture('zoom-hook', event);
         }, true);
       }
@@ -5708,6 +5748,7 @@
     });
 
     function onLeaveGuardClick(event) {
+      if (logRelatedSwatch('leave-guard', event)) return;
       var surface = logCapture('leave-guard', event);
       if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
       var renderId = state.renderId;
