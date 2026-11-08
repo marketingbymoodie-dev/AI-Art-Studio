@@ -1411,8 +1411,10 @@
       if (state.mediaWriting !== 1) return;
       state._pausedHeroObs = img && img.__appaiMyPetObserver;
       state._pausedSectionObs = state.productMediaObserver;
+      state._pausedZoomObs = state.zoomObserver;
       try { if (state._pausedHeroObs) state._pausedHeroObs.disconnect(); } catch (e) {}
       try { if (state._pausedSectionObs) state._pausedSectionObs.disconnect(); } catch (e2) {}
+      try { if (state._pausedZoomObs) state._pausedZoomObs.disconnect(); } catch (e3) {}
     }
 
     function resumeMediaObservers(img) {
@@ -1420,8 +1422,10 @@
       if (state.mediaWriting !== 0) return;
       var heroObs = state._pausedHeroObs;
       var sectionObs = state._pausedSectionObs;
+      var zoomObs = state._pausedZoomObs;
       state._pausedHeroObs = null;
       state._pausedSectionObs = null;
+      state._pausedZoomObs = null;
       if (heroObs && img) {
         try { heroObs.observe(img, { attributes: true, attributeFilter: ['src', 'srcset', 'sizes'] }); } catch (e) {}
       }
@@ -1436,6 +1440,19 @@
               attributeFilter: ['src', 'srcset'],
             });
           } catch (e2) {}
+        }
+      }
+      if (zoomObs) {
+        var zoomTarget = zoomObserveTarget();
+        if (zoomTarget) {
+          try {
+            zoomObs.observe(zoomTarget, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['open', 'src', 'srcset'],
+            });
+          } catch (e3) {}
         }
       }
     }
@@ -1537,18 +1554,24 @@
         var el = targets[i];
         // The outgoing hero stays on screen until the new img has decoded.
         if (state.swapMaskWaiting && state.holdOldHero && el === state.holdOldHero) continue;
+        // A slide that belongs to another colour keeps that colour's preview.
+        // Writing the selected swatch here is what blocked thumbnail clicks.
+        var own = mediaColourForImg(el);
+        var useUrl = (own && state.previewUrlByColor && state.previewUrlByColor[own]) || url;
+        if (!useUrl) continue;
         // Skip a node we just wrote. currentSrc lags the attribute write, so
         // the guard observer would otherwise re-enter until the stack melts.
         // A different node (theme replacement) still gets written.
-        if (el.__appaiAssertUrl === url && (now - (el.__appaiAssertAt || 0)) < 250) continue;
-        if (previewWinning(el, url)) {
-          el.__appaiAssertUrl = url;
+        if (el.__appaiAssertUrl === useUrl && (now - (el.__appaiAssertAt || 0)) < 250) continue;
+        if (srcAlready(el, useUrl) && !el.getAttribute('srcset') && !el.getAttribute('sizes')) continue;
+        if (previewWinning(el, useUrl)) {
+          el.__appaiAssertUrl = useUrl;
           el.__appaiAssertAt = now;
           continue;
         }
-        el.__appaiAssertUrl = url;
+        el.__appaiAssertUrl = useUrl;
         el.__appaiAssertAt = now;
-        applyPreviewSrc(el, url);
+        applyPreviewSrc(el, useUrl);
         wrote++;
       }
       if (targets.length && state.inlineHero && !document.body.contains(state.inlineHero)) {
@@ -1931,6 +1954,211 @@
      * carrying our stash attribute get their src re-applied without
      * stashing a second original.
      */
+    function colourForMediaId(mediaId) {
+      if (!mediaId) return null;
+      var map = getMediaIdByColor(root);
+      var id = String(mediaId);
+      for (var color in map) {
+        if (!Object.prototype.hasOwnProperty.call(map, color)) continue;
+        if (String(map[color]) === id) return canonicalPreviewColor(color) || color;
+      }
+      return null;
+    }
+
+    function mediaIdForImg(img) {
+      if (!img) return '';
+      var id = slideMediaId(img);
+      if (id) return id;
+      var slide = img.closest ? img.closest('slideshow-slide, [slide-id]') : null;
+      if (slide && slide.getAttribute('slide-id')) return String(slide.getAttribute('slide-id'));
+      return '';
+    }
+
+    function mediaColourForImg(img) {
+      return colourForMediaId(mediaIdForImg(img));
+    }
+
+    function pageGallerySlides() {
+      var gallery = document.querySelector('media-gallery, product-media-gallery');
+      var scope = gallery || productSectionScope() || document;
+      var all = [];
+      try { all = scope.querySelectorAll('slideshow-slide'); } catch (e) { return []; }
+      var out = [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].closest && all[i].closest('dialog, zoom-dialog')) continue;
+        out.push(all[i]);
+      }
+      return out;
+    }
+
+    function colourForSlide(slide) {
+      if (!slide) return null;
+      var id = slide.getAttribute('slide-id') || '';
+      if (!id) {
+        var host = slide.querySelector ? slide.querySelector('[data-media-id]') : null;
+        if (host) id = host.getAttribute('data-media-id') || '';
+      }
+      return colourForMediaId(id);
+    }
+
+    function colourForThumbButton(btn) {
+      if (!btn) return null;
+      var isZoom = btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail');
+      var sel = isZoom ? 'button.dialog-thumbnails-list__thumbnail' : 'button.slideshow-controls__thumbnail';
+      var list = btn.parentElement ? btn.parentElement.querySelectorAll(sel) : [];
+      var index = -1;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] === btn) { index = i; break; }
+      }
+      var slides = pageGallerySlides();
+      if (index >= 0 && slides[index]) {
+        var fromSlide = colourForSlide(slides[index]);
+        if (fromSlide) return fromSlide;
+      }
+      var aria = btn.getAttribute('aria-label') || '';
+      var m = aria.match(/\bon\s+(.+)$/i);
+      if (m) return canonicalPreviewColor(m[1].trim());
+      return null;
+    }
+
+    function applyOwnPreview(img) {
+      if (!img || img.tagName !== 'IMG') return false;
+      if (img.closest && img.closest('.appai-my-pet')) return false;
+      if (isCoverImg(img)) return false;
+      if (state.holdOldHero && img === state.holdOldHero) return false;
+      var colour = mediaColourForImg(img);
+      if (!colour) {
+        var btn = img.closest ? img.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail') : null;
+        if (btn) colour = colourForThumbButton(btn);
+      }
+      if (!colour || !state.previewUrlByColor) return false;
+      var url = state.previewUrlByColor[colour];
+      if (!url) return false;
+      if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return false;
+      applyPreviewSrc(img, url);
+      return true;
+    }
+
+    // Page thumbnail buttons and zoom thumbs are not inside [data-media-id],
+    // so the media-id pass never reaches them.
+    function swapLooseThumbnails(scope) {
+      var rootEl = scope || document.querySelector('media-gallery') || document;
+      var buttons = [];
+      try {
+        buttons = rootEl.querySelectorAll('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
+      } catch (e) { return; }
+      for (var i = 0; i < buttons.length; i++) {
+        var imgs = buttons[i].querySelectorAll ? buttons[i].querySelectorAll('img') : [];
+        for (var j = 0; j < imgs.length; j++) applyOwnPreview(imgs[j]);
+      }
+    }
+
+    function selectSwatch(colour) {
+      var want = String(colour || '').trim().toLowerCase();
+      if (!want) return;
+      var current = currentInlineColour();
+      if (current && String(current).trim().toLowerCase() === want) return;
+      var radios = document.querySelectorAll('input[type="radio"]');
+      for (var i = 0; i < radios.length; i++) {
+        var name = String(radios[i].name || '').toLowerCase();
+        if (name.indexOf('color') === -1 && name.indexOf('colour') === -1) continue;
+        if (String(radios[i].value || '').trim().toLowerCase() !== want) continue;
+        if (radios[i].disabled) return;
+        if (radios[i].checked) return;
+        var label = radios[i].closest ? radios[i].closest('label') : null;
+        if (!label && radios[i].id) label = document.querySelector('label[for="' + radios[i].id + '"]');
+        if (label) label.click();
+        else radios[i].click();
+        return;
+      }
+    }
+
+    function installThumbnailSync() {
+      if (state.thumbnailSyncInstalled) return;
+      state.thumbnailSyncInstalled = true;
+      document.addEventListener('click', function (event) {
+        if (!state.inlineApplied || !state.renderId) return;
+        var t = event.target;
+        if (!t || !t.closest) return;
+        var btn = t.closest('button.slideshow-controls__thumbnail');
+        if (!btn || (btn.closest && btn.closest('dialog, zoom-dialog'))) return;
+        var colour = colourForThumbButton(btn);
+        if (!colour) return;
+        state.holdColour = colour;
+        var url = state.previewUrlByColor ? state.previewUrlByColor[colour] : null;
+        setTimeout(function () {
+          if (!state.inlineApplied) return;
+          var slides = pageGallerySlides();
+          var list = btn.parentElement ? btn.parentElement.querySelectorAll('button.slideshow-controls__thumbnail') : [];
+          var index = -1;
+          for (var i = 0; i < list.length; i++) if (list[i] === btn) { index = i; break; }
+          var slide = index >= 0 ? slides[index] : null;
+          if (slide) {
+            var imgs = slide.querySelectorAll('img');
+            for (var k = 0; k < imgs.length; k++) applyOwnPreview(imgs[k]);
+          }
+          applyOwnPreview(btn.querySelector('img'));
+          if (url) {
+            var visible = findVisibleHeroImg();
+            if (visible && mediaColourForImg(visible) === colour) applyOwnPreview(visible);
+          }
+          // Stock thumbnail clicks on this theme only scroll the slide.
+          // The shopper still needs the variant to match the picture, so
+          // select that colour's swatch after the theme has moved the slide.
+          selectSwatch(colour);
+        }, 0);
+      }, true);
+    }
+
+    function zoomObserveTarget() {
+      return document.querySelector('zoom-dialog')
+        || document.querySelector('dialog.dialog-zoomed-gallery__dialog');
+    }
+
+    function zoomDialogOpen(target) {
+      if (!target) return false;
+      var dialog = target.tagName === 'DIALOG' ? target : (target.querySelector ? target.querySelector('dialog') : null);
+      if (dialog && (dialog.open || dialog.hasAttribute('open'))) return true;
+      if (target.hasAttribute && target.hasAttribute('open')) return true;
+      var box = dialog || target;
+      try {
+        var rect = box.getBoundingClientRect();
+        if (rect.width > 20 && rect.height > 20) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function swapZoomDialog(target) {
+      if (!target || !state.inlineApplied || !state.previewUrlByColor) return;
+      var dialog = target.tagName === 'DIALOG' ? target : (target.querySelector ? target.querySelector('dialog') : null);
+      var scope = dialog || target;
+      var imgs = scope.querySelectorAll ? scope.querySelectorAll('img') : [];
+      for (var i = 0; i < imgs.length; i++) applyOwnPreview(imgs[i]);
+      swapLooseThumbnails(scope);
+    }
+
+    // Ritual/Horizon zoom is <zoom-dialog> + dialog.dialog-zoomed-gallery__dialog.
+    // The same element is what opens on a phone-width viewport.
+    function installZoomSwap() {
+      if (state.zoomObserver) return;
+      var target = zoomObserveTarget();
+      if (!target) return;
+      var observer = new MutationObserver(function () {
+        if (state.mediaWriting) return;
+        if (!state.renderId || !state.inlineApplied) return;
+        if (!zoomDialogOpen(target)) return;
+        swapZoomDialog(target);
+      });
+      observer.observe(target, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['open', 'src', 'srcset'],
+      });
+      state.zoomObserver = observer;
+      if (zoomDialogOpen(target)) swapZoomDialog(target);
+    }
+
     function swapVariantSlides(urlsByColor) {
       var mediaIdByColor = getMediaIdByColor(root);
       var scope = null;
@@ -1977,6 +2205,7 @@
           matched ? '(' + matched + ' nodes swapped, incl. thumbnail)' : '(NO MATCHING NODES in product section)');
       }
       state.inlineSlideStash = stash;
+      swapLooseThumbnails();
       console.log(TAG, 'slide swap: total nodes swapped =', totalMatched, 'colours in map =', Object.keys(urlsByColor).length);
     }
 
@@ -2255,6 +2484,8 @@
       // same microtask as insertion, so the shopper never sees a flash of
       // the stock image. Idempotent — safe to re-install on every activation.
       installGalleryGuard();
+      installThumbnailSync();
+      installZoomSwap();
       // Issue 7 — inlineApplied gates every observer / listener / ATC
       // intercept so revertToOriginalDesign can turn them off without
       // tearing down the one-time installs below.
@@ -2442,7 +2673,9 @@
         // (Ritual multi-form PDP), info.colorName will be frozen on the
         // wrong variant; the checked swatch is the shopper's actual intent.
         var swColor = readSwatchColor(root);
-        var colorName = state.holdColour
+        var ownColour = mediaColourForImg(hero);
+        var colorName = ownColour
+          || state.holdColour
           || ((swColor && info.colorName && swColor !== info.colorName)
             ? swColor
             : (info.colorName || swColor || null));
@@ -2582,6 +2815,7 @@
       console.log(TAG, 'gallery guard: watching', container.tagName.toLowerCase() + (container.className ? '.' + String(container.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
         if (!state.renderId || !state.inlineApplied) return;
+        installZoomSwap();
         // STAGING-100 — primary defence for carousel-style galleries: if
         // any new element was inserted, re-run per-variant slide swap so
         // newly-rendered slides pick up our composites. Covers theme
