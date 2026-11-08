@@ -4296,6 +4296,7 @@
       // tearing down the one-time installs below.
       state.inlineApplied = true;
       scheduleGallerySync('activate');
+      prepareShadow('activate');
       installInlineFormPollFallback();
       // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
@@ -4387,6 +4388,7 @@
     function revertToOriginalDesign() {
       if (state.reverted && !state.inlineApplied) return;
       console.log(TAG, 'revert');
+      restoreStampedForm();
       clearHeroHold();
       state.reverted = true;
       state.inlineApplied = false;
@@ -4796,6 +4798,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
+        prepareShadow('variant');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -4866,6 +4869,7 @@
           last.__size = sizeNow;
           rememberVariantChoice();
           scheduleGallerySync('size');
+          prepareShadow('size');
         }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
@@ -4886,6 +4890,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
+        prepareShadow('colour');
       }, 500);
     }
 
@@ -5005,26 +5010,152 @@
       return properties;
     }
 
-    function handOffToTheme(form, shadowVariantId, properties) {
-      if (!form || !shadowVariantId) return false;
+    function atcSelection() {
+      var info = currentVariantInfo(root);
+      return {
+        catalogId: String(info.variantId || ''),
+        colour: currentColourName() || info.colorName || '',
+        sizeName: currentSizeName() || info.sizeId || '',
+        price: info.price,
+      };
+    }
+
+    function shadowCacheKey(sel) {
+      return [state.renderId || '', sel.catalogId, sel.colour, sel.sizeName].join('|');
+    }
+
+    function prepareShadow(reason) {
+      if (!inlineOn()) return Promise.resolve(null);
+      var sel = atcSelection();
+      if (!sel.catalogId) return Promise.resolve(null);
+      var key = shadowCacheKey(sel);
+      if (state.shadowByKey && state.shadowByKey[key]) return Promise.resolve(state.shadowByKey[key]);
+      if (state.shadowPending && state.shadowPending.key === key) return state.shadowPending.promise;
+      var promise = mockupForColour(sel.colour).then(function (localUrl) {
+        if (localUrl) paintFlyImage(localUrl);
+        return attemptResolveVariant(sel.catalogId, sel.price, 0, {
+          colorName: sel.colour,
+          sizeName: sel.sizeName,
+          mockupUrl: localUrl,
+        }).then(function (res) {
+          var entry = {
+            key: key,
+            catalogId: sel.catalogId,
+            shadowId: String(res.variantId),
+            properties: cartLineProperties(res, sel.colour, sel.sizeName),
+            mockupUrl: (res.previewUrl && String(res.previewUrl).indexOf('https://') === 0) ? res.previewUrl : localUrl,
+            colour: sel.colour,
+            sizeName: sel.sizeName,
+          };
+          state.shadowByKey = state.shadowByKey || {};
+          state.shadowByKey[key] = entry;
+          console.log(
+            TAG,
+            'atc shadow ready',
+            'reason=' + (reason || ''),
+            'colour=' + sel.colour,
+            'catalog=' + sel.catalogId,
+            'shadow=' + entry.shadowId,
+            'mockupTail=' + srcTail(entry.mockupUrl),
+          );
+          return entry;
+        });
+      });
+      state.shadowPending = { key: key, promise: promise };
+      var clear = function () {
+        if (state.shadowPending && state.shadowPending.key === key) state.shadowPending = null;
+      };
+      promise.then(clear, clear);
+      return promise;
+    }
+
+    function stampForm(form, entry) {
+      if (!form || !entry) return;
       var idInput = form.querySelector('input[name="id"], select[name="id"]');
-      var catalogId = idInput ? idInput.value : '';
-      if (idInput) idInput.value = String(shadowVariantId);
-      var keys = Object.keys(properties);
-      for (var i = 0; i < keys.length; i++) setFormProperty(form, keys[i], properties[keys[i]]);
-      var component = form.closest('product-form-component');
-      var handed = false;
-      if (component && typeof component.handleSubmit === 'function') {
-        try {
-          component.handleSubmit(new Event('submit', { bubbles: false, cancelable: true }));
-          handed = true;
-        } catch (err) {
-          console.warn(TAG, 'theme handleSubmit failed', err && err.message);
+      if (idInput && !form.getAttribute('data-appai-catalog-id')) {
+        form.setAttribute('data-appai-catalog-id', idInput.value);
+      }
+      if (idInput) idInput.value = String(entry.shadowId);
+      var props = entry.properties || {};
+      var keys = Object.keys(props);
+      for (var i = 0; i < keys.length; i++) setFormProperty(form, keys[i], props[keys[i]]);
+      form.setAttribute('data-appai-theme-pass', '1');
+      if (entry.mockupUrl) paintFlyImage(entry.mockupUrl);
+    }
+
+    function restoreForm(form, catalogId) {
+      if (!form) return;
+      var idInput = form.querySelector('input[name="id"], select[name="id"]');
+      var restoreId = catalogId || form.getAttribute('data-appai-catalog-id') || '';
+      if (idInput && restoreId) idInput.value = String(restoreId);
+      form.removeAttribute('data-appai-catalog-id');
+      form.removeAttribute('data-appai-theme-pass');
+      var inputs = form.querySelectorAll('input[data-appai-prop]');
+      for (var i = 0; i < inputs.length; i++) inputs[i].remove();
+    }
+
+    function restoreStampedForm() {
+      var form = findMainProductForm(root);
+      if (form) restoreForm(form, form.getAttribute('data-appai-catalog-id'));
+      setPreparing(false);
+    }
+
+    function addButtonLabel(btn, text) {
+      if (!btn) return;
+      var label = btn.querySelector('.add-to-cart-text:not(.add-to-cart-text--added)');
+      if (!label) label = btn;
+      if (text == null) return label;
+      if (!btn.getAttribute('data-appai-label')) btn.setAttribute('data-appai-label', (label.textContent || '').trim());
+      label.textContent = text;
+      return label;
+    }
+
+    function setPreparing(on) {
+      var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button');
+      for (var i = 0; i < nodes.length; i++) {
+        var btn = nodes[i];
+        if (btn.closest && btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
+        var section = mainProductSection();
+        var inSection = section && section.contains(btn);
+        var inSticky = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
+        if (!inSection && !inSticky) continue;
+        if (on) addButtonLabel(btn, 'Preparing…');
+        else if (btn.getAttribute('data-appai-label')) {
+          addButtonLabel(btn, btn.getAttribute('data-appai-label'));
+          btn.removeAttribute('data-appai-label');
         }
       }
-      if (idInput && catalogId) idInput.value = catalogId;
-      for (var j = 0; j < keys.length; j++) setFormProperty(form, keys[j], '');
-      return handed;
+    }
+
+    function noteAtcClick(entry) {
+      state.atcClickSeq = (state.atcClickSeq || 0) + 1;
+      state.atcClick = {
+        id: state.atcClickSeq,
+        submits: 0,
+        catalogId: String(entry.catalogId),
+        shadowId: String(entry.shadowId),
+      };
+      console.log(
+        TAG,
+        'atc once',
+        'click=' + state.atcClick.id,
+        'catalog=' + entry.catalogId,
+        'shadow=' + entry.shadowId,
+      );
+    }
+
+    function submitThemeOnce(form, entry) {
+      if (!form || !entry) return;
+      stampForm(form, entry);
+      noteAtcClick(entry);
+      state.atcRelease = true;
+      var btn = form.querySelector('button[name="add"], button.product-form__submit');
+      try {
+        if (btn && !btn.disabled) btn.click();
+        else if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      } finally {
+        state.atcRelease = false;
+      }
     }
 
     function fallbackCartAdd(res, properties) {
@@ -5043,97 +5174,91 @@
     function installInlineATCIntercept() {
       if (state.atcBound) return;
       state.atcBound = true;
-      // Leave the button click alone when it will submit the product form,
-      // so Horizon's add-to-cart-component can play fly-to-cart. The submit
-      // listener below swaps in the shadow variant and then calls the
-      // theme's own handleSubmit. A type=button sticky control never
-      // submits, so that click runs the same path itself.
-      // Revert (inlineApplied false) returns before any of this, so the
-      // theme adds the catalog variant with no AppAI properties.
+      // One theme submit per click. The shadow id and line properties are
+      // written onto the form before that submit. We never call
+      // handleSubmit ourselves — that second call was adding the catalogue
+      // variant as well as the shadow.
       document.addEventListener('click', function (e) {
         if (!inlineOn()) return;
         var t = e.target;
         if (!t || !t.closest) return;
         if (t.closest('.shopify-payment-button')) return;
-        var btn = t.closest('button[name="add"], button.product-form__submit');
+        var btn = t.closest('button[name="add"], button.product-form__submit, sticky-add-to-cart button');
         if (!btn) return;
         if (btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) return;
         var section = mainProductSection();
         var inSection = !!(section && section.contains(btn));
         var inSticky = !!btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) return;
-        var info = currentVariantInfo(root);
-        var colour = currentColourName() || info.colorName || '';
-        var cached = urlForColourMap(state.previewUrlByColor, colour);
-        if (cached) paintFlyImage(cached);
-        var type = (btn.getAttribute('type') || 'submit').toLowerCase();
-        var form = btn.form || btn.closest('form');
-        if (type === 'submit' && isOurCartForm(form)) return;
-        // Horizon's sticky bar is type=button. Its handler clicks the main
-        // submit button (and plays the sticky fly-to-cart). Let that through;
-        // the submit listener adds the shadow variant.
-        if (inSticky) return;
+        var form = (btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root);
+        if (state.atcRelease && form && form.getAttribute('data-appai-theme-pass') === '1') return;
+        if (form && form.getAttribute('data-appai-theme-pass') === '1') {
+          restoreForm(form, form.getAttribute('data-appai-catalog-id'));
+        }
+        var sel = atcSelection();
+        var entry = state.shadowByKey && state.shadowByKey[shadowCacheKey(sel)];
+        if (entry && form && String(entry.shadowId) !== String(sel.catalogId)) {
+          stampForm(form, entry);
+          noteAtcClick(entry);
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
-        runInlineATC(findMainProductForm(root) || form);
+        if (state.atcBusy) return;
+        if (btn.disabled) return;
+        holdAndSubmit(form);
       }, true);
       document.addEventListener('submit', function (e) {
         var form = e.target;
         if (!inlineOn() || !isOurCartForm(form)) return;
+        var click = state.atcClick;
+        if (form.getAttribute('data-appai-theme-pass') === '1' && click) {
+          var idInput = form.querySelector('input[name="id"], select[name="id"]');
+          var submitted = idInput ? String(idInput.value || '') : '';
+          click.submits += 1;
+          console.log(
+            TAG,
+            'atc submit',
+            'click=' + click.id,
+            'count=' + click.submits,
+            'variant=' + submitted,
+            'shadow=' + (submitted && submitted === String(click.shadowId) ? 'yes' : 'no'),
+          );
+          var catalogId = click.catalogId;
+          setTimeout(function () { restoreForm(form, catalogId); }, 0);
+          markDismissed(state.renderId);
+          markInCart(state.renderId);
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
-        runInlineATC(form);
+        console.log(TAG, 'atc submit blocked', 'reason=shadow-not-stamped');
+        if (!state.atcBusy) holdAndSubmit(form);
       }, true);
     }
 
-    function runInlineATC(form) {
-      if (state.atcBusy) return;
-      var targetForm = form || findMainProductForm(root);
-      var addBtn = targetForm ? targetForm.querySelector('button[name="add"], button.product-form__submit') : null;
-      if (addBtn && addBtn.disabled) return;
-      var info = currentVariantInfo(root);
-      var variantId = info.variantId;
-      if (!variantId) {
-        console.warn(TAG, 'inline ATC: no variant id on form, aborting');
-        return;
-      }
-      var colour = currentColourName() || info.colorName || '';
-      var sizeName = currentSizeName() || info.sizeId || '';
+    function holdAndSubmit(form) {
       state.atcBusy = true;
-      mockupForColour(colour)
-        .then(function (localUrl) {
-          paintFlyImage(localUrl);
-          console.log(TAG, 'atc colour=' + colour, 'size=' + sizeName, 'mockupTail=' + srcTail(localUrl));
-          return attemptResolveVariant(String(variantId), info.price, 0, {
-            colorName: colour,
-            sizeName: sizeName,
-            mockupUrl: localUrl,
-          }).then(function (res) {
-            console.log(
-              TAG,
-              'atc sentTail=' + srcTail(res.previewUrl),
-              'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl),
-            );
-            var properties = cartLineProperties(res, colour, sizeName);
-            var target = form || findMainProductForm(root);
-            if (handOffToTheme(target, res.variantId, properties)) {
-              markDismissed(state.renderId);
-              markInCart(state.renderId);
-              return;
-            }
-            return fallbackCartAdd(res, properties).then(function () {
-              markDismissed(state.renderId);
-              markInCart(state.renderId);
-            });
-          });
+      setPreparing(true);
+      var sel = atcSelection();
+      console.log(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
+      prepareShadow('click')
+        .then(function (entry) {
+          if (!entry || !inlineOn()) throw new Error('Could not add this design to cart.');
+          if (String(entry.shadowId) === String(entry.catalogId)) throw new Error('Could not add this design to cart.');
+          setPreparing(false);
+          submitThemeOnce(form || findMainProductForm(root), entry);
         })
         .catch(function (err) {
           console.warn(TAG, 'inline ATC failed:', err && err.message);
           if (caption) caption.textContent = (err && err.message) || 'Could not add to cart. Please try again.';
         })
-        .then(function () { state.atcBusy = false; });
+        .then(function () {
+          state.atcBusy = false;
+          setPreparing(false);
+        });
     }
 
     function openUploadStep() {
@@ -5655,8 +5780,6 @@
           // Bugs B/C — write the shopper's ACTUAL selected colour/size, not
           // whatever happened to be on the PDP form when ATC was clicked.
           var properties = cartLineProperties(res, modalColour, modalSize);
-          var form = findMainProductForm(root);
-          if (handOffToTheme(form, res.variantId, properties)) return { ok: true, themed: true };
           return fallbackCartAdd(res, properties).then(function () { return { ok: true, themed: false }; });
         })
         .then(function (added) {
