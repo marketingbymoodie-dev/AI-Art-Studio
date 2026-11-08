@@ -164,6 +164,29 @@
     color: var(--appai-my-pet-caption-fg, #666666) !important;
     opacity: 1 !important;
   }
+  .appai-my-pet__press {
+    position: relative;
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 500;
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+    cursor: pointer;
+  }
+  .appai-my-pet__press::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 44px;
+    transform: translateY(-50%);
+  }
   /* Collapse the caption slot entirely when neither the theme subtitle nor the
      cap caption has anything to say (prevents an empty line of padding when a
      merchant blanks the subtitle AND the shopper hasn't generated yet). */
@@ -243,6 +266,7 @@
   }
   .appai-my-pet__designs {
     position: relative;
+    z-index: 1;
     flex: 0 0 auto;
     margin: 0;
     padding: 0;
@@ -274,11 +298,13 @@
     inset: 0;
     z-index: 40;
     background: transparent;
+    pointer-events: none;
   }
   .appai-my-pet-designs-backdrop[hidden] { display: none !important; }
   .appai-my-pet-designs {
     position: fixed;
     z-index: 41;
+    pointer-events: auto;
     max-width: calc(100vw - 16px);
     padding: 0.5rem;
     border-radius: 12px;
@@ -314,10 +340,11 @@
     border-radius: 10px;
     overflow: hidden;
     background: #f3f3f3;
-    border: 2px solid transparent;
+    border: 1px solid rgba(26, 26, 26, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
   }
   .appai-my-pet-designs__thumb[aria-pressed="true"] .appai-my-pet-designs__frame {
-    border-color: #1a1a1a;
+    border: 2px solid #1a1a1a;
   }
   .appai-my-pet-designs__frame img,
   .appai-my-pet-designs__zoom img {
@@ -378,6 +405,25 @@
     }
   }
   @media (max-width: 749px) {
+    .appai-my-pet__meta {
+      display: block;
+      text-align: center;
+      line-height: 1.35;
+    }
+    .appai-my-pet__caption {
+      display: inline;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+    }
+    .appai-my-pet__designs {
+      display: inline;
+      margin-left: 0.45rem;
+      vertical-align: baseline;
+    }
+    .appai-my-pet-designs-backdrop.appai-my-pet-designs--sheet {
+      pointer-events: auto;
+    }
     .appai-my-pet-designs-backdrop { background: transparent; }
     .appai-my-pet-designs--sheet .appai-my-pet-designs {
       left: 0;

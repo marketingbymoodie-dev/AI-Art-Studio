@@ -106,7 +106,15 @@
     };
     if (own && own.colorName) next.colorName = own.colorName;
     if (own && own.sizeName) next.sizeName = own.sizeName;
+    if (prev.reverted) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
+  }
+  function persistReverted(shopifyProductId, on) {
+    var prev = readStoredRecord(shopifyProductId);
+    if (!prev || !prev.renderId) return;
+    if (on) prev.reverted = true;
+    else delete prev.reverted;
+    writeStoredRecord(shopifyProductId, prev);
   }
   function writeStoredVariantChoice(shopifyProductId, colorName, sizeName) {
     var prev = readStoredRecord(shopifyProductId);
@@ -1011,7 +1019,17 @@
         'display:block;margin:6px auto 0;padding:0;background:none;border:0;' +
         'color:#D65857;font-size:12px;line-height:1.4;' +
         'text-decoration:underline;cursor:pointer;';
-      revertLink.addEventListener('click', function () { revertToOriginalDesign(); });
+      revertLink.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        revertToOriginalDesign();
+      });
+      revertLink.addEventListener('pointerup', function (event) {
+        if (event.pointerType === 'mouse') return;
+        event.preventDefault();
+        event.stopPropagation();
+        revertToOriginalDesign();
+      });
       // Place AFTER the caption if present (keeps button + caption together)
       // or directly after the button.
       var anchor = caption && caption.parentNode === openBtn.parentNode ? caption : openBtn;
@@ -1238,7 +1256,27 @@
         noteRestoreLockOnOpenBtn();
         return;
       }
-      caption.textContent = formatAttemptsMessage(capStatus);
+      var message = formatAttemptsMessage(capStatus);
+      var press = message === 'Sign up to the Petposterous Press for 2 more custom designs.'
+        && capStatus.emailBonusAvailable
+        && !capStatus.emailBonusApplied;
+      if (press) {
+        caption.classList.remove('appai-shimmer');
+        if (!caption.querySelector('[data-appai-my-pet-press]')) {
+          caption.textContent = '';
+          var pressBtn = document.createElement('button');
+          pressBtn.type = 'button';
+          pressBtn.className = 'appai-my-pet__press';
+          pressBtn.setAttribute('data-appai-my-pet-press', '1');
+          pressBtn.textContent = message;
+          pressBtn.addEventListener('click', function () {
+            maybePromptEmailSave({ force: true, trigger: 'try-another-photo' });
+          });
+          caption.appendChild(pressBtn);
+        }
+      } else {
+        caption.textContent = message;
+      }
       if (capStatus.allowed === false) {
         openBtn.setAttribute('aria-disabled', 'true');
         caption.classList.remove('appai-shimmer');
@@ -1345,6 +1383,72 @@
       cancelDesignHover(true);
       designsPop.hidden = true;
       if (designsBtn) designsBtn.setAttribute('aria-expanded', 'false');
+      setSheetScrollLock(false);
+    }
+
+    function setSheetScrollLock(on) {
+      if (!document.body) return;
+      if (on) {
+        document.body.setAttribute('data-appai-my-pet-scroll-lock', '1');
+        document.body.style.overflow = 'hidden';
+        return;
+      }
+      if (document.body.getAttribute('data-appai-my-pet-scroll-lock') !== '1') return;
+      document.body.style.overflow = '';
+      document.body.removeAttribute('data-appai-my-pet-scroll-lock');
+    }
+
+    function shirtHex(colorName) {
+      var want = String(colorName || '').trim().toLowerCase();
+      if (!want) return '#f3f3f3';
+      var radios = document.querySelectorAll('input[type="radio"]');
+      for (var i = 0; i < radios.length; i++) {
+        if (String(radios[i].value || '').trim().toLowerCase() !== want) continue;
+        var radioName = String(radios[i].name || '').toLowerCase();
+        if (radioName.indexOf('color') === -1 && radioName.indexOf('colour') === -1) continue;
+        var label = radios[i].closest ? radios[i].closest('label') : null;
+        if (!label && radios[i].id) label = document.querySelector('label[for="' + radios[i].id + '"]');
+        var host = label || radios[i].parentElement;
+        if (!host) continue;
+        var nodes = [host];
+        var painted = host.querySelectorAll ? host.querySelectorAll('*') : [];
+        for (var n = 0; n < painted.length && n < 6; n++) nodes.push(painted[n]);
+        for (var k = 0; k < nodes.length; k++) {
+          if (nodes[k] === host) continue;
+          var rect = null;
+          try { rect = nodes[k].getBoundingClientRect(); } catch (e2) {}
+          if (rect && (rect.width > 48 || rect.height > 48 || rect.width < 8)) continue;
+          var bg = '';
+          try { bg = window.getComputedStyle(nodes[k]).backgroundColor; } catch (e) {}
+          var hex = rgbToHex(bg);
+          if (hex) return hex;
+        }
+      }
+      var known = {
+        black: '#1a1a1a',
+        white: '#f7f7f7',
+        sage: '#9DC183',
+        'dark grey': '#4B4B4B',
+        'dark gray': '#4B4B4B',
+        'light grey': '#d4d4d4',
+        'light gray': '#d4d4d4',
+        red: '#C41E3A',
+        blue: '#2563EB',
+        pink: '#F4A6C3',
+      };
+      return known[want] || '#f3f3f3';
+    }
+
+    function rgbToHex(bg) {
+      var text = String(bg || '');
+      var m = text.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?/);
+      if (!m) return '';
+      if (m[4] != null && Number(m[4]) === 0) return '';
+      function hex(n) {
+        var s = Number(n).toString(16);
+        return s.length === 1 ? '0' + s : s;
+      }
+      return '#' + hex(m[1]) + hex(m[2]) + hex(m[3]);
     }
 
     function designLabelPair(item) {
@@ -1364,6 +1468,7 @@
         var active = item.renderId === state.renderId;
         var name = 'Design ' + (i + 1);
         var pair = designLabelPair(item);
+        var savedChoice = storedChoiceFor(shopifyProductId, item.renderId);
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'appai-my-pet-designs__thumb';
@@ -1371,12 +1476,15 @@
         btn.setAttribute('aria-label', name + (pair ? ', ' + pair : '') + (active ? ', current' : ''));
         var frame = document.createElement('span');
         frame.className = 'appai-my-pet-designs__frame';
+        var shirt = shirtHex(savedChoice.colorName || item.colorName || '');
+        frame.style.backgroundColor = shirt;
         var img = document.createElement('img');
         img.alt = '';
         img.src = item.thumbnailUrl || '';
         frame.appendChild(img);
         var zoom = document.createElement('span');
         zoom.className = 'appai-my-pet-designs__zoom';
+        zoom.style.backgroundColor = shirt;
         var zoomImg = document.createElement('img');
         zoomImg.alt = '';
         zoomImg.src = item.thumbnailUrl || '';
@@ -1414,6 +1522,7 @@
       if (!designsPop || !designsBtn) return;
       var sheet = isDesignSheet();
       designsPop.classList.toggle('appai-my-pet-designs--sheet', sheet);
+      setSheetScrollLock(sheet);
       var panel = designsPop.querySelector('.appai-my-pet-designs');
       if (!panel) return;
       if (sheet) {
@@ -1489,6 +1598,17 @@
         document.addEventListener('keydown', function (event) {
           if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'PageUp' || event.key === 'PageDown' || event.key === ' ') noteUserScroll();
         });
+        document.addEventListener('click', function (event) {
+          if (!designsPop || designsPop.hidden || isDesignSheet()) return;
+          var target = event.target;
+          if (!target || !target.closest) return;
+          if (target.closest('.appai-my-pet-designs') || target.closest('[data-appai-my-pet-designs]')) return;
+          closeDesigns();
+        });
+        window.addEventListener('scroll', function () {
+          if (!designsPop || designsPop.hidden || isDesignSheet()) return;
+          placeDesigns();
+        }, { passive: true });
       }
       fillDesigns(state.designs || []);
       designsPop.hidden = false;
@@ -1650,6 +1770,23 @@
       return activationUrl;
     }
 
+    function reapplyActiveDesign() {
+      if (!state.renderId) return;
+      console.log(TAG, 're-apply');
+      state.reverted = false;
+      persistReverted(shopifyProductId, false);
+      var colour = currentInlineColour() || (currentVariantInfo(root).colorName || '');
+      var url = urlForColourMap(state.previewUrlByColor, colour) || state.previewUrl;
+      if (url) {
+        activateInlinePreviewWithRetry(url);
+        return;
+      }
+      getJson('my-pet/resolve-render', { renderId: state.renderId }).then(function (res) {
+        if (!res || !res.ok || !res.previewUrl || state.reverted) return;
+        showResolvedDesign(res, colour);
+      }).catch(function () {});
+    }
+
     function selectListedDesign(item) {
       if (!item || state.restorePending) return;
       cancelDesignHover(false);
@@ -1662,6 +1799,11 @@
       var same = item.renderId === state.renderId
         && namesMatch(colorName, fallbackColor)
         && namesMatch(sizeName, fallbackSize);
+      var wasReverted = !!state.reverted;
+      if (wasReverted) {
+        state.reverted = false;
+        persistReverted(shopifyProductId, false);
+      }
       if (same) {
         if (!saved.colorName && !saved.sizeName && state.renderId) {
           writeStoredVariantChoice(shopifyProductId, fallbackColor, fallbackSize);
@@ -1673,8 +1815,18 @@
           'selected size=' + (fallbackSize || '(none)'));
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
+        if (wasReverted) {
+          var again = urlForColourMap(state.previewUrlByColor, fallbackColor) || state.previewUrl;
+          if (again) {
+            console.log(TAG, 're-apply');
+            activateInlinePreviewWithRetry(again);
+          } else {
+            reapplyActiveDesign();
+          }
+        }
         return;
       }
+      if (wasReverted) console.log(TAG, 're-apply');
       var token = armDesignSwitch();
       var cached = readResolveCache(item.renderId);
       var pending = cached
@@ -1877,6 +2029,25 @@
       state.applyExactVariant = applyExactVariant;
       var stored = readStoredRender(shopifyProductId);
       if (!stored || !stored.renderId) return;
+      if (stored.reverted) {
+        state.reverted = true;
+        state.renderId = stored.renderId;
+        state.jobId = stored.jobId || null;
+        var cachedRevert = readResolveCache(stored.renderId);
+        var keepUrls = function (res) {
+          if (!state.reverted || !res || !res.ok || !res.previewUrl) return;
+          state.jobId = res.jobId || state.jobId;
+          state.previewUrl = res.previewUrl;
+          state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
+            ? Object.assign({}, res.previewUrlsByColor)
+            : {};
+          writeResolveCache(res);
+          preloadPreviewUrls(state.previewUrlByColor);
+        };
+        if (cachedRevert) keepUrls(cachedRevert);
+        else getJson('my-pet/resolve-render', { renderId: stored.renderId }).then(keepUrls).catch(function () {});
+        return;
+      }
       state.restorePending = true;
       var finished = false;
       var badgeTimer = null;
@@ -2842,7 +3013,7 @@
       if (!container || container === document.body) return;
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
-        if (!state.renderId || !state.inlineApplied) return;
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         var colorName = state.holdColour || currentInlineColour();
         var replaced = null;
         var replacedArea = -1;
@@ -3283,7 +3454,7 @@
         state.zoomObserver = null;
       }
       var observer = new MutationObserver(function () {
-        if (!state.renderId || !state.inlineApplied) return;
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         // A mutation delivered while we are writing is the theme's stock
         // src landing in the same turn. Re-apply after our write finishes
         // instead of dropping it.
@@ -3318,6 +3489,7 @@
     }
 
     function syncActiveGallery(reason) {
+      if (state.reverted || !state.inlineApplied) return;
       if (!state.previewUrlByColor || !Object.keys(state.previewUrlByColor).length) return;
       if (!state.renderId) return;
       if (state.gallerySyncing) return;
@@ -3333,11 +3505,18 @@
     }
 
     function scheduleGallerySync(reason) {
+      if (state.reverted) return;
       state.gallerySyncReason = reason || state.gallerySyncReason || '';
       if (state.gallerySyncTimers) return;
       state.gallerySyncTimers = true;
+      var generation = state.gallerySyncGeneration || 0;
       [0, 350, 900].forEach(function (ms) {
         setTimeout(function () {
+          if (generation !== (state.gallerySyncGeneration || 0)) return;
+          if (state.reverted || !state.inlineApplied) {
+            if (ms === 900) state.gallerySyncTimers = false;
+            return;
+          }
           syncActiveGallery(state.gallerySyncReason);
           if (ms === 900) state.gallerySyncTimers = false;
         }, ms);
@@ -3475,7 +3654,7 @@
               if (ok) {
                 console.log(TAG, 'slide swap check (+300ms):', capturedColor,
                   'container=' + capturedCls, '✓ currentSrc matches');
-              } else {
+              } else if (!state.reverted && state.inlineApplied) {
                 console.warn(TAG, 'slide swap check (+300ms):', capturedColor,
                   'container=' + capturedCls,
                   '✗ MISMATCH currentSrc tail=' + rc,
@@ -3684,6 +3863,7 @@
       // tearing down the one-time installs below.
       state.inlineApplied = true;
       scheduleGallerySync('activate');
+      installInlineFormPollFallback();
       // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
         openBtn.textContent = 'Try another photo';
@@ -3734,9 +3914,56 @@
      * (Do not spell it with an asterisk-slash in this JSDoc — closes the
      * block comment early and breaks the whole file parse — staging-94.)
      */
+    function restoreSwappedImg(img) {
+      if (!img || img.tagName !== 'IMG') return;
+      var orig = img.getAttribute('data-appai-my-pet-slide-original-src');
+      if (orig == null) orig = img.getAttribute('data-appai-my-pet-original-src');
+      var srcset = img.getAttribute('data-appai-my-pet-slide-original-srcset');
+      if (srcset == null) srcset = img.getAttribute('data-appai-my-pet-original-srcset');
+      var sizes = img.getAttribute('data-appai-my-pet-slide-original-sizes');
+      if (sizes == null) sizes = img.getAttribute('data-appai-my-pet-original-sizes');
+      try {
+        if (orig != null) img.src = orig;
+        if (srcset) img.setAttribute('srcset', srcset);
+        else img.removeAttribute('srcset');
+        if (sizes) img.setAttribute('sizes', sizes);
+        else img.removeAttribute('sizes');
+      } catch (e) {}
+      restoreDetachedSources(img);
+      img.removeAttribute('data-appai-my-pet-preview');
+      img.removeAttribute('data-appai-my-pet-slide');
+    }
+
+    function restoreLiveGallery() {
+      var selector = 'img[data-appai-my-pet-slide-original-src], img[data-appai-my-pet-original-src]';
+      var lists = [];
+      var scope = productSectionScope();
+      try { if (scope && scope.querySelectorAll) lists.push(scope.querySelectorAll(selector)); } catch (e) {}
+      var zoom = zoomObserveTarget();
+      try { if (zoom && zoom.querySelectorAll) lists.push(zoom.querySelectorAll(selector)); } catch (e2) {}
+      var seen = [];
+      for (var a = 0; a < lists.length; a++) {
+        for (var i = 0; i < lists[a].length; i++) {
+          if (seen.indexOf(lists[a][i]) !== -1) continue;
+          seen.push(lists[a][i]);
+          restoreSwappedImg(lists[a][i]);
+        }
+      }
+    }
+
     function revertToOriginalDesign() {
-      console.log(TAG, 'revert to original design');
+      if (state.reverted && !state.inlineApplied) return;
+      console.log(TAG, 'revert');
       clearHeroHold();
+      state.reverted = true;
+      state.inlineApplied = false;
+      state.thumbColour = null;
+      state.designSwitchColour = null;
+      state.designSwitchSize = null;
+      state.holdColour = null;
+      state.gallerySyncGeneration = (state.gallerySyncGeneration || 0) + 1;
+      state.gallerySyncTimers = false;
+      persistReverted(shopifyProductId, true);
       // 1. Disconnect observers + stop backup poll BEFORE touching src so
       //    the observers don't see our restoration as a "theme stole the
       //    preview" mutation and re-assert back to preview.
@@ -3765,6 +3992,7 @@
       // something to restore from (swapInlineHero's data-appai-my-pet-
       // original-src vs swapVariantSlides' data-appai-my-pet-slide-
       // original-src are different attrs — no collision).
+      restoreLiveGallery();
       revertVariantSlides();
       // 2. Restore src/srcset on the CURRENT live hero (may differ from the
       //    staleHero reference if the theme replaced the node during the
@@ -3795,7 +4023,6 @@
       }
       // 3. Flip state flags — ATC intercept + variant listeners + observers
       //    all gate on inlineApplied/inlineHero.
-      state.inlineApplied = false;
       state.inlineHero = null;
       // 4. Button + link UI back to pre-activation state.
       if (openBtn) {
@@ -3862,7 +4089,7 @@
       var assert = function () {
         if (state.mediaWriting) return;
         if (state.holdOldHero && hero === state.holdOldHero) return;
-        if (!state.renderId || !state.inlineApplied) return;
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         var info = currentVariantInfo(root);
         // STAGING-99 — swatch cross-check. If the form is the wrong one
         // (Ritual multi-form PDP), info.colorName will be frozen on the
@@ -3937,7 +4164,7 @@
       // selector matches the theme.
       if (state.inlineGuardBackupTimer) clearInterval(state.inlineGuardBackupTimer);
       state.inlineGuardBackupTimer = setInterval(function () {
-        if (!state.renderId || !state.inlineApplied) return;
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         var currentHero = state.inlineHero;
         if (currentHero && document.body.contains(currentHero) && currentHero.__appaiMyPetObserver) return;
         var fresh = findProductHeroImg();
@@ -4031,7 +4258,7 @@
       }
       console.log(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
-        if (!state.renderId || !state.inlineApplied) return;
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         installZoomSwap();
         // STAGING-100 — primary defence for carousel-style galleries: if
         // any new element was inserted, re-run per-variant slide swap so
@@ -5157,6 +5384,10 @@
       // branches all behave the same as the modal-mode change-photo button.
       if (previewMode === 'inline' && state.inlineApplied) {
         tryAnotherPhoto();
+        return;
+      }
+      if (previewMode === 'inline' && state.reverted && state.renderId) {
+        reapplyActiveDesign();
         return;
       }
       // Issue 7 (post-staging-93) — reverted-but-already-generated state in
