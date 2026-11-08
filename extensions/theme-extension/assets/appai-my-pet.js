@@ -224,7 +224,7 @@
     return '/apps/appai/' + path.replace(/^\//, '');
   }
 
-  function postJson(path, body) {
+  function postJson(path, body, signal) {
     var payload = Object.assign({}, body || {});
     var key = readStoredDeviceKey();
     if (key && !payload.deviceKey) payload.deviceKey = key;
@@ -233,6 +233,7 @@
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify(payload),
+      signal: signal || undefined,
     }).then(function (r) { return r.json(); }).then(captureDeviceKeyFromResponse);
   }
 
@@ -2298,12 +2299,25 @@
           try {
             var sizeRadio = findKindRadio(picker, 'size', actualSize, true);
             var colourRadio = findKindRadio(picker, 'colour', actualColor, true);
-            if (sizeRadio) markRadio(sizeRadio, id);
+            var sizeNeeds = !!(sizeRadio && !sizeRadio.checked);
+            var colourNeeds = !!(colourRadio && !colourRadio.checked);
+            // Check both, then fire one change. A second change aborts the
+            // theme's section fetch (AbortError in variant-picker.js).
+            if (sizeRadio) markRadio(sizeRadio, null);
             if (colourRadio) markRadio(colourRadio, id);
-            if (idInput) idInput.value = id;
-            if (sizeRadio) sizeRadio.dispatchEvent(new Event('change', { bubbles: true }));
-            if (colourRadio) colourRadio.dispatchEvent(new Event('change', { bubbles: true }));
-            else if (!sizeRadio && idInput) idInput.dispatchEvent(new Event('change', { bubbles: true }));
+            var dispatch = null;
+            if (colourNeeds || (sizeNeeds && colourRadio)) dispatch = colourRadio;
+            else if (sizeNeeds) dispatch = sizeRadio;
+            if (dispatch) {
+              dispatch.setAttribute('data-variant-id', id);
+              dispatch.setAttribute('data-option-available', 'true');
+              dispatch.removeAttribute('aria-disabled');
+              dispatch.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (idInput && String(idInput.value) !== id) {
+              idInput.value = id;
+              idInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (idInput && String(idInput.value) !== id) idInput.value = id;
           } finally {
             window.__appaiSelectingDefaultSize = false;
           }
@@ -2619,10 +2633,25 @@
       return true;
     }
 
+    function abortShadowFetches() {
+      var list = state.shadowAborts || [];
+      state.shadowAborts = [];
+      for (var i = 0; i < list.length; i++) {
+        try { list[i].abort(); } catch (e) {}
+      }
+    }
+
     function bumpRenderGeneration(reason) {
       state.renderGeneration = (state.renderGeneration || 0) + 1;
       state.gallerySyncGeneration = (state.gallerySyncGeneration || 0) + 1;
       state.gallerySyncTimers = false;
+      state.shadowEpoch = (state.shadowEpoch || 0) + 1;
+      state.warmToken = 'gen-' + state.renderGeneration;
+      if (state.prefetchCtrl) {
+        try { state.prefetchCtrl.abort(); } catch (e) {}
+        state.prefetchCtrl = null;
+      }
+      abortShadowFetches();
       console.log(TAG, 'render generation', state.renderGeneration, reason || '');
       return state.renderGeneration;
     }
@@ -2802,9 +2831,11 @@
       state._pausedHeroObs = img && img.__appaiMyPetObserver;
       state._pausedSectionObs = state.productMediaObserver;
       state._pausedZoomObs = state.zoomObserver;
+      state._pausedGalleryObs = state.inlineGalleryObserver;
       try { if (state._pausedHeroObs) state._pausedHeroObs.disconnect(); } catch (e) {}
       try { if (state._pausedSectionObs) state._pausedSectionObs.disconnect(); } catch (e2) {}
       try { if (state._pausedZoomObs) state._pausedZoomObs.disconnect(); } catch (e3) {}
+      try { if (state._pausedGalleryObs) state._pausedGalleryObs.disconnect(); } catch (e4) {}
     }
 
     function resumeMediaObservers(img) {
@@ -2813,9 +2844,11 @@
       var heroObs = state._pausedHeroObs;
       var sectionObs = state._pausedSectionObs;
       var zoomObs = state._pausedZoomObs;
+      var galleryObs = state._pausedGalleryObs;
       state._pausedHeroObs = null;
       state._pausedSectionObs = null;
       state._pausedZoomObs = null;
+      state._pausedGalleryObs = null;
       if (heroObs && img) {
         try { heroObs.observe(img, { attributes: true, attributeFilter: ['src', 'srcset', 'sizes'] }); } catch (e) {}
       }
@@ -2844,6 +2877,9 @@
             });
           } catch (e3) {}
         }
+      }
+      if (galleryObs && state.galleryGuardRoot && document.contains(state.galleryGuardRoot)) {
+        try { galleryObs.observe(state.galleryGuardRoot, { childList: true, subtree: true }); } catch (e4) {}
       }
     }
 
@@ -3557,6 +3593,7 @@
     // so the media-id pass never reaches them. Search the product section
     // and the zoom dialog, not only the first media-gallery.
     function swapLooseThumbnails(scope) {
+      var n = 0;
       var roots = [];
       var gallery = mainMediaGallery();
       var zoom = mainZoomDialog();
@@ -3573,9 +3610,12 @@
           if (seen.indexOf(buttons[i]) !== -1) continue;
           seen.push(buttons[i]);
           var imgs = buttons[i].querySelectorAll ? buttons[i].querySelectorAll('img') : [];
-          for (var j = 0; j < imgs.length; j++) applyOwnPreview(imgs[j]);
+          for (var j = 0; j < imgs.length; j++) {
+            if (applyOwnPreview(imgs[j])) n++;
+          }
         }
       }
+      return n;
     }
 
     function selectSwatch(colour) {
@@ -3974,24 +4014,21 @@
     }
 
     function swapVariantSlides(urlsByColor) {
-      if (!urlsByColor) return;
-      if (state.reverted) return;
+      if (!urlsByColor) return 0;
+      if (state.reverted) return 0;
       pauseMediaObservers(state.inlineHero);
+      var changed = 0;
       try {
       var mediaIdByColor = getMediaIdByColor(root);
       var scope = mainMediaGallery() || mainProductSection();
-      if (!scope) return;
-      var totalMatched = 0;
+      if (!scope) return 0;
       var stash = state.inlineSlideStash || [];
       for (var color in urlsByColor) {
         if (!Object.prototype.hasOwnProperty.call(urlsByColor, color)) continue;
         var url = urlsByColor[color];
         if (!url) continue;
         var mediaId = mediaIdByColor[color];
-        if (!mediaId) {
-          console.log(TAG, 'slide swap:', color, '→ no featured_media id in variants data (skipped)');
-          continue;
-        }
+        if (!mediaId) continue;
         var slides = [];
         try { slides = scope.querySelectorAll('[data-media-id="' + mediaId + '"]'); } catch (e) {}
         var matched = 0;
@@ -4005,21 +4042,25 @@
             if (img.closest && img.closest('.appai-my-pet')) continue;
             if (state.holdOldHero && img === state.holdOldHero) continue;
             if (isCoverImg(img)) continue;
-            swapOneSlideImage(img, url, color, mediaId, stash);
-            matched++;
+            if (swapOneSlideImage(img, url, color, mediaId, stash)) matched++;
           }
         }
-        totalMatched += matched;
-        console.log(TAG, 'slide swap:', color, '→ media', mediaId,
-          matched ? '(' + matched + ' nodes swapped, incl. thumbnail)' : '(NO MATCHING NODES in product section)');
+        changed += matched;
+        if (matched) {
+          console.log(TAG, 'slide swap:', color, '→ media', mediaId,
+            '(' + matched + ' nodes swapped, incl. thumbnail)');
+        }
       }
       state.inlineSlideStash = stash;
-      swapLooseThumbnails();
+      changed += swapLooseThumbnails() || 0;
       holdMissingColours();
-      console.log(TAG, 'slide swap: total nodes swapped =', totalMatched, 'colours in map =', Object.keys(urlsByColor).length);
+      if (changed) {
+        console.log(TAG, 'slide swap: total nodes swapped =', changed, 'colours in map =', Object.keys(urlsByColor).length);
+      }
       } finally {
         resumeMediaObservers(state.inlineHero);
       }
+      return changed;
     }
 
     /**
@@ -4050,8 +4091,8 @@
      *   restoring it, …) is immediately visible in the console.
      */
     function swapOneSlideImage(img, url, color, mediaId, stash) {
-      if (!galleryImgAllowed(img)) return;
-      if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes') && !responsiveLeftovers(img)) return;
+      if (!galleryImgAllowed(img)) return false;
+      if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes') && !responsiveLeftovers(img)) return false;
       if (!img.hasAttribute('data-appai-my-pet-slide-original-src')) {
         img.setAttribute('data-appai-my-pet-slide-original-src', img.getAttribute('src') || '');
         var origSrcset = img.getAttribute('srcset');
@@ -4096,10 +4137,7 @@
               if (!generationCurrent(capturedGen, capturedRender)) return;
               var rc = urlTail(capturedImg.currentSrc || capturedImg.src || '');
               var ok = rc === capturedTail && !responsiveLeftovers(capturedImg);
-              if (ok) {
-                console.log(TAG, 'slide swap check (+300ms):', capturedColor,
-                  'container=' + capturedCls, '✓ currentSrc matches');
-              } else if (!state.reverted && state.inlineApplied) {
+              if (!ok && !state.reverted && state.inlineApplied) {
                 console.warn(TAG, 'slide swap check (+300ms):', capturedColor,
                   'container=' + capturedCls,
                   '✗ MISMATCH currentSrc tail=' + rc,
@@ -4111,6 +4149,7 @@
           }, 300);
         })(img, color, cls, url, setTail, state.renderGeneration || 0, state.renderId);
       } catch (e) {}
+      return true;
     }
 
     /**
@@ -4401,6 +4440,46 @@
       }
     }
 
+    function heroStockSrc(img) {
+      if (!img || !img.getAttribute) return '';
+      return img.getAttribute('data-appai-my-pet-original-src')
+        || img.getAttribute('data-appai-my-pet-slide-original-src')
+        || '';
+    }
+
+    function urlIsCustomPreview(url) {
+      if (!url) return false;
+      if (state.previewUrl && urlsMatch(url, state.previewUrl)) return true;
+      var map = state.previewUrlByColor || {};
+      var keys = Object.keys(map);
+      for (var i = 0; i < keys.length; i++) {
+        if (map[keys[i]] && urlsMatch(url, map[keys[i]])) return true;
+      }
+      return false;
+    }
+
+    function heroStillCustom(img) {
+      if (!img) return false;
+      var attr = img.getAttribute ? (img.getAttribute('src') || '') : '';
+      if (img.getAttribute && img.getAttribute('data-appai-my-pet-preview') === 'true' && urlIsCustomPreview(attr)) return true;
+      return urlIsCustomPreview(attr);
+    }
+
+    function forceHeroStock(img, stockSrc) {
+      if (!img || !stockSrc) return;
+      restoreSwappedImg(img);
+      if (!heroStillCustom(img)) return;
+      try { img.src = stockSrc; } catch (e) {}
+      try { img.removeAttribute('srcset'); } catch (e2) {}
+      try { img.removeAttribute('sizes'); } catch (e3) {}
+      var picture = img.closest ? img.closest('picture') : null;
+      if (picture && picture.querySelectorAll) {
+        var sources = picture.querySelectorAll('source');
+        for (var i = 0; i < sources.length; i++) sources[i].removeAttribute('srcset');
+      }
+      img.removeAttribute('data-appai-my-pet-preview');
+    }
+
     function revertToOriginalDesign() {
       if (state.reverted && !state.inlineApplied) return;
       console.log(TAG, 'revert');
@@ -4443,34 +4522,36 @@
       // something to restore from (swapInlineHero's data-appai-my-pet-
       // original-src vs swapVariantSlides' data-appai-my-pet-slide-
       // original-src are different attrs — no collision).
+      var liveBefore = findVisibleHeroImg() || findProductHeroImg() || staleHero;
+      var stockSrc = heroStockSrc(liveBefore) || heroStockSrc(staleHero);
+      if (!stockSrc) {
+        var stockScope = productSectionScope();
+        var stashed = [];
+        try {
+          stashed = stockScope.querySelectorAll('img[data-appai-my-pet-original-src], img[data-appai-my-pet-slide-original-src]');
+        } catch (e) {}
+        for (var si = 0; si < stashed.length; si++) {
+          var candidate = heroStockSrc(stashed[si]);
+          if (candidate && !urlIsCustomPreview(candidate)) { stockSrc = candidate; break; }
+        }
+      }
       restoreLiveGallery();
       revertVariantSlides();
-      // 2. Restore src/srcset on the CURRENT live hero (may differ from the
-      //    staleHero reference if the theme replaced the node during the
-      //    session — latest swapInlineHero call stashed the current node's
-      //    own original on it).
-      var live = findProductHeroImg();
-      if (live && live.hasAttribute('data-appai-my-pet-original-src')) {
-        var origSrc = live.getAttribute('data-appai-my-pet-original-src') || '';
-        var origSrcset = live.getAttribute('data-appai-my-pet-original-srcset') || '';
-        try { if (origSrc) live.src = origSrc; } catch (_) {}
-        try {
-          if (origSrcset) live.setAttribute('srcset', origSrcset);
-          else live.removeAttribute('srcset');
-        } catch (_) {}
-        var origSizes = live.getAttribute('data-appai-my-pet-original-sizes') || '';
-        try {
-          if (origSizes) live.setAttribute('sizes', origSizes);
-          else live.removeAttribute('sizes');
-        } catch (_) {}
-        live.removeAttribute('data-appai-my-pet-original-sizes');
-        restoreDetachedSources(live);
-        live.removeAttribute('data-appai-my-pet-preview');
-        // Keep the original-src attrs around so a re-activate followed by
-        // another revert still has them (swapInlineHero won't re-capture
-        // when the attribute is already set, so this is correct).
-      } else {
+      var live = findVisibleHeroImg() || findProductHeroImg();
+      if (live && heroStillCustom(live)) {
+        if (!stockSrc) stockSrc = heroStockSrc(live);
+        if (stockSrc) forceHeroStock(live, stockSrc);
+      }
+      var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
+      if (stickyImg && stickyImg.getAttribute('data-appai-my-pet-sticky-original-src')) {
+        try { stickyImg.src = stickyImg.getAttribute('data-appai-my-pet-sticky-original-src'); } catch (e) {}
+        stickyImg.removeAttribute('data-appai-my-pet-sticky-original-src');
+      }
+      live = findVisibleHeroImg() || findProductHeroImg() || live;
+      if (!live || heroStillCustom(live)) {
         console.warn(TAG, 'revert: no live hero or no original-src stash to restore from');
+      } else {
+        console.log(TAG, 'revert: hero restored', srcTail(live.currentSrc || live.getAttribute('src') || ''));
       }
       // 3. Flip state flags — ATC intercept + variant listeners + observers
       //    all gate on inlineApplied/inlineHero.
@@ -4699,6 +4780,7 @@
       }
       console.log(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
+        if (state.mediaWriting) return;
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
         installZoomSwap();
         // STAGING-100 — primary defence for carousel-style galleries: if
@@ -4719,8 +4801,9 @@
           if (sawAdded) break;
         }
         if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
-          if (!state.gallerySyncing) swapVariantSlides(state.previewUrlByColor);
-          scheduleGallerySync('gallery');
+          var swapped = 0;
+          if (!state.gallerySyncing) swapped = swapVariantSlides(state.previewUrlByColor) || 0;
+          if (swapped) scheduleGallerySync('gallery');
         }
         // Legacy single-hero fallback: themes without per-variant slides
         // (Dawn simple products) still need the opacity-hide + hero-src
@@ -4984,9 +5067,11 @@
       }
       var stickyImg = document.querySelector('sticky-add-to-cart img.sticky-add-to-cart__image-img, .sticky-add-to-cart img');
       if (stickyImg && (!section || !section.contains(stickyImg))) {
+        if (!stickyImg.getAttribute('data-appai-my-pet-sticky-original-src')) {
+          stickyImg.setAttribute('data-appai-my-pet-sticky-original-src', stickyImg.getAttribute('src') || '');
+        }
         try { stickyImg.crossOrigin = 'anonymous'; } catch (e) {}
         stickyImg.src = url;
-        stickyImg.removeAttribute('srcset');
       }
     }
 
@@ -5009,39 +5094,11 @@
       return atc;
     }
 
-    function triggerThemeFly() {
-      var atc = mainAddToCartComponent();
-      var btn = atc && atc.querySelector ? atc.querySelector('button[name="add"], [ref="addToCartButton"]') : null;
+    function primeThemeFly() {
       var image = flyImageUrl();
+      var atc = mainAddToCartComponent();
       if (atc && image) atc.dataset.productVariantMedia = image;
-      var before = document.querySelectorAll('fly-to-cart').length;
-      if (atc && btn && typeof atc.handleClick === 'function') {
-        try {
-          atc.handleClick({ target: btn, preventDefault: function () {}, stopPropagation: function () {} });
-        } catch (e) {}
-      }
-      if (document.querySelectorAll('fly-to-cart').length === before && btn && image) {
-        var cartIcon = document.querySelector('.header-actions__cart-icon');
-        if (cartIcon) {
-          var fly = document.createElement('fly-to-cart');
-          fly.classList.add('fly-to-cart--main');
-          fly.style.setProperty('background-image', 'url("' + String(image).replace(/"/g, '') + '")');
-          fly.style.setProperty('--start-opacity', '0');
-          fly.source = btn;
-          fly.destination = cartIcon;
-          document.body.appendChild(fly);
-        }
-      }
       console.log(TAG, 'fly-to-cart triggered');
-    }
-
-    function armThemeFly(btn) {
-      triggerThemeFly();
-      if (!btn) return;
-      btn.dataset.puppet = 'true';
-      setTimeout(function () {
-        try { delete btn.dataset.puppet; } catch (e) { btn.removeAttribute('data-puppet'); }
-      }, 0);
     }
 
     function setFormProperty(form, name, value) {
@@ -5097,16 +5154,37 @@
 
     function prepareShadowFor(sel, reason) {
       if (!inlineOn() || !sel || !sel.catalogId) return Promise.resolve(null);
+      var epoch = state.shadowEpoch || 0;
+      var renderId = state.renderId;
+      var warmToken = reason === 'prefetch' ? state.warmToken : null;
+      function current() {
+        if (epoch !== (state.shadowEpoch || 0)) return false;
+        if (renderId !== state.renderId) return false;
+        if (warmToken && warmToken !== state.warmToken) return false;
+        if (state.reverted) return false;
+        return true;
+      }
+      if (!current()) return Promise.resolve(null);
       var key = shadowCacheKey(sel);
       if (state.shadowByKey && state.shadowByKey[key]) return Promise.resolve(state.shadowByKey[key]);
       state.shadowFlight = state.shadowFlight || {};
       if (state.shadowFlight[key]) return state.shadowFlight[key];
+      var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      if (ctrl) {
+        state.shadowAborts = state.shadowAborts || [];
+        state.shadowAborts.push(ctrl);
+        if (reason === 'prefetch') state.prefetchCtrl = ctrl;
+      }
       var promise = mockupForColour(sel.colour).then(function (localUrl) {
+        if (!current()) return null;
         return attemptResolveVariant(sel.catalogId, sel.price, 0, {
           colorName: sel.colour,
           sizeName: sel.sizeName,
           mockupUrl: localUrl,
+          signal: ctrl ? ctrl.signal : undefined,
+          guard: current,
         }).then(function (res) {
+          if (!res || !res.variantId || !current()) return null;
           var entry = {
             key: key,
             catalogId: sel.catalogId,
@@ -5129,10 +5207,17 @@
           );
           return entry;
         });
+      }).catch(function (err) {
+        if (!current() || (err && err.name === 'AbortError')) return null;
+        throw err;
       });
       state.shadowFlight[key] = promise;
       var clear = function () {
         if (state.shadowFlight && state.shadowFlight[key] === promise) delete state.shadowFlight[key];
+        if (ctrl && state.shadowAborts) {
+          var at = state.shadowAborts.indexOf(ctrl);
+          if (at !== -1) state.shadowAborts.splice(at, 1);
+        }
       };
       promise.then(clear, clear);
       return promise;
@@ -5151,36 +5236,42 @@
       }, 80);
     }
 
+    function nextLikelyColour(current, sizeName) {
+      var colours = allColorOptions(root);
+      var want = String(current || '').trim().toLowerCase();
+      var start = -1;
+      for (var i = 0; i < colours.length; i++) {
+        if (String(colours[i]).trim().toLowerCase() === want) { start = i; break; }
+      }
+      for (var n = 1; n <= colours.length; n++) {
+        var colour = colours[(start + n) % colours.length];
+        if (!colour || String(colour).trim().toLowerCase() === want) continue;
+        var variant = variantForColor(root, colour, sizeName);
+        if (!variant || variant.available === false) continue;
+        return { colour: String(colour), variant: variant };
+      }
+      return null;
+    }
+
     function scheduleSiblingWarm() {
       if (!inlineOn()) return;
       var sel = atcSelection();
-      if (!sel.catalogId || !sel.sizeName) return;
-      var token = (state.renderId || '') + '|' + sel.sizeName;
+      if (!sel.catalogId) return;
+      var token = (state.renderId || '') + '|' + sel.sizeName + '|' + sel.colour;
       if (state.warmToken === token) return;
-      state.warmToken = token;
-      var colours = allColorOptions(root);
-      var index = 0;
-      function step() {
-        if (state.warmToken !== token || !inlineOn()) return;
-        if (index >= colours.length) return;
-        var colour = colours[index++];
-        if (String(colour).trim().toLowerCase() === String(sel.colour || '').trim().toLowerCase()) {
-          step();
-          return;
-        }
-        var variant = variantForColor(root, colour, sel.sizeName);
-        if (!variant || variant.available === false) {
-          step();
-          return;
-        }
-        prepareShadowFor({
-          catalogId: String(variant.id),
-          colour: String(colour),
-          sizeName: sel.sizeName,
-          price: variant.price != null ? (variant.price / 100).toFixed(2) : sel.price,
-        }, 'prefetch').then(function () { setTimeout(step, 300); }, function () { setTimeout(step, 300); });
+      if (state.prefetchCtrl) {
+        try { state.prefetchCtrl.abort(); } catch (e) {}
+        state.prefetchCtrl = null;
       }
-      setTimeout(step, 150);
+      state.warmToken = token;
+      var next = nextLikelyColour(sel.colour, sel.sizeName);
+      if (!next) return;
+      prepareShadowFor({
+        catalogId: String(next.variant.id),
+        colour: next.colour,
+        sizeName: sel.sizeName,
+        price: next.variant.price != null ? (next.variant.price / 100).toFixed(2) : sel.price,
+      }, 'prefetch').catch(function () {});
     }
 
     function stampForm(form, entry) {
@@ -5213,14 +5304,39 @@
       setPreparing(false);
     }
 
+    function buttonLabelNode(btn) {
+      if (!btn) return null;
+      var content = btn.querySelector('.add-to-cart-text__content');
+      if (content) {
+        for (var i = 0; i < content.children.length; i++) {
+          var child = content.children[i];
+          if (child.hasAttribute && child.hasAttribute('ref')) continue;
+          if (child.querySelector && child.querySelector('[ref]')) continue;
+          return child;
+        }
+      }
+      var walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT, null);
+      var node;
+      while ((node = walker.nextNode())) {
+        if (!node.nodeValue || !String(node.nodeValue).trim()) continue;
+        var parent = node.parentElement;
+        if (parent && parent.closest && parent.closest('[ref]') && parent.closest('[ref]') !== btn) continue;
+        if (parent && parent.classList && parent.classList.contains('add-to-cart__added')) continue;
+        return node;
+      }
+      return null;
+    }
+
     function addButtonLabel(btn, text) {
       if (!btn) return;
-      var label = btn.querySelector('.add-to-cart-text:not(.add-to-cart-text--added)');
-      if (!label) label = btn;
-      if (text == null) return label;
-      if (!btn.getAttribute('data-appai-label')) btn.setAttribute('data-appai-label', (label.textContent || '').trim());
-      label.textContent = text;
-      return label;
+      var node = buttonLabelNode(btn);
+      if (!node) return;
+      if (text == null) return node;
+      var current = node.nodeType === 3 ? node.nodeValue : node.textContent;
+      if (!btn.getAttribute('data-appai-label')) btn.setAttribute('data-appai-label', String(current || '').trim());
+      if (node.nodeType === 3) node.nodeValue = text;
+      else if (!node.querySelector || !node.querySelector('[ref]')) node.textContent = text;
+      return node;
     }
 
     function setPreparing(on) {
@@ -5308,10 +5424,8 @@
           if (inSticky) {
             var heldHero = flyImageUrl();
             if (heldHero) paintFlyImage(heldHero);
-            console.log(TAG, 'fly-to-cart triggered');
-          } else {
-            armThemeFly(btn);
           }
+          primeThemeFly();
           return;
         }
         if (form && form.getAttribute('data-appai-theme-pass') === '1') {
@@ -5325,10 +5439,8 @@
           if (inSticky) {
             var readyHero = flyImageUrl();
             if (readyHero) paintFlyImage(readyHero);
-            console.log(TAG, 'fly-to-cart triggered');
-          } else {
-            armThemeFly(btn);
           }
+          primeThemeFly();
           return;
         }
         e.preventDefault();
@@ -5815,14 +5927,16 @@
      * show other `!success` responses as their actual error (Bug #3 fix).
      */
     function attemptResolveVariant(variantId, price, attempt, extra) {
+      if (extra && typeof extra.guard === 'function' && !extra.guard()) return Promise.resolve(null);
       var body = { renderId: state.renderId, variantId: variantId, price: price };
       if (extra) {
         if (extra.colorName) body.colorName = extra.colorName;
         if (extra.sizeName) body.sizeName = extra.sizeName;
         if (extra.mockupUrl) body.mockupUrl = extra.mockupUrl;
       }
-      return postJson('my-pet/resolve-variant', body)
+      return postJson('my-pet/resolve-variant', body, extra && extra.signal)
         .then(function (res) {
+          if (extra && typeof extra.guard === 'function' && !extra.guard()) return null;
           if (res && res.success && res.variantId) return res;
           var code = res && res.code;
           if (code === 'still_preparing') {
@@ -5832,6 +5946,7 @@
             if (attempt < backoffs.length) {
               return new Promise(function (resolve, reject) {
                 setTimeout(function () {
+                  if (extra && typeof extra.guard === 'function' && !extra.guard()) { resolve(null); return; }
                   attemptResolveVariant(variantId, price, attempt + 1, extra).then(resolve, reject);
                 }, backoffs[attempt]);
               });
