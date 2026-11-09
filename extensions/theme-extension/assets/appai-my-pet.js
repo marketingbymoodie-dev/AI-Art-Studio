@@ -3060,15 +3060,6 @@
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
       url = preferDecodedUrl(url);
-      // A colour change keeps the previous custom image on screen until the
-      // next colour has decoded. Writing the new URL early blanks the hero.
-      if (state.colourSwapPending && !colourUrlReady(url)) {
-        var keep = state.colourHoldFrom;
-        if (!keep) return;
-        var shown = img.currentSrc || (img.getAttribute && img.getAttribute('src')) || '';
-        if (heroStillCustom(img) && urlsMatch(shown, keep)) return;
-        url = keep;
-      }
       if (!galleryImgAllowed(img)) return;
       var same = srcAlready(img, url);
       var dirty = !!(img.getAttribute('srcset') || img.getAttribute('sizes'));
@@ -3236,15 +3227,27 @@
       var isColor = ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
       var isSize = !isColor && ctx.indexOf('size') !== -1;
       if (!isColor && !isSize) return null;
-      if (isSize) return { kind: 'size', colorName: currentInlineColour() };
-      var value = '';
-      if (probed.tagName === 'SELECT' || probed.tagName === 'INPUT') value = probed.value || '';
-      if (!value) {
-        value = probed.getAttribute('data-option-value') || probed.getAttribute('data-value') || probed.getAttribute('aria-label') || '';
+      if (isSize) {
+        return {
+          kind: 'size',
+          colorName: checkedProductOption('colour') || currentInlineColour(),
+          sizeName: String(valueOf(probed) || '').trim(),
+        };
       }
-      value = String(value).trim();
+      var value = valueOf(probed);
+      value = String(value || '').trim();
       if (!value || value.length > 40) return null;
-      return { kind: 'color', colorName: canonicalPreviewColor(value) };
+      return {
+        kind: 'color',
+        colorName: canonicalPreviewColor(value),
+        sizeName: checkedProductOption('size') || '',
+      };
+    }
+
+    function valueOf(node) {
+      if (!node) return '';
+      if (node.tagName === 'SELECT' || node.tagName === 'INPUT') return node.value || '';
+      return node.getAttribute('data-option-value') || node.getAttribute('data-value') || node.getAttribute('aria-label') || '';
     }
 
     function currentInlineColour() {
@@ -3850,6 +3853,39 @@
       clearHoldBackground('cleared', currentInlineColour());
     }
 
+    function paintColourNow(colorName, url) {
+      var hero = findVisibleHeroImg() || findActiveSlideImg() || state.inlineHero || findProductHeroImg();
+      if (hero) {
+        applyPreviewSrc(hero, url);
+        state.inlineHero = hero;
+      }
+      var mediaId = '';
+      try {
+        var map = getMediaIdByColor(root);
+        if (map && map[colorName]) mediaId = String(map[colorName]);
+      } catch (e) {}
+      if (mediaId && typeof paintSlidesForMedia === 'function') paintSlidesForMedia(mediaId);
+      if (state.previewUrlByColor) {
+        try { swapVariantSlides(state.previewUrlByColor); } catch (e2) {}
+      }
+    }
+
+    function watchColourVisible(started, colorName, url) {
+      var tick = function () {
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        var ms = Date.now() - started;
+        var shown = hero ? (hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '') : '';
+        var visible = !!(hero && urlsMatch(shown, url) && hero.complete && hero.naturalWidth > 0);
+        if (visible || ms > 1500) {
+          console.log(TAG, 'colour swap click→visible ms=' + ms, 'colour=' + (colorName || ''));
+          return;
+        }
+        if (window.requestAnimationFrame) requestAnimationFrame(tick);
+        else setTimeout(tick, 16);
+      };
+      tick();
+    }
+
     function installSwatchPreempt() {
       if (state.swatchPreemptInstalled) return;
       state.swatchPreemptInstalled = true;
@@ -3879,39 +3915,20 @@
         var url = previewUrlForColour(colorName);
         state.thumbColour = null;
         state.holdColour = colorName;
+        state.colourSwapPending = false;
         if (url) state.previewUrl = url;
-        var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
         releaseHeroHold();
-        var shownHero = findVisibleHeroImg() || state.inlineHero;
-        var shownSrc = shownHero ? (shownHero.currentSrc || shownHero.getAttribute('src') || '') : '';
-        state.colourHoldFrom = (shownSrc && urlIsCustomPreview(shownSrc)) ? shownSrc : (state.previewUrl || '');
-        function revealColour() {
-          if (state.heroHoldToken !== token) return;
-          state.colourSwapPending = false;
-          var hero = findVisibleHeroImg() || state.inlineHero;
-          if (hero && url) applyPreviewSrc(hero, url);
-          if (state.previewUrlByColor) {
-            try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
-          }
-          scheduleGallerySync(intent.kind === 'size' ? 'size' : 'swatch');
-        }
-        if (url && colourUrlReady(url)) {
-          revealColour();
-        } else if (url) {
-          state.colourSwapPending = true;
-          decodeHeroUrl(url).then(function (ok) {
-            if (state.heroHoldToken !== token) return;
-            if (!ok) {
-              state.colourSwapPending = false;
-              console.log(TAG, 'colour swap held reason=decode-failed', 'colour=' + colorName);
-              return;
-            }
-            revealColour();
-          });
-        } else if (intent.kind === 'color') {
+        if (intent.kind === 'color' && url && event.type === 'click') {
+          var swapStarted = Date.now();
+          paintColourNow(colorName, url);
+          watchColourVisible(swapStarted, colorName, url);
+        } else if (intent.kind === 'color' && !url) {
           swapInlineColor(colorName);
         }
-        scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour');
+        scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour', {
+          colour: intent.kind === 'color' ? colorName : (intent.colorName || ''),
+          size: intent.sizeName || checkedProductOption('size') || '',
+        });
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
@@ -5503,7 +5520,6 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
-        scheduleShadowWarm('variant');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -5603,25 +5619,6 @@
           ' swatch=' + (swColor || '(none)') + ')');
         last = now;
         var expected = state.previewUrlByColor[effectiveColor];
-        if (expected && !colourUrlReady(expected)) {
-          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor, 'waiting=decode');
-          state.previewUrl = expected;
-          if (!state.colourSwapPending) {
-            state.colourSwapPending = true;
-            var heroNow = findVisibleHeroImg() || state.inlineHero;
-            var srcNow = heroNow ? (heroNow.currentSrc || heroNow.getAttribute('src') || '') : '';
-            state.colourHoldFrom = (srcNow && urlIsCustomPreview(srcNow)) ? srcNow : (state.previewUrl || '');
-          }
-          decodeHeroUrl(expected).then(function (ok) {
-            state.colourSwapPending = false;
-            if (!ok || state.reverted) return;
-            reassertColourPreview('form-poll', effectiveColor, expected);
-            scheduleGallerySync('colour');
-          });
-          rememberVariantChoice();
-          scheduleShadowWarm('colour');
-          return;
-        }
         if (expected) {
           console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor);
           state.previewUrl = expected;
@@ -5855,6 +5852,66 @@
       return [state.renderId || '', sel.catalogId, sel.colour, sel.sizeName].join('|');
     }
 
+    function shadowRadioKey(sel) {
+      return [
+        state.renderId || '',
+        String((sel && (sel.colour || sel.colorName)) || '').trim().toLowerCase(),
+        String((sel && (sel.sizeName || sel.size)) || '').trim().toLowerCase(),
+      ].join('|');
+    }
+
+    function shadowStoreId() {
+      return 'appai_my_pet_shadow_v1:' + shopifyProductId;
+    }
+
+    function readShadowStore(sel) {
+      try {
+        var bag = JSON.parse(window.sessionStorage.getItem(shadowStoreId()) || '{}');
+        var row = bag[shadowRadioKey(sel)];
+        if (!row || !row.shadowId) return null;
+        row.reused = true;
+        return row;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function writeShadowStore(sel, entry) {
+      try {
+        var bag = JSON.parse(window.sessionStorage.getItem(shadowStoreId()) || '{}');
+        bag[shadowRadioKey(sel)] = {
+          shadowId: entry.shadowId,
+          catalogId: entry.catalogId,
+          properties: entry.properties || {},
+          mockupUrl: entry.mockupUrl || '',
+          colour: entry.colour || sel.colour || '',
+          sizeName: entry.sizeName || sel.sizeName || '',
+        };
+        window.sessionStorage.setItem(shadowStoreId(), JSON.stringify(bag));
+      } catch (e) {}
+    }
+
+    function radioCombo(override) {
+      var colour = (override && override.colour) || checkedProductOption('colour') || readSwatchColor(root) || '';
+      var size = (override && override.size) || checkedProductOption('size') || '';
+      return { colour: String(colour || '').trim(), size: String(size || '').trim() };
+    }
+
+    function selectionFromRadios(combo) {
+      var colour = combo.colour || checkedProductOption('colour') || '';
+      var size = combo.size || checkedProductOption('size') || '';
+      var variant = findExactVariant(root, colour || null, size || null);
+      var info = currentVariantInfo(root);
+      var catalogId = variant && variant.id != null ? String(variant.id) : String(info.variantId || '');
+      var price = variant && variant.price != null ? (variant.price / 100).toFixed(2) : info.price;
+      return {
+        catalogId: catalogId,
+        colour: colour || info.colorName || '',
+        sizeName: size || info.sizeId || '',
+        price: price,
+      };
+    }
+
     function logShadowCreate(renderId, sel, reused) {
       console.log(
         TAG,
@@ -5893,10 +5950,13 @@
         );
       }
       var key = shadowCacheKey(sel);
-      if (state.shadowByKey && state.shadowByKey[key]) {
-        state.shadowByKey[key].reused = true;
+      var remembered = (state.shadowByKey && state.shadowByKey[key]) || readShadowStore(sel);
+      if (remembered && remembered.shadowId) {
+        remembered.reused = true;
+        state.shadowByKey = state.shadowByKey || {};
+        state.shadowByKey[key] = remembered;
         logCreate(true);
-        return Promise.resolve(state.shadowByKey[key]);
+        return Promise.resolve(remembered);
       }
       state.shadowFlight = state.shadowFlight || {};
       if (state.shadowFlight[key]) return state.shadowFlight[key];
@@ -5928,6 +5988,7 @@
           entry.reused = res.reused === true;
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
+          writeShadowStore(sel, entry);
           if (res.steps) console.log(TAG, 'resolve steps', res.steps);
           logCreate(entry.reused);
           return entry;
@@ -5970,37 +6031,48 @@
       );
     }
 
-    function scheduleShadowWarm(reason) {
-      var sel = atcSelection();
+    function scheduleShadowWarm(reason, override) {
+      var combo = radioCombo(override);
+      var logged = { colour: combo.colour, sizeName: combo.size };
       if (!designReadyForCart()) {
-        logWarmDebounce(reason, 'cancelled=design-not-ready', sel);
+        logWarmDebounce(reason, 'cancelled=design-not-ready', logged);
         return;
       }
       if (designTransitionActive()) {
-        logWarmDebounce(reason, 'cancelled=design-transition', sel);
+        logWarmDebounce(reason, 'cancelled=design-transition', logged);
         return;
       }
-      if (!sel || !sel.catalogId) {
-        logWarmDebounce(reason, 'cancelled=no-variant', sel);
+      if (!combo.colour && !combo.size) {
+        logWarmDebounce(reason, 'cancelled=no-variant', logged);
         return;
       }
-      if (state.shadowWarmTimer) logWarmDebounce(reason, 'cancelled=rescheduled', sel);
+      var key = shadowRadioKey(combo);
+      if (state.shadowWarmTimer && state.shadowWarmKey === key) {
+        logWarmDebounce(reason, 'kept=same-combo', logged);
+        return;
+      }
+      if (state.shadowWarmTimer) logWarmDebounce(reason, 'cancelled=rescheduled', logged);
       clearTimeout(state.shadowWarmTimer);
-      var key = shadowCacheKey(sel);
-      logWarmDebounce(reason, 'timer-set=2000', sel);
+      state.shadowWarmKey = key;
+      logWarmDebounce(reason, 'timer-set=2000', logged);
       state.shadowWarmTimer = setTimeout(function () {
         state.shadowWarmTimer = null;
         if (!designReadyForCart()) {
-          logWarmDebounce(reason, 'fired-cancelled=design-not-ready', sel);
+          logWarmDebounce(reason, 'fired-cancelled=design-not-ready', logged);
           return;
         }
         if (designTransitionActive()) {
-          logWarmDebounce(reason, 'fired-cancelled=design-transition', sel);
+          logWarmDebounce(reason, 'fired-cancelled=design-transition', logged);
           return;
         }
-        var now = atcSelection();
-        if (!now || shadowCacheKey(now) !== key) {
-          logWarmDebounce(reason, 'fired-cancelled=selection-changed', now);
+        var live = radioCombo();
+        if (shadowRadioKey(live) !== key) {
+          logWarmDebounce(reason, 'fired-cancelled=selection-changed', { colour: live.colour, sizeName: live.size });
+          return;
+        }
+        var now = selectionFromRadios(live);
+        if (!now.catalogId) {
+          logWarmDebounce(reason, 'fired-cancelled=no-variant', { colour: live.colour, sizeName: live.size });
           return;
         }
         var started = Date.now();

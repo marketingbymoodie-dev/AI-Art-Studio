@@ -11843,6 +11843,100 @@ ${orientationExtra}
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
+        // My Pet already has the row. Purchasable, the Ajax poll, price sync
+        // and the image upload were the 4–5s on a reused shadow. Return the id
+        // from this lookup and finish those in the background.
+        if (source === "my-pet") {
+          const reusedVariantId = existing.shopifyVariantId;
+          const reusedProductId = existing.shopifyProductId;
+          const reusedRowId = existing.id;
+          const reusedCartAdded = existing.cartAddedAt;
+          const reusedBaseId = existing.baseVariantId || String(variantId);
+          const steps = stepLine();
+          console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms reused=fast`);
+          void (async () => {
+            const bg = (name: string, started: number) => {
+              console.log(`${resolveTag} background reuse ${name}=${Date.now() - started}ms`);
+            };
+            let t = Date.now();
+            try {
+              await ensureShadowVariantPurchasable({
+                shop,
+                token,
+                variantId: reusedVariantId,
+                baseVariantId: reusedBaseId,
+              });
+              bg("purchasable", t);
+            } catch (reuseErr: any) {
+              bg("purchasable", t);
+              console.warn(`${resolveTag} background reuse purchasable failed:`, reuseErr?.message || reuseErr);
+            }
+            t = Date.now();
+            try {
+              await assertAjaxVariantVisible({ shop, variantId: reusedVariantId, adminLive: true });
+              bg("visible-poll", t);
+            } catch (visErr: any) {
+              bg("visible-poll", t);
+              console.warn(`${resolveTag} background reuse visible-poll failed:`, visErr?.message || visErr);
+            }
+            if (!reusedCartAdded) {
+              t = Date.now();
+              try {
+                await storage.updatePublishedProduct(reusedRowId, {
+                  expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+                });
+                bg("expiry", t);
+              } catch (expErr: any) {
+                console.warn(`${resolveTag} background reuse expiry failed:`, expErr?.message || expErr);
+              }
+            }
+            t = Date.now();
+            try {
+              await syncShadowVariantPrice({
+                shop,
+                token,
+                shadowVariantId: reusedVariantId,
+                baseVariantId: String(variantId),
+                priceOverride: overridePriceFormatted,
+              });
+              bg("price", t);
+            } catch (priceErr: any) {
+              console.warn(`${resolveTag} background reuse price failed:`, priceErr?.message || priceErr);
+            }
+            if (reusedProductId && reusedVariantId) {
+              t = Date.now();
+              try {
+                const imgRes = await shadowFetch(
+                  `${apiBase}/products/${reusedProductId}/images.json`,
+                  {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                      image: { src: mockupUrl, variant_ids: [Number(reusedVariantId)] },
+                    }),
+                  },
+                  SHADOW_CREATE_FETCH_TIMEOUT_MS,
+                );
+                if (!imgRes.ok) {
+                  const errText = await imgRes.text();
+                  console.warn(`${resolveTag} background reuse image failed:`, imgRes.status, errText.substring(0, 160));
+                }
+                bg("image", t);
+              } catch (imgErr: any) {
+                console.warn(`${resolveTag} background reuse image failed:`, imgErr?.message || imgErr);
+              }
+            }
+          })();
+          return res.json({
+            success: true,
+            variantId: reusedVariantId,
+            reused: true,
+            designId: persistDesignId,
+            matchedKey: existingKey,
+            shadowImage: mockupUrl,
+            steps,
+          });
+        }
         // Re-read live base FRONT price, then apply both-tier override if sent.
         // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
         // Independent of purchasable/visibility, so it overlaps them (never rejects).

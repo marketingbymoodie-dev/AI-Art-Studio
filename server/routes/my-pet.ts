@@ -277,6 +277,10 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     try {
       const colour = colorName ? String(colorName) : "";
       const size = sizeName ? String(sizeName) : "";
+      const clientMockup = typeof clientMockupRaw === "string" ? clientMockupRaw.trim() : "";
+      const clientPath = clientMockup.split("?")[0].split("#")[0];
+      const clientIsGeneration = clientPath.endsWith(`/${String(renderId)}.png`);
+      const clientColourUrl = clientMockup.startsWith("https://") && !clientIsGeneration ? clientMockup : "";
       const { jobId, previewUrl, designLabel, designId } = await getMyPetRenderForAddToCart({
         shop,
         deviceKey,
@@ -284,11 +288,8 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         colorName: colour,
         sizeName: size,
         variantId: String(variantId),
+        knownPreviewUrl: clientColourUrl,
       });
-      const clientMockup = typeof clientMockupRaw === "string" ? clientMockupRaw.trim() : "";
-      const clientPath = clientMockup.split("?")[0].split("#")[0];
-      const clientIsGeneration = clientPath.endsWith(`/${String(renderId)}.png`);
-      const clientColourUrl = clientMockup.startsWith("https://") && !clientIsGeneration ? clientMockup : "";
       // Click-time gallery URL wins. The signed colour file is the fallback
       // when that map entry was not ready yet.
       const mockupUrl = clientColourUrl || previewUrl;

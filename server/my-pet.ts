@@ -872,6 +872,8 @@ export async function getMyPetRenderForAddToCart(args: {
   colorName?: string | null;
   sizeName?: string | null;
   variantId?: string | null;
+  /** Gallery URL the shopper is already showing. Skips the storage exists check. */
+  knownPreviewUrl?: string | null;
 }): Promise<{
   jobId: string;
   previewUrl: string;
@@ -887,9 +889,10 @@ export async function getMyPetRenderForAddToCart(args: {
   }
   const colorName = String(args.colorName || "").trim();
   const sizeName = String(args.sizeName || "").trim();
+  const knownPreview = String(args.knownPreviewUrl || "");
   let previewPath = render.previewPath;
-  let previewUrl = "";
-  if (colorName) {
+  let previewUrl = knownPreview.startsWith("https://") ? knownPreview : "";
+  if (!previewUrl && colorName) {
     const colourPath = myPetPreviewPathForColor(render.id, colorName);
     const exists = await myPetObjectExists(colourPath).catch(() => false);
     if (exists) {
