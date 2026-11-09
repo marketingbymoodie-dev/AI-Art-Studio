@@ -12,7 +12,7 @@
 */
 ;(function () {
   "use strict";
-  var VER = "1.3";
+  var VER = "1.4";
   if (window.__APPAI_SHADOW_SWAP_VER__ === VER) return;
   window.__APPAI_SHADOW_SWAP_VER__ = VER;
 
@@ -463,6 +463,49 @@
     setTimeout(function () { releasing = false; }, 0);
   }
 
+  function awaitingVariantImages() {
+    var bag = window.AppAI && window.AppAI.variantsAwaitingImage;
+    if (!bag) return [];
+    var ids = [];
+    for (var key in bag) if (bag[key]) ids.push(key);
+    return ids;
+  }
+
+  // My Pet returns the variant id before the mockup is attached. Checkout
+  // paints the variant image, so wait until that image exists.
+  function holdForVariantImages(control) {
+    if (holding || releasing) return;
+    holding = true;
+    var started = Date.now();
+    showHoldBanner(true);
+    function finish(result) {
+      if (!holding) return;
+      holding = false;
+      var waited = Date.now() - started;
+      console.log("[AppAI swap-hold] image waited=" + waited + "ms result=" + result);
+      showHoldBanner(false);
+      syncPendingChrome();
+      continueCheckout(control);
+    }
+    function tick() {
+      if (!holding) return;
+      var ids = awaitingVariantImages();
+      if (!ids.length) return finish("image");
+      if (Date.now() - started >= SWAP_HOLD_MAX_MS) return finish("fallthrough");
+      for (var i = 0; i < ids.length; i++) {
+        (function (id) {
+          warmVariant(id).then(function () {
+            var bag = window.AppAI && window.AppAI.variantsAwaitingImage;
+            if (bag) delete bag[id];
+            if (!awaitingVariantImages().length) finish("image");
+          }, function () {});
+        })(ids[i]);
+      }
+      setTimeout(tick, SWAP_HOLD_POLL_MS);
+    }
+    tick();
+  }
+
   function holdThenContinue(control) {
     if (holding || releasing) return;
     if (document.documentElement.classList.contains("appai-print-pending")) return;
@@ -500,10 +543,16 @@
     }
     if (!control || !isCheckoutLike(control)) return;
     if (document.documentElement.classList.contains("appai-print-pending")) return;
-    if (mode() !== "base-first" || !Object.keys(readMap(PENDING_KEY)).length) return;
+    if (mode() === "base-first" && Object.keys(readMap(PENDING_KEY)).length) {
+      e.preventDefault();
+      e.stopPropagation();
+      holdThenContinue(control);
+      return;
+    }
+    if (!awaitingVariantImages().length) return;
     e.preventDefault();
     e.stopPropagation();
-    holdThenContinue(control);
+    holdForVariantImages(control);
   }, true);
 
   if (typeof window.fetch === "function" && !window.__APPAI_SHADOW_SWAP_FETCH__) {

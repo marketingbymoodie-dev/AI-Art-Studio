@@ -2757,6 +2757,14 @@
       try { return scope.querySelector('media-gallery, product-media-gallery'); } catch (e) { return null; }
     }
 
+    // Horizon replaces the gallery element. The product section stays, so
+    // the observers that have to write before paint watch the section.
+    function stableGalleryHost() {
+      var section = mainProductSection();
+      if (section && section !== document && section !== document.body) return section;
+      return mainMediaGallery();
+    }
+
     function mainZoomDialog() {
       var gallery = mainMediaGallery();
       var zoom = gallery && gallery.querySelector
@@ -3077,6 +3085,9 @@
           try { delete img.dataset.srcset; } catch (e) {}
         }
         detachPictureSources(img);
+        if (state.colourPaint && state.colourPaint.url && urlsMatch(state.colourPaint.url, url)) {
+          try { img.decoding = 'sync'; } catch (eDec) {}
+        }
         assignImgSrc(img, url);
         img.__appaiAssertUrl = url;
         img.__appaiAssertAt = Date.now();
@@ -3157,7 +3168,11 @@
         // A slide that belongs to another colour keeps that colour's preview.
         // Writing the selected swatch here is what blocked thumbnail clicks.
         var own = mediaColourForImg(el);
-        var useUrl = (own && state.previewUrlByColor && state.previewUrlByColor[own]) || url;
+        var paintUrl = state.colourPaint && state.colourPaint.url;
+        var visibleNow = paintUrl ? (findVisibleHeroImg() || state.inlineHero) : null;
+        var useUrl = (paintUrl && el === visibleNow)
+          ? paintUrl
+          : ((own && state.previewUrlByColor && state.previewUrlByColor[own]) || url);
         if (!useUrl) continue;
         // Skip a node we just wrote. currentSrc lags the attribute write, so
         // the guard observer would otherwise re-enter until the stack melts.
@@ -3644,6 +3659,13 @@
         var map = getMediaIdByColor(root);
         if (colour && map && map[colour]) expectedMedia = String(map[colour]);
       } catch (e) {}
+      if (state.colourPaint && state.colourPaint.url && img === findVisibleHeroImg()) {
+        if (!(srcAlready(img, state.colourPaint.url) && !img.getAttribute('srcset') && !img.getAttribute('sizes'))) {
+          applyPreviewSrc(img, state.colourPaint.url);
+        }
+        state.inlineHero = img;
+        return true;
+      }
       if (mediaId && expectedMedia && mediaId !== expectedMedia) return false;
       if (!mediaId && !isHeroCandidate(img)) return false;
       if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
@@ -3760,7 +3782,7 @@
     // before paint, and writes the cached preview onto that new node.
     function installProductMediaObserver() {
       if (state.productMediaObserver) return;
-      var container = mainMediaGallery() || mediaHoldContainer(null);
+      var container = stableGalleryHost() || mediaHoldContainer(null);
       if (!container || container === document || container === document.body) return;
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
@@ -3853,42 +3875,172 @@
       clearHoldBackground('cleared', currentInlineColour());
     }
 
-    function paintColourNow(colorName, url) {
-      var hero = findVisibleHeroImg() || findActiveSlideImg() || state.inlineHero || findProductHeroImg();
-      if (hero) {
-        applyPreviewSrc(hero, url);
-        state.inlineHero = hero;
+    function onScreenHeroImgs() {
+      var scope = mainMediaGallery() || productSectionScope();
+      var imgs;
+      try { imgs = scope.querySelectorAll('img'); } catch (e) { return []; }
+      var ranked = [];
+      var vw = window.innerWidth || 0;
+      var vh = window.innerHeight || 0;
+      for (var i = 0; i < imgs.length; i++) {
+        var img = imgs[i];
+        if (!galleryImgAllowed(img)) continue;
+        if (img.closest && img.closest('dialog, zoom-dialog')) continue;
+        var rect;
+        try { rect = img.getBoundingClientRect(); } catch (e2) { continue; }
+        var ix = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
+        var iy = Math.max(0, Math.min(rect.bottom, vh) - Math.max(rect.top, 0));
+        var area = ix * iy;
+        if (area < 160 * 160 && (rect.width < 160 || rect.height < 160)) continue;
+        if (area < 160 * 80) continue;
+        ranked.push({ img: img, area: area });
       }
-      var mediaId = '';
-      try {
-        var map = getMediaIdByColor(root);
-        if (map && map[colorName]) mediaId = String(map[colorName]);
-      } catch (e) {}
-      if (mediaId && typeof paintSlidesForMedia === 'function') paintSlidesForMedia(mediaId);
-      if (state.previewUrlByColor) {
-        try { swapVariantSlides(state.previewUrlByColor); } catch (e2) {}
+      ranked.sort(function (a, b) { return b.area - a.area; });
+      var out = [];
+      for (var r = 0; r < ranked.length; r++) out.push(ranked[r].img);
+      return out;
+    }
+
+    function colourMark(label, extra) {
+      var tl = state.colourTimeline;
+      if (!tl) return;
+      var now = window.performance && performance.now ? performance.now() : Date.now();
+      var t = Math.round(now - tl.t0);
+      var line = label + (extra ? ' ' + extra : '');
+      tl.events.push('+' + t + 'ms ' + line);
+      console.log(TAG, 'colour timeline +' + t + 'ms', line);
+    }
+
+    function logColourTimeline(why) {
+      var tl = state.colourTimeline;
+      if (!tl) return;
+      console.log(TAG, 'colour timeline summary', why || '', tl.events.join(' | '));
+    }
+
+    function colourFetchInteresting(url) {
+      if (!state.colourTimeline) return false;
+      var u = String(url || '');
+      if (!u) return false;
+      if (u.indexOf('section_id') !== -1 || u.indexOf('sections=') !== -1) return true;
+      if (u.indexOf('variant=') !== -1 && u.indexOf('/products/') !== -1) return true;
+      return false;
+    }
+
+    function installColourFetchWatch() {
+      if (state.colourFetchWatch) return;
+      state.colourFetchWatch = true;
+      if (typeof window.fetch === 'function') {
+        var origFetch = window.fetch;
+        window.fetch = function (input, init) {
+          var url = '';
+          try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) {}
+          var watch = colourFetchInteresting(url);
+          var seq = watch && state.colourTimeline ? state.colourTimeline.seq : 0;
+          if (watch) colourMark('horizon fetch start', String(url).slice(0, 160));
+          var pending;
+          try { pending = origFetch.apply(this, arguments); }
+          catch (err) {
+            if (watch) colourMark('horizon fetch end', 'throw');
+            throw err;
+          }
+          if (watch && pending && typeof pending.then === 'function') {
+            pending.then(function (res) {
+              if (!state.colourTimeline || state.colourTimeline.seq !== seq) return res;
+              colourMark('horizon fetch end', String(res && res.status) + ' ' + String(url).slice(0, 120));
+              return res;
+            }, function (err) {
+              if (state.colourTimeline && state.colourTimeline.seq === seq) colourMark('horizon fetch end', 'error');
+              throw err;
+            });
+          }
+          return pending;
+        };
       }
     }
 
+    function paintColourNow(colorName, url) {
+      var heroes = onScreenHeroImgs();
+      var hero = heroes[0] || findVisibleHeroImg() || findActiveSlideImg() || state.inlineHero;
+      colourMark('hero write', hero ? describeImg(hero) : 'no visible hero');
+      if (!hero) return;
+      state.holdOldHero = null;
+      applyPreviewSrc(hero, url);
+      state.inlineHero = hero;
+      var shown = hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '';
+      colourMark('hero wrote', 'onScreen=' + heroes.length + ' match=' + urlsMatch(shown, url) + ' complete=' + !!hero.complete + ' ' + describeImg(hero));
+    }
+
     function watchColourVisible(started, colorName, url) {
+      var seq = state.colourTimeline ? state.colourTimeline.seq : 0;
+      var lastNode = null;
+      var matchedFrames = 0;
+      var loggedVisible = false;
       var tick = function () {
-        var hero = findVisibleHeroImg() || state.inlineHero;
-        var ms = Date.now() - started;
-        var shown = hero ? (hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '') : '';
-        var visible = !!(hero && urlsMatch(shown, url) && hero.complete && hero.naturalWidth > 0);
-        if (visible || ms > 1500) {
-          console.log(TAG, 'colour swap click→visible ms=' + ms, 'colour=' + (colorName || ''));
-          return;
+        if (!state.colourTimeline || state.colourTimeline.seq !== seq) return;
+        var hero = (onScreenHeroImgs()[0]) || findVisibleHeroImg();
+        var shown = hero ? (hero.currentSrc || '') : '';
+        var match = !!(hero && urlsMatch(shown, url) && hero.complete && hero.naturalWidth > 0);
+        if (!match) {
+          if (loggedVisible) {
+            loggedVisible = false;
+            matchedFrames = 0;
+            colourMark('currentSrc lost', describeImg(hero));
+          } else {
+            matchedFrames = 0;
+          }
+          lastNode = hero;
+        } else if (hero !== lastNode) {
+          matchedFrames = 1;
+          lastNode = hero;
+          colourMark('currentSrc matched', nodeStamp(hero) + ' tail=' + urlTail(shown));
+        } else {
+          matchedFrames++;
+          lastNode = hero;
         }
-        if (window.requestAnimationFrame) requestAnimationFrame(tick);
-        else setTimeout(tick, 16);
+        if (match && matchedFrames >= 2 && !loggedVisible) {
+          loggedVisible = true;
+          var ms = Date.now() - started;
+          colourMark('currentSrc stayed', 'node=' + nodeStamp(hero));
+          console.log(TAG, 'colour swap click→visible ms=' + ms, 'colour=' + (colorName || ''), 'node=' + nodeStamp(hero));
+          logColourTimeline('stayed');
+        }
+        if (Date.now() - started < 6000) {
+          if (window.requestAnimationFrame) requestAnimationFrame(tick);
+          else setTimeout(tick, 32);
+        } else if (!loggedVisible) {
+          console.log(TAG, 'colour swap click→visible timeout', 'colour=' + (colorName || ''), 'currentSrc=' + urlTail(shown), describeImg(hero));
+          logColourTimeline('timeout');
+        } else {
+          logColourTimeline('end');
+        }
       };
       tick();
+    }
+
+    function repaintColourReplacement(reason) {
+      var paint = state.colourPaint;
+      if (!paint || !paint.url || !state.previewUrlByColor) return 0;
+      if (reason === 'section-load' && paint.lastRepaint && (Date.now() - paint.lastRepaint) < 400) {
+        colourMark('re-swap skipped', reason);
+        return 0;
+      }
+      paint.lastRepaint = Date.now();
+      colourMark('gallery replacement', reason || '');
+      var swapped = 0;
+      if (!state.gallerySyncing) {
+        try { swapped = swapVariantSlides(state.previewUrlByColor) || 0; } catch (e) {}
+      }
+      var heroes = onScreenHeroImgs();
+      var hero = heroes[0] || findVisibleHeroImg() || state.inlineHero;
+      if (hero) applyPreviewSrc(hero, paint.url);
+      colourMark('re-swap', 'nodes=' + swapped + ' hero=' + (hero ? nodeStamp(hero) : 'none') + ' ' + (reason || ''));
+      return swapped;
     }
 
     function installSwatchPreempt() {
       if (state.swatchPreemptInstalled) return;
       state.swatchPreemptInstalled = true;
+      installColourFetchWatch();
       installProductMediaObserver();
       var handler = function (event) {
         if (logRelatedSwatch('swatch', event)) return;
@@ -3920,8 +4072,24 @@
         releaseHeroHold();
         if (intent.kind === 'color' && url && event.type === 'click') {
           var swapStarted = Date.now();
+          state.colourPaintSeq = (state.colourPaintSeq || 0) + 1;
+          state.colourPaint = { colour: colorName, url: url, started: swapStarted, seq: state.colourPaintSeq };
+          state.colourTimeline = {
+            seq: state.colourPaintSeq,
+            t0: window.performance && performance.now ? performance.now() : swapStarted,
+            started: swapStarted,
+            events: [],
+          };
+          colourMark('swatch click captured', 'colour=' + colorName);
           paintColourNow(colorName, url);
           watchColourVisible(swapStarted, colorName, url);
+          var paintSeq = state.colourPaintSeq;
+          setTimeout(function () {
+            if (!state.colourPaint || state.colourPaint.seq !== paintSeq) return;
+            logColourTimeline('end');
+            state.colourPaint = null;
+            state.colourTimeline = null;
+          }, 6000);
         } else if (intent.kind === 'color' && !url) {
           swapInlineColor(colorName);
         }
@@ -5231,14 +5399,17 @@
         // A thumbnail click names the colour the main image must show.
         // A design switch names it only for that hero. Every other slide
         // keeps the colour its own media id maps to.
-        var colorName = (activeHero && thumbPick)
+        var colorName = (state.colourPaint && state.colourPaint.url && activeHero && state.colourPaint.colour)
+          || (activeHero && thumbPick)
           || (activeHero && forced)
           || ownColour
           || state.holdColour
           || ((swColor && info.colorName && swColor !== info.colorName)
             ? swColor
             : (info.colorName || swColor || null));
-        var expected = colorName ? state.previewUrlByColor[colorName] : null;
+        var expected = (state.colourPaint && state.colourPaint.url && activeHero)
+          ? state.colourPaint.url
+          : (colorName ? state.previewUrlByColor[colorName] : null);
         // Src already matches: no write, no log. srcset leftovers are
         // stripped inside applyPreviewSrc with the observers paused.
         if (expected && srcAlready(hero, expected) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes')) return;
@@ -5312,7 +5483,7 @@
           state.inlineHero = fresh;
           if (expected) reassertColourPreview('node-replaced', colorName, expected);
           installHeroGuard(fresh);
-          scheduleGallerySync('node-replaced');
+          if (!(state.colourPaint && state.colourPaint.url)) scheduleGallerySync('node-replaced');
           console.log(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
         }
       }, 1500);
@@ -5336,6 +5507,23 @@
      * themes where none match, we fall back to the 1500ms element-
      * replacement poll above (slower but functionally correct).
      */
+    function addedTouchesGallery(mutations) {
+      var gallery = mainMediaGallery();
+      for (var m = 0; m < mutations.length; m++) {
+        var added = mutations[m].addedNodes;
+        if (!added) continue;
+        for (var a = 0; a < added.length; a++) {
+          var node = added[a];
+          if (!node || node.nodeType !== 1) continue;
+          if (node.classList && (node.classList.contains('appai-my-pet-veil') || node.classList.contains('appai-my-pet-switch-cover') || node.classList.contains('appai-my-pet-opening'))) continue;
+          if (gallery && (node === gallery || (gallery.contains && gallery.contains(node)))) return true;
+          if (node.matches && node.matches('media-gallery, product-media-gallery, slideshow-slide')) return true;
+          if (node.querySelector && node.querySelector('media-gallery, product-media-gallery, slideshow-slide, img.product-media__image')) return true;
+        }
+      }
+      return false;
+    }
+
     function installGalleryGuard() {
       if (state.inlineGalleryObserver) {
         try { state.inlineGalleryObserver.disconnect(); } catch (e) {}
@@ -5365,7 +5553,7 @@
         console.log(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
         return;
       }
-      var watch = container;
+      var watch = stableGalleryHost() || container;
       state.galleryGuardRoot = watch;
       if (!state.sectionLoadHook) {
         state.sectionLoadHook = true;
@@ -5377,6 +5565,10 @@
             return;
           }
           if (!state.inlineApplied || !state.renderId) return;
+          if (state.colourPaint && state.colourPaint.url) {
+            repaintColourReplacement('section-load');
+            return;
+          }
           scheduleGallerySync('section-load');
         });
       }
@@ -5412,16 +5604,21 @@
           }
           if (sawAdded) break;
         }
-        if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
-          var swapped = 0;
-          if (!state.gallerySyncing) swapped = swapVariantSlides(state.previewUrlByColor) || 0;
-          if (swapped) scheduleGallerySync('gallery');
-          clearTimeout(state.colourSettleTimer);
-          state.colourSettleTimer = setTimeout(function () {
-            if (designTransitionActive() || state.reverted || !state.inlineApplied) return;
-            if (!state.previewUrlByColor) return;
-            try { swapVariantSlides(state.previewUrlByColor); } catch (eSettle) {}
-          }, 200);
+        if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length && addedTouchesGallery(mutations)) {
+          if (state.colourPaint && state.colourPaint.url) {
+            repaintColourReplacement('mutation');
+          } else {
+            var swapped = 0;
+            if (!state.gallerySyncing) swapped = swapVariantSlides(state.previewUrlByColor) || 0;
+            if (swapped) scheduleGallerySync('gallery');
+            clearTimeout(state.colourSettleTimer);
+            state.colourSettleTimer = setTimeout(function () {
+              if (designTransitionActive() || state.reverted || !state.inlineApplied) return;
+              if (state.colourPaint && state.colourPaint.url) return;
+              if (!state.previewUrlByColor) return;
+              try { swapVariantSlides(state.previewUrlByColor); } catch (eSettle) {}
+            }, 200);
+          }
         }
         if (state.designCover) paintDesignCover();
         // Legacy single-hero fallback: themes without per-variant slides
@@ -5519,7 +5716,9 @@
           swapInlineColor(info.colorName);
         }
         rememberVariantChoice();
-        scheduleGallerySync('colour');
+        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, info.colorName))) {
+          scheduleGallerySync('colour');
+        }
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -5628,7 +5827,9 @@
           swapInlineColor(effectiveColor);
         }
         rememberVariantChoice();
-        scheduleGallerySync('colour');
+        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, effectiveColor))) {
+          scheduleGallerySync('colour');
+        }
         scheduleShadowWarm('colour');
       }, 500);
     }
@@ -5642,7 +5843,9 @@
       if (cached) {
         state.previewUrl = cached;
         reassertColourPreview('swap-inline', colorName, cached);
-        scheduleGallerySync('colour');
+        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, colorName))) {
+          scheduleGallerySync('colour');
+        }
         console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
         return;
       }

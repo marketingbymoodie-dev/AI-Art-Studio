@@ -12222,18 +12222,24 @@ ${orientationExtra}
       }
 
       // Best-effort product title lookup for a nicer shadow title (non-fatal).
+      // My Pet skips it: the extra Admin GET sat on the add-to-cart path.
       let baseProductTitle = "Custom Design";
-      try {
-        const productRes = await shadowFetch(`${apiBase}/products/${productId}.json?fields=id,title`, { headers });
-        if (productRes.ok) {
-          const { product: baseProduct } = await productRes.json();
-          if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
-        } else {
-          const t = await productRes.text();
-          console.warn(`[ShadowProduct] Product title lookup failed for ${productId}:`, t.substring(0, 160));
+      if (source === "my-pet") {
+        step("title skipped");
+      } else {
+        try {
+          const productRes = await shadowFetch(`${apiBase}/products/${productId}.json?fields=id,title`, { headers });
+          if (productRes.ok) {
+            const { product: baseProduct } = await productRes.json();
+            if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
+          } else {
+            const t = await productRes.text();
+            console.warn(`[ShadowProduct] Product title lookup failed for ${productId}:`, t.substring(0, 160));
+          }
+        } catch (e: any) {
+          console.warn(`[ShadowProduct] Product title lookup error for ${productId}:`, e?.message || e);
         }
-      } catch (e: any) {
-        console.warn(`[ShadowProduct] Product title lookup error for ${productId}:`, e?.message || e);
+        step("title");
       }
 
       // 4. Build a clean human-readable title from variant options
@@ -12346,6 +12352,7 @@ ${orientationExtra}
           shop,
           token,
           variantId: shadowVariant.id,
+          productId: shadowProduct.id,
         });
         const continueMs = Date.now() - continueStarted;
         resolveSteps.push(`inventory-continue=${continueMs}`);
@@ -12364,49 +12371,56 @@ ${orientationExtra}
         };
         void (async () => {
           const bgStarted = Date.now();
+          // The mockup upload used to wait out publish and shipping, so a new
+          // combo reached the cart with no variant image. Start it now.
+          const imageJob = (async () => {
+            const imageStarted = Date.now();
+            try {
+              const imgRes = await shadowFetch(
+                `${apiBase}/products/${shadowProductId}/images.json`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
+                  }),
+                },
+                SHADOW_CREATE_FETCH_TIMEOUT_MS,
+              );
+              if (!imgRes.ok) {
+                const t = await imgRes.text();
+                console.warn(
+                  `${resolveTag} background image failed:`,
+                  imgRes.status,
+                  t.substring(0, 200),
+                );
+              } else {
+                console.log(`${resolveTag} background image set variant=${shadowVariantNum}`);
+              }
+            } catch (imgErr: any) {
+              console.warn(`${resolveTag} background image failed:`, imgErr?.message || imgErr);
+            }
+            bgMark("image", Date.now() - imageStarted);
+          })();
           try {
-            await completeShadowVariantPurchasable({
-              shop,
-              token,
-              variantId: shadowVariant.id,
-              baseVariantId: variantId,
-              productGid: confirmed.productGid,
-              itemId: confirmed.itemId,
-              mark: bgMark,
-            });
+            await Promise.all([
+              imageJob,
+              completeShadowVariantPurchasable({
+                shop,
+                token,
+                variantId: shadowVariant.id,
+                baseVariantId: variantId,
+                productGid: confirmed.productGid,
+                itemId: confirmed.itemId,
+                mark: bgMark,
+              }),
+            ]);
           } catch (bgErr: any) {
             console.warn(
               `${resolveTag} background purchasable failed:`,
               bgErr?.message || bgErr,
             );
           }
-          const imageStarted = Date.now();
-          try {
-            const imgRes = await shadowFetch(
-              `${apiBase}/products/${shadowProductId}/images.json`,
-              {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                  image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
-                }),
-              },
-              SHADOW_CREATE_FETCH_TIMEOUT_MS,
-            );
-            if (!imgRes.ok) {
-              const t = await imgRes.text();
-              console.warn(
-                `${resolveTag} background image failed:`,
-                imgRes.status,
-                t.substring(0, 200),
-              );
-            } else {
-              console.log(`${resolveTag} background image set variant=${shadowVariantNum}`);
-            }
-          } catch (imgErr: any) {
-            console.warn(`${resolveTag} background image failed:`, imgErr?.message || imgErr);
-          }
-          bgMark("image", Date.now() - imageStarted);
           const metaStarted = Date.now();
           try {
             const metaRes = await shadowFetch(

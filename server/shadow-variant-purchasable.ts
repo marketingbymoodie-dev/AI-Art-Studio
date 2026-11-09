@@ -279,6 +279,8 @@ export async function confirmShadowInventoryContinue(opts: {
   shop: string;
   token: string;
   variantId: string | number;
+  /** REST create already returned the product id. Skips the lookup query. */
+  productId?: string | number | null;
 }): Promise<ShadowContinueConfirmed> {
   const shop = String(opts.shop || "").trim();
   const token = String(opts.token || "").trim();
@@ -291,28 +293,34 @@ export async function confirmShadowInventoryContinue(opts: {
   }
 
   const variantGid = `gid://shopify/ProductVariant/${variantId}`;
-  const lookup = await shopifyGraphql({
-    shop,
-    token,
-    variantId,
-    query: `query($id: ID!) {
-      productVariant(id: $id) {
-        id
-        inventoryPolicy
-        product { id }
-        inventoryItem { id tracked }
-      }
-    }`,
-    variables: { id: variantGid },
-  });
-  const variant = lookup?.data?.productVariant;
-  const productGid = String(variant?.product?.id || "");
+  const givenProduct = String(opts.productId || "").replace(/\D/g, "");
+  let productGid = givenProduct ? `gid://shopify/Product/${givenProduct}` : "";
+  let itemId: string | null = null;
   if (!productGid) {
-    throw new ShadowVariantNotPurchasableError(
-      `Shadow purchasable lookup missed product id for variant ${variantId}`,
+    const lookup = await shopifyGraphql({
+      shop,
+      token,
       variantId,
-      lookup,
-    );
+      query: `query($id: ID!) {
+        productVariant(id: $id) {
+          id
+          inventoryPolicy
+          product { id }
+          inventoryItem { id tracked }
+        }
+      }`,
+      variables: { id: variantGid },
+    });
+    const variant = lookup?.data?.productVariant;
+    productGid = String(variant?.product?.id || "");
+    itemId = variant?.inventoryItem?.id ? String(variant.inventoryItem.id) : null;
+    if (!productGid) {
+      throw new ShadowVariantNotPurchasableError(
+        `Shadow purchasable lookup missed product id for variant ${variantId}`,
+        variantId,
+        lookup,
+      );
+    }
   }
 
   // Unconditional CONTINUE — do not skip when inventoryItem.tracked is already false.
@@ -349,7 +357,6 @@ export async function confirmShadowInventoryContinue(opts: {
     );
   }
   console.log(`[ShadowProduct] inventoryPolicy CONTINUE confirmed for variant ${variantId}`);
-  const itemId = variant?.inventoryItem?.id ? String(variant.inventoryItem.id) : null;
   return { productGid, itemId };
 }
 
@@ -409,7 +416,30 @@ export async function completeShadowVariantPurchasable(opts: {
   });
 
   const untrack = lap("untrack", async () => {
-    if (!itemId) return;
+    let id = itemId;
+    if (!id) {
+      try {
+        const lookup = await shopifyGraphql({
+          shop,
+          token,
+          variantId,
+          query: `query($id: ID!) {
+            productVariant(id: $id) { inventoryItem { id } }
+          }`,
+          variables: { id: `gid://shopify/ProductVariant/${variantId}` },
+        });
+        id = lookup?.data?.productVariant?.inventoryItem?.id
+          ? String(lookup.data.productVariant.inventoryItem.id)
+          : null;
+      } catch (lookupErr: any) {
+        console.error(
+          `[ShadowProduct] inventoryItem lookup failed for ${variantId}:`,
+          lookupErr?.message || lookupErr,
+        );
+        return;
+      }
+    }
+    if (!id) return;
     try {
       const untracked = await shopifyGraphql({
         shop,
@@ -421,7 +451,7 @@ export async function completeShadowVariantPurchasable(opts: {
             userErrors { field message }
           }
         }`,
-        variables: { id: itemId, input: { tracked: false } },
+        variables: { id, input: { tracked: false } },
       });
       const untrackErrors = untracked?.data?.inventoryItemUpdate?.userErrors ?? [];
       if (untrackErrors.length > 0) {

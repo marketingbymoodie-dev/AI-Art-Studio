@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.4';
+  var CART_IMG_VERSION = '3.5';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -242,6 +242,126 @@
     img.removeAttribute('data-srcset');
     img.removeAttribute('data-lazy-src');
     img.setAttribute('data-appai-mockup', 'true');
+  }
+
+  function shopifyCdnSrc(src) {
+    var s = String(src || '');
+    return s.indexOf('cdn.shopify.com') !== -1 || s.indexOf('/cdn/shop/') !== -1;
+  }
+
+  function cartSizedUrl(src) {
+    var abs = String(src || '');
+    if (abs.indexOf('//') === 0) abs = 'https:' + abs;
+    if (abs.indexOf('/') === 0) abs = location.origin + abs;
+    if (abs.indexOf('/cdn/shop/') !== -1) return abs;
+    var file = abs.match(/\/files\/([^/?#]+\.(?:jpe?g|png|webp|gif))/i);
+    if (!file) return abs;
+    return location.origin + '/cdn/shop/files/' + file[1] + '?width=250';
+  }
+
+  function awaitingBag() {
+    window.AppAI = window.AppAI || {};
+    if (!window.AppAI.variantsAwaitingImage) window.AppAI.variantsAwaitingImage = {};
+    return window.AppAI.variantsAwaitingImage;
+  }
+
+  function noteAwaiting(variantId, waiting) {
+    var id = String(variantId || '').replace(/\D/g, '');
+    if (!id) return;
+    var bag = awaitingBag();
+    if (waiting) bag[id] = Date.now();
+    else delete bag[id];
+    if (waiting) ensureImagePoll();
+  }
+
+  function lineImgs(container) {
+    return [].slice.call(deepQueryAll(container, 'img')).filter(function (img) {
+      if (!elInCartUi(img)) return false;
+      var w = Number(img.getAttribute('width') || img.naturalWidth || 0);
+      var h = Number(img.getAttribute('height') || img.naturalHeight || 0);
+      if ((w && w <= 40) || (h && h <= 40)) return false;
+      return true;
+    });
+  }
+
+  function mediaHost(container) {
+    var hosts = deepQueryAll(
+      container,
+      '.cart-items__media, .cart-item__media, td.cart-items__media, .cart-items__media-container',
+    );
+    return hosts[0] || container;
+  }
+
+  // A new shadow has no variant image, so Horizon renders an empty media cell.
+  // Put the line's _mockup_url there until the variant image exists.
+  function paintLine(container, url, variantId) {
+    if (!container || !url) return false;
+    if (container === document || container === document.documentElement || container === document.body) return false;
+    var imgs = lineImgs(container);
+    var img = imgs[0];
+    if (img) {
+      var src = img.currentSrc || img.getAttribute('src') || '';
+      if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') {
+        noteAwaiting(variantId, false);
+        return false;
+      }
+      setImg(img, url);
+      img.setAttribute('data-appai-awaiting', '1');
+      noteAwaiting(variantId, true);
+      return true;
+    }
+    var host = mediaHost(container);
+    var hostClass = typeof host.className === 'string' ? host.className : '';
+    if (host === container && hostClass.indexOf('media') === -1) return false;
+    var created = document.createElement('img');
+    created.className = 'cart-items__media-image';
+    created.alt = '';
+    created.setAttribute('width', '250');
+    created.setAttribute('height', '250');
+    setImg(created, url);
+    created.setAttribute('data-appai-awaiting', '1');
+    var anchor = host.querySelector ? host.querySelector('a, .cart-items__media-container') : null;
+    (anchor || host).appendChild(created);
+    noteAwaiting(variantId, true);
+    try { console.info(LOG + ' inserted mockup variant=' + variantId); } catch (_) {}
+    return true;
+  }
+
+  var imagePoll = null;
+  function ensureImagePoll() {
+    if (imagePoll) return;
+    imagePoll = setInterval(pollVariantImages, 800);
+  }
+
+  function pollVariantImages() {
+    var bag = awaitingBag();
+    var ids = Object.keys(bag);
+    if (!ids.length) {
+      clearInterval(imagePoll);
+      imagePoll = null;
+      return;
+    }
+    for (var i = 0; i < ids.length; i++) {
+      (function (id) {
+        fetch('/variants/' + id + '.js', { credentials: 'same-origin' })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (data) {
+            if (!data || !awaitingBag()[id]) return;
+            var featured = data.featured_image;
+            var src = featured && typeof featured === 'object' ? featured.src : featured;
+            if (!src) return;
+            var sized = cartSizedUrl(src);
+            var nodes = deepQueryAll(document.documentElement, 'img[data-appai-awaiting="1"]');
+            for (var n = 0; n < nodes.length; n++) {
+              setImg(nodes[n], sized);
+              nodes[n].removeAttribute('data-appai-awaiting');
+            }
+            noteAwaiting(id, false);
+            try { console.info(LOG + ' variant image ready ' + id); } catch (_) {}
+          })
+          .catch(function () {});
+      })(ids[i]);
+    }
   }
 
   function lineIdxFromEl(el) {
@@ -653,6 +773,7 @@
       .then(function (cart) {
         var items = cart.items || [];
         var keyMap = new Map(),
+          keyVariant = new Map(),
           varMap = new Map(),
           indexed = [];
 
@@ -668,6 +789,7 @@
           if (!url) continue;
           rememberCustomizerItem(it);
           keyMap.set(it.key, url);
+          keyVariant.set(it.key, String(it.variant_id || ''));
           varMap.set(String(it.variant_id), url);
           indexed.push({
             index: i + 1,
@@ -695,11 +817,7 @@
                 inps[ii].closest("[class*='cart']") ||
                 inps[ii].closest('form') ||
                 document;
-              var imgs = [].slice.call(deepQueryAll(c, 'img')).filter(isLikelyProductImg);
-              if (imgs.length) {
-                setImg(imgs[0], u);
-                replaced++;
-              }
+              if (paintLine(c, u, keyVariant.get(m[1]) || '')) replaced++;
             }
 
             if (replaced === 0 && indexed.length > 0) {
@@ -719,8 +837,6 @@
                 if (!nodes.length) continue;
                 for (var n = 0; n < nodes.length; n++) {
                   var node = nodes[n];
-                  var img = [].slice.call(deepQueryAll(node, 'img')).find(isLikelyProductImg);
-                  if (!img) continue;
                   var mu = null;
                   var li = lineIdxFromEl(node);
                   if (li !== null)
@@ -740,8 +856,11 @@
                     if (va) mu = varMap.get(String(va)) || null;
                   }
                   if (mu) {
-                    setImg(img, mu);
-                    replaced++;
+                    var vid = '';
+                    for (var kv = 0; kv < indexed.length; kv++) {
+                      if (indexed[kv].mockupUrl === mu) { vid = indexed[kv].variantId; break; }
+                    }
+                    if (paintLine(node, mu, vid)) replaced++;
                   }
                 }
               }
@@ -789,8 +908,7 @@
         inputs[i].closest("[class*='cart']") ||
         inputs[i].closest('form') ||
         document;
-      var imgs = [].slice.call(deepQueryAll(c, 'img')).filter(isLikelyProductImg);
-      if (imgs.length) setImg(imgs[0], images[m[1]]);
+      paintLine(c, images[m[1]], '');
     }
   }
 
