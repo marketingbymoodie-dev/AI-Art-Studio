@@ -11754,6 +11754,86 @@ ${orientationExtra}
           : NaN;
       const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
       const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
+      // My Pet reuse is a database read. Do it before the shop-token fetch so
+      // a shadow that already exists does not pay getAuthorizedInstallation.
+      let myPetLookedUp = false;
+      let myPetLookupMs = 0;
+      let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
+      let existingKey: string | undefined;
+      if (source === "my-pet") {
+        myPetLookedUp = true;
+        const lookupStarted = Date.now();
+        const earlyPersist = reusableShadowDesignId(String(designId), String(variantId));
+        const earlyKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
+        for (const key of earlyKeys) {
+          const row = await storage.getPublishedProduct(shop, key);
+          if (row?.status !== "active") continue;
+          if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
+          existing = row;
+          existingKey = key;
+          break;
+        }
+        myPetLookupMs = Date.now() - lookupStarted;
+        if (existing && existing.status === "active") {
+          // The My Pet proxy already checked this device against the render.
+          // A second ownership round-trip here was the ~800ms on a pure reuse.
+          console.log(`${resolveTag} [ResolveVariant] authorized cache=skipped`);
+          const steps = `lookup=${myPetLookupMs} authorized=0`;
+          console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms reused=fast`);
+          const reusedVariantId = existing.shopifyVariantId;
+          const reusedProductId = existing.shopifyProductId;
+          const reusedBaseId = existing.baseVariantId || String(variantId);
+          res.json({
+            success: true,
+            variantId: reusedVariantId,
+            reused: true,
+            designId: earlyPersist,
+            matchedKey: existingKey,
+            shadowImage: mockupUrl,
+            steps,
+          });
+          void (async () => {
+            try {
+              const cachedBg = takeAuthorizedShop(shop);
+              let bgToken = cachedBg?.accessToken || "";
+              if (!bgToken) {
+                const bgInstall = await getAuthorizedInstallation(shop);
+                if (!bgInstall) return;
+                const ready = await ensureValidOfflineAccessToken(bgInstall);
+                if (!ready.ok) return;
+                bgToken = ready.accessToken;
+                rememberAuthorizedShop(shop, ready.installation, bgToken);
+              }
+              await ensureShadowVariantPurchasable({
+                shop,
+                token: bgToken,
+                variantId: reusedVariantId,
+                baseVariantId: reusedBaseId,
+              });
+              if (reusedProductId && reusedVariantId) {
+                const apiBaseBg = `https://${shop}/admin/api/2025-10`;
+                await shadowFetch(
+                  `${apiBaseBg}/products/${reusedProductId}/images.json`,
+                  {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "X-Shopify-Access-Token": bgToken,
+                    },
+                    body: JSON.stringify({
+                      image: { src: mockupUrl, variant_ids: [Number(reusedVariantId)] },
+                    }),
+                  },
+                  SHADOW_CREATE_FETCH_TIMEOUT_MS,
+                );
+              }
+            } catch (bgErr: any) {
+              console.warn(`${resolveTag} background reuse after early return failed:`, bgErr?.message || bgErr);
+            }
+          })();
+          return;
+        }
+      }
       // Shop row + offline token are cached for 5 minutes. The ownership
       // check below is this request's signature/session proof and always runs.
       const cachedAuth = takeAuthorizedShop(shop);
@@ -11872,18 +11952,22 @@ ${orientationExtra}
           : null;
       if (basePromise) void basePromise.catch(() => {});
       const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
-      const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
-      let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
-      let existingKey: string | undefined;
-      for (const key of lookupKeys) {
-        const row = await storage.getPublishedProduct(shop, key);
-        if (row?.status !== "active") continue;
-        if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
-        existing = row;
-        existingKey = key;
-        break;
+      if (myPetLookedUp) {
+        resolveSteps.push(`lookup=${myPetLookupMs}`);
+        resolveLap = Date.now();
+        console.log(`${resolveTag} lookup done existing=none +${Date.now() - resolveStarted}ms (${myPetLookupMs}ms)`);
+      } else {
+        const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
+        for (const key of lookupKeys) {
+          const row = await storage.getPublishedProduct(shop, key);
+          if (row?.status !== "active") continue;
+          if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
+          existing = row;
+          existingKey = key;
+          break;
+        }
+        step(`lookup done existing=${existing ? existing.shopifyVariantId : "none"}`);
       }
-      step(`lookup done existing=${existing ? existing.shopifyVariantId : "none"}`);
       if (existing && existing.status === "active") {
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,

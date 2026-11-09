@@ -6228,15 +6228,19 @@ console.log('[My Pet] script build=01ff12b1 loaded');
       };
     }
 
+    function normComboPart(value) {
+      return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
     function shadowCacheKey(sel) {
-      return [state.renderId || '', sel.catalogId, sel.colour, sel.sizeName].join('|');
+      return shadowRadioKey(sel);
     }
 
     function shadowRadioKey(sel) {
       return [
         state.renderId || '',
-        String((sel && (sel.colour || sel.colorName)) || '').trim().toLowerCase(),
-        String((sel && (sel.sizeName || sel.size)) || '').trim().toLowerCase(),
+        normComboPart(sel && (sel.colour || sel.colorName)),
+        normComboPart(sel && (sel.sizeName || sel.size)),
       ].join('|');
     }
 
@@ -6244,10 +6248,50 @@ console.log('[My Pet] script build=01ff12b1 loaded');
       return 'appai_my_pet_shadow_v1:' + shopifyProductId;
     }
 
+    function readShadowBag() {
+      var bag = {};
+      function absorb(raw) {
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return;
+        var keys = Object.keys(parsed);
+        for (var i = 0; i < keys.length; i++) bag[keys[i]] = parsed[keys[i]];
+      }
+      try { absorb(window.localStorage.getItem(shadowStoreId())); } catch (e) {}
+      try { absorb(window.sessionStorage.getItem(shadowStoreId())); } catch (e2) {}
+      return bag;
+    }
+
+    function shadowRowMatches(row, sel, key) {
+      if (!row || !row.shadowId) return false;
+      if (key && row.colour != null) {
+        var rowKey = shadowRadioKey({
+          colour: row.colour,
+          sizeName: row.sizeName,
+        });
+        if (rowKey === key) return true;
+      }
+      if (sel && sel.catalogId && row.catalogId && String(row.catalogId) === String(sel.catalogId)) {
+        if (normComboPart(row.colour) === normComboPart(sel.colour) || !normComboPart(row.colour)) return true;
+      }
+      return false;
+    }
+
     function readShadowStore(sel) {
       try {
-        var bag = JSON.parse(window.sessionStorage.getItem(shadowStoreId()) || '{}');
-        var row = bag[shadowRadioKey(sel)];
+        var bag = readShadowBag();
+        var key = shadowRadioKey(sel);
+        var row = bag[key];
+        if (!row || !row.shadowId) {
+          var keys = Object.keys(bag);
+          for (var i = 0; i < keys.length; i++) {
+            if (keys[i].indexOf((state.renderId || '') + '|') !== 0) continue;
+            if (shadowRowMatches(bag[keys[i]], sel, key)) {
+              row = bag[keys[i]];
+              break;
+            }
+          }
+        }
         if (!row || !row.shadowId) return null;
         row.reused = true;
         return row;
@@ -6257,18 +6301,23 @@ console.log('[My Pet] script build=01ff12b1 loaded');
     }
 
     function writeShadowStore(sel, entry) {
-      try {
-        var bag = JSON.parse(window.sessionStorage.getItem(shadowStoreId()) || '{}');
-        bag[shadowRadioKey(sel)] = {
-          shadowId: entry.shadowId,
-          catalogId: entry.catalogId,
-          properties: entry.properties || {},
-          mockupUrl: entry.mockupUrl || '',
-          colour: entry.colour || sel.colour || '',
-          sizeName: entry.sizeName || sel.sizeName || '',
-        };
-        window.sessionStorage.setItem(shadowStoreId(), JSON.stringify(bag));
-      } catch (e) {}
+      var row = {
+        shadowId: entry.shadowId,
+        catalogId: entry.catalogId,
+        properties: entry.properties || {},
+        mockupUrl: entry.mockupUrl || '',
+        colour: entry.colour || sel.colour || '',
+        sizeName: entry.sizeName || sel.sizeName || '',
+      };
+      var key = shadowRadioKey(sel);
+      function write(storage) {
+        var bag = {};
+        try { bag = JSON.parse(storage.getItem(shadowStoreId()) || '{}') || {}; } catch (e) { bag = {}; }
+        bag[key] = row;
+        storage.setItem(shadowStoreId(), JSON.stringify(bag));
+      }
+      try { write(window.sessionStorage); } catch (e) {}
+      try { write(window.localStorage); } catch (e2) {}
     }
 
     function radioCombo(override) {
@@ -6337,6 +6386,7 @@ console.log('[My Pet] script build=01ff12b1 loaded');
         state.shadowByKey = state.shadowByKey || {};
         state.shadowByKey[key] = remembered;
         writeShadowStore(sel, remembered);
+        console.log(TAG, 'reuse source=session');
         logCreate(true);
         return Promise.resolve(remembered);
       }
@@ -6372,6 +6422,7 @@ console.log('[My Pet] script build=01ff12b1 loaded');
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
           writeShadowStore(sel, entry);
+          if (entry.reused) console.log(TAG, 'reuse source=server');
           if (res.steps) console.log(TAG, 'resolve steps', res.steps);
           logCreate(entry.reused);
           return entry;
