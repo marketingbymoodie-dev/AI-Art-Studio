@@ -264,22 +264,25 @@ async function attachShadowShipping(opts: {
   }
 }
 
+export type ShadowContinueConfirmed = {
+  productGid: string;
+  itemId: string | null;
+};
+
 /**
- * Write inventoryPolicy CONTINUE on this variant and assert it landed.
- * Also attempts to untrack inventory (non-fatal if CONTINUE already landed).
- * When baseVariantId is set, the shadow must end in exactly the base's
- * delivery profile (Shopify moves the variant; General is not left additive).
+ * Inventory policy CONTINUE, asserted. Cart /cart/add.js 422s "sold out"
+ * while the variant is still DENY at qty 0. This is the last write the
+ * My Pet response waits for — publish, metafields and the mockup image
+ * run after the variant id is returned.
  */
-export async function ensureShadowVariantPurchasable(opts: {
+export async function confirmShadowInventoryContinue(opts: {
   shop: string;
   token: string;
   variantId: string | number;
-  baseVariantId?: string | number;
-}): Promise<void> {
+}): Promise<ShadowContinueConfirmed> {
   const shop = String(opts.shop || "").trim();
   const token = String(opts.token || "").trim();
   const variantId = String(opts.variantId || "").replace(/\D/g, "");
-  const baseVariantId = String(opts.baseVariantId || "").replace(/\D/g, "");
   if (!shop || !token || !variantId) {
     throw new ShadowVariantNotPurchasableError(
       "Shadow purchasable write skipped — missing shop, token, or variantId",
@@ -346,9 +349,47 @@ export async function ensureShadowVariantPurchasable(opts: {
     );
   }
   console.log(`[ShadowProduct] inventoryPolicy CONTINUE confirmed for variant ${variantId}`);
+  const itemId = variant?.inventoryItem?.id ? String(variant.inventoryItem.id) : null;
+  return { productGid, itemId };
+}
+
+/**
+ * Publish, untrack, delivery-profile parity, and table-mode shipping.
+ * My Pet runs this after the variant id has already been returned.
+ */
+export async function completeShadowVariantPurchasable(opts: {
+  shop: string;
+  token: string;
+  variantId: string | number;
+  baseVariantId?: string | number;
+  productGid: string;
+  itemId?: string | null;
+  mark?: (name: string, ms: number) => void;
+}): Promise<void> {
+  const shop = String(opts.shop || "").trim();
+  const token = String(opts.token || "").trim();
+  const variantId = String(opts.variantId || "").replace(/\D/g, "");
+  const baseVariantId = String(opts.baseVariantId || "").replace(/\D/g, "");
+  const productGid = String(opts.productGid || "");
+  const itemId = opts.itemId || null;
+  if (!shop || !token || !variantId || !productGid) {
+    throw new ShadowVariantNotPurchasableError(
+      "Shadow purchasable finish skipped — missing shop, token, variant, or product",
+      variantId || "unknown",
+    );
+  }
+  const mark = opts.mark;
+  const lap = async (name: string, run: () => Promise<void>) => {
+    const started = Date.now();
+    try {
+      await run();
+    } finally {
+      mark?.(name, Date.now() - started);
+    }
+  };
 
   const numericProductId = productGid.replace(/\D/g, "");
-  const publish = (async () => {
+  const publish = lap("publish", async () => {
     try {
       await ensureProductOnOnlineStore({
         shop,
@@ -365,10 +406,9 @@ export async function ensureShadowVariantPurchasable(opts: {
         variantId,
       );
     }
-  })();
+  });
 
-  const itemId = variant?.inventoryItem?.id;
-  const untrack = (async () => {
+  const untrack = lap("untrack", async () => {
     if (!itemId) return;
     try {
       const untracked = await shopifyGraphql({
@@ -396,16 +436,17 @@ export async function ensureShadowVariantPurchasable(opts: {
         e?.message || e,
       );
     }
-  })();
+  });
 
-  const parity = baseVariantId
-    ? ensureShadowDeliveryProfileParity({
-        shop,
-        token,
-        variantId,
-        baseVariantId,
-      })
-    : Promise.resolve();
+  const parity = lap("delivery-profile", async () => {
+    if (!baseVariantId) return;
+    await ensureShadowDeliveryProfileParity({
+      shop,
+      token,
+      variantId,
+      baseVariantId,
+    });
+  });
 
   const settled = await Promise.allSettled([publish, untrack, parity]);
   for (const s of settled) {
@@ -413,12 +454,37 @@ export async function ensureShadowVariantPurchasable(opts: {
   }
 
   if (baseVariantId) {
-    await attachShadowShipping({
-      shop,
-      shopifyVariantId: variantId,
-      sourceVariantId: baseVariantId,
+    await lap("shipping", async () => {
+      await attachShadowShipping({
+        shop,
+        shopifyVariantId: variantId,
+        sourceVariantId: baseVariantId,
+      });
     });
   }
+}
+
+/**
+ * Write inventoryPolicy CONTINUE on this variant and assert it landed.
+ * Also attempts to untrack inventory (non-fatal if CONTINUE already landed).
+ * When baseVariantId is set, the shadow must end in exactly the base's
+ * delivery profile (Shopify moves the variant; General is not left additive).
+ */
+export async function ensureShadowVariantPurchasable(opts: {
+  shop: string;
+  token: string;
+  variantId: string | number;
+  baseVariantId?: string | number;
+  mark?: (name: string, ms: number) => void;
+}): Promise<void> {
+  const started = Date.now();
+  const confirmed = await confirmShadowInventoryContinue(opts);
+  opts.mark?.("inventory-continue", Date.now() - started);
+  await completeShadowVariantPurchasable({
+    ...opts,
+    productGid: confirmed.productGid,
+    itemId: confirmed.itemId,
+  });
 }
 
 /** @deprecated Use ensureShadowVariantPurchasable */

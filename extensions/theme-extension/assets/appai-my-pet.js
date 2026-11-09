@@ -1647,22 +1647,31 @@
 
     function decodeHeroUrl(url) {
       var path = urlPath(url);
-      if (!path) return;
+      if (!path) return Promise.resolve(false);
+      if (state.decodedHeroPaths && state.decodedHeroPaths[path]) return Promise.resolve(true);
+      state.heroDecodeWait = state.heroDecodeWait || {};
+      if (state.heroDecodeWait[path]) return state.heroDecodeWait[path];
       state.heroDecodeFlight = state.heroDecodeFlight || {};
-      if (state.heroDecodeFlight[path] || (state.decodedHeroPaths && state.decodedHeroPaths[path])) return;
       state.heroDecodeFlight[path] = true;
-      var img = new Image();
-      img.decoding = 'async';
-      if (previewNeedsCors(url)) {
-        try { img.crossOrigin = 'anonymous'; } catch (e) {}
-      }
-      var finish = function () { markHeroDecoded(url); };
-      img.onload = function () {
-        if (typeof img.decode === 'function') img.decode().then(finish, finish);
-        else finish();
-      };
-      img.onerror = function () { delete state.heroDecodeFlight[path]; };
-      img.src = url;
+      var promise = new Promise(function (resolve) {
+        var img = new Image();
+        img.decoding = 'async';
+        if (previewNeedsCors(url)) {
+          try { img.crossOrigin = 'anonymous'; } catch (e) {}
+        }
+        var finish = function () { markHeroDecoded(url); resolve(true); };
+        img.onload = function () {
+          if (typeof img.decode === 'function') img.decode().then(finish, finish);
+          else finish();
+        };
+        img.onerror = function () {
+          delete state.heroDecodeFlight[path];
+          resolve(false);
+        };
+        img.src = url;
+      });
+      state.heroDecodeWait[path] = promise;
+      return promise;
     }
 
     function prefetchDesigns(list) {
@@ -1869,7 +1878,7 @@
         ? Object.assign({}, res.previewUrlsByColor)
         : {};
       logColourMap('resolved');
-      if (state.selectionOnce !== (state.renderGeneration || 0)) preloadPreviewUrls(state.previewUrlByColor);
+      preloadPreviewUrls(state.previewUrlByColor);
       writeStoredRender(shopifyProductId, res.renderId, res.jobId);
       if (previewMode !== 'inline') return res.previewUrl;
       var colour = colourOverride || currentInlineColour();
@@ -2529,15 +2538,8 @@
         }
       } catch (e) {}
       if (!urls.length) return;
-      console.log(TAG, 'preloading', urls.length, 'colour URLs');
-      for (var i = 0; i < urls.length; i++) {
-        try {
-          var img = new Image();
-          img.decoding = 'async';
-          if (previewNeedsCors(urls[i])) img.crossOrigin = 'anonymous';
-          img.src = urls[i];
-        } catch (e) {}
-      }
+      console.log(TAG, 'design colours preloaded', urls.length);
+      for (var i = 0; i < urls.length; i++) decodeHeroUrl(urls[i]);
     }
 
     // STAGING-98 diagnostic — log each colour → url tail so a Black mockup
@@ -2669,6 +2671,11 @@
       if (!path) return;
       state.decodedHeroPaths = state.decodedHeroPaths || {};
       state.decodedHeroPaths[path] = url;
+    }
+
+    function colourUrlReady(url) {
+      var path = urlPath(url);
+      return !!(path && state.decodedHeroPaths && state.decodedHeroPaths[path]);
     }
 
     function preferDecodedUrl(url) {
@@ -3053,6 +3060,15 @@
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
       url = preferDecodedUrl(url);
+      // A colour change keeps the previous custom image on screen until the
+      // next colour has decoded. Writing the new URL early blanks the hero.
+      if (state.colourSwapPending && !colourUrlReady(url)) {
+        var keep = state.colourHoldFrom;
+        if (!keep) return;
+        var shown = img.currentSrc || (img.getAttribute && img.getAttribute('src')) || '';
+        if (heroStillCustom(img) && urlsMatch(shown, keep)) return;
+        url = keep;
+      }
       if (!galleryImgAllowed(img)) return;
       var same = srcAlready(img, url);
       var dirty = !!(img.getAttribute('srcset') || img.getAttribute('sizes'));
@@ -3864,26 +3880,37 @@
         state.thumbColour = null;
         state.holdColour = colorName;
         if (url) state.previewUrl = url;
-        scheduleGallerySync(intent.kind === 'size' ? 'size' : 'swatch');
         var token = (state.heroHoldToken = (state.heroHoldToken || 0) + 1);
-        state.swapMaskWaiting = token;
-        if (state.swapMaskTimer) clearTimeout(state.swapMaskTimer);
-        state.swapMaskTimer = setTimeout(function () {
-          if (state.swapMaskWaiting !== token) return;
-          var liveUrl = previewUrlForColour(colorName);
-          var liveHero = findVisibleHeroImg() || state.inlineHero;
-          if (liveUrl && heroReady(liveHero, liveUrl)) return;
+        releaseHeroHold();
+        var shownHero = findVisibleHeroImg() || state.inlineHero;
+        var shownSrc = shownHero ? (shownHero.currentSrc || shownHero.getAttribute('src') || '') : '';
+        state.colourHoldFrom = (shownSrc && urlIsCustomPreview(shownSrc)) ? shownSrc : (state.previewUrl || '');
+        function revealColour() {
+          if (state.heroHoldToken !== token) return;
+          state.colourSwapPending = false;
+          var hero = findVisibleHeroImg() || state.inlineHero;
+          if (hero && url) applyPreviewSrc(hero, url);
           if (state.previewUrlByColor) {
             try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
           }
-        }, 6000);
-        // Hide the hero so Horizon's stock re-render cannot flash. The
-        // gallery background keeps the custom image until currentSrc is ours.
-        hideHeroForSwatch();
-        holdFrameOn(colorName);
-        state.holdStockLogged = false;
-        watchColourHold(colorName);
-        if (!url && intent.kind === 'color') swapInlineColor(colorName);
+          scheduleGallerySync(intent.kind === 'size' ? 'size' : 'swatch');
+        }
+        if (url && colourUrlReady(url)) {
+          revealColour();
+        } else if (url) {
+          state.colourSwapPending = true;
+          decodeHeroUrl(url).then(function (ok) {
+            if (state.heroHoldToken !== token) return;
+            if (!ok) {
+              state.colourSwapPending = false;
+              console.log(TAG, 'colour swap held reason=decode-failed', 'colour=' + colorName);
+              return;
+            }
+            revealColour();
+          });
+        } else if (intent.kind === 'color') {
+          swapInlineColor(colorName);
+        }
         scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour');
       };
       document.addEventListener('click', handler, true);
@@ -4505,6 +4532,7 @@
       for (var i = 0; i < keys.length; i++) {
         if (extra[keys[i]] && !state.previewUrlByColor[keys[i]]) state.previewUrlByColor[keys[i]] = extra[keys[i]];
       }
+      preloadPreviewUrls(state.previewUrlByColor);
     }
 
     function fillMissingColours(renderId, gen) {
@@ -4865,6 +4893,8 @@
         console.warn(TAG, 'inline activate: COLOUR MISMATCH form=' + info.colorName + ' swatch=' + swatchColor + ' — using swatch');
       }
       var effectiveUrl = (effectiveColor && state.previewUrlByColor[effectiveColor]) || previewUrl;
+      preloadPreviewUrls(state.previewUrlByColor);
+      if (effectiveUrl) decodeHeroUrl(effectiveUrl);
       swapInlineHero(hero, effectiveUrl);
       var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
       console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
@@ -5028,7 +5058,9 @@
     function revertToOriginalDesign() {
       if (state.reverted && !state.inlineApplied) return;
       console.log(TAG, 'revert');
+      if (state.shadowWarmTimer) console.log(TAG, 'warm debounce', 'reason=revert', 'cancelled=revert');
       clearTimeout(state.shadowWarmTimer);
+      state.shadowWarmTimer = null;
       restoreStampedForm();
       clearHeroHold();
       state.reverted = true;
@@ -5510,6 +5542,8 @@
         'swatchColor=' + (readSwatchColor(root) || '(none)'),
         'variantColor=' + (currentVariantInfo(root).colorName || '(none)'));
       var last = currentVariantInfo(root);
+      var trackedSize = '';
+      var trackedColour = '';
       var tickCount = 0;
       state.inlineFormPollTimer = setInterval(function () {
         if (state.reverted || !state.inlineApplied || !state.inlineHero || !state.renderId) return;
@@ -5537,28 +5571,57 @@
         var effectiveColor = (swColor && now.colorName && swColor !== now.colorName)
           ? swColor  // swatch is the shopper's actual intent
           : (now.colorName || swColor);
-        var sizeNow = checkedProductOption('size') || now.sizeId || '';
-        if (sizeNow && sizeNow !== last.__size) {
-          last.__size = sizeNow;
-          if (designTransitionActive()) {
-            last = now; last.__swatch = swColor; return;
+        var sizeNow = checkedProductOption('size') || trackedSize || now.sizeId || '';
+        if (sizeNow && sizeNow !== trackedSize) {
+          var firstSize = !trackedSize;
+          trackedSize = sizeNow;
+          if (!firstSize) {
+            if (designTransitionActive()) {
+              last = now; return;
+            }
+            rememberVariantChoice();
+            scheduleGallerySync('size');
+            scheduleShadowWarm('size');
           }
-          rememberVariantChoice();
-          scheduleGallerySync('size');
-          scheduleShadowWarm('size');
         }
-        var lastEffective = last.__swatch || last.colorName;
-        if (!effectiveColor || effectiveColor === lastEffective) {
-          last = now; last.__swatch = swColor; return;
+        if (!trackedColour) {
+          trackedColour = effectiveColor || '';
+          last = now;
+          return;
         }
+        if (!effectiveColor || effectiveColor === trackedColour) {
+          last = now;
+          return;
+        }
+        var previousColour = trackedColour;
+        trackedColour = effectiveColor;
         if (designTransitionActive()) {
-          last = now; last.__swatch = swColor; return;
+          last = now; return;
         }
-        console.log(TAG, 'inline form poll: colour changed', lastEffective, '→', effectiveColor,
+        console.log(TAG, 'inline form poll: colour changed', previousColour, '→', effectiveColor,
           '(formId=' + now.variantId + ' formColor=' + (now.colorName || '(none)') +
           ' swatch=' + (swColor || '(none)') + ')');
-        last = now; last.__swatch = swColor;
+        last = now;
         var expected = state.previewUrlByColor[effectiveColor];
+        if (expected && !colourUrlReady(expected)) {
+          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor, 'waiting=decode');
+          state.previewUrl = expected;
+          if (!state.colourSwapPending) {
+            state.colourSwapPending = true;
+            var heroNow = findVisibleHeroImg() || state.inlineHero;
+            var srcNow = heroNow ? (heroNow.currentSrc || heroNow.getAttribute('src') || '') : '';
+            state.colourHoldFrom = (srcNow && urlIsCustomPreview(srcNow)) ? srcNow : (state.previewUrl || '');
+          }
+          decodeHeroUrl(expected).then(function (ok) {
+            state.colourSwapPending = false;
+            if (!ok || state.reverted) return;
+            reassertColourPreview('form-poll', effectiveColor, expected);
+            scheduleGallerySync('colour');
+          });
+          rememberVariantChoice();
+          scheduleShadowWarm('colour');
+          return;
+        }
         if (expected) {
           console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor);
           state.previewUrl = expected;
@@ -5865,6 +5928,7 @@
           entry.reused = res.reused === true;
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
+          if (res.steps) console.log(TAG, 'resolve steps', res.steps);
           logCreate(entry.reused);
           return entry;
         });
@@ -5895,17 +5959,50 @@
 
     // One combo only: the colour and size still selected 2s later.
     // Passing through a colour resets the timer and creates nothing.
+    function logWarmDebounce(reason, outcome, sel) {
+      console.log(
+        TAG,
+        'warm debounce',
+        'reason=' + (reason || ''),
+        outcome,
+        'colour=' + ((sel && sel.colour) || ''),
+        'size=' + ((sel && sel.sizeName) || ''),
+      );
+    }
+
     function scheduleShadowWarm(reason) {
-      if (!designReadyForCart() || designTransitionActive()) return;
-      clearTimeout(state.shadowWarmTimer);
       var sel = atcSelection();
-      if (!sel || !sel.catalogId) return;
+      if (!designReadyForCart()) {
+        logWarmDebounce(reason, 'cancelled=design-not-ready', sel);
+        return;
+      }
+      if (designTransitionActive()) {
+        logWarmDebounce(reason, 'cancelled=design-transition', sel);
+        return;
+      }
+      if (!sel || !sel.catalogId) {
+        logWarmDebounce(reason, 'cancelled=no-variant', sel);
+        return;
+      }
+      if (state.shadowWarmTimer) logWarmDebounce(reason, 'cancelled=rescheduled', sel);
+      clearTimeout(state.shadowWarmTimer);
       var key = shadowCacheKey(sel);
+      logWarmDebounce(reason, 'timer-set=2000', sel);
       state.shadowWarmTimer = setTimeout(function () {
         state.shadowWarmTimer = null;
-        if (!designReadyForCart() || designTransitionActive()) return;
+        if (!designReadyForCart()) {
+          logWarmDebounce(reason, 'fired-cancelled=design-not-ready', sel);
+          return;
+        }
+        if (designTransitionActive()) {
+          logWarmDebounce(reason, 'fired-cancelled=design-transition', sel);
+          return;
+        }
         var now = atcSelection();
-        if (!now || shadowCacheKey(now) !== key) return;
+        if (!now || shadowCacheKey(now) !== key) {
+          logWarmDebounce(reason, 'fired-cancelled=selection-changed', now);
+          return;
+        }
         var started = Date.now();
         console.log(TAG, 'warm start', 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reason=' + (reason || ''));
         prepareShadowFor(now, 'warm').then(function (entry) {

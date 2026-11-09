@@ -78,6 +78,8 @@ import {
 import { selectVisibleGalleryJobs } from "@shared/galleryVisibleDesigns";
 import {
   ShadowVariantNotPurchasableError,
+  completeShadowVariantPurchasable,
+  confirmShadowInventoryContinue,
   ensureShadowVariantPurchasable,
 } from "./shadow-variant-purchasable";
 import { syncShadowVariantPrice } from "./shadow-variant-price";
@@ -11666,7 +11668,17 @@ ${orientationExtra}
       null;
     const resolveStarted = Date.now();
     const resolveTag = `[ResolveVariant ${crypto.randomBytes(3).toString("hex")}]`;
-    const step = (name: string) => console.log(`${resolveTag} ${name} +${Date.now() - resolveStarted}ms`);
+    const resolveSteps: string[] = [];
+    let resolveLap = resolveStarted;
+    const step = (name: string) => {
+      const now = Date.now();
+      const delta = now - resolveLap;
+      resolveLap = now;
+      const label = name.split(" ")[0];
+      resolveSteps.push(`${label}=${delta}`);
+      console.log(`${resolveTag} ${name} +${now - resolveStarted}ms (${delta}ms)`);
+    };
+    const stepLine = () => resolveSteps.join(" ");
     // Answer still_preparing before the storefront's 30s abort. Work keeps
     // running and persists, so the next tap reuses instead of re-minting.
     const sendJson = res.json.bind(res);
@@ -12228,6 +12240,134 @@ ${orientationExtra}
         expiresAt: sixHoursFromNow,
         cartAddedAt: null,
       } as any);
+      step("persisted");
+
+      // My Pet: the variant id is addable once CONTINUE has landed. Publishing,
+      // the seo.hidden metafield, the mockup image, delivery profile, shipping
+      // and the Ajax visibility poll all finish after this response. The cart
+      // drawer paints _mockup_url; checkout still uses the variant image.
+      if (source === "my-pet") {
+        const continueStarted = Date.now();
+        const confirmed = await confirmShadowInventoryContinue({
+          shop,
+          token,
+          variantId: shadowVariant.id,
+        });
+        const continueMs = Date.now() - continueStarted;
+        resolveSteps.push(`inventory-continue=${continueMs}`);
+        console.log(`${resolveTag} inventory-continue ${continueMs}ms`);
+        const steps = stepLine();
+        console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms`);
+        settleResolveFlight?.({
+          shopifyProductId: String(shadowProduct.id),
+          shopifyVariantId: String(shadowVariant.id),
+        });
+        settleResolveFlight = null;
+        const shadowProductId = String(shadowProduct.id);
+        const shadowVariantNum = Number(shadowVariant.id);
+        const bgMark = (name: string, ms: number) => {
+          console.log(`${resolveTag} background ${name}=${ms}ms`);
+        };
+        void (async () => {
+          const bgStarted = Date.now();
+          try {
+            await completeShadowVariantPurchasable({
+              shop,
+              token,
+              variantId: shadowVariant.id,
+              baseVariantId: variantId,
+              productGid: confirmed.productGid,
+              itemId: confirmed.itemId,
+              mark: bgMark,
+            });
+          } catch (bgErr: any) {
+            console.warn(
+              `${resolveTag} background purchasable failed:`,
+              bgErr?.message || bgErr,
+            );
+          }
+          const imageStarted = Date.now();
+          try {
+            const imgRes = await shadowFetch(
+              `${apiBase}/products/${shadowProductId}/images.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
+                }),
+              },
+              SHADOW_CREATE_FETCH_TIMEOUT_MS,
+            );
+            if (!imgRes.ok) {
+              const t = await imgRes.text();
+              console.warn(
+                `${resolveTag} background image failed:`,
+                imgRes.status,
+                t.substring(0, 200),
+              );
+            } else {
+              console.log(`${resolveTag} background image set variant=${shadowVariantNum}`);
+            }
+          } catch (imgErr: any) {
+            console.warn(`${resolveTag} background image failed:`, imgErr?.message || imgErr);
+          }
+          bgMark("image", Date.now() - imageStarted);
+          const metaStarted = Date.now();
+          try {
+            const metaRes = await shadowFetch(
+              `${apiBase}/products/${shadowProductId}/metafields.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  metafield: {
+                    namespace: "seo",
+                    key: "hidden",
+                    value: "1",
+                    type: "number_integer",
+                  },
+                }),
+              },
+              SHADOW_CREATE_FETCH_TIMEOUT_MS,
+            );
+            if (!metaRes.ok) {
+              const t = await metaRes.text();
+              console.warn(`${resolveTag} background metafield failed:`, metaRes.status, t.substring(0, 160));
+            }
+          } catch (metaErr: any) {
+            console.warn(`${resolveTag} background metafield failed:`, metaErr?.message || metaErr);
+          }
+          bgMark("metafield", Date.now() - metaStarted);
+          const visibleStarted = Date.now();
+          try {
+            await assertAjaxVariantVisible({
+              shop,
+              variantId: shadowVariant.id,
+              adminLive: true,
+            });
+            bgMark("visible-poll", Date.now() - visibleStarted);
+          } catch (visErr: any) {
+            bgMark("visible-poll", Date.now() - visibleStarted);
+            console.warn(
+              `${resolveTag} background visible-poll failed:`,
+              visErr?.message || visErr,
+            );
+          }
+          console.log(`${resolveTag} background done total=${Date.now() - bgStarted}ms`);
+        })();
+        return res.json({
+          success: true,
+          variantId: String(shadowVariant.id),
+          created: true,
+          designId: persistDesignId,
+          shadowImage: mockupUrl,
+          price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
+          priceSource: overridePriceFormatted ? "both" : "front",
+          liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
+          steps,
+        });
+      }
 
       await ensureShadowVariantPurchasable({
         shop,
