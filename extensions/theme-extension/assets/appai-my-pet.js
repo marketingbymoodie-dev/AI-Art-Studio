@@ -1848,6 +1848,9 @@
         state.designTransition.url = activationUrl;
         if (colour) state.designTransition.colour = colour;
         state.inlineApplied = true;
+        var heroNow = findVisibleHeroImg() || findProductHeroImg();
+        if (heroNow) state.inlineHero = heroNow;
+        installInlineATCIntercept();
         fillMissingColours(res.renderId, state.renderGeneration || 0);
         scheduleTransitionSwap(state.designTransition.token);
         return activationUrl;
@@ -1958,7 +1961,7 @@
       pending.then(function (res) {
         if (!token || token !== designSwitchToken || !generationCurrent(gen, item.renderId)) return;
         if (!res || !res.ok || !res.previewUrl) {
-          endDesignTransition(token, 'timeout');
+          endDesignTransition(token, 'resolve-failed');
           return;
         }
         var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
@@ -1980,7 +1983,7 @@
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
       }).catch(function () {
-        if (token && token === designSwitchToken) endDesignTransition(token, 'timeout');
+        if (token && token === designSwitchToken) endDesignTransition(token, 'resolve-failed');
       });
     }
 
@@ -2588,15 +2591,44 @@
     }
 
     function urlTail(url) {
-      return String(url || '').split('?')[0].split('/').pop();
+      return String(url || '').split('#')[0].split('?')[0].split('/').pop();
     }
 
+    function urlPath(url) {
+      var raw = String(url || '').split('#')[0];
+      if (!raw) return '';
+      try { return new URL(raw, window.location.href).pathname || ''; }
+      catch (e) { return raw.split('?')[0]; }
+    }
+
+    // Pathname only. Signed query strings (Supabase tokens, CDN params)
+    // must not keep a swapped hero from counting as the custom image.
     function urlsMatch(a, b) {
       if (!a || !b) return false;
       if (a === b) return true;
+      var pa = urlPath(a);
+      var pb = urlPath(b);
+      if (pa && pb && pa === pb) return true;
       var ta = urlTail(a);
       var tb = urlTail(b);
       return ta.length > 8 && ta === tb;
+    }
+
+    // The visible pixels are currentSrc. The src attribute can already be
+    // ours while the browser is still painting a srcset/stock candidate.
+    function heroShowsCustom(hero, url) {
+      if (!hero || !url) return false;
+      var current = String(hero.currentSrc || '');
+      if (current) return urlsMatch(current, url);
+      if (hero.complete && hero.naturalWidth > 0) {
+        var attr = (hero.getAttribute && hero.getAttribute('src')) || hero.src || '';
+        return !!(attr && urlsMatch(attr, url));
+      }
+      return false;
+    }
+
+    function visibleHeroShowsCustom(url) {
+      return heroShowsCustom(findVisibleHeroImg() || state.inlineHero, url);
     }
 
     function nodeStamp(el) {
@@ -3249,14 +3281,31 @@
         fallbackDue: false,
         swapped: false,
         allowSwap: false,
+        watching: false,
+        holdLogged: false,
         url: '',
       };
       showOpeningCover();
+      if (!state.inlineGalleryObserver) installGalleryGuard();
+      installProductMediaObserver();
+      installInlineATCIntercept();
       console.log(TAG, 'design transition start render=' + renderId);
       clearTimeout(state.designTransition.hardTimer);
       state.designTransition.hardTimer = setTimeout(function () {
-        endDesignTransition(token, 'timeout');
-      }, 3000);
+        var live = state.designTransition;
+        if (!live || live.token !== token) return;
+        if (live.url && visibleHeroShowsCustom(live.url)) {
+          endDesignTransition(token, 'settled');
+          return;
+        }
+        if (!live.holdLogged) {
+          live.holdLogged = true;
+          console.log(TAG, 'cover holding reason=timeout hero=stock', 'elapsedMs=' + (Date.now() - live.startedAt));
+        }
+        live.swapped = false;
+        live.fallbackDue = true;
+        runDesignTransitionSwap(token);
+      }, 6000);
       return token;
     }
 
@@ -3277,7 +3326,8 @@
       if (!t || t.token !== token || t.swapped) return;
       if (t.expectsRerender && !t.sawMutation && !t.fallbackDue) return;
       clearTimeout(t.swapTimer);
-      var delay = t.sawMutation ? 80 : 0;
+      // Wait until Horizon's section re-render stops mutating, then swap once.
+      var delay = t.sawMutation ? 200 : 0;
       t.swapTimer = setTimeout(function () { runDesignTransitionSwap(token); }, delay);
     }
 
@@ -3285,12 +3335,11 @@
       var t = state.designTransition;
       if (!t || t.token !== designSwitchToken) return;
       t.lastMutationAt = Date.now();
-      if (t.swapped) {
-        placeOpeningCover();
-        return;
-      }
       t.sawMutation = true;
       placeOpeningCover();
+      // A mutation after we painted means Horizon replaced the gallery.
+      // Swap again once this re-render settles. Don't reveal stock.
+      if (t.swapped) t.swapped = false;
       scheduleTransitionSwap(t.token);
     }
 
@@ -3310,19 +3359,24 @@
     }
 
     function watchOpeningCover(token) {
+      var t = state.designTransition;
+      if (!t || t.token !== token || t.watching) return;
+      t.watching = true;
       function tick() {
-        var t = state.designTransition;
-        if (!t || t.token !== token) return;
-        if (Date.now() - t.startedAt >= 3000) {
-          endDesignTransition(token, 'timeout');
-          return;
-        }
+        var live = state.designTransition;
+        if (!live || live.token !== token) return;
         var hero = findVisibleHeroImg() || state.inlineHero;
-        var src = hero ? String(hero.currentSrc || '') : '';
-        var quiet = Date.now() - t.lastMutationAt >= 400;
-        if (t.swapped && t.url && hero && urlsMatch(src, t.url) && quiet) {
-          endDesignTransition(token, 'settled');
-          return;
+        if (live.url && heroShowsCustom(hero, live.url)) {
+          if (!live.matchedAt) live.matchedAt = Date.now();
+          // Held until the visible hero stays on the custom image. A stock
+          // re-render clears matchedAt because currentSrc no longer matches.
+          if (Date.now() - live.matchedAt >= 200) {
+            live.watching = false;
+            endDesignTransition(token, 'settled');
+            return;
+          }
+        } else {
+          live.matchedAt = 0;
         }
         setTimeout(tick, 60);
       }
@@ -3333,6 +3387,17 @@
       var t = state.designTransition;
       if (!t || t.token !== token) return;
       var elapsed = Date.now() - t.startedAt;
+      var heroNow = findVisibleHeroImg() || state.inlineHero;
+      if (t.url && !heroShowsCustom(heroNow, t.url)) {
+        if (!t.holdLogged) {
+          t.holdLogged = true;
+          console.log(TAG, 'cover holding reason=' + reason + ' hero=stock', 'elapsedMs=' + elapsed);
+        }
+        t.swapped = false;
+        t.fallbackDue = true;
+        runDesignTransitionSwap(token);
+        return;
+      }
       if (!t.swapped && state.previewUrlByColor && t.url) {
         t.allowSwap = true;
         try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
@@ -3394,7 +3459,13 @@
     function holdFrameOn(colorName) {
       var hero = visibleSlideImg();
       if (isCoverImg(hero)) hero = findProductHeroImg();
-      var url = holdBackgroundUrl(hero);
+      var target = previewUrlForColour(colorName);
+      var shown = holdBackgroundUrl(hero);
+      var url = target || shown;
+      if (!target && hero) {
+        var orig = hero.getAttribute('data-appai-my-pet-original-src') || hero.getAttribute('data-appai-my-pet-slide-original-src') || '';
+        if (orig && shown && urlsMatch(shown, orig)) url = state.previewUrl || '';
+      }
       var host = mediaHoldContainer(hero);
       if (!url || !host) {
         console.log(TAG, 'hold on skipped colour=' + (colorName || '?'));
@@ -3483,18 +3554,93 @@
       return true;
     }
 
+    function releaseHeroHold() {
+      var scope = productSectionScope();
+      var held = [];
+      try { held = scope.querySelectorAll('[data-appai-my-pet-held]'); } catch (e) {}
+      for (var i = 0; i < held.length; i++) {
+        held[i].style.visibility = held[i].__appaiHeldVisibility || '';
+        held[i].removeAttribute('data-appai-my-pet-held');
+      }
+    }
+
     function endSwapMask(why, colorName) {
       if (!state.swapMaskWaiting) {
         clearHoldBackground('', colorName);
         return;
       }
+      var colour = colorName || state.holdColour || currentInlineColour();
+      var url = previewUrlForColour(colour);
+      var hero = findVisibleHeroImg() || state.inlineHero;
+      if (url && !heroShowsCustom(hero, url)) {
+        if (!state.holdStockLogged) {
+          state.holdStockLogged = true;
+          var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
+          console.log(TAG, 'hold holding reason=' + (why || 'stock') + ' hero=stock', 'elapsedMs=' + elapsed, 'colour=' + (colour || ''));
+        }
+        if (state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
+          try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
+        }
+        if (hero && url) applyPreviewSrc(hero, url);
+        return;
+      }
+      state.holdStockLogged = false;
+      state.colourMatchedAt = 0;
+      state.colourHoldWatching = false;
       state.swapMaskWaiting = 0;
       state.swapMaskEndedAt = Date.now();
       if (state.swapMaskTimer) {
         clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = null;
       }
-      clearHoldBackground(why, colorName || state.holdColour || currentInlineColour());
+      releaseHeroHold();
+      clearHoldBackground(why, colour);
+    }
+
+    function watchColourHold(colorName) {
+      var token = state.swapMaskWaiting;
+      if (!token || state.colourHoldWatching) return;
+      state.colourHoldWatching = true;
+      var started = state.swapMaskStarted || Date.now();
+      function tick() {
+        if (state.swapMaskWaiting !== token) {
+          state.colourHoldWatching = false;
+          return;
+        }
+        var colour = colorName || state.holdColour;
+        var url = previewUrlForColour(colour);
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        if (url && heroShowsCustom(hero, url)) {
+          if (!state.colourMatchedAt) state.colourMatchedAt = Date.now();
+          if (Date.now() - state.colourMatchedAt >= 200) {
+            state.colourHoldWatching = false;
+            endSwapMask('settled', colour);
+            return;
+          }
+        } else {
+          state.colourMatchedAt = 0;
+        }
+        if (Date.now() - started >= 6000) {
+          if (!state.holdStockLogged) {
+            state.holdStockLogged = true;
+            console.log(TAG, 'hold holding reason=timeout hero=stock', 'elapsedMs=' + (Date.now() - started), 'colour=' + (colour || ''));
+          }
+          if (state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
+            try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
+          }
+          var live = findVisibleHeroImg() || state.inlineHero;
+          if (live && url) applyPreviewSrc(live, url);
+          if (url && heroShowsCustom(findVisibleHeroImg() || live, url)) {
+            state.colourHoldWatching = false;
+            endSwapMask('settled', colour);
+            return;
+          }
+          setTimeout(tick, 120);
+          return;
+        }
+        setTimeout(tick, 60);
+      }
+      tick();
     }
 
     function noteReplacementDecoded(img, colorName) {
@@ -3502,6 +3648,9 @@
       if (!token || !img) return;
       var finish = function () {
         if (state.swapMaskWaiting !== token) return;
+        var url = previewUrlForColour(colorName);
+        var hero = findVisibleHeroImg() || img;
+        if (url && !heroShowsCustom(hero, url)) return;
         endSwapMask('replaced', colorName);
       };
       if (typeof img.decode === 'function') img.decode().then(finish, finish);
@@ -3517,6 +3666,10 @@
       if (!container || container === document || container === document.body) return;
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
+        if (designTransitionActive()) {
+          noteDesignGalleryMutation();
+          return;
+        }
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
         var colorName = state.holdColour || currentInlineColour();
         var replaced = null;
@@ -3638,11 +3791,19 @@
         if (state.swapMaskTimer) clearTimeout(state.swapMaskTimer);
         state.swapMaskTimer = setTimeout(function () {
           if (state.swapMaskWaiting !== token) return;
-          endSwapMask('timeout', colorName);
-        }, 1500);
-        // Previous frame stays on the old hero and on the gallery background.
-        // The new node is painted when the theme inserts it.
+          var liveUrl = previewUrlForColour(colorName);
+          var liveHero = findVisibleHeroImg() || state.inlineHero;
+          if (liveUrl && heroShowsCustom(liveHero, liveUrl)) return;
+          if (state.previewUrlByColor) {
+            try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
+          }
+        }, 6000);
+        // Hide the hero so Horizon's stock re-render cannot flash. The
+        // gallery background keeps the custom image until currentSrc is ours.
+        hideHeroForSwatch();
         holdFrameOn(colorName);
+        state.holdStockLogged = false;
+        watchColourHold(colorName);
         if (!url && intent.kind === 'color') swapInlineColor(colorName);
       };
       document.addEventListener('click', handler, true);
@@ -5078,18 +5239,18 @@
         state.sectionLoadHook = true;
         document.addEventListener('shopify:section:load', function () {
           state.galleryGuardRoot = null;
-          if (!state.inlineApplied || !state.renderId) return;
           if (designTransitionActive()) {
             noteDesignGalleryMutation();
+            installGalleryGuard();
             return;
           }
+          if (!state.inlineApplied || !state.renderId) return;
           scheduleGallerySync('section-load');
         });
       }
       console.log(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
-        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         if (designTransitionActive()) {
           var sawGallery = false;
           for (var dm = 0; dm < mutations.length; dm++) {
@@ -5099,6 +5260,7 @@
           if (sawGallery) noteDesignGalleryMutation();
           return;
         }
+        if (!state.renderId || !state.inlineApplied || state.reverted) return;
         installZoomSwap();
         // STAGING-100 — primary defence for carousel-style galleries: if
         // any new element was inserted, re-run per-variant slide swap so
@@ -5121,6 +5283,12 @@
           var swapped = 0;
           if (!state.gallerySyncing) swapped = swapVariantSlides(state.previewUrlByColor) || 0;
           if (swapped) scheduleGallerySync('gallery');
+          clearTimeout(state.colourSettleTimer);
+          state.colourSettleTimer = setTimeout(function () {
+            if (designTransitionActive() || state.reverted || !state.inlineApplied) return;
+            if (!state.previewUrlByColor) return;
+            try { swapVariantSlides(state.previewUrlByColor); } catch (eSettle) {}
+          }, 200);
         }
         if (state.designCover) paintDesignCover();
         // Legacy single-hero fallback: themes without per-variant slides
@@ -5361,6 +5529,14 @@
       return !!(state.renderId && state.inlineHero && state.inlineApplied);
     }
 
+    // A saved design can be on the hero before activateInlinePreview runs
+    // (the opening-cover path returns early). Cart intercept uses this.
+    function designReadyForCart() {
+      if (!state.renderId || state.reverted) return false;
+      if (revertedFlagOn(shopifyProductId)) return false;
+      return !!(state.inlineApplied || state.previewUrl || designTransitionActive());
+    }
+
     function mockupForColour(colour) {
       var url = urlForColourMap(state.previewUrlByColor, colour);
       if (url) return Promise.resolve(url);
@@ -5542,7 +5718,7 @@
 
     function prepareShadowFor(sel, reason) {
       if (reason !== 'click') return Promise.resolve(null);
-      if (!inlineOn() || !sel || !sel.catalogId) return Promise.resolve(null);
+      if (!designReadyForCart() || !sel || !sel.catalogId) return Promise.resolve(null);
       var epoch = state.shadowEpoch || 0;
       var renderId = state.renderId;
       var warmToken = reason === 'prefetch' ? state.warmToken : null;
@@ -5557,6 +5733,7 @@
       var key = shadowCacheKey(sel);
       if (state.shadowByKey && state.shadowByKey[key]) {
         logShadowCreate(renderId, sel, true);
+        state.shadowByKey[key].reused = true;
         return Promise.resolve(state.shadowByKey[key]);
       }
       state.shadowFlight = state.shadowFlight || {};
@@ -5586,9 +5763,10 @@
             colour: sel.colour,
             sizeName: sel.sizeName,
           };
+          entry.reused = res.reused === true;
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
-          logShadowCreate(renderId, sel, res.reused === true);
+          logShadowCreate(renderId, sel, entry.reused);
           return entry;
         });
       }).catch(function (err) {
@@ -5682,7 +5860,7 @@
     }
 
     function setPreparing(on) {
-      var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button');
+      var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button, .sticky-add-to-cart button');
       for (var i = 0; i < nodes.length; i++) {
         var btn = nodes[i];
         if (btn.closest && btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
@@ -5709,13 +5887,62 @@
       }
     }
 
-    function noteAtcClick(entry) {
+    function cartForms() {
+      var forms = [];
+      function add(form) {
+        if (form && forms.indexOf(form) === -1) forms.push(form);
+      }
+      var section = mainProductSection();
+      var scoped = [];
+      try {
+        scoped = section ? section.querySelectorAll('form[action*="/cart/add"]') : [];
+      } catch (e) {}
+      for (var i = 0; i < scoped.length; i++) {
+        if (isOurCartForm(scoped[i])) add(scoped[i]);
+      }
+      var sticky = [];
+      try { sticky = document.querySelectorAll('sticky-add-to-cart form[action*="/cart/add"]'); } catch (e2) {}
+      for (var s = 0; s < sticky.length; s++) add(sticky[s]);
+      add(findMainProductForm(root));
+      return forms;
+    }
+
+    function primaryCartForm() {
+      var section = mainProductSection();
+      var component = section && section.querySelector ? section.querySelector('product-form-component') : null;
+      var form = component && component.querySelector ? component.querySelector('form[action*="/cart/add"]') : null;
+      if (form && isOurCartForm(form)) return form;
+      return findMainProductForm(root);
+    }
+
+    function stampAllForms(entry) {
+      var forms = cartForms();
+      for (var i = 0; i < forms.length; i++) stampForm(forms[i], entry);
+      var section = mainProductSection();
+      var components = [];
+      try { components = section ? section.querySelectorAll('product-form-component') : []; } catch (e) {}
+      for (var c = 0; c < components.length; c++) {
+        var ref = components[c].refs && components[c].refs.variantId;
+        if (ref && entry && entry.shadowId) ref.value = String(entry.shadowId);
+      }
+    }
+
+    function restoreAllForms(catalogId) {
+      var forms = cartForms();
+      for (var i = 0; i < forms.length; i++) restoreForm(forms[i], catalogId);
+    }
+
+    function noteAtcClick(entry, sel) {
       state.atcClickSeq = (state.atcClickSeq || 0) + 1;
       state.atcClick = {
         id: state.atcClickSeq,
         submits: 0,
         catalogId: String(entry.catalogId),
         shadowId: String(entry.shadowId),
+        colour: (sel && sel.colour) || entry.colour || '',
+        sizeName: (sel && sel.sizeName) || entry.sizeName || '',
+        renderId: state.renderId || '',
+        reused: entry.reused === true,
       };
       console.log(
         TAG,
@@ -5726,15 +5953,50 @@
       );
     }
 
-    function submitThemeOnce(form, entry) {
-      if (!form || !entry) return;
-      stampForm(form, entry);
-      noteAtcClick(entry);
+    // /cart/add.js answers with Clear-Site-Data, which wipes the console.
+    // Repeat the three lines after that response so the trail stays visible.
+    function replayAtcLogs(click) {
+      setTimeout(function () {
+        if (!click) return;
+        console.log(TAG, 'atc hold', 'catalog=' + click.catalogId, 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
+        console.log(
+          TAG,
+          'shadow create-on-atc',
+          'render=' + (click.renderId || ''),
+          'colour=' + (click.colour || ''),
+          'size=' + (click.sizeName || ''),
+          'reused=' + (click.reused ? 'true' : 'false'),
+        );
+        console.log(TAG, 'atc submit', 'shadow=yes', 'count=' + (click.submits || 1));
+      }, 1500);
+    }
+
+    function submitThemeOnce(form, entry, sel) {
+      var target = primaryCartForm() || form;
+      if (!target || !entry) throw new Error('Could not add this design to cart.');
+      stampAllForms(entry);
+      stampForm(target, entry);
+      var idInput = target.querySelector('input[name="id"], select[name="id"]');
+      if (!idInput || String(idInput.value) !== String(entry.shadowId) || String(entry.shadowId) === String(entry.catalogId)) {
+        console.log(TAG, 'atc submit blocked', 'reason=stamp-missed');
+        throw new Error('Could not add this design to cart.');
+      }
+      noteAtcClick(entry, sel);
       state.atcRelease = true;
-      var btn = form.querySelector('button[name="add"], button.product-form__submit');
+      state.atcFlyPending = true;
+      var btn = target.querySelector('button[name="add"], button.product-form__submit');
       try {
+        if (typeof target.requestSubmit === 'function') {
+          if (btn && btn.form === target) target.requestSubmit(btn);
+          else target.requestSubmit();
+        } else if (btn && !btn.disabled) {
+          btn.click();
+        } else {
+          throw new Error('Could not add this design to cart.');
+        }
+      } catch (err) {
         if (btn && !btn.disabled) btn.click();
-        else if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else throw err;
       } finally {
         state.atcRelease = false;
       }
@@ -5761,48 +6023,42 @@
       // handleSubmit ourselves — that second call was adding the catalogue
       // variant as well as the shadow.
       document.addEventListener('click', function (e) {
-        if (!inlineOn()) return;
+        // The released submit uses requestSubmit. A fallback click must be
+        // allowed through; the swoop fires from the submit listener only.
+        if (state.atcRelease) return;
+        if (!designReadyForCart()) return;
         var t = e.target;
         if (!t || !t.closest) return;
         if (t.closest('.shopify-payment-button')) return;
-        var btn = t.closest('button[name="add"], button.product-form__submit, sticky-add-to-cart button');
+        var btn = t.closest('button[name="add"], button.product-form__submit, sticky-add-to-cart button, .sticky-add-to-cart button');
         if (!btn) return;
         if (btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) return;
         var section = mainProductSection();
         var inSection = !!(section && section.contains(btn));
         var inSticky = !!btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) return;
-        var form = (btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root);
-        if (state.atcRelease && form && form.getAttribute('data-appai-theme-pass') === '1') {
-          flyStoreMark(btn);
-          return;
-        }
-        if (form && form.getAttribute('data-appai-theme-pass') === '1') {
-          restoreForm(form, form.getAttribute('data-appai-catalog-id'));
-        }
-        var sel = atcSelection();
-        var entry = state.shadowByKey && state.shadowByKey[shadowCacheKey(sel)];
-        if (entry && form && String(entry.shadowId) !== String(sel.catalogId)) {
-          logShadowCreate(state.renderId, sel, true);
-          stampForm(form, entry);
-          noteAtcClick(entry);
-          flyStoreMark(btn);
-          return;
-        }
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
         if (state.atcBusy) return;
-        if (btn.disabled) return;
+        var form = primaryCartForm() || ((btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root));
         holdAndSubmit(form);
       }, true);
       document.addEventListener('submit', function (e) {
         var form = e.target;
-        if (!inlineOn() || !isOurCartForm(form)) return;
+        if (!designReadyForCart() || !isOurCartForm(form)) return;
         var click = state.atcClick;
-        if (form.getAttribute('data-appai-theme-pass') === '1' && click) {
+        if (state.atcRelease && click && form.getAttribute('data-appai-theme-pass') === '1') {
           var idInput = form.querySelector('input[name="id"], select[name="id"]');
+          if (idInput) idInput.value = String(click.shadowId);
           var submitted = idInput ? String(idInput.value || '') : '';
+          if (!submitted || submitted === String(click.catalogId) || submitted !== String(click.shadowId)) {
+            e.preventDefault();
+            e.stopPropagation();
+            try { e.stopImmediatePropagation(); } catch (_) {}
+            console.log(TAG, 'atc submit blocked', 'reason=catalog-variant');
+            return;
+          }
           click.submits += 1;
           console.log(
             TAG,
@@ -5810,10 +6066,15 @@
             'click=' + click.id,
             'count=' + click.submits,
             'variant=' + submitted,
-            'shadow=' + (submitted && submitted === String(click.shadowId) ? 'yes' : 'no'),
+            'shadow=yes',
           );
+          if (state.atcFlyPending) {
+            state.atcFlyPending = false;
+            flyStoreMark(form.querySelector('button[name="add"], button[type="submit"]'));
+          }
+          if (click.submits === 1) replayAtcLogs(click);
           var catalogId = click.catalogId;
-          setTimeout(function () { restoreForm(form, catalogId); }, 0);
+          setTimeout(function () { restoreAllForms(catalogId); }, 0);
           markDismissed(state.renderId);
           markInCart(state.renderId);
           return;
@@ -5827,29 +6088,33 @@
     }
 
     function holdAndSubmit(form) {
+      if (state.atcBusy) return;
       state.atcBusy = true;
       setPreparing(true);
       var sel = atcSelection();
       console.log(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
-      prepareShadow('click')
-        .then(function (entry) {
-          if (!entry || !inlineOn()) throw new Error('Could not add this design to cart.');
-          if (String(entry.shadowId) === String(entry.catalogId)) throw new Error('Could not add this design to cart.');
-          setPreparing(false);
-          submitThemeOnce(form || findMainProductForm(root), entry);
-        })
-        .catch(function (err) {
-          console.warn(TAG, 'inline ATC failed:', err && err.message);
-          var retry = 'Couldn’t prepare your design. Try again.';
-          if (caption) caption.textContent = retry;
-          setTimeout(function () {
-            if (caption && caption.textContent === retry) caption.textContent = '';
-          }, 4000);
-        })
-        .then(function () {
-          state.atcBusy = false;
-          setPreparing(false);
-        });
+      // Let "Preparing your design…" paint before a cached shadow submits.
+      setTimeout(function () {
+        prepareShadow('click')
+          .then(function (entry) {
+            if (!entry || !designReadyForCart()) throw new Error('Could not add this design to cart.');
+            if (String(entry.shadowId) === String(entry.catalogId)) throw new Error('Could not add this design to cart.');
+            setPreparing(false);
+            submitThemeOnce(form || primaryCartForm(), entry, sel);
+          })
+          .catch(function (err) {
+            console.warn(TAG, 'inline ATC failed:', err && err.message);
+            var retry = 'Couldn’t prepare your design. Try again.';
+            if (caption) caption.textContent = retry;
+            setTimeout(function () {
+              if (caption && caption.textContent === retry) caption.textContent = '';
+            }, 4000);
+          })
+          .then(function () {
+            state.atcBusy = false;
+            setPreparing(false);
+          });
+      }, 120);
     }
 
     function openUploadStep() {
