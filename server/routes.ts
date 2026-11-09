@@ -233,6 +233,7 @@ import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShop
 import { ensureShopifyCarrierService } from "./printify-checkout-shipping";
 import { isCreatorPlatformShop } from "./creator-host";
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest, recoverOrCreateInstallationFromSession } from "./shopify-offline-token";
+import { forgetAuthorizedShop, rememberAuthorizedShop, takeAuthorizedShop } from "./authorized-shop-cache";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { renderTermsOfUseHtml } from "./terms-of-use";
@@ -1980,6 +1981,7 @@ async function getAuthorizedInstallation(shop: string) {
  * reject flow instead of hammering Shopify with a known-bad token.
  */
 async function markShopTokenInvalid(shop: string): Promise<void> {
+  forgetAuthorizedShop(shop);
   try {
     const inst = await storage.getShopifyInstallationByShop(shop);
     if (inst && inst.status === "active") {
@@ -11752,9 +11754,55 @@ ${orientationExtra}
           : NaN;
       const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
       const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      // Shop row + offline token are cached for 5 minutes. The ownership
+      // check below is this request's signature/session proof and always runs.
+      const cachedAuth = takeAuthorizedShop(shop);
+      const authCache = cachedAuth ? "hit" : "miss";
+      console.log(`[ResolveVariant] authorized cache=${authCache}`);
+      let installation = cachedAuth?.installation ?? null;
+      let token = cachedAuth?.accessToken ?? "";
+      if (!cachedAuth) {
+        installation = await getAuthorizedInstallation(shop);
+        if (!installation) {
+          return res.status(403).json({ success: false, error: "Shop not authorized" });
+        }
+        // ISSUE 3 (post-staging-92) — pre-flight token refresh.
+        //
+        // Previously we read installation.accessToken verbatim and only
+        // reacted to 401s AFTER a Shopify call. With expiring offline tokens
+        // (24h TTL, refresh via grant_type=refresh_token) a request that
+        // arrives after expiry always failed its first call, then
+        // markShopTokenInvalid blanked the token, and the merchant saw
+        // "Admin API token invalid — reconnect the app" until they ran an
+        // OAuth reinstall by hand. The exchange infrastructure already
+        // exists (shopify-offline-token.ts) — getAuthorizedInstallation
+        // just wasn't using it.
+        //
+        // ensureValidOfflineAccessToken refreshes in place when the token
+        // is within REFRESH_SKEW_MS (2min) of expiry via the stored refresh
+        // token, persists the new token, and returns it. Legacy
+        // non-expiring installs get migrated on the same call. Covers the
+        // overwhelming majority of recurrence cases without the shopper
+        // touching Shopify Admin. A fresh result is cached; a token inside
+        // the refresh skew is not.
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        if (!tokenReady.ok) {
+          forgetAuthorizedShop(shop);
+          console.error(
+            `${resolveTag} pre-flight refresh failed shop=${shop} error=${tokenReady.error}`,
+          );
+          if (tokenReady.needsReinstall) await markShopTokenInvalid(shop);
+          return res.status(403).json({
+            success: false,
+            error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
+            reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            fallback: true,
+            variantId: String(variantId),
+          });
+        }
+        token = tokenReady.accessToken;
+        installation = tokenReady.installation;
+        rememberAuthorizedShop(shop, installation, token);
       }
       // A real job prefix must be this caller’s design. Non-job keys (cart line
       // ids, old readable labels) have nothing to steal and stay as they were.
@@ -11781,43 +11829,29 @@ ${orientationExtra}
           }
         }
       }
-      // ISSUE 3 (post-staging-92) — pre-flight token refresh.
-      //
-      // Previously we read installation.accessToken verbatim and only
-      // reacted to 401s AFTER a Shopify call. With expiring offline tokens
-      // (24h TTL, refresh via grant_type=refresh_token) a request that
-      // arrives after expiry always failed its first call, then
-      // markShopTokenInvalid blanked the token, and the merchant saw
-      // "Admin API token invalid — reconnect the app" until they ran an
-      // OAuth reinstall by hand. The exchange infrastructure already
-      // exists (shopify-offline-token.ts) — getAuthorizedInstallation
-      // just wasn't using it.
-      //
-      // ensureValidOfflineAccessToken refreshes in place when the token
-      // is within REFRESH_SKEW_MS (2min) of expiry via the stored refresh
-      // token, persists the new token, and returns it. Legacy
-      // non-expiring installs get migrated on the same call. Covers the
-      // overwhelming majority of recurrence cases without the shopper
-      // touching Shopify Admin.
-      const tokenReady = await ensureValidOfflineAccessToken(installation);
-      if (!tokenReady.ok) {
-        console.error(
-          `${resolveTag} pre-flight refresh failed shop=${shop} error=${tokenReady.error}`,
-        );
-        if (tokenReady.needsReinstall) await markShopTokenInvalid(shop);
-        return res.status(403).json({
-          success: false,
-          error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
-          reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
-          fallback: true,
-          variantId: String(variantId),
-        });
-      }
-      let token = tokenReady.accessToken;
-      Object.assign(installation, tokenReady.installation);
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
-      step(`authorized shop=${shop} design=${String(designId).slice(0, 80)} variant=${variantId}`);
+      step(`authorized shop=${shop} design=${String(designId).slice(0, 80)} variant=${variantId} cache=${authCache}`);
+      const logReusedShadowImage = (variantIdForImage: string | number | null | undefined) => {
+        const id = String(variantIdForImage || "").replace(/\D/g, "");
+        if (!id) {
+          console.log(`${resolveTag} [ResolveVariant] shadow image present=false variant=`);
+          return;
+        }
+        void (async () => {
+          let present = false;
+          try {
+            const imageRes = await shadowFetch(`${apiBase}/variants/${id}.json`, { headers });
+            const imageBody = imageRes.ok
+              ? ((await imageRes.json()) as { variant?: { image_id?: unknown } })
+              : null;
+            present = !!imageBody?.variant?.image_id;
+          } catch (imageErr: any) {
+            console.warn(`${resolveTag} shadow image check failed:`, imageErr?.message || imageErr);
+          }
+          console.log(`${resolveTag} [ResolveVariant] shadow image present=${present ? "true" : "false"} variant=${id}`);
+        })();
+      };
 
       // ── Shadow product path ────────────────────────────────────────────────
       // 1. Reuse by exact persist key. ATC stamps `job::variant::cfgHash` so
@@ -11826,6 +11860,17 @@ ${orientationExtra}
       //    when the incoming id has NO print-config suffix. Never fall back
       //    from a cfg-keyed id to job::variant — that reused the last mockup
       //    onto every cart line for the same design.
+      // Lookup (DB) and the base-variant Admin GET do not depend on each
+      // other. My Pet starts both now. A reuse returns on the lookup and does
+      // not wait for the GET. A new combo awaits the GET that is already in
+      // flight. Other flows keep the GET after the lookup so a reuse does
+      // not call Admin.
+      const baseStarted = Date.now();
+      const basePromise =
+        source === "my-pet"
+          ? shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers })
+          : null;
+      if (basePromise) void basePromise.catch(() => {});
       const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
       const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
       let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
@@ -11854,22 +11899,11 @@ ${orientationExtra}
           const reusedBaseId = existing.baseVariantId || String(variantId);
           const steps = stepLine();
           console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms reused=fast`);
+          logReusedShadowImage(reusedVariantId);
           void (async () => {
             const bg = (name: string, started: number) => {
               console.log(`${resolveTag} background reuse ${name}=${Date.now() - started}ms`);
             };
-            try {
-              const imageRes = await shadowFetch(
-                `${apiBase}/variants/${reusedVariantId}.json`,
-                { headers },
-              );
-              const imageBody = imageRes.ok ? await imageRes.json() : null;
-              const present = !!(imageBody?.variant?.image_id);
-              console.log(`[ResolveVariant] shadow image present=${present ? "true" : "false"} variant=${reusedVariantId}`);
-            } catch (imageErr: any) {
-              console.log(`[ResolveVariant] shadow image present=false variant=${reusedVariantId}`);
-              console.warn(`${resolveTag} shadow image check failed:`, imageErr?.message || imageErr);
-            }
             let t = Date.now();
             try {
               await ensureShadowVariantPurchasable({
@@ -12149,6 +12183,7 @@ ${orientationExtra}
             }
             throw joinErr;
           }
+          if (source === "my-pet") logReusedShadowImage(after.shopifyVariantId);
           return res.json({
             success: true,
             variantId: after.shopifyVariantId,
@@ -12175,8 +12210,13 @@ ${orientationExtra}
 
       // 2. Canonical source of truth: resolve productId from variantId.
       //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
-      let variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
-      step(`base variant lookup ${variantLookupRes.status}`);
+      //    My Pet started this GET in parallel with the published-product lookup.
+      const fetchStarted = basePromise ? baseStarted : Date.now();
+      let variantLookupRes = basePromise
+        ? await basePromise
+        : await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      const baseFetchMs = Date.now() - fetchStarted;
+      step(`base variant lookup ${variantLookupRes.status} fetch=${baseFetchMs}ms`);
       // ISSUE 3 (post-staging-92) — on-401 retry. Pre-flight refresh above
       // handles the known-expired case; this catches the edge where the
       // token looked valid to us (not yet within REFRESH_SKEW_MS) but
@@ -12184,11 +12224,13 @@ ${orientationExtra}
       // expiry). forceRefresh:true bypasses the "looks fresh" short-circuit.
       // One retry only — if that also 401s, fall through to markShopTokenInvalid.
       if (variantLookupRes.status === 401 || variantLookupRes.status === 403) {
+        forgetAuthorizedShop(shop);
         const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
         if (retried.ok) {
           token = retried.accessToken;
           Object.assign(installation, retried.installation);
           headers["X-Shopify-Access-Token"] = token;
+          rememberAuthorizedShop(shop, installation, token);
           variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
           step(`base variant lookup retry-after-refresh ${variantLookupRes.status}`);
         } else {
@@ -12301,11 +12343,13 @@ ${orientationExtra}
       // orphan — but a 401 means the request never authenticated, so there's
       // no server-side state change. Safe to retry.
       if (createProductRes.status === 401 || createProductRes.status === 403) {
+        forgetAuthorizedShop(shop);
         const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
         if (retried.ok) {
           token = retried.accessToken;
           Object.assign(installation, retried.installation);
           headers["X-Shopify-Access-Token"] = token;
+          rememberAuthorizedShop(shop, installation, token);
           createProductRes = await shadowFetch(`${apiBase}/products.json`, {
             method: 'POST',
             headers,
@@ -12358,6 +12402,10 @@ ${orientationExtra}
       // the seo.hidden metafield, the mockup image, delivery profile, shipping
       // and the Ajax visibility poll all finish after this response. The cart
       // drawer paints _mockup_url; checkout still uses the variant image.
+      // CONTINUE stays on this side of the response. Admin API 2025-10 ignores
+      // REST inventory_policy, so the new variant is DENY at qty 0 until this
+      // GraphQL write lands. /cart/add.js then 422s "sold out", and the client
+      // adds as soon as this handler returns.
       if (source === "my-pet") {
         const continueStarted = Date.now();
         const confirmed = await confirmShadowInventoryContinue({
