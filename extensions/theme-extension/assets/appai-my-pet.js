@@ -6507,9 +6507,16 @@
     }
 
     // /cart/add.js answers with Clear-Site-Data, which wipes the console.
-    // Repeat the three lines after that response so the trail stays visible.
+    // Repeat the trail after that response so it stays visible, including
+    // cart-thumb lines that the drawer pass logged before the wipe.
+    function replayThumbLines(click) {
+      var lines = window.__APPAI_CART_THUMB_LOGS__ || [];
+      var from = click._thumbFrom || 0;
+      for (var i = from; i < lines.length; i++) console.log(lines[i]);
+      click._thumbFrom = lines.length;
+    }
     function replayAtcLogs(click) {
-      setTimeout(function () {
+      function reprint() {
         if (!click) return;
         // Clear-Site-Data wiped the live lines. This is a reprint, not a second add.
         console.log(TAG, 'atc path=replay', 'click=' + click.id, 'mockup=' + (click.mockup ? 'yes' : 'no'));
@@ -6531,7 +6538,11 @@
           console.log(TAG, 'create ms=' + click.createMs, 'reused=' + (click.createReused ? 'true' : 'false'), 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
         }
         if (click.elapsedMs != null) console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
-      }, 1500);
+        replayThumbLines(click);
+      }
+      setTimeout(reprint, 1500);
+      // The drawer pass can land after the first reprint. Print only the new lines.
+      setTimeout(function () { replayThumbLines(click); }, 3200);
     }
 
     function submitThemeOnce(form, entry, sel) {

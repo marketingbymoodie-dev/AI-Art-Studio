@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.6';
+  var CART_IMG_VERSION = '3.7';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -325,56 +325,125 @@
     return set;
   }
 
-  function thumbSource(img, mockupUrl, catalog) {
-    if (!mockupUrl) return 'none';
-    var src = img ? (img.currentSrc || img.getAttribute('src') || '') : '';
-    if (!src || /no-image|placeholder|blank\.svg/i.test(src)) return 'mockup_url';
-    var key = fileKey(src);
-    if (key && catalog && catalog[key]) return 'mockup_url';
-    if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') return 'variant';
-    return 'mockup_url';
-  }
-
-  function logThumb(source, lineKey) {
+  function rememberThumbLine(line) {
     try {
-      console.log('[My Pet] cart thumb applied source=' + source + ' line=' + (lineKey || ''));
+      window.__APPAI_CART_THUMB_LOGS__ = window.__APPAI_CART_THUMB_LOGS__ || [];
+      window.__APPAI_CART_THUMB_LOGS__.push(line);
+      if (window.__APPAI_CART_THUMB_LOGS__.length > 40) window.__APPAI_CART_THUMB_LOGS__.shift();
     } catch (e) {}
+    try { console.log(line); } catch (e2) {}
   }
 
-  // Missing image, or the catalog photo, becomes the line's _mockup_url.
-  // A real shadow variant image is left alone (source=variant).
+  function logPass(trigger, n) {
+    rememberThumbLine('[My Pet] cart thumb pass trigger=' + (trigger || 'unknown') + ' lines=' + n);
+  }
+
+  function logThumb(source, lineKey, reason) {
+    rememberThumbLine(
+      '[My Pet] cart thumb applied source=' + source +
+      ' line=' + (lineKey || '') +
+      ' reason=' + (reason || ''),
+    );
+  }
+
+  function imgSrc(img) {
+    return img ? (img.currentSrc || img.getAttribute('src') || '') : '';
+  }
+
+  function srcIsPlaceholder(src) {
+    return !src || /no-image|placeholder|blank\.svg|\.svg(\?|$)/i.test(src);
+  }
+
+  // Horizon's cart row with no variant image is an empty td.cart-items__media.
+  // Some builds put a placeholder <svg> there instead of an <img>.
+  function mediaIsPlaceholder(cell, img) {
+    if (img && srcIsPlaceholder(imgSrc(img))) return true;
+    if (img) return false;
+    if (!cell) return false;
+    return deepQueryAll(cell, 'svg').length > 0;
+  }
+
+  function classifyThumb(img, cell, mockupUrl, catalog) {
+    var placeholder = mediaIsPlaceholder(cell, img);
+    if (!mockupUrl) {
+      if (!img || placeholder) return { source: 'none', reason: placeholder ? 'placeholder' : 'img-missing' };
+      return { source: 'none', reason: 'ok' };
+    }
+    if (!img || placeholder) {
+      return { source: 'mockup_url', reason: placeholder ? 'placeholder' : 'img-missing' };
+    }
+    if (img.getAttribute('data-appai-mockup') === 'true') return { source: 'mockup_url', reason: 'ok' };
+    var src = imgSrc(img);
+    var key = fileKey(src);
+    if (key && catalog && catalog[key]) return { source: 'mockup_url', reason: 'catalog' };
+    if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') return { source: 'variant', reason: 'ok' };
+    return { source: 'mockup_url', reason: 'img-missing' };
+  }
+
+  function clearPlaceholderGraphics(cell) {
+    var svgs = deepQueryAll(cell, 'svg');
+    for (var i = 0; i < svgs.length; i++) {
+      if (svgs[i].parentNode) svgs[i].parentNode.removeChild(svgs[i]);
+    }
+  }
+
+  // Horizon sizes the thumb from .cart-items__media-container { aspect-ratio: var(--ratio) }
+  // and .cart-items__media-image { width:100%; object-fit:cover }.
+  function ensureLineImage(cell, url) {
+    var imgs = lineImgs(cell);
+    var img = imgs[0] || null;
+    if (img && srcIsPlaceholder(imgSrc(img))) img = null;
+    if (!img) {
+      clearPlaceholderGraphics(cell);
+      var frame = null;
+      try {
+        frame = cell.querySelector('.cart-items__media-container, a.cart-items__media-container');
+      } catch (e) {}
+      if (!frame) {
+        frame = document.createElement('span');
+        frame.className = 'cart-items__media-container';
+        frame.style.setProperty('--ratio', '1');
+        frame.setAttribute('data-appai-media', '1');
+        cell.appendChild(frame);
+      }
+      img = document.createElement('img');
+      img.className = 'cart-items__media-image border-style';
+      img.alt = '';
+      img.setAttribute('width', '250');
+      img.setAttribute('height', '250');
+      img.style.width = '100%';
+      img.style.height = 'auto';
+      img.style.objectFit = 'cover';
+      img.style.aspectRatio = 'inherit';
+      frame.appendChild(img);
+    }
+    setImg(img, url);
+    img.setAttribute('data-appai-awaiting', '1');
+    return img;
+  }
+
+  // Missing image, placeholder, or the catalog photo becomes the line's _mockup_url.
+  // A real shadow variant image is left alone (source=variant, reason=ok).
   function paintLine(container, url, variantId, catalog) {
     if (!container || container === document || container === document.documentElement || container === document.body) {
-      return 'none';
+      return { source: 'none', reason: 'img-missing' };
     }
-    var imgs = lineImgs(container);
+    var cell = mediaHost(container);
+    var imgs = lineImgs(cell);
     var img = imgs[0] || null;
-    var source = thumbSource(img, url, catalog);
-    if (source === 'variant') {
+    var verdict = classifyThumb(img, cell, url, catalog);
+    if (verdict.source === 'variant') {
       noteAwaiting(variantId, false);
-      return 'variant';
+      return verdict;
     }
-    if (source !== 'mockup_url' || !url) return 'none';
-    if (img) {
-      setImg(img, url);
-      img.setAttribute('data-appai-awaiting', '1');
-      noteAwaiting(variantId, true);
-      return 'mockup_url';
+    if (verdict.source !== 'mockup_url' || !url) return verdict;
+    var hostClass = typeof cell.className === 'string' ? cell.className : '';
+    if (cell === container && hostClass.indexOf('media') === -1 && !container.querySelector) {
+      return { source: 'none', reason: verdict.reason };
     }
-    var host = mediaHost(container);
-    var hostClass = typeof host.className === 'string' ? host.className : '';
-    if (host === container && hostClass.indexOf('media') === -1) return 'none';
-    var created = document.createElement('img');
-    created.className = 'cart-items__media-image';
-    created.alt = '';
-    created.setAttribute('width', '250');
-    created.setAttribute('height', '250');
-    setImg(created, url);
-    created.setAttribute('data-appai-awaiting', '1');
-    var anchor = host.querySelector ? host.querySelector('a, .cart-items__media-container') : null;
-    (anchor || host).appendChild(created);
+    ensureLineImage(cell, url);
     noteAwaiting(variantId, true);
-    return 'mockup_url';
+    return verdict;
   }
 
   var imagePoll = null;
@@ -807,7 +876,33 @@
     }
   }
 
-  function applyMockups() {
+  function rowForKey(key) {
+    if (!key) return null;
+    var want = String(key);
+    var nodes = deepQueryAll(document.documentElement, '[data-key], [id^="CartItem-"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || !el.getAttribute) continue;
+      if (el.getAttribute('data-key') === want) return el;
+      if ((el.id || '') === 'CartItem-' + want) return el;
+    }
+    var inps = deepQueryAll(document.documentElement, "input[name^='updates[']");
+    for (var u = 0; u < inps.length; u++) {
+      var m = /^updates\[(.+)\]$/.exec(inps[u].getAttribute('name') || '');
+      if (!m || m[1] !== want) continue;
+      return (
+        inps[u].closest('[data-key]') ||
+        inps[u].closest("[id*='CartItem']") ||
+        inps[u].closest('tr') ||
+        inps[u].closest('li') ||
+        inps[u].closest('.cart-item') ||
+        null
+      );
+    }
+    return null;
+  }
+
+  function applyMockups(trigger) {
     if (isApplying) {
       pendingRerun = true;
       return;
@@ -822,132 +917,33 @@
     getCart(needFetch)
       .then(function (cart) {
         var items = cart.items || [];
-        var keyMap = new Map(),
-          keyVariant = new Map(),
-          varMap = new Map(),
-          indexed = [];
         var catalog = catalogFiles();
-        var logged = {};
-        var missingMockup = [];
+        logPass(trigger || 'load', items.length);
 
         customizerState.keys = new Set();
         customizerState.handles = new Set();
         customizerState.urlPaths = new Set();
         customizerState.variants = new Set();
 
-        for (var i = 0; i < items.length; i++) {
-          var it = items[i];
-          if (lineIsCustomizer(it)) rememberCustomizerItem(it);
-          var url = mockupUrlFromLineProperties(it && it.properties);
-          if (!url) {
-            if (lineIsCustomizer(it) && it.key) missingMockup.push(String(it.key));
-            continue;
-          }
-          rememberCustomizerItem(it);
-          keyMap.set(it.key, url);
-          keyVariant.set(it.key, String(it.variant_id || ''));
-          varMap.set(String(it.variant_id), url);
-          indexed.push({
-            index: i + 1,
-            variantId: String(it.variant_id),
-            mockupUrl: url,
-            key: it.key,
-          });
-        }
-
-        var replaced = 0;
         try {
-          if (keyMap.size > 0) {
-            var inps = deepQueryAll(document.documentElement, "input[name^='updates[']");
-            for (var ii = 0; ii < inps.length; ii++) {
-              var m = /^updates\[(.+)\]$/.exec(inps[ii].getAttribute('name') || '');
-              if (!m) continue;
-              var u = keyMap.get(m[1]);
-              if (!u) continue;
-              var c =
-                inps[ii].closest('[data-cart-item]') ||
-                inps[ii].closest("[id*='CartItem']") ||
-                inps[ii].closest('tr') ||
-                inps[ii].closest('li') ||
-                inps[ii].closest('.cart-item') ||
-                inps[ii].closest("[class*='cart']") ||
-                inps[ii].closest('form') ||
-                document;
-              var source = paintLine(c, u, keyVariant.get(m[1]) || '', catalog);
-              if (source === 'mockup_url') replaced++;
-              if (source !== 'none' && !logged[m[1]]) {
-                logged[m[1]] = true;
-                logThumb(source, m[1]);
-              }
+          for (var i = 0; i < items.length; i++) {
+            var it = items[i];
+            if (!lineIsCustomizer(it)) continue;
+            rememberCustomizerItem(it);
+            var url = mockupUrlFromLineProperties(it && it.properties);
+            var row = rowForKey(it.key);
+            if (!row) {
+              logThumb('none', it.key, 'img-missing');
+              continue;
             }
-
-            if (replaced === 0 && indexed.length > 0) {
-              var sels = [
-                '.cart-items__table-row',
-                '.cart-item',
-                "[class*='cart-item']",
-                "[id*='CartItem']",
-                'cart-items > *',
-                'cart-drawer-items > *',
-                'cart-items-component tr',
-                "form[action*='/cart'] li",
-                "form[action*='/cart'] tr",
-              ];
-              for (var s = 0; s < sels.length; s++) {
-                var nodes = deepQueryAll(document.documentElement, sels[s]);
-                if (!nodes.length) continue;
-                for (var n = 0; n < nodes.length; n++) {
-                  var node = nodes[n];
-                  var mu = null;
-                  var li = lineIdxFromEl(node);
-                  if (li !== null)
-                    for (var k = 0; k < indexed.length; k++) {
-                      if (indexed[k].index === li) {
-                        mu = indexed[k].mockupUrl;
-                        break;
-                      }
-                    }
-                  if (!mu) {
-                    var va =
-                      node.getAttribute('data-variant-id') || node.getAttribute('data-variant');
-                    if (!va) {
-                      var vel = node.querySelector('[data-variant-id]');
-                      if (vel) va = vel.getAttribute('data-variant-id');
-                    }
-                    if (va) mu = varMap.get(String(va)) || null;
-                  }
-                  if (mu) {
-                    var vid = '';
-                    for (var kv = 0; kv < indexed.length; kv++) {
-                      if (indexed[kv].mockupUrl === mu) { vid = indexed[kv].variantId; break; }
-                    }
-                    var source2 = paintLine(node, mu, vid, catalog);
-                    if (source2 === 'mockup_url') replaced++;
-                    var lineKey = '';
-                    for (var lk = 0; lk < indexed.length; lk++) {
-                      if (indexed[lk].mockupUrl === mu) { lineKey = indexed[lk].key; break; }
-                    }
-                    if (lineKey && !logged[lineKey]) {
-                      logged[lineKey] = true;
-                      logThumb(source2, lineKey);
-                    }
-                  }
-                }
-              }
-            }
-
+            var painted = paintLine(row, url, String(it.variant_id || ''), catalog);
+            logThumb(painted.source, it.key, painted.reason);
           }
         } catch (_) {}
-
-        for (var left = 0; left < indexed.length; left++) {
-          if (!logged[indexed[left].key]) logThumb('none', indexed[left].key);
-        }
-        for (var miss = 0; miss < missingMockup.length; miss++) {
-          if (!logged[missingMockup[miss]]) logThumb('none', missingMockup[miss]);
-        }
         finishApply(true);
       })
       .catch(function () {
+        logPass(trigger || 'load', 0);
         finishApply(false);
       });
   }
@@ -985,7 +981,7 @@
         inputs[i].closest('form') ||
         document;
       var cachedSource = paintLine(c, images[m[1]], '', catalogFiles());
-      logThumb(cachedSource, m[1]);
+      logThumb(cachedSource.source, m[1], cachedSource.reason);
     }
   }
 
@@ -995,7 +991,9 @@
   };
 
   var t = null;
+  var pendingTrigger = 'load';
   function schedule(opts) {
+    if (opts && opts.trigger) pendingTrigger = opts.trigger;
     if (isApplying || hushMutations) {
       if (opts && opts.cartChanged) cartDirty = true;
       pendingRerun = true;
@@ -1003,36 +1001,126 @@
     }
     if (opts && opts.cartChanged) cartDirty = true;
     clearTimeout(t);
-    t = setTimeout(applyMockups, 250);
+    t = setTimeout(function () {
+      applyMockups(pendingTrigger || 'mutation');
+    }, 250);
   }
 
-  function requestCartRefresh() {
+  function requestCartRefresh(trigger) {
     paintCached(document.documentElement);
-    schedule({ cartChanged: true });
+    schedule({ cartChanged: true, trigger: typeof trigger === 'string' ? trigger : 'cart' });
   }
 
-  window.aiArtFastReplace = requestCartRefresh;
-  window.__applyCartMockups = requestCartRefresh;
+  // Horizon re-renders the drawer inside an open shadow root. A document-level
+  // observer never sees that. Watch the drawer and its shadow root directly.
+  var watched = typeof WeakSet === 'function' ? new WeakSet() : null;
+  function watchRoot(root, trigger) {
+    if (!root || typeof root.nodeType !== 'number') return;
+    if (watched) {
+      if (watched.has(root)) return;
+      watched.add(root);
+    }
+    try {
+      var ob = new MutationObserver(function () {
+        if (isApplying || hushMutations) return;
+        schedule({ cartChanged: true, trigger: trigger });
+      });
+      ob.observe(root, { childList: true, subtree: true });
+    } catch (_) {}
+    if (root.shadowRoot) watchRoot(root.shadowRoot, trigger);
+  }
 
-  applyMockups();
+  function watchDrawers() {
+    var nodes = cartUiRoots();
+    for (var i = 0; i < nodes.length; i++) {
+      watchRoot(nodes[i], 'mutation');
+      if (cartEvents) {
+        bindCartEvents(nodes[i]);
+        if (nodes[i].shadowRoot) bindCartEvents(nodes[i].shadowRoot);
+      }
+    }
+  }
+
+  function onCartEvent(name) {
+    return function () {
+      watchDrawers();
+      requestCartRefresh(name);
+    };
+  }
+
+  window.aiArtFastReplace = function () { requestCartRefresh('fast'); };
+  window.__applyCartMockups = function () { requestCartRefresh('apply'); };
+
+  applyMockups('load');
+  watchDrawers();
+  function mutationTouchesCart(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var target = mutations[i].target;
+      var el = target && target.nodeType === 1 ? target : target && target.parentElement;
+      if (el && elInCartUi(el)) return true;
+      var added = mutations[i].addedNodes;
+      for (var n = 0; n < added.length; n++) {
+        if (added[n].nodeType === 1 && elInCartUi(added[n])) return true;
+      }
+    }
+    return false;
+  }
+
   try {
     var ob = new MutationObserver(function (mutations) {
-      if (!(isApplying || hushMutations)) {
-        for (var i = 0; i < mutations.length; i++) {
-          var added = mutations[i].addedNodes;
-          for (var n = 0; n < added.length; n++) paintCached(added[n]);
+      watchDrawers();
+      if (isApplying || hushMutations) return;
+      if (!mutationTouchesCart(mutations)) return;
+      for (var i = 0; i < mutations.length; i++) {
+        var added = mutations[i].addedNodes;
+        for (var n = 0; n < added.length; n++) {
+          if (added[n].nodeType === 1) paintCached(added[n]);
         }
       }
-      if (isApplying || hushMutations) return;
-      schedule();
+      schedule({ cartChanged: true, trigger: 'mutation' });
     });
     ob.observe(document.documentElement, { childList: true, subtree: true });
   } catch (_) {}
-  window.addEventListener('appai:cart-updated', requestCartRefresh);
-  document.addEventListener('cart:updated', requestCartRefresh);
-  document.addEventListener('cart:refresh', requestCartRefresh);
-  document.addEventListener('cart:update', requestCartRefresh);
-  document.addEventListener('shopify:section:load', schedule);
-  window.addEventListener('pageshow', requestCartRefresh);
+  // Horizon cart-drawer-component listens for StandardEvents.cartLinesUpdate,
+  // theme-drawer:open, and cart-section:restored. Names vary by theme build,
+  // so the drawer observer above is the fallback when none of these fire.
+  var cartEvents = [
+    'cart:update',
+    'cart:updated',
+    'cart:refresh',
+    'cart:lines-update',
+    'cart:lines:update',
+    'cart-section:restored',
+    'theme-drawer:open',
+    'drawer:open',
+  ];
+  var boundEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
+  function bindCartEvents(target) {
+    if (!target || !target.addEventListener) return;
+    if (boundEvents) {
+      if (boundEvents.has(target)) return;
+      boundEvents.add(target);
+    }
+    for (var b = 0; b < cartEvents.length; b++) {
+      target.addEventListener(cartEvents[b], onCartEvent(cartEvents[b]));
+    }
+  }
+  for (var ev = 0; ev < cartEvents.length; ev++) {
+    document.addEventListener(cartEvents[ev], onCartEvent(cartEvents[ev]));
+    window.addEventListener(cartEvents[ev], onCartEvent(cartEvents[ev]));
+  }
+  var drawerNodes = cartUiRoots();
+  for (var d = 0; d < drawerNodes.length; d++) {
+    bindCartEvents(drawerNodes[d]);
+    if (drawerNodes[d].shadowRoot) bindCartEvents(drawerNodes[d].shadowRoot);
+  }
+  document.addEventListener('shopify:section:load', function (e) {
+    var id = '';
+    try { id = String((e && e.detail && (e.detail.sectionId || e.detail.section_id)) || ''); } catch (_) {}
+    watchDrawers();
+    requestCartRefresh(id.indexOf('cart') !== -1 ? 'section:' + id : 'shopify:section:load');
+  });
+  window.addEventListener('pageshow', function () { requestCartRefresh('pageshow'); });
+  window.addEventListener('appai:cart-updated', function () { requestCartRefresh('appai:cart-updated'); });
   console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint before the cart fetch)');
 })();
