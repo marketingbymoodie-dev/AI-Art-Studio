@@ -6035,10 +6035,40 @@
         '_appai_my_pet_render_id': res.renderId || state.renderId || '',
       };
       if (res.jobId) properties['_appai_job_id'] = res.jobId;
-      if (res.previewUrl && String(res.previewUrl).indexOf('https://') === 0) properties['_mockup_url'] = res.previewUrl;
+      var mockup = colourMockupUrl(colorName, res && res.previewUrl);
+      if (mockup) properties['_mockup_url'] = mockup;
       if (colorName) properties['_color'] = colorName;
       if (sizeName) properties['_size'] = sizeName;
       return properties;
+    }
+
+    // The composed image for this render and colour. Never the catalog photo.
+    function colourMockupUrl(colour, fallback) {
+      var mapped = '';
+      try { mapped = urlForColourMap(state.previewUrlByColor, colour) || ''; } catch (e) {}
+      var candidates = [mapped, fallback, state.previewUrl];
+      for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i] && String(candidates[i]).indexOf('https://') === 0) return String(candidates[i]);
+      }
+      return '';
+    }
+
+    function withMockupProperty(entry, colour, sizeName) {
+      if (!entry) return '';
+      var url = colourMockupUrl(colour, entry.mockupUrl || (entry.properties && entry.properties._mockup_url));
+      var props = {};
+      var existing = entry.properties || {};
+      var keys = Object.keys(existing);
+      for (var i = 0; i < keys.length; i++) props[keys[i]] = existing[keys[i]];
+      if (!props._design_id) props._design_id = 'My Pet';
+      if (!props._appai_my_pet_render_id) props._appai_my_pet_render_id = state.renderId || '';
+      if (colour) props._color = colour;
+      if (sizeName) props._size = sizeName;
+      if (url) props._mockup_url = url;
+      else delete props._mockup_url;
+      entry.properties = props;
+      if (url) entry.mockupUrl = url;
+      return url;
     }
 
     function atcSelection() {
@@ -6156,8 +6186,10 @@
       var remembered = (state.shadowByKey && state.shadowByKey[key]) || readShadowStore(sel);
       if (remembered && remembered.shadowId) {
         remembered.reused = true;
+        withMockupProperty(remembered, sel.colour, sel.sizeName);
         state.shadowByKey = state.shadowByKey || {};
         state.shadowByKey[key] = remembered;
+        writeShadowStore(sel, remembered);
         logCreate(true);
         return Promise.resolve(remembered);
       }
@@ -6189,6 +6221,7 @@
             sizeName: sel.sizeName,
           };
           entry.reused = res.reused === true;
+          withMockupProperty(entry, sel.colour, sel.sizeName);
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
           writeShadowStore(sel, entry);
@@ -6449,6 +6482,7 @@
         shadowId: String(entry.shadowId),
         colour: (sel && sel.colour) || entry.colour || '',
         sizeName: (sel && sel.sizeName) || entry.sizeName || '',
+        mockup: !!((entry.properties && entry.properties._mockup_url) || entry.mockupUrl),
         renderId: state.renderId || '',
         reused: entry.reused === true,
         createMs: state.lastCreateLog ? state.lastCreateLog.ms : null,
@@ -6477,6 +6511,8 @@
     function replayAtcLogs(click) {
       setTimeout(function () {
         if (!click) return;
+        // Clear-Site-Data wiped the live lines. This is a reprint, not a second add.
+        console.log(TAG, 'atc path=replay', 'click=' + click.id, 'mockup=' + (click.mockup ? 'yes' : 'no'));
         console.log(TAG, 'atc hold', 'catalog=' + click.catalogId, 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
         console.log(
           TAG,
@@ -6501,6 +6537,7 @@
     function submitThemeOnce(form, entry, sel) {
       var target = primaryCartForm() || form;
       if (!target || !entry) throw new Error('Could not add this design to cart.');
+      withMockupProperty(entry, (sel && sel.colour) || entry.colour, (sel && sel.sizeName) || entry.sizeName);
       stampAllForms(entry);
       stampForm(target, entry);
       var idInput = target.querySelector('input[name="id"], select[name="id"]');
@@ -6539,6 +6576,23 @@
         if (!added.ok) throw new Error((added.json && (added.json.description || added.json.message)) || 'Could not add to cart');
         refreshAndOpenCartDrawer();
       });
+    }
+
+    // The only custom-add submit. Page clicks use the theme form (one
+    // requestSubmit). The modal uses one fetch. Both stamp _mockup_url first.
+    function submitCustomLine(path, entry, sel, form) {
+      if (!entry || !entry.shadowId) throw new Error('Could not add this design to cart.');
+      var colour = (sel && sel.colour) || entry.colour || '';
+      var sizeName = (sel && sel.sizeName) || entry.sizeName || '';
+      var mockup = withMockupProperty(entry, colour, sizeName);
+      console.log(TAG, 'atc path=' + path, 'mockup=' + (mockup ? 'yes' : 'no'), 'tail=' + srcTail(mockup));
+      if (path === 'fetch') {
+        return fallbackCartAdd({ variantId: entry.shadowId }, entry.properties).then(function () {
+          return { ok: true, themed: false };
+        });
+      }
+      submitThemeOnce(form, entry, sel);
+      return Promise.resolve({ ok: true, themed: true });
     }
 
     function installInlineATCIntercept() {
@@ -6626,7 +6680,7 @@
             if (String(entry.shadowId) === String(entry.catalogId)) throw new Error('Could not add this design to cart.');
             logShadowCreate(state.renderId, sel, entry.reused === true);
             setPreparing(false);
-            submitThemeOnce(form || primaryCartForm(), entry, sel);
+            submitCustomLine('theme', entry, sel, form || primaryCartForm());
           })
           .catch(function (err) {
             console.warn(TAG, 'inline ATC failed:', err && err.message);
@@ -7166,8 +7220,16 @@
           // sees them on the Shopify order page.
           // Bugs B/C — write the shopper's ACTUAL selected colour/size, not
           // whatever happened to be on the PDP form when ATC was clicked.
-          var properties = cartLineProperties(res, modalColour, modalSize);
-          return fallbackCartAdd(res, properties).then(function () { return { ok: true, themed: false }; });
+          var entry = {
+            shadowId: String(res.variantId),
+            catalogId: exactVariantId,
+            properties: cartLineProperties(res, modalColour, modalSize),
+            mockupUrl: res.previewUrl || '',
+            colour: modalColour,
+            sizeName: modalSize,
+            reused: res.reused === true,
+          };
+          return submitCustomLine('fetch', entry, { colour: modalColour, sizeName: modalSize });
         })
         .then(function (added) {
           if (!added || !added.ok) throw new Error('Could not add to cart');

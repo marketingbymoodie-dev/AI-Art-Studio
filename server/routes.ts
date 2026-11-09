@@ -11858,6 +11858,18 @@ ${orientationExtra}
             const bg = (name: string, started: number) => {
               console.log(`${resolveTag} background reuse ${name}=${Date.now() - started}ms`);
             };
+            try {
+              const imageRes = await shadowFetch(
+                `${apiBase}/variants/${reusedVariantId}.json`,
+                { headers },
+              );
+              const imageBody = imageRes.ok ? await imageRes.json() : null;
+              const present = !!(imageBody?.variant?.image_id);
+              console.log(`[ResolveVariant] shadow image present=${present ? "true" : "false"} variant=${reusedVariantId}`);
+            } catch (imageErr: any) {
+              console.log(`[ResolveVariant] shadow image present=false variant=${reusedVariantId}`);
+              console.warn(`${resolveTag} shadow image check failed:`, imageErr?.message || imageErr);
+            }
             let t = Date.now();
             try {
               await ensureShadowVariantPurchasable({

@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.5';
+  var CART_IMG_VERSION = '3.6';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -292,27 +292,78 @@
     return hosts[0] || container;
   }
 
-  // A new shadow has no variant image, so Horizon renders an empty media cell.
-  // Put the line's _mockup_url there until the variant image exists.
-  function paintLine(container, url, variantId) {
-    if (!container || !url) return false;
-    if (container === document || container === document.documentElement || container === document.body) return false;
+  function fileKey(url) {
+    return String(url || '').split('?')[0].split('#')[0].split('/').pop().toLowerCase();
+  }
+
+  function catalogFiles() {
+    var set = {};
+    function add(url) {
+      var key = fileKey(url);
+      if (key) set[key] = true;
+    }
+    var stamped = [];
+    try {
+      stamped = document.querySelectorAll('[data-appai-my-pet-slide-original-src], [data-appai-my-pet-original-src]');
+    } catch (e) {}
+    for (var i = 0; i < stamped.length; i++) {
+      add(stamped[i].getAttribute('data-appai-my-pet-slide-original-src'));
+      add(stamped[i].getAttribute('data-appai-my-pet-original-src'));
+    }
+    var root = document.getElementById('appai-root');
+    if (root) {
+      try {
+        var variants = JSON.parse(root.getAttribute('data-variants') || '[]');
+        for (var v = 0; v < variants.length; v++) {
+          var media = variants[v] && variants[v].featured_media;
+          if (!media) continue;
+          if (media.preview_image && media.preview_image.src) add(media.preview_image.src);
+          if (media.src) add(media.src);
+        }
+      } catch (e2) {}
+    }
+    return set;
+  }
+
+  function thumbSource(img, mockupUrl, catalog) {
+    if (!mockupUrl) return 'none';
+    var src = img ? (img.currentSrc || img.getAttribute('src') || '') : '';
+    if (!src || /no-image|placeholder|blank\.svg/i.test(src)) return 'mockup_url';
+    var key = fileKey(src);
+    if (key && catalog && catalog[key]) return 'mockup_url';
+    if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') return 'variant';
+    return 'mockup_url';
+  }
+
+  function logThumb(source, lineKey) {
+    try {
+      console.log('[My Pet] cart thumb applied source=' + source + ' line=' + (lineKey || ''));
+    } catch (e) {}
+  }
+
+  // Missing image, or the catalog photo, becomes the line's _mockup_url.
+  // A real shadow variant image is left alone (source=variant).
+  function paintLine(container, url, variantId, catalog) {
+    if (!container || container === document || container === document.documentElement || container === document.body) {
+      return 'none';
+    }
     var imgs = lineImgs(container);
-    var img = imgs[0];
+    var img = imgs[0] || null;
+    var source = thumbSource(img, url, catalog);
+    if (source === 'variant') {
+      noteAwaiting(variantId, false);
+      return 'variant';
+    }
+    if (source !== 'mockup_url' || !url) return 'none';
     if (img) {
-      var src = img.currentSrc || img.getAttribute('src') || '';
-      if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') {
-        noteAwaiting(variantId, false);
-        return false;
-      }
       setImg(img, url);
       img.setAttribute('data-appai-awaiting', '1');
       noteAwaiting(variantId, true);
-      return true;
+      return 'mockup_url';
     }
     var host = mediaHost(container);
     var hostClass = typeof host.className === 'string' ? host.className : '';
-    if (host === container && hostClass.indexOf('media') === -1) return false;
+    if (host === container && hostClass.indexOf('media') === -1) return 'none';
     var created = document.createElement('img');
     created.className = 'cart-items__media-image';
     created.alt = '';
@@ -323,8 +374,7 @@
     var anchor = host.querySelector ? host.querySelector('a, .cart-items__media-container') : null;
     (anchor || host).appendChild(created);
     noteAwaiting(variantId, true);
-    try { console.info(LOG + ' inserted mockup variant=' + variantId); } catch (_) {}
-    return true;
+    return 'mockup_url';
   }
 
   var imagePoll = null;
@@ -776,6 +826,9 @@
           keyVariant = new Map(),
           varMap = new Map(),
           indexed = [];
+        var catalog = catalogFiles();
+        var logged = {};
+        var missingMockup = [];
 
         customizerState.keys = new Set();
         customizerState.handles = new Set();
@@ -786,7 +839,10 @@
           var it = items[i];
           if (lineIsCustomizer(it)) rememberCustomizerItem(it);
           var url = mockupUrlFromLineProperties(it && it.properties);
-          if (!url) continue;
+          if (!url) {
+            if (lineIsCustomizer(it) && it.key) missingMockup.push(String(it.key));
+            continue;
+          }
           rememberCustomizerItem(it);
           keyMap.set(it.key, url);
           keyVariant.set(it.key, String(it.variant_id || ''));
@@ -817,7 +873,12 @@
                 inps[ii].closest("[class*='cart']") ||
                 inps[ii].closest('form') ||
                 document;
-              if (paintLine(c, u, keyVariant.get(m[1]) || '')) replaced++;
+              var source = paintLine(c, u, keyVariant.get(m[1]) || '', catalog);
+              if (source === 'mockup_url') replaced++;
+              if (source !== 'none' && !logged[m[1]]) {
+                logged[m[1]] = true;
+                logThumb(source, m[1]);
+              }
             }
 
             if (replaced === 0 && indexed.length > 0) {
@@ -860,7 +921,16 @@
                     for (var kv = 0; kv < indexed.length; kv++) {
                       if (indexed[kv].mockupUrl === mu) { vid = indexed[kv].variantId; break; }
                     }
-                    if (paintLine(node, mu, vid)) replaced++;
+                    var source2 = paintLine(node, mu, vid, catalog);
+                    if (source2 === 'mockup_url') replaced++;
+                    var lineKey = '';
+                    for (var lk = 0; lk < indexed.length; lk++) {
+                      if (indexed[lk].mockupUrl === mu) { lineKey = indexed[lk].key; break; }
+                    }
+                    if (lineKey && !logged[lineKey]) {
+                      logged[lineKey] = true;
+                      logThumb(source2, lineKey);
+                    }
                   }
                 }
               }
@@ -869,6 +939,12 @@
           }
         } catch (_) {}
 
+        for (var left = 0; left < indexed.length; left++) {
+          if (!logged[indexed[left].key]) logThumb('none', indexed[left].key);
+        }
+        for (var miss = 0; miss < missingMockup.length; miss++) {
+          if (!logged[missingMockup[miss]]) logThumb('none', missingMockup[miss]);
+        }
         finishApply(true);
       })
       .catch(function () {
@@ -908,7 +984,8 @@
         inputs[i].closest("[class*='cart']") ||
         inputs[i].closest('form') ||
         document;
-      paintLine(c, images[m[1]], '');
+      var cachedSource = paintLine(c, images[m[1]], '', catalogFiles());
+      logThumb(cachedSource, m[1]);
     }
   }
 
