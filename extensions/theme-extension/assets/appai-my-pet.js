@@ -4,6 +4,7 @@
  * garment → add to cart via the same shadow-SKU endpoint every other
  * customizer flow uses. See docs/ (My Pet plan) for the full spec.
  */
+console.log('[My Pet] script build=APPAI_BUILD_SHA loaded');
 (function () {
   'use strict';
   var TAG = '[My Pet]';
@@ -202,11 +203,69 @@
         window.sessionStorage.removeItem(RESOLVE_CACHE_PREFIX + renderId);
         return null;
       }
+      if (!signedUrlUsable(parsed.previewUrl) || !signedMapUsable(parsed.previewUrlsByColor)) {
+        window.sessionStorage.removeItem(RESOLVE_CACHE_PREFIX + renderId);
+        return null;
+      }
       return parsed;
     } catch (e) { return null; }
   }
+  // Supabase signed URLs carry exp in the token JWT. Our 15-minute clock
+  // can still hand out a URL whose token already expired.
+  function signedUrlExpiryMs(url) {
+    try {
+      var q = String(url || '').split('?')[1] || '';
+      if (!q) return 0;
+      var token = '';
+      var parts = q.split('&');
+      for (var i = 0; i < parts.length; i++) {
+        var eq = parts[i].indexOf('=');
+        var key = eq === -1 ? parts[i] : parts[i].slice(0, eq);
+        if (key !== 'token') continue;
+        token = decodeURIComponent(parts[i].slice(eq + 1));
+      }
+      if (!token || token.indexOf('.') === -1) return 0;
+      var payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (payload.length % 4) payload += '=';
+      var json = JSON.parse(atob(payload));
+      var exp = json && Number(json.exp);
+      return exp ? exp * 1000 : 0;
+    } catch (e) { return 0; }
+  }
+  function signedUrlUsable(url) {
+    if (!url) return false;
+    var exp = signedUrlExpiryMs(url);
+    if (!exp) return true;
+    return Date.now() < exp - 15000;
+  }
+  function signedMapUsable(map) {
+    if (!map || typeof map !== 'object') return true;
+    var keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) {
+      if (map[keys[i]] && !signedUrlUsable(map[keys[i]])) return false;
+    }
+    return true;
+  }
+  function earliestSignedExpiry(urls) {
+    var exp = 0;
+    for (var i = 0; i < urls.length; i++) {
+      var one = signedUrlExpiryMs(urls[i]);
+      if (one && (!exp || one < exp)) exp = one;
+    }
+    return exp;
+  }
+
   function writeResolveCache(res) {
     if (!res || !res.ok || !res.renderId || !res.previewUrl) return;
+    if (!signedUrlUsable(res.previewUrl) || !signedMapUsable(res.previewUrlsByColor)) return;
+    var expiresAt = Date.now() + RESOLVE_CACHE_MAX_AGE_MS;
+    var urls = [res.previewUrl];
+    var map = res.previewUrlsByColor || {};
+    var mapKeys = Object.keys(map);
+    for (var i = 0; i < mapKeys.length; i++) if (map[mapKeys[i]]) urls.push(map[mapKeys[i]]);
+    var tokenExp = earliestSignedExpiry(urls);
+    if (tokenExp && tokenExp - 15000 < expiresAt) expiresAt = tokenExp - 15000;
+    if (expiresAt <= Date.now()) return;
     try {
       window.sessionStorage.setItem(RESOLVE_CACHE_PREFIX + res.renderId, JSON.stringify({
         ok: true,
@@ -215,7 +274,7 @@
         previewUrl: res.previewUrl,
         previewUrlsByColor: res.previewUrlsByColor || {},
         colorName: res.colorName || '',
-        expiresAt: Date.now() + RESOLVE_CACHE_MAX_AGE_MS,
+        expiresAt: expiresAt,
       }));
     } catch (e) { /* sessionStorage disabled or full */ }
   }
@@ -1362,12 +1421,62 @@
       }
       return '';
     }
+    var resignedEdited = {};
+    var rendersRefreshFlight = null;
+    function forgetCachedThumb(url) {
+      try {
+        var key = 'appai_my_pet_thumbs_v1:' + shopifyProductId;
+        var raw = window.sessionStorage.getItem(key);
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        if (!parsed || !parsed.urls) return;
+        var ids = Object.keys(parsed.urls);
+        var changed = false;
+        for (var i = 0; i < ids.length; i++) {
+          if (parsed.urls[ids[i]] === url || !signedUrlUsable(parsed.urls[ids[i]])) {
+            delete parsed.urls[ids[i]];
+            changed = true;
+          }
+        }
+        if (!Object.keys(parsed.urls).length) window.sessionStorage.removeItem(key);
+        else if (changed) window.sessionStorage.setItem(key, JSON.stringify(parsed));
+      } catch (e) {}
+    }
+    function resignEditedUrl(url) {
+      var match = String(url || '').match(/my-pet\/edited\/([0-9a-f-]{8,})/i);
+      var renderId = match ? match[1] : '';
+      if (!renderId || resignedEdited[renderId]) return;
+      resignedEdited[renderId] = true;
+      console.log(TAG, 'signed url 400 render=' + renderId);
+      forgetCachedThumb(url);
+      try { window.sessionStorage.removeItem(RESOLVE_CACHE_PREFIX + renderId); } catch (e) {}
+      getJson('my-pet/resolve-render', { renderId: renderId }).then(function (res) {
+        if (!res || !res.ok || !res.previewUrl) return;
+        writeResolveCache(res);
+        console.log(TAG, 'signed url refreshed render=' + renderId);
+      });
+      if (!rendersRefreshFlight) {
+        rendersRefreshFlight = getJson('my-pet/renders', { productId: shopifyProductId }).then(function (res) {
+          rendersRefreshFlight = null;
+          var list = res && res.ok && Array.isArray(res.renders) ? res.renders : [];
+          if (list.length) preloadDesignThumbs(list);
+        }, function () { rendersRefreshFlight = null; });
+      }
+    }
     function preloadUrl(url) {
       if (!url || String(url).indexOf('http') !== 0) return;
+      if (!signedUrlUsable(url)) {
+        resignEditedUrl(url);
+        return;
+      }
       try {
         var img = new Image();
         img.decoding = 'async';
         if (previewNeedsCors(url)) img.crossOrigin = 'anonymous';
+        img.onerror = function () {
+          if (String(url).indexOf('my-pet/edited/') === -1) return;
+          resignEditedUrl(url);
+        };
         img.src = url;
       } catch (e) {}
     }
@@ -1606,13 +1715,27 @@
 
     function warmCachedDesignThumbs() {
       try {
-        var raw = window.sessionStorage.getItem('appai_my_pet_thumbs_v1:' + shopifyProductId);
+        var key = 'appai_my_pet_thumbs_v1:' + shopifyProductId;
+        var raw = window.sessionStorage.getItem(key);
         if (!raw) return;
         var parsed = JSON.parse(raw);
         var urls = parsed && parsed.urls;
         if (!urls) return;
+        // Signed thumbs last about an hour. A tab that stays open keeps
+        // sessionStorage, so a later load must not replay a dead token.
+        var stale = !parsed.at || (Date.now() - parsed.at > 50 * 60 * 1000);
         var ids = Object.keys(urls);
-        for (var i = 0; i < ids.length; i++) preloadUrl(urls[ids[i]]);
+        var live = {};
+        for (var i = 0; i < ids.length; i++) {
+          if (!stale && signedUrlUsable(urls[ids[i]])) live[ids[i]] = urls[ids[i]];
+        }
+        if (Object.keys(live).length !== ids.length) {
+          if (!Object.keys(live).length) window.sessionStorage.removeItem(key);
+          else window.sessionStorage.setItem(key, JSON.stringify({ at: parsed.at, urls: live }));
+        }
+        if (stale || !Object.keys(live).length) return;
+        ids = Object.keys(live);
+        for (var j = 0; j < ids.length; j++) preloadUrl(live[ids[j]]);
       } catch (e) {}
     }
 
@@ -1628,7 +1751,12 @@
         preloadUrl(url);
       }
       try {
-        window.sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), urls: urls }));
+        var keep = {};
+        var keepIds = Object.keys(urls);
+        for (var k = 0; k < keepIds.length; k++) {
+          if (signedUrlUsable(urls[keepIds[k]])) keep[keepIds[k]] = urls[keepIds[k]];
+        }
+        window.sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), urls: keep }));
       } catch (e) {}
       console.log(TAG, 'design thumbs preloaded', Object.keys(urls).length);
     }
@@ -1666,6 +1794,7 @@
         };
         img.onerror = function () {
           delete state.heroDecodeFlight[path];
+          if (String(url).indexOf('my-pet/edited/') !== -1) resignEditedUrl(url);
           resolve(false);
         };
         img.src = url;
@@ -3410,14 +3539,8 @@
           endDesignTransition(token, 'settled');
           return;
         }
-        if (!live.holdLogged) {
-          live.holdLogged = true;
-          console.log(TAG, 'cover holding reason=timeout hero=stock', 'elapsedMs=' + (Date.now() - live.startedAt));
-        }
-        live.swapped = false;
-        live.fallbackDue = true;
-        runDesignTransitionSwap(token);
-      }, 6000);
+        endDesignTransition(token, 'cap');
+      }, 4000);
       return token;
     }
 
@@ -3478,6 +3601,11 @@
         var live = state.designTransition;
         if (!live || live.token !== token) return;
         var hero = findVisibleHeroImg() || state.inlineHero;
+        if (Date.now() - live.startedAt >= 4000) {
+          live.watching = false;
+          endDesignTransition(token, 'cap');
+          return;
+        }
         if (live.url && heroReady(hero, live.url)) {
           if (!live.matchedAt) live.matchedAt = Date.now();
           // Held until the visible hero stays on the custom image. A stock
@@ -3489,10 +3617,25 @@
           }
         } else {
           live.matchedAt = 0;
+          if (!live.holdLogged) {
+            live.holdLogged = true;
+            console.log(TAG, 'cover waiting reason=' + coverWaitDetail(live), 'elapsedMs=' + (Date.now() - live.startedAt));
+          }
         }
         setTimeout(tick, 60);
       }
       tick();
+    }
+
+    function coverWaitDetail(t) {
+      if (!t || !t.url) return 'no-preview-url';
+      var hero = findVisibleHeroImg() || state.inlineHero;
+      if (!hero) return 'no-hero';
+      var src = hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '';
+      if (!src) return 'hero-empty';
+      if (!heroShowsCustom(hero, t.url)) return 'hero-stock src=' + srcTail(src);
+      if (!(hero.complete && hero.naturalWidth > 0)) return 'hero-decoding src=' + srcTail(src);
+      return 'hero-custom';
     }
 
     function endDesignTransition(token, reason) {
@@ -3500,15 +3643,19 @@
       if (!t || t.token !== token) return;
       var elapsed = Date.now() - t.startedAt;
       var heroNow = findVisibleHeroImg() || state.inlineHero;
-      if (t.url && !heroReady(heroNow, t.url)) {
+      var capped = reason === 'cap' || elapsed >= 4000;
+      if (!capped && t.url && !heroReady(heroNow, t.url)) {
         if (!t.holdLogged) {
           t.holdLogged = true;
-          console.log(TAG, 'cover holding reason=' + reason + ' hero=stock', 'elapsedMs=' + elapsed);
+          console.log(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
         }
         t.swapped = false;
         t.fallbackDue = true;
         runDesignTransitionSwap(token);
         return;
+      }
+      if (capped && t.url && !heroReady(heroNow, t.url)) {
+        console.log(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
       }
       if (!t.swapped && state.previewUrlByColor && t.url) {
         t.allowSwap = true;
@@ -6509,6 +6656,11 @@
     // /cart/add.js answers with Clear-Site-Data, which wipes the console.
     // Repeat the trail after that response so it stays visible, including
     // cart-thumb lines that the drawer pass logged before the wipe.
+    // The cart thumb script listens for this. It runs its own pass 500ms and
+    // 1500ms later, so a custom add does not depend on a Horizon cart event.
+    function noteCustomAddReturned() {
+      try { window.dispatchEvent(new Event('appai:my-pet-added')); } catch (e) {}
+    }
     function replayThumbLines(click) {
       var lines = window.__APPAI_CART_THUMB_LOGS__ || [];
       var from = click._thumbFrom || 0;
@@ -6540,6 +6692,7 @@
         if (click.elapsedMs != null) console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
         replayThumbLines(click);
       }
+      noteCustomAddReturned();
       setTimeout(reprint, 1500);
       // The drawer pass can land after the first reprint. Print only the new lines.
       setTimeout(function () { replayThumbLines(click); }, 3200);
@@ -7258,6 +7411,7 @@
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
           if (!added.themed) refreshAndOpenCartDrawer();
+          noteCustomAddReturned();
         })
         .catch(function (err) {
           if (btn) btn.disabled = false;

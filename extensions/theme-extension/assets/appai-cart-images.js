@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.7';
+  var CART_IMG_VERSION = '3.8';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -1122,5 +1122,16 @@
   });
   window.addEventListener('pageshow', function () { requestCartRefresh('pageshow'); });
   window.addEventListener('appai:cart-updated', function () { requestCartRefresh('appai:cart-updated'); });
+  var addPassArmed = 0;
+  function passAfterCustomAdd() {
+    var now = Date.now();
+    if (now - addPassArmed < 2000) return;
+    addPassArmed = now;
+    setTimeout(function () { applyMockups('add+500'); }, 500);
+    setTimeout(function () { applyMockups('add+1500'); }, 1500);
+  }
+  window.__appaiCartThumbAfterAdd = passAfterCustomAdd;
+  window.addEventListener('appai:my-pet-added', passAfterCustomAdd);
+  console.log('[My Pet] cart thumb install');
   console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint before the cart fetch)');
 })();

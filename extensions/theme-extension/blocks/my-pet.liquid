@@ -56,7 +56,10 @@
       <button type="button" class="appai-my-pet__designs" data-appai-my-pet-designs hidden>Your designs</button>
     </div>
   </div>
-  <script src="{{ 'appai-my-pet.js' | asset_url }}" defer></script>
+  {% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
+  {% assign appai_my_pet_js = 'appai-my-pet.js' | asset_url %}
+  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=APPAI_BUILD_SHA" defer></script>
+  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=APPAI_BUILD_SHA" defer></script>
 {% endif %}
 
 {% schema %}
