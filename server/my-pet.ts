@@ -1096,6 +1096,7 @@ export async function listMyPetRendersForDevice(args: {
   jobId: string | null;
   createdAt: string;
   thumbnailUrl: string;
+  heroUrl: string;
   colorName: string | null;
   sizeName: string | null;
 }>> {
@@ -1140,11 +1141,13 @@ export async function listMyPetRendersForDevice(args: {
       } catch {
         thumbnailUrl = await signedMyPetThumbnail(row.previewPath);
       }
+      const heroUrl = await signedMyPetUrl(row.previewPath);
       return {
         renderId: row.id,
         jobId: row.jobId,
         createdAt: row.createdAt.toISOString(),
         thumbnailUrl,
+        heroUrl,
         colorName: row.colorId,
         sizeName: row.sizeId,
       };

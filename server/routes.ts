@@ -11960,12 +11960,11 @@ ${orientationExtra}
             }
             return setSrc;
           };
-          // My Pet cart thumbnails are the shadow variant image. Wait until
-          // Shopify has that image before the storefront adds the line.
-          // Customizer reuse stays fire-and-forget so a slow image POST
-          // cannot miss the cart/add deadline.
-          if (source === "my-pet") shadowImage = await refreshReusedShadow();
-          else void refreshReusedShadow();
+          // The cart drawer paints _mockup_url immediately. Shopify's image
+          // fetch must not hold the variant id. Checkout still uses the
+          // variant image; the storefront's pre-checkout hold covers the
+          // rare case where that upload has not finished.
+          void refreshReusedShadow();
         }
         return res.json({
           success: true,
@@ -12159,7 +12158,10 @@ ${orientationExtra}
             inventory_policy: 'continue',
             fulfillment_service: 'manual',
           }],
-          images: [{ src: mockupUrl }],
+          // My Pet returns the variant id before Shopify downloads the mockup.
+          // Other flows still send the image with the product so the variant
+          // image exists in the response.
+          ...(source === "my-pet" ? {} : { images: [{ src: mockupUrl }] }),
         },
       });
       let createProductRes = await shadowFetch(`${apiBase}/products.json`, {
@@ -12235,9 +12237,48 @@ ${orientationExtra}
       });
       step("created purchasable ok");
 
-      // 6. Assign the mockup image to the variant
+      // 6. Assign the mockup image to the variant. My Pet does this after
+      // the response: the product and variant already exist, and the cart
+      // line carries _mockup_url for the drawer.
       let createdShadowImage = mockupUrl;
-      if (shadowProduct.images && shadowProduct.images.length > 0) {
+      if (source === "my-pet") {
+        const shadowProductId = String(shadowProduct.id);
+        const shadowVariantNum = Number(shadowVariant.id);
+        void (async () => {
+          try {
+            const imgRes = await shadowFetch(
+              `${apiBase}/products/${shadowProductId}/images.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
+                }),
+              },
+              SHADOW_CREATE_FETCH_TIMEOUT_MS,
+            );
+            if (!imgRes.ok) {
+              const t = await imgRes.text();
+              console.warn(
+                `[ShadowProduct] async image failed product=${shadowProductId}:`,
+                imgRes.status,
+                t.substring(0, 200),
+              );
+            } else {
+              const imgBody = (await imgRes.json().catch(() => ({}))) as { image?: { src?: string } };
+              const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+              console.log(
+                `[ShadowProduct] async image set product=${shadowProductId} variant=${shadowVariantNum} shopifyTail=${tail(imgBody?.image?.src || "")} mockupTail=${tail(mockupUrl)}`,
+              );
+            }
+          } catch (imgErr: any) {
+            console.warn(
+              `[ShadowProduct] async image failed product=${shadowProductId}:`,
+              imgErr?.message || imgErr,
+            );
+          }
+        })();
+      } else if (shadowProduct.images && shadowProduct.images.length > 0) {
         const imgId = shadowProduct.images[0].id;
         createdShadowImage = shadowProduct.images[0].src || mockupUrl;
         await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {

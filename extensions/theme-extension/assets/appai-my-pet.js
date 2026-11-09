@@ -1397,6 +1397,7 @@
         designsBtn.hidden = false;
         designsBtn.textContent = 'Your designs (' + list.length + ')';
         preloadDesignThumbs(list);
+        preloadDesignHeroes(list);
         if (designsPop && !designsPop.hidden) fillDesigns(list);
       }).catch(function () { designsBtn.hidden = true; });
     }
@@ -1630,6 +1631,38 @@
         window.sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), urls: urls }));
       } catch (e) {}
       console.log(TAG, 'design thumbs preloaded', Object.keys(urls).length);
+    }
+
+    function preloadDesignHeroes(list) {
+      if (!list || !list.length) return;
+      var n = 0;
+      for (var i = 0; i < list.length; i++) {
+        var url = list[i] && list[i].heroUrl;
+        if (!url || String(url).indexOf('http') !== 0) continue;
+        n++;
+        decodeHeroUrl(url);
+      }
+      if (n) console.log(TAG, 'design heroes preloaded', n);
+    }
+
+    function decodeHeroUrl(url) {
+      var path = urlPath(url);
+      if (!path) return;
+      state.heroDecodeFlight = state.heroDecodeFlight || {};
+      if (state.heroDecodeFlight[path] || (state.decodedHeroPaths && state.decodedHeroPaths[path])) return;
+      state.heroDecodeFlight[path] = true;
+      var img = new Image();
+      img.decoding = 'async';
+      if (previewNeedsCors(url)) {
+        try { img.crossOrigin = 'anonymous'; } catch (e) {}
+      }
+      var finish = function () { markHeroDecoded(url); };
+      img.onload = function () {
+        if (typeof img.decode === 'function') img.decode().then(finish, finish);
+        else finish();
+      };
+      img.onerror = function () { delete state.heroDecodeFlight[path]; };
+      img.src = url;
     }
 
     function prefetchDesigns(list) {
@@ -2631,6 +2664,30 @@
       return heroShowsCustom(findVisibleHeroImg() || state.inlineHero, url);
     }
 
+    function markHeroDecoded(url) {
+      var path = urlPath(url);
+      if (!path) return;
+      state.decodedHeroPaths = state.decodedHeroPaths || {};
+      state.decodedHeroPaths[path] = url;
+    }
+
+    function preferDecodedUrl(url) {
+      var path = urlPath(url);
+      var cached = path && state.decodedHeroPaths && state.decodedHeroPaths[path];
+      return cached || url;
+    }
+
+    // currentSrc can match before the browser has painted the bytes.
+    // The cover stays until the visible hero has actually decoded.
+    function heroReady(hero, url) {
+      if (!heroShowsCustom(hero, url)) return false;
+      return !!(hero.complete && hero.naturalWidth > 0);
+    }
+
+    function visibleHeroReady(url) {
+      return heroReady(findVisibleHeroImg() || state.inlineHero, url);
+    }
+
     function nodeStamp(el) {
       if (!el) return '(none)';
       if (!el.__appaiMyPetNodeId) {
@@ -2995,6 +3052,7 @@
 
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
+      url = preferDecodedUrl(url);
       if (!galleryImgAllowed(img)) return;
       var same = srcAlready(img, url);
       var dirty = !!(img.getAttribute('srcset') || img.getAttribute('sizes'));
@@ -3248,7 +3306,7 @@
         cover.style.justifyContent = 'center';
         cover.style.gap = '8px';
         cover.style.pointerEvents = 'auto';
-        document.body.appendChild(cover);
+        stableCoverHost().appendChild(cover);
         state.openingCover = cover;
         if (!state.openingCoverBound) {
           state.openingCoverBound = true;
@@ -3264,6 +3322,26 @@
       var cover = state.openingCover;
       if (cover && cover.parentNode) cover.parentNode.removeChild(cover);
       state.openingCover = null;
+    }
+
+    // position:fixed is viewport-relative only on document.body. Horizon's
+    // section morph removes a cover that lives inside the gallery, so a
+    // missing cover is created again here.
+    function stableCoverHost() {
+      return document.body;
+    }
+
+    function ensureOpeningCover() {
+      if (!designTransitionActive()) return;
+      var host = stableCoverHost();
+      var cover = state.openingCover;
+      if (!cover || !cover.isConnected) {
+        state.openingCover = null;
+        showOpeningCover();
+        return;
+      }
+      if (cover.parentNode !== host) host.appendChild(cover);
+      placeOpeningCover();
     }
 
     function beginDesignTransition(renderId, colorName, sizeName) {
@@ -3294,7 +3372,7 @@
       state.designTransition.hardTimer = setTimeout(function () {
         var live = state.designTransition;
         if (!live || live.token !== token) return;
-        if (live.url && visibleHeroShowsCustom(live.url)) {
+        if (live.url && visibleHeroReady(live.url)) {
           endDesignTransition(token, 'settled');
           return;
         }
@@ -3336,7 +3414,7 @@
       if (!t || t.token !== designSwitchToken) return;
       t.lastMutationAt = Date.now();
       t.sawMutation = true;
-      placeOpeningCover();
+      ensureOpeningCover();
       // A mutation after we painted means Horizon replaced the gallery.
       // Swap again once this re-render settles. Don't reveal stock.
       if (t.swapped) t.swapped = false;
@@ -3366,7 +3444,7 @@
         var live = state.designTransition;
         if (!live || live.token !== token) return;
         var hero = findVisibleHeroImg() || state.inlineHero;
-        if (live.url && heroShowsCustom(hero, live.url)) {
+        if (live.url && heroReady(hero, live.url)) {
           if (!live.matchedAt) live.matchedAt = Date.now();
           // Held until the visible hero stays on the custom image. A stock
           // re-render clears matchedAt because currentSrc no longer matches.
@@ -3388,7 +3466,7 @@
       if (!t || t.token !== token) return;
       var elapsed = Date.now() - t.startedAt;
       var heroNow = findVisibleHeroImg() || state.inlineHero;
-      if (t.url && !heroShowsCustom(heroNow, t.url)) {
+      if (t.url && !heroReady(heroNow, t.url)) {
         if (!t.holdLogged) {
           t.holdLogged = true;
           console.log(TAG, 'cover holding reason=' + reason + ' hero=stock', 'elapsedMs=' + elapsed);
@@ -3418,6 +3496,7 @@
         state.inlineHero = hero;
         installHeroGuard(hero);
       }
+      scheduleShadowWarm('design');
     }
 
     function showDesignCover() {
@@ -3572,7 +3651,7 @@
       var colour = colorName || state.holdColour || currentInlineColour();
       var url = previewUrlForColour(colour);
       var hero = findVisibleHeroImg() || state.inlineHero;
-      if (url && !heroShowsCustom(hero, url)) {
+      if (url && !heroReady(hero, url)) {
         if (!state.holdStockLogged) {
           state.holdStockLogged = true;
           var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
@@ -3610,7 +3689,7 @@
         var colour = colorName || state.holdColour;
         var url = previewUrlForColour(colour);
         var hero = findVisibleHeroImg() || state.inlineHero;
-        if (url && heroShowsCustom(hero, url)) {
+        if (url && heroReady(hero, url)) {
           if (!state.colourMatchedAt) state.colourMatchedAt = Date.now();
           if (Date.now() - state.colourMatchedAt >= 200) {
             state.colourHoldWatching = false;
@@ -3630,7 +3709,7 @@
           }
           var live = findVisibleHeroImg() || state.inlineHero;
           if (live && url) applyPreviewSrc(live, url);
-          if (url && heroShowsCustom(findVisibleHeroImg() || live, url)) {
+          if (url && heroReady(findVisibleHeroImg() || live, url)) {
             state.colourHoldWatching = false;
             endSwapMask('settled', colour);
             return;
@@ -3650,7 +3729,7 @@
         if (state.swapMaskWaiting !== token) return;
         var url = previewUrlForColour(colorName);
         var hero = findVisibleHeroImg() || img;
-        if (url && !heroShowsCustom(hero, url)) return;
+        if (url && !heroReady(hero, url)) return;
         endSwapMask('replaced', colorName);
       };
       if (typeof img.decode === 'function') img.decode().then(finish, finish);
@@ -3793,7 +3872,7 @@
           if (state.swapMaskWaiting !== token) return;
           var liveUrl = previewUrlForColour(colorName);
           var liveHero = findVisibleHeroImg() || state.inlineHero;
-          if (liveUrl && heroShowsCustom(liveHero, liveUrl)) return;
+          if (liveUrl && heroReady(liveHero, liveUrl)) return;
           if (state.previewUrlByColor) {
             try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
           }
@@ -3805,6 +3884,7 @@
         state.holdStockLogged = false;
         watchColourHold(colorName);
         if (!url && intent.kind === 'color') swapInlineColor(colorName);
+        scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour');
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
@@ -4826,6 +4906,7 @@
       showRevertLink();
       if (state.inlineAttached) {
         console.log(TAG, 'inline activate: observers re-installed (listeners already attached from earlier activation)');
+        scheduleShadowWarm('activate');
         return true;
       }
       state.inlineAttached = true;
@@ -4834,6 +4915,7 @@
       installInlineFormPollFallback();
       installSwatchPreempt();
       console.log(TAG, 'inline activate: full install complete (hero+gallery observers, variant listeners, ATC intercept, form poll fallback)');
+      scheduleShadowWarm('activate');
       return true;
     }
 
@@ -4946,6 +5028,7 @@
     function revertToOriginalDesign() {
       if (state.reverted && !state.inlineApplied) return;
       console.log(TAG, 'revert');
+      clearTimeout(state.shadowWarmTimer);
       restoreStampedForm();
       clearHeroHold();
       state.reverted = true;
@@ -5252,6 +5335,7 @@
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
         if (designTransitionActive()) {
+          ensureOpeningCover();
           var sawGallery = false;
           for (var dm = 0; dm < mutations.length; dm++) {
             var addedNow = mutations[dm].addedNodes;
@@ -5387,6 +5471,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
+        scheduleShadowWarm('variant');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -5460,6 +5545,7 @@
           }
           rememberVariantChoice();
           scheduleGallerySync('size');
+          scheduleShadowWarm('size');
         }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
@@ -5483,6 +5569,7 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
+        scheduleShadowWarm('colour');
       }, 500);
     }
 
@@ -5717,7 +5804,7 @@
     }
 
     function prepareShadowFor(sel, reason) {
-      if (reason !== 'click') return Promise.resolve(null);
+      if (reason !== 'click' && reason !== 'warm') return Promise.resolve(null);
       if (!designReadyForCart() || !sel || !sel.catalogId) return Promise.resolve(null);
       var epoch = state.shadowEpoch || 0;
       var renderId = state.renderId;
@@ -5730,10 +5817,22 @@
         return true;
       }
       if (!current()) return Promise.resolve(null);
+      var started = Date.now();
+      function logCreate(reused) {
+        var ms = Date.now() - started;
+        state.lastCreateLog = { ms: ms, reused: !!reused, colour: sel.colour || '', size: sel.sizeName || '' };
+        console.log(
+          TAG,
+          'create ms=' + ms,
+          'reused=' + (reused ? 'true' : 'false'),
+          'colour=' + (sel.colour || ''),
+          'size=' + (sel.sizeName || ''),
+        );
+      }
       var key = shadowCacheKey(sel);
       if (state.shadowByKey && state.shadowByKey[key]) {
-        logShadowCreate(renderId, sel, true);
         state.shadowByKey[key].reused = true;
+        logCreate(true);
         return Promise.resolve(state.shadowByKey[key]);
       }
       state.shadowFlight = state.shadowFlight || {};
@@ -5766,7 +5865,7 @@
           entry.reused = res.reused === true;
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
-          logShadowCreate(renderId, sel, entry.reused);
+          logCreate(entry.reused);
           return entry;
         });
       }).catch(function (err) {
@@ -5793,6 +5892,43 @@
     function prepareShadowSoon() {}
 
     function scheduleSiblingWarm() {}
+
+    // One combo only: the colour and size still selected 2s later.
+    // Passing through a colour resets the timer and creates nothing.
+    function scheduleShadowWarm(reason) {
+      if (!designReadyForCart() || designTransitionActive()) return;
+      clearTimeout(state.shadowWarmTimer);
+      var sel = atcSelection();
+      if (!sel || !sel.catalogId) return;
+      var key = shadowCacheKey(sel);
+      state.shadowWarmTimer = setTimeout(function () {
+        state.shadowWarmTimer = null;
+        if (!designReadyForCart() || designTransitionActive()) return;
+        var now = atcSelection();
+        if (!now || shadowCacheKey(now) !== key) return;
+        var started = Date.now();
+        console.log(TAG, 'warm start', 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reason=' + (reason || ''));
+        prepareShadowFor(now, 'warm').then(function (entry) {
+          var ms = Date.now() - started;
+          state.lastWarmLog = {
+            ms: ms,
+            colour: now.colour || '',
+            size: now.sizeName || '',
+            reused: !!(entry && entry.reused),
+          };
+          console.log(
+            TAG,
+            'warm end',
+            'ms=' + ms,
+            'colour=' + (now.colour || ''),
+            'size=' + (now.sizeName || ''),
+            'reused=' + (entry && entry.reused ? 'true' : 'false'),
+          );
+        }).catch(function () {
+          console.log(TAG, 'warm end', 'ms=' + (Date.now() - started), 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reused=false');
+        });
+      }, 2000);
+    }
 
     function stampForm(form, entry) {
       if (!form || !entry) return;
@@ -5943,7 +6079,18 @@
         sizeName: (sel && sel.sizeName) || entry.sizeName || '',
         renderId: state.renderId || '',
         reused: entry.reused === true,
+        createMs: state.lastCreateLog ? state.lastCreateLog.ms : null,
+        createReused: state.lastCreateLog ? state.lastCreateLog.reused : entry.reused === true,
       };
+      var warm = state.lastWarmLog;
+      var warmColour = (sel && sel.colour) || entry.colour || '';
+      var warmSize = (sel && sel.sizeName) || entry.sizeName || '';
+      if (warm && warm.colour === warmColour && warm.size === warmSize) {
+        state.atcClick.warmMs = warm.ms;
+        state.atcClick.warmColour = warm.colour;
+        state.atcClick.warmSize = warm.size;
+        state.atcClick.warmReused = warm.reused;
+      }
       console.log(
         TAG,
         'atc once',
@@ -5968,6 +6115,14 @@
           'reused=' + (click.reused ? 'true' : 'false'),
         );
         console.log(TAG, 'atc submit', 'shadow=yes', 'count=' + (click.submits || 1));
+        if (click.warmMs != null) {
+          console.log(TAG, 'warm start', 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''));
+          console.log(TAG, 'warm end', 'ms=' + click.warmMs, 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''), 'reused=' + (click.warmReused ? 'true' : 'false'));
+        }
+        if (click.createMs != null) {
+          console.log(TAG, 'create ms=' + click.createMs, 'reused=' + (click.createReused ? 'true' : 'false'), 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
+        }
+        if (click.elapsedMs != null) console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
       }, 1500);
     }
 
@@ -5983,7 +6138,6 @@
       }
       noteAtcClick(entry, sel);
       state.atcRelease = true;
-      state.atcFlyPending = true;
       var btn = target.querySelector('button[name="add"], button.product-form__submit');
       try {
         if (typeof target.requestSubmit === 'function') {
@@ -6024,7 +6178,7 @@
       // variant as well as the shadow.
       document.addEventListener('click', function (e) {
         // The released submit uses requestSubmit. A fallback click must be
-        // allowed through; the swoop fires from the submit listener only.
+        // allowed through. The P flies on this click, before the shadow.
         if (state.atcRelease) return;
         if (!designReadyForCart()) return;
         var t = e.target;
@@ -6040,6 +6194,8 @@
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
+        state.atcClickAt = Date.now();
+        flyStoreMark(btn);
         if (state.atcBusy) return;
         var form = primaryCartForm() || ((btn.form && isOurCartForm(btn.form)) ? btn.form : findMainProductForm(root));
         holdAndSubmit(form);
@@ -6060,6 +6216,7 @@
             return;
           }
           click.submits += 1;
+          click.elapsedMs = state.atcClickAt ? (Date.now() - state.atcClickAt) : 0;
           console.log(
             TAG,
             'atc submit',
@@ -6068,10 +6225,7 @@
             'variant=' + submitted,
             'shadow=yes',
           );
-          if (state.atcFlyPending) {
-            state.atcFlyPending = false;
-            flyStoreMark(form.querySelector('button[name="add"], button[type="submit"]'));
-          }
+          console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
           if (click.submits === 1) replayAtcLogs(click);
           var catalogId = click.catalogId;
           setTimeout(function () { restoreAllForms(catalogId); }, 0);
@@ -6093,12 +6247,12 @@
       setPreparing(true);
       var sel = atcSelection();
       console.log(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
-      // Let "Preparing your design…" paint before a cached shadow submits.
       setTimeout(function () {
         prepareShadow('click')
           .then(function (entry) {
             if (!entry || !designReadyForCart()) throw new Error('Could not add this design to cart.');
             if (String(entry.shadowId) === String(entry.catalogId)) throw new Error('Could not add this design to cart.');
+            logShadowCreate(state.renderId, sel, entry.reused === true);
             setPreparing(false);
             submitThemeOnce(form || primaryCartForm(), entry, sel);
           })
@@ -6114,7 +6268,7 @@
             state.atcBusy = false;
             setPreparing(false);
           });
-      }, 120);
+      }, 0);
     }
 
     function openUploadStep() {
