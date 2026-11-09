@@ -1843,6 +1843,15 @@
       var key = colour ? canonicalPreviewColor(colour) : '';
       var mapped = (key && state.previewUrlByColor[key]) || (colour && state.previewUrlByColor[colour]) || '';
       var activationUrl = mapped || res.previewUrl;
+      if (designTransitionActive()) {
+        state.previewUrl = activationUrl;
+        state.designTransition.url = activationUrl;
+        if (colour) state.designTransition.colour = colour;
+        state.inlineApplied = true;
+        fillMissingColours(res.renderId, state.renderGeneration || 0);
+        scheduleTransitionSwap(state.designTransition.token);
+        return activationUrl;
+      }
       activateInlinePreviewWithRetry(activationUrl);
       fillMissingColours(res.renderId, state.renderGeneration || 0);
       if (recompositeMissing && !mapped && colour) swapInlineColor(colour);
@@ -1901,18 +1910,18 @@
       }
       var gen = bumpRenderGeneration('select');
       if (!(same && !wasReverted)) state.selectionOnce = gen;
+      var token = null;
       if (!(same && !wasReverted)) {
-        var outgoing = findVisibleHeroImg() || state.inlineHero;
-        state.designCoverUrl = outgoing
-          ? (outgoing.currentSrc || (outgoing.getAttribute && outgoing.getAttribute('src')) || '')
-          : (state.previewUrl || '');
+        token = beginDesignTransition(item.renderId, colorName, sizeName);
         state.designSwitchColour = colorName || '';
         state.designSwitchSize = sizeName || '';
-        showDesignCover();
         if (state.applyExactVariant && colorName) {
           state.applyExactVariant(colorName, sizeName || fallbackSize || 'M');
         }
-        showDesignCover();
+        if (state.designTransition && state.designTransition.token === token) {
+          state.designTransition.expectsRerender = !!(state.variantDispatchedAt && (Date.now() - state.variantDispatchedAt) < 300);
+          if (state.designTransition.expectsRerender) armTransitionFallback(token);
+        }
       }
       if (same && !wasReverted) {
         if (!saved.colorName && !saved.sizeName && state.renderId) {
@@ -1937,33 +1946,27 @@
           ? Object.assign({}, cachedNow.previewUrlsByColor)
           : {};
         state.inlineApplied = true;
-        if (generationCurrent(gen, item.renderId)) consumeSelectionSwap(state.previewUrlByColor);
-        showDesignCover();
       } else {
         state.previewUrlByColor = {};
         state.previewUrl = '';
         state.inlineApplied = true;
         holdMissingColours();
-        showDesignCover();
       }
-      var token = armDesignSwitch();
       var pending = cachedNow
         ? Promise.resolve(cachedNow)
         : getJson('my-pet/resolve-render', { renderId: item.renderId });
       pending.then(function (res) {
-        if (token !== designSwitchToken || !generationCurrent(gen, item.renderId)) {
-          finishDesignSwitch(token);
-          return;
-        }
+        if (!token || token !== designSwitchToken || !generationCurrent(gen, item.renderId)) return;
         if (!res || !res.ok || !res.previewUrl) {
-          finishDesignSwitch(token);
+          endDesignTransition(token, 'timeout');
           return;
         }
         var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
         state.designSwitchColour = picked.colorName || colorName || '';
         state.designSwitchSize = picked.sizeName || sizeName || '';
-        if (state.applyExactVariant && state.designSwitchColour) {
-          state.applyExactVariant(state.designSwitchColour, state.designSwitchSize || fallbackSize || 'M');
+        if (state.designTransition && state.designTransition.token === token) {
+          state.designTransition.colour = state.designSwitchColour;
+          state.designTransition.sizeName = state.designSwitchSize;
         }
         var selectedColour = currentColourName();
         var selectedSize = currentSizeName();
@@ -1973,12 +1976,12 @@
           'selected colour=' + (selectedColour || '(none)'),
           'selected size=' + (selectedSize || '(none)'));
         writeStoredVariantChoice(shopifyProductId, state.designSwitchColour, state.designSwitchSize);
-        var url = showResolvedDesign(res, state.designSwitchColour || selectedColour, true);
+        showResolvedDesign(res, state.designSwitchColour || selectedColour, true);
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
-        if (url) waitForDesignHero(url, token);
-        else finishDesignSwitch(token);
-      }).catch(function () { finishDesignSwitch(token); });
+      }).catch(function () {
+        if (token && token === designSwitchToken) endDesignTransition(token, 'timeout');
+      });
     }
 
     if (designsBtn) {
@@ -2362,11 +2365,13 @@
             var dispatch = null;
             if (colourNeeds || (sizeNeeds && colourRadio)) dispatch = colourRadio;
             else if (sizeNeeds) dispatch = sizeRadio;
+            state.variantDispatchedAt = 0;
             if (dispatch) {
               dispatch.setAttribute('data-variant-id', id);
               dispatch.setAttribute('data-option-available', 'true');
               dispatch.removeAttribute('aria-disabled');
               dispatch.dispatchEvent(new Event('change', { bubbles: true }));
+              state.variantDispatchedAt = Date.now();
             } else if (idInput && String(idInput.value) !== id) {
               idInput.value = id;
               idInput.dispatchEvent(new Event('change', { bubbles: true }));
@@ -3172,6 +3177,184 @@
       return previewUrlForColour(colour) || state.previewUrl || '';
     }
 
+    function designTransitionActive() {
+      return !!(state.designTransition && state.designTransition.token === designSwitchToken);
+    }
+
+    function openingHostRect() {
+      var host = mainMediaGallery() || mediaHoldContainer(findVisibleHeroImg());
+      if (!host || !host.getBoundingClientRect) return null;
+      var rect = host.getBoundingClientRect();
+      if (!rect || rect.width < 2 || rect.height < 2) return null;
+      return rect;
+    }
+
+    function placeOpeningCover() {
+      var cover = state.openingCover;
+      if (!cover) return;
+      var rect = openingHostRect();
+      if (!rect) return;
+      cover.style.left = Math.round(rect.left) + 'px';
+      cover.style.top = Math.round(rect.top) + 'px';
+      cover.style.width = Math.round(rect.width) + 'px';
+      cover.style.height = Math.round(rect.height) + 'px';
+    }
+
+    function showOpeningCover() {
+      var cover = state.openingCover;
+      if (!cover) {
+        cover = document.createElement('div');
+        cover.className = 'appai-my-pet-opening';
+        cover.setAttribute('aria-hidden', 'true');
+        cover.innerHTML = '<span class="appai-my-pet-opening__spin"></span><span class="appai-my-pet-opening__label">Opening design…</span>';
+        cover.style.position = 'fixed';
+        cover.style.zIndex = '40';
+        cover.style.background = '#fff';
+        cover.style.display = 'flex';
+        cover.style.flexDirection = 'column';
+        cover.style.alignItems = 'center';
+        cover.style.justifyContent = 'center';
+        cover.style.gap = '8px';
+        cover.style.pointerEvents = 'auto';
+        document.body.appendChild(cover);
+        state.openingCover = cover;
+        if (!state.openingCoverBound) {
+          state.openingCoverBound = true;
+          var move = function () { if (state.openingCover) placeOpeningCover(); };
+          window.addEventListener('scroll', move, true);
+          window.addEventListener('resize', move);
+        }
+      }
+      placeOpeningCover();
+    }
+
+    function removeOpeningCover() {
+      var cover = state.openingCover;
+      if (cover && cover.parentNode) cover.parentNode.removeChild(cover);
+      state.openingCover = null;
+    }
+
+    function beginDesignTransition(renderId, colorName, sizeName) {
+      var token = ++designSwitchToken;
+      clearTimeout(state.designSwitchTimer);
+      state.designTransition = {
+        token: token,
+        renderId: renderId,
+        colour: colorName || '',
+        sizeName: sizeName || '',
+        startedAt: Date.now(),
+        lastMutationAt: Date.now(),
+        sawMutation: false,
+        expectsRerender: false,
+        fallbackDue: false,
+        swapped: false,
+        allowSwap: false,
+        url: '',
+      };
+      showOpeningCover();
+      console.log(TAG, 'design transition start render=' + renderId);
+      clearTimeout(state.designTransition.hardTimer);
+      state.designTransition.hardTimer = setTimeout(function () {
+        endDesignTransition(token, 'timeout');
+      }, 3000);
+      return token;
+    }
+
+    function armTransitionFallback(token) {
+      var t = state.designTransition;
+      if (!t || t.token !== token) return;
+      clearTimeout(t.fallbackTimer);
+      t.fallbackTimer = setTimeout(function () {
+        var live = state.designTransition;
+        if (!live || live.token !== token || live.swapped) return;
+        live.fallbackDue = true;
+        runDesignTransitionSwap(token);
+      }, 1200);
+    }
+
+    function scheduleTransitionSwap(token) {
+      var t = state.designTransition;
+      if (!t || t.token !== token || t.swapped) return;
+      if (t.expectsRerender && !t.sawMutation && !t.fallbackDue) return;
+      clearTimeout(t.swapTimer);
+      var delay = t.sawMutation ? 80 : 0;
+      t.swapTimer = setTimeout(function () { runDesignTransitionSwap(token); }, delay);
+    }
+
+    function noteDesignGalleryMutation() {
+      var t = state.designTransition;
+      if (!t || t.token !== designSwitchToken) return;
+      t.lastMutationAt = Date.now();
+      if (t.swapped) {
+        placeOpeningCover();
+        return;
+      }
+      t.sawMutation = true;
+      placeOpeningCover();
+      scheduleTransitionSwap(t.token);
+    }
+
+    function runDesignTransitionSwap(token) {
+      var t = state.designTransition;
+      if (!t || t.token !== token || token !== designSwitchToken || t.swapped) return;
+      var map = state.previewUrlByColor;
+      if (!map || !Object.keys(map).length || !t.url) return;
+      t.swapped = true;
+      clearTimeout(t.fallbackTimer);
+      clearTimeout(t.swapTimer);
+      console.log(TAG, 'theme re-render settled');
+      t.allowSwap = true;
+      try { swapVariantSlides(map); }
+      finally { t.allowSwap = false; }
+      watchOpeningCover(token);
+    }
+
+    function watchOpeningCover(token) {
+      function tick() {
+        var t = state.designTransition;
+        if (!t || t.token !== token) return;
+        if (Date.now() - t.startedAt >= 3000) {
+          endDesignTransition(token, 'timeout');
+          return;
+        }
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        var src = hero ? String(hero.currentSrc || '') : '';
+        var quiet = Date.now() - t.lastMutationAt >= 400;
+        if (t.swapped && t.url && hero && urlsMatch(src, t.url) && quiet) {
+          endDesignTransition(token, 'settled');
+          return;
+        }
+        setTimeout(tick, 60);
+      }
+      tick();
+    }
+
+    function endDesignTransition(token, reason) {
+      var t = state.designTransition;
+      if (!t || t.token !== token) return;
+      var elapsed = Date.now() - t.startedAt;
+      if (!t.swapped && state.previewUrlByColor && t.url) {
+        t.allowSwap = true;
+        try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
+        t.allowSwap = false;
+        t.swapped = true;
+      }
+      clearTimeout(t.hardTimer);
+      clearTimeout(t.swapTimer);
+      clearTimeout(t.fallbackTimer);
+      removeOpeningCover();
+      clearDesignCover();
+      state.designTransition = null;
+      state.designSwitchColour = null;
+      state.designSwitchSize = null;
+      console.log(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
+      var hero = findVisibleHeroImg() || findProductHeroImg();
+      if (hero && state.inlineApplied && state.renderId) {
+        state.inlineHero = hero;
+        installHeroGuard(hero);
+      }
+    }
+
     function showDesignCover() {
       state.designCover = true;
       paintDesignCover();
@@ -3429,6 +3612,7 @@
         var surface = logCapture('swatch', event);
         if (surface === 'main-image' || surface === 'zoom-chrome' || surface === 'zoom-thumb') return;
         if (window.__appaiSelectingDefaultSize) return;
+        if (designTransitionActive()) return;
         if (!state.inlineApplied || !state.renderId) return;
         var hit = event.target && event.target.closest
           ? event.target.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail')
@@ -3460,19 +3644,6 @@
         // The new node is painted when the theme inserts it.
         holdFrameOn(colorName);
         if (!url && intent.kind === 'color') swapInlineColor(colorName);
-        if (intent.kind !== 'size' && colorName) {
-          var sized = currentSizeName() || '';
-          var picked = variantForColor(root, colorName, sized);
-          if (picked) {
-            prepareShadowFor({
-              catalogId: String(picked.id),
-              colour: String(colorName),
-              sizeName: sized,
-              price: picked.price != null ? (picked.price / 100).toFixed(2) : null,
-            }, 'swatch');
-          }
-        }
-        prepareShadowSoon(intent.kind === 'size' ? 'size' : 'swatch');
       };
       document.addEventListener('click', handler, true);
       document.addEventListener('change', handler, true);
@@ -3958,6 +4129,7 @@
 
     function syncActiveGallery(reason) {
       if (state.reverted || !state.inlineApplied) return;
+      if (designTransitionActive()) return;
       if (!state.previewUrlByColor || !Object.keys(state.previewUrlByColor).length) return;
       if (!state.renderId) return;
       if (state.gallerySyncing) return;
@@ -3975,6 +4147,7 @@
 
     function scheduleGallerySync(reason) {
       if (state.reverted) return;
+      if (designTransitionActive()) return;
       state.gallerySyncReason = reason || state.gallerySyncReason || '';
       if (state.gallerySyncTimers) return;
       state.gallerySyncTimers = true;
@@ -4139,6 +4312,7 @@
     function swapVariantSlides(urlsByColor) {
       if (!urlsByColor) return 0;
       if (state.reverted) return 0;
+      if (designTransitionActive() && !(state.designTransition && state.designTransition.allowSwap)) return 0;
       pauseMediaObservers(state.inlineHero);
       var changed = 0;
       try {
@@ -4480,7 +4654,6 @@
       // tearing down the one-time installs below.
       state.inlineApplied = true;
       if (state.selectionOnce !== (state.renderGeneration || 0)) scheduleGallerySync('activate');
-      prepareShadowSoon('activate');
       installInlineFormPollFallback();
       // Relabel + show revert link every activation (idempotent).
       if (openBtn) {
@@ -4749,6 +4922,7 @@
       // without tearing down the whole intercept.
       var assert = function () {
         if (state.mediaWriting) return;
+        if (designTransitionActive()) return;
         if (state.holdOldHero && hero === state.holdOldHero) return;
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
         var info = currentVariantInfo(root);
@@ -4826,6 +5000,7 @@
       if (state.inlineGuardBackupTimer) clearInterval(state.inlineGuardBackupTimer);
       state.inlineGuardBackupTimer = setInterval(function () {
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
+        if (designTransitionActive()) return;
         var currentHero = state.inlineHero;
         if (currentHero && document.body.contains(currentHero) && currentHero.__appaiMyPetObserver) return;
         var fresh = findProductHeroImg();
@@ -4904,6 +5079,10 @@
         document.addEventListener('shopify:section:load', function () {
           state.galleryGuardRoot = null;
           if (!state.inlineApplied || !state.renderId) return;
+          if (designTransitionActive()) {
+            noteDesignGalleryMutation();
+            return;
+          }
           scheduleGallerySync('section-load');
         });
       }
@@ -4911,6 +5090,15 @@
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
+        if (designTransitionActive()) {
+          var sawGallery = false;
+          for (var dm = 0; dm < mutations.length; dm++) {
+            var addedNow = mutations[dm].addedNodes;
+            if (addedNow && addedNow.length) { sawGallery = true; break; }
+          }
+          if (sawGallery) noteDesignGalleryMutation();
+          return;
+        }
         installZoomSwap();
         // STAGING-100 — primary defence for carousel-style galleries: if
         // any new element was inserted, re-run per-variant slide swap so
@@ -5002,6 +5190,10 @@
         if (!state.inlineApplied) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineApplied=false'); return; }
         if (!state.inlineHero) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineHero=null'); return; }
         if (!state.renderId) { console.log(TAG, 'inline variant evt:', evtType, '→ bail renderId=null'); return; }
+        if (designTransitionActive()) {
+          console.log(TAG, 'inline variant evt:', evtType, '→ design transition owns this change');
+          return;
+        }
         var info = currentVariantInfo(root);
         // STAGING-99 cross-check — if the form-derived colour disagrees
         // with the swatch-input-derived colour, prefer the swatch (that's
@@ -5027,7 +5219,6 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
-        prepareShadowSoon('variant');
       };
       for (var i = 0; i < EVENT_NAMES.length; i++) {
         document.addEventListener(EVENT_NAMES[i], handler, true);
@@ -5096,12 +5287,17 @@
         var sizeNow = checkedProductOption('size') || now.sizeId || '';
         if (sizeNow && sizeNow !== last.__size) {
           last.__size = sizeNow;
+          if (designTransitionActive()) {
+            last = now; last.__swatch = swColor; return;
+          }
           rememberVariantChoice();
           scheduleGallerySync('size');
-          prepareShadowSoon('size');
         }
         var lastEffective = last.__swatch || last.colorName;
         if (!effectiveColor || effectiveColor === lastEffective) {
+          last = now; last.__swatch = swColor; return;
+        }
+        if (designTransitionActive()) {
           last = now; last.__swatch = swColor; return;
         }
         console.log(TAG, 'inline form poll: colour changed', lastEffective, '→', effectiveColor,
@@ -5119,7 +5315,6 @@
         }
         rememberVariantChoice();
         scheduleGallerySync('colour');
-        prepareShadowSoon('colour');
       }, 500);
     }
 
@@ -5233,24 +5428,54 @@
       var rect = null;
       try { rect = hero && hero.getBoundingClientRect(); } catch (e) {}
       var dest = document.querySelector('.header-actions__cart-icon') || document.querySelector('a[href*="/cart"]');
-      if (!hero || !rect || rect.width < 2 || rect.height < 2 || !dest) {
+      var destRect = null;
+      try { destRect = dest && dest.getBoundingClientRect(); } catch (e2) {}
+      if (!hero || !rect || rect.width < 2 || rect.height < 2 || !dest || !destRect || destRect.width < 2) {
         console.log(TAG, 'fly mark skipped', 'hero=' + !!hero, 'dest=' + !!dest);
         return;
       }
       state.flyAt = now;
-      var mark = storeMarkUrl();
-      var fly = document.createElement('fly-to-cart');
-      fly.className = 'fly-to-cart--main';
-      fly.style.setProperty('background-image', 'url("' + String(mark).replace(/"/g, '') + '")');
-      fly.style.setProperty('background-color', 'transparent');
-      fly.style.setProperty('--start-opacity', '0');
-      fly.source = hero;
-      fly.destination = dest;
-      document.body.appendChild(fly);
       silenceThemeFly(btn);
-      var startX = Math.round(rect.left + rect.width / 2);
-      var startY = Math.round(rect.top + rect.height / 2);
-      console.log(TAG, 'fly mark', 'fromHero', startX, startY, 'w=' + Math.round(rect.width));
+      var mark = storeMarkUrl();
+      var size = 40;
+      var flyer = document.createElement('div');
+      flyer.className = 'appai-my-pet-fly';
+      flyer.setAttribute('aria-hidden', 'true');
+      flyer.style.position = 'fixed';
+      flyer.style.left = '0';
+      flyer.style.top = '0';
+      flyer.style.width = size + 'px';
+      flyer.style.height = size + 'px';
+      flyer.style.margin = '0';
+      flyer.style.padding = '0';
+      flyer.style.pointerEvents = 'none';
+      flyer.style.zIndex = '2147483000';
+      flyer.style.backgroundColor = 'transparent';
+      flyer.style.backgroundImage = 'url("' + String(mark).replace(/"/g, '') + '")';
+      flyer.style.backgroundRepeat = 'no-repeat';
+      flyer.style.backgroundPosition = 'center';
+      flyer.style.backgroundSize = 'contain';
+      flyer.style.opacity = '1';
+      flyer.style.transition = 'none';
+      var startX = rect.left + rect.width / 2 - size / 2;
+      var startY = rect.top + rect.height / 2 - size / 2;
+      var endX = destRect.left + destRect.width / 2 - size / 2;
+      var endY = destRect.top + destRect.height / 2 - size / 2;
+      flyer.style.transform = 'translate(' + Math.round(startX) + 'px, ' + Math.round(startY) + 'px) scale(1)';
+      document.body.appendChild(flyer);
+      flyer.offsetWidth;
+      flyer.style.transition = 'transform 500ms ease-in, opacity 500ms ease-in';
+      flyer.style.transform = 'translate(' + Math.round(endX) + 'px, ' + Math.round(endY) + 'px) scale(0.35)';
+      flyer.style.opacity = '0';
+      var removed = false;
+      function removeFlyer() {
+        if (removed) return;
+        removed = true;
+        if (flyer.parentNode) flyer.parentNode.removeChild(flyer);
+      }
+      flyer.addEventListener('transitionend', removeFlyer);
+      setTimeout(removeFlyer, 1200);
+      console.log(TAG, 'fly mark', 'fromHero', Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2), 'w=' + Math.round(rect.width));
     }
 
     function setFormProperty(form, name, value) {
@@ -5304,7 +5529,19 @@
       return [state.renderId || '', sel.catalogId, sel.colour, sel.sizeName].join('|');
     }
 
+    function logShadowCreate(renderId, sel, reused) {
+      console.log(
+        TAG,
+        'shadow create-on-atc',
+        'render=' + renderId,
+        'colour=' + (sel.colour || ''),
+        'size=' + (sel.sizeName || ''),
+        'reused=' + (reused ? 'true' : 'false'),
+      );
+    }
+
     function prepareShadowFor(sel, reason) {
+      if (reason !== 'click') return Promise.resolve(null);
       if (!inlineOn() || !sel || !sel.catalogId) return Promise.resolve(null);
       var epoch = state.shadowEpoch || 0;
       var renderId = state.renderId;
@@ -5318,7 +5555,10 @@
       }
       if (!current()) return Promise.resolve(null);
       var key = shadowCacheKey(sel);
-      if (state.shadowByKey && state.shadowByKey[key]) return Promise.resolve(state.shadowByKey[key]);
+      if (state.shadowByKey && state.shadowByKey[key]) {
+        logShadowCreate(renderId, sel, true);
+        return Promise.resolve(state.shadowByKey[key]);
+      }
       state.shadowFlight = state.shadowFlight || {};
       if (state.shadowFlight[key]) return state.shadowFlight[key];
       var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
@@ -5348,15 +5588,7 @@
           };
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
-          console.log(
-            TAG,
-            'atc shadow ready',
-            'reason=' + (reason || ''),
-            'colour=' + sel.colour,
-            'catalog=' + sel.catalogId,
-            'shadow=' + entry.shadowId,
-            'mockupTail=' + srcTail(entry.mockupUrl),
-          );
+          logShadowCreate(renderId, sel, res.reused === true);
           return entry;
         });
       }).catch(function (err) {
@@ -5376,55 +5608,13 @@
     }
 
     function prepareShadow(reason) {
-      var entry = prepareShadowFor(atcSelection(), reason);
-      if (reason !== 'prefetch') scheduleSiblingWarm();
-      return entry;
+      if (reason !== 'click') return Promise.resolve(null);
+      return prepareShadowFor(atcSelection(), 'click');
     }
 
-    function prepareShadowSoon(reason) {
-      prepareShadow(reason);
-      setTimeout(function () {
-        if (inlineOn()) prepareShadow(reason);
-      }, 80);
-    }
+    function prepareShadowSoon() {}
 
-    function nextLikelyColour(current, sizeName) {
-      var colours = allColorOptions(root);
-      var want = String(current || '').trim().toLowerCase();
-      var start = -1;
-      for (var i = 0; i < colours.length; i++) {
-        if (String(colours[i]).trim().toLowerCase() === want) { start = i; break; }
-      }
-      for (var n = 1; n <= colours.length; n++) {
-        var colour = colours[(start + n) % colours.length];
-        if (!colour || String(colour).trim().toLowerCase() === want) continue;
-        var variant = variantForColor(root, colour, sizeName);
-        if (!variant || variant.available === false) continue;
-        return { colour: String(colour), variant: variant };
-      }
-      return null;
-    }
-
-    function scheduleSiblingWarm() {
-      if (!inlineOn()) return;
-      var sel = atcSelection();
-      if (!sel.catalogId) return;
-      var token = (state.renderId || '') + '|' + sel.sizeName + '|' + sel.colour;
-      if (state.warmToken === token) return;
-      if (state.prefetchCtrl) {
-        try { state.prefetchCtrl.abort(); } catch (e) {}
-        state.prefetchCtrl = null;
-      }
-      state.warmToken = token;
-      var next = nextLikelyColour(sel.colour, sel.sizeName);
-      if (!next) return;
-      prepareShadowFor({
-        catalogId: String(next.variant.id),
-        colour: next.colour,
-        sizeName: sel.sizeName,
-        price: next.variant.price != null ? (next.variant.price / 100).toFixed(2) : sel.price,
-      }, 'prefetch').catch(function () {});
-    }
+    function scheduleSiblingWarm() {}
 
     function stampForm(form, entry) {
       if (!form || !entry) return;
@@ -5500,10 +5690,21 @@
         var inSection = section && section.contains(btn);
         var inSticky = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) continue;
-        if (on) addButtonLabel(btn, 'Preparing…');
-        else if (btn.getAttribute('data-appai-label')) {
-          addButtonLabel(btn, btn.getAttribute('data-appai-label'));
-          btn.removeAttribute('data-appai-label');
+        if (on) {
+          addButtonLabel(btn, 'Preparing your design…');
+          if (!btn.disabled) {
+            btn.setAttribute('data-appai-preparing', '1');
+            btn.disabled = true;
+          }
+        } else {
+          if (btn.getAttribute('data-appai-preparing') === '1') {
+            btn.disabled = false;
+            btn.removeAttribute('data-appai-preparing');
+          }
+          if (btn.getAttribute('data-appai-label')) {
+            addButtonLabel(btn, btn.getAttribute('data-appai-label'));
+            btn.removeAttribute('data-appai-label');
+          }
         }
       }
     }
@@ -5582,6 +5783,7 @@
         var sel = atcSelection();
         var entry = state.shadowByKey && state.shadowByKey[shadowCacheKey(sel)];
         if (entry && form && String(entry.shadowId) !== String(sel.catalogId)) {
+          logShadowCreate(state.renderId, sel, true);
           stampForm(form, entry);
           noteAtcClick(entry);
           flyStoreMark(btn);
@@ -5638,7 +5840,11 @@
         })
         .catch(function (err) {
           console.warn(TAG, 'inline ATC failed:', err && err.message);
-          if (caption) caption.textContent = (err && err.message) || 'Could not add to cart. Please try again.';
+          var retry = 'Couldn’t prepare your design. Try again.';
+          if (caption) caption.textContent = retry;
+          setTimeout(function () {
+            if (caption && caption.textContent === retry) caption.textContent = '';
+          }, 4000);
         })
         .then(function () {
           state.atcBusy = false;
