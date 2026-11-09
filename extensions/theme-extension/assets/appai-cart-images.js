@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.9';
+  var CART_IMG_VERSION = '3.10';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -107,25 +107,26 @@
     return parts.join('|');
   }
 
-  function getCart(needFetch) {
+  function readCartResponse(r) {
+    if (!r.ok) throw new Error('cart.js ' + r.status);
+    var headerUpdatedAt =
+      r.headers.get('x-cartjs-updatedat') || r.headers.get('X-Cartjs-Updatedat') || '';
+    return r.json().then(function (cart) {
+      cartDirty = false;
+      lastCartFingerprint = cartFingerprint(cart, headerUpdatedAt);
+      lastCartJson = cart;
+      return cart;
+    });
+  }
+
+  function getCart(needFetch, fresh) {
+    if (fresh) {
+      return fetch('/cart.js', { credentials: 'same-origin', cache: 'no-store' }).then(readCartResponse);
+    }
     if (cartPromise) return cartPromise;
     if (!needFetch && lastCartJson) return Promise.resolve(lastCartJson);
     cartPromise = fetch('/cart.js', { credentials: 'same-origin' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('cart.js ' + r.status);
-        var headerUpdatedAt =
-          r.headers.get('x-cartjs-updatedat') || r.headers.get('X-Cartjs-Updatedat') || '';
-        return r.json().then(function (cart) {
-          var fp = cartFingerprint(cart, headerUpdatedAt);
-          cartDirty = false;
-          if (lastCartJson && lastCartFingerprint && fp === lastCartFingerprint) {
-            return lastCartJson;
-          }
-          lastCartFingerprint = fp;
-          lastCartJson = cart;
-          return cart;
-        });
-      })
+      .then(readCartResponse)
       .finally(function () {
         cartPromise = null;
       });
@@ -350,6 +351,22 @@
 
   function logPass(trigger, n) {
     rememberThumbLine('[My Pet] cart thumb pass trigger=' + (trigger || 'unknown') + ' lines=' + n);
+  }
+
+  function logAddPass(trigger, lines, replaced) {
+    rememberThumbLine(
+      '[My Pet] cart thumb pass trigger=' + trigger +
+      ' lines=' + lines +
+      ' replaced=' + replaced,
+    );
+  }
+
+  function logMissingMockup(lineKey) {
+    rememberThumbLine('[My Pet] cart thumb missing-mockup line=' + (lineKey || ''));
+  }
+
+  function isAddPass(trigger) {
+    return trigger === 'add+500' || trigger === 'add+1500';
   }
 
   function logThumb(source, lineKey, reason) {
@@ -891,7 +908,14 @@
       document.documentElement.classList.remove('appai-cart-loading');
       if (pendingRerun) {
         pendingRerun = false;
-        schedule(cartDirty ? { cartChanged: true, trigger: pendingTrigger } : { trigger: pendingTrigger });
+        var rerunFresh = pendingFresh;
+        var rerunTrigger = pendingTrigger;
+        pendingFresh = false;
+        if (rerunFresh) {
+          setTimeout(function () { applyMockups(rerunTrigger); }, 0);
+        } else {
+          schedule({ cartChanged: cartDirty, trigger: rerunTrigger });
+        }
       }
     }
   }
@@ -940,24 +964,52 @@
   }
 
   var lastThumbFp = '';
+  var lastPassSig = '';
+  var pendingFresh = false;
+  function passSignature(cart) {
+    var items = (cart && cart.items) || [];
+    var parts = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var row = rowForKey(it.key);
+      var img = row ? lineImgs(mediaHost(row))[0] : null;
+      parts.push(
+        String(it.key || '') +
+        '=' + fileKey(imgSrc(img)) +
+        '|' + (mockupUrlFromLineProperties(it.properties) || ''),
+      );
+    }
+    parts.sort();
+    return parts.join('||');
+  }
   function applyMockups(trigger) {
+    var addPass = isAddPass(trigger);
     if (isApplying) {
       pendingRerun = true;
+      pendingFresh = pendingFresh || addPass;
       if (trigger) pendingTrigger = trigger;
       return;
     }
-    var fp = thumbFingerprint();
-    if (fp && fp === lastThumbFp && trigger !== 'load') {
-      return;
+    // Idle mutations compare the DOM only. An add pass never takes this skip:
+    // the new line is often absent from the pre-add DOM and from cached /cart.js.
+    if (!addPass) {
+      var fp = thumbFingerprint();
+      if (fp && fp === lastThumbFp && trigger !== 'load') return;
+      if (trigger === 'mutation') cartDirty = true;
     }
-    if (trigger === 'mutation') cartDirty = true;
     isApplying = true;
     hushMutations = true;
     pauseObservers();
-    var needFetch = cartDirty || !lastCartJson;
+    var needFetch = addPass || cartDirty || !lastCartJson;
     try { ensureStyles(); } catch (_) {}
-    getCart(needFetch)
+    getCart(needFetch, addPass)
       .then(function (cart) {
+        var sig = passSignature(cart);
+        if (!addPass && sig && sig === lastPassSig && trigger !== 'load') {
+          lastThumbFp = thumbFingerprint();
+          finishApply(true, false);
+          return;
+        }
         var items = cart.items || [];
         var catalog = catalogFiles();
         var replaced = 0;
@@ -974,24 +1026,31 @@
             rememberCustomizerItem(it);
             var url = mockupUrlFromLineProperties(it && it.properties);
             var row = rowForKey(it.key);
+            var img = row ? lineImgs(mediaHost(row))[0] : null;
+            var variantImage = !!(img && !srcIsPlaceholder(imgSrc(img)) && shopifyCdnSrc(imgSrc(img)));
+            if (!url && !variantImage) {
+              logMissingMockup(it.key);
+              continue;
+            }
             if (!row) {
-              logThumb('none', it.key, 'img-missing');
+              if (addPass) logThumb('none', it.key, 'img-missing');
               continue;
             }
             var painted = paintLine(row, url, String(it.variant_id || ''), catalog);
             if (painted && painted.wrote) {
               replaced++;
               logThumb(painted.source, it.key, painted.reason);
-            } else if (painted && painted.reason && painted.reason !== 'ok') {
-              logThumb(painted.source, it.key, painted.reason);
             }
           }
         } catch (_) {}
-        if (replaced) logPass(trigger || 'load', replaced);
+        if (addPass) logAddPass(trigger, items.length, replaced);
+        else if (replaced) logPass(trigger || 'load', replaced);
+        lastPassSig = passSignature(cart);
         lastThumbFp = thumbFingerprint();
         finishApply(true, replaced > 0);
       })
       .catch(function () {
+        if (addPass) logAddPass(trigger, 0, 0);
         finishApply(false, false);
       });
   }
@@ -1051,6 +1110,7 @@
       return;
     }
     if (opts && opts.cartChanged) cartDirty = true;
+    if (opts && opts.immediate) delay = 0;
     clearTimeout(t);
     t = setTimeout(function () {
       applyMockups(pendingTrigger || 'mutation');

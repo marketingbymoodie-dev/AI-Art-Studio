@@ -6681,6 +6681,7 @@ console.log('[My Pet] script build=03cab19a loaded');
         colour: (sel && sel.colour) || entry.colour || '',
         sizeName: (sel && sel.sizeName) || entry.sizeName || '',
         mockup: !!((entry.properties && entry.properties._mockup_url) || entry.mockupUrl),
+        mockupUrl: (entry.properties && entry.properties._mockup_url) || entry.mockupUrl || '',
         renderId: state.renderId || '',
         reused: entry.reused === true,
         createMs: state.lastCreateLog ? state.lastCreateLog.ms : null,
@@ -6723,6 +6724,7 @@ console.log('[My Pet] script build=03cab19a loaded');
         if (!click) return;
         // Clear-Site-Data wiped the live lines. This is a reprint, not a second add.
         console.log(TAG, 'atc path=replay', 'click=' + click.id, 'mockup=' + (click.mockup ? 'yes' : 'no'));
+        console.log(TAG, 'atc _mockup_url=' + (click.mockupUrl || ''));
         console.log(TAG, 'atc hold', 'catalog=' + click.catalogId, 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
         console.log(
           TAG,
@@ -6800,7 +6802,9 @@ console.log('[My Pet] script build=03cab19a loaded');
       var colour = (sel && sel.colour) || entry.colour || '';
       var sizeName = (sel && sel.sizeName) || entry.sizeName || '';
       var mockup = withMockupProperty(entry, colour, sizeName);
+      var sentMockup = (entry.properties && entry.properties._mockup_url) || '';
       console.log(TAG, 'atc path=' + path, 'mockup=' + (mockup ? 'yes' : 'no'), 'tail=' + srcTail(mockup));
+      console.log(TAG, 'atc _mockup_url=' + sentMockup);
       if (path === 'fetch') {
         return fallbackCartAdd({ variantId: entry.shadowId }, entry.properties).then(function () {
           return { ok: true, themed: false };
