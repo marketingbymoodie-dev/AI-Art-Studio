@@ -3328,6 +3328,12 @@ console.log('[My Pet] script build=babae8ed loaded');
     // different <img>s after a theme gallery rebuild — then checks currentSrc
     // 300ms later in case srcset/sizes/<source> won the first paint.
     function reassertColourPreview(reason, colorName, url) {
+      var liveNow = liveColourChoice();
+      if (colorName && liveNow.colour && !namesMatch(colorName, liveNow.colour)) {
+        logColourRace(state.sectionFetchSeq || 0, liveNow);
+        colorName = liveNow.colour;
+        url = liveNow.url || url;
+      }
       if (!url) return;
       var targets = heroAssertTargets(colorName);
       if (!targets.length) return;
@@ -3342,9 +3348,14 @@ console.log('[My Pet] script build=babae8ed loaded');
         var own = mediaColourForImg(el);
         var paintUrl = state.colourPaint && state.colourPaint.url;
         var visibleNow = paintUrl ? (findVisibleHeroImg() || state.inlineHero) : null;
-        var useUrl = (paintUrl && el === visibleNow)
-          ? paintUrl
-          : ((own && state.previewUrlByColor && state.previewUrlByColor[own]) || url);
+        var slideNow = el.closest ? el.closest('slideshow-slide') : null;
+        var showing = !slideNow || !slideIsHidden(slideNow);
+        var liveUrl = liveColourChoice().url;
+        var useUrl = (showing && liveUrl)
+          ? liveUrl
+          : ((paintUrl && el === visibleNow)
+            ? paintUrl
+            : ((own && state.previewUrlByColor && state.previewUrlByColor[own]) || url));
         if (!useUrl) continue;
         // Skip a node we just wrote. currentSrc lags the attribute write, so
         // the guard observer would otherwise re-enter until the stack melts.
@@ -3834,14 +3845,24 @@ console.log('[My Pet] script build=babae8ed loaded');
 
     // Only the newly inserted hero for the selected colour. Other slides
     // keep the colour swapVariantSlides wrote from their own media id.
-    function paintProductMediaImage(img, colorName) {
+    function revealPaintedHero(img) {
+      if (!img) return;
+      function show() { img.style.visibility = ''; }
+      if (img.complete && img.naturalWidth > 0) show();
+      else {
+        img.addEventListener('load', show, { once: true });
+        setTimeout(show, 350);
+      }
+    }
+
+    function paintProductMediaImage(img, colorName, force) {
       if (!img || img.tagName !== 'IMG' || !galleryImgAllowed(img)) return false;
       if (isCoverImg(img)) return false;
       if (!img.classList || !img.classList.contains('product-media__image')) return false;
       if (img.closest && img.closest('.appai-my-pet')) return false;
       if (looksLikeThumb(img)) return false;
       if (state.holdOldHero && img === state.holdOldHero) return false;
-      var colour = colorName || state.holdColour || currentInlineColour();
+      var colour = colorName || liveColourChoice().colour || state.holdColour || currentInlineColour();
       var url = previewUrlForColour(colour);
       if (!url) return false;
       var mediaId = slideMediaId(img);
@@ -3857,7 +3878,7 @@ console.log('[My Pet] script build=babae8ed loaded');
         state.inlineHero = img;
         return true;
       }
-      if (mediaId && expectedMedia && mediaId !== expectedMedia) return false;
+      if (!force && mediaId && expectedMedia && mediaId !== expectedMedia) return false;
       if (!mediaId && !isHeroCandidate(img)) return false;
       if (srcAlready(img, url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
       applyPreviewSrc(img, url);
@@ -3982,7 +4003,9 @@ console.log('[My Pet] script build=babae8ed loaded');
           return;
         }
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
-        var colorName = state.holdColour || currentInlineColour();
+        var liveNow = liveColourChoice();
+        if (state.sectionFetchSeq && state.sectionFetchSeq !== liveNow.seq) logColourRace(state.sectionFetchSeq, liveNow);
+        var colorName = liveNow.colour;
         var replaced = null;
         var replacedArea = -1;
         for (var i = 0; i < mutations.length; i++) {
@@ -3995,7 +4018,15 @@ console.log('[My Pet] script build=babae8ed loaded');
               if (node.classList && node.classList.contains('appai-my-pet-veil')) continue;
               var imgs = node.tagName === 'IMG' ? [node] : (node.querySelectorAll ? node.querySelectorAll('img.product-media__image') : []);
               for (var k = 0; k < imgs.length; k++) {
-                if (!paintProductMediaImage(imgs[k], colorName)) continue;
+                var fresh = liveColourChoice();
+                var slide = imgs[k].closest ? imgs[k].closest('slideshow-slide') : null;
+                var showNow = !slide || !slideIsHidden(slide);
+                if (showNow) imgs[k].style.visibility = 'hidden';
+                if (!paintProductMediaImage(imgs[k], fresh.colour, showNow)) {
+                  if (showNow) imgs[k].style.visibility = '';
+                  continue;
+                }
+                if (showNow) revealPaintedHero(imgs[k]);
                 var area = 0;
                 try {
                   var rect = imgs[k].getBoundingClientRect();
@@ -4092,6 +4123,35 @@ console.log('[My Pet] script build=babae8ed loaded');
       return out;
     }
 
+    function noteColourSelection(colour, bump) {
+      var name = colour ? (canonicalPreviewColor(colour) || colour) : (state.selectedColour || '');
+      if (name) state.selectedColour = name;
+      if (bump) state.colourSeq = (state.colourSeq || 0) + 1;
+      return state.colourSeq || 0;
+    }
+
+    function liveColourChoice() {
+      var name = state.selectedColour || state.holdColour || currentInlineColour() || '';
+      return {
+        seq: state.colourSeq || 0,
+        colour: name,
+        url: name ? (previewUrlForColour(name) || '') : '',
+      };
+    }
+
+    function logColourRace(staleSeq, live) {
+      var now = live || liveColourChoice();
+      var key = String(staleSeq || 0) + '>' + now.seq + ':' + (now.colour || '');
+      if (state.colourRaceLogged === key) return;
+      state.colourRaceLogged = key;
+      console.log(
+        TAG,
+        'colour race guard stale=' + (staleSeq || 0) +
+        ' current=' + now.seq +
+        ' colour=' + (now.colour || ''),
+      );
+    }
+
     function colourMark(label, extra) {
       var tl = state.colourTimeline;
       if (!tl) return;
@@ -4109,7 +4169,6 @@ console.log('[My Pet] script build=babae8ed loaded');
     }
 
     function colourFetchInteresting(url) {
-      if (!state.colourTimeline) return false;
       var u = String(url || '');
       if (!u) return false;
       if (u.indexOf('section_id') !== -1 || u.indexOf('sections=') !== -1) return true;
@@ -4126,8 +4185,11 @@ console.log('[My Pet] script build=babae8ed loaded');
           var url = '';
           try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) {}
           var watch = colourFetchInteresting(url);
-          var seq = watch && state.colourTimeline ? state.colourTimeline.seq : 0;
-          if (watch) colourMark('horizon fetch start', String(url).slice(0, 160));
+          var seq = watch ? (state.colourSeq || 0) : 0;
+          if (watch) {
+            state.sectionFetchSeq = seq;
+            colourMark('horizon fetch start', String(url).slice(0, 160));
+          }
           var pending;
           try { pending = origFetch.apply(this, arguments); }
           catch (err) {
@@ -4136,10 +4198,12 @@ console.log('[My Pet] script build=babae8ed loaded');
           }
           if (watch && pending && typeof pending.then === 'function') {
             pending.then(function (res) {
+              if ((state.colourSeq || 0) !== seq) logColourRace(seq);
               if (!state.colourTimeline || state.colourTimeline.seq !== seq) return res;
               colourMark('horizon fetch end', String(res && res.status) + ' ' + String(url).slice(0, 120));
               return res;
             }, function (err) {
+              if ((state.colourSeq || 0) !== seq) logColourRace(seq);
               if (state.colourTimeline && state.colourTimeline.seq === seq) colourMark('horizon fetch end', 'error');
               throw err;
             });
@@ -4250,6 +4314,8 @@ console.log('[My Pet] script build=babae8ed loaded');
         var intent = colorFromSwatchEvent(event);
         if (!intent || !intent.colorName) return;
         var colorName = intent.colorName;
+        if (event.type === 'click' && intent.kind === 'color') noteColourSelection(colorName, true);
+        else if (event.type === 'click' && intent.kind === 'size') noteColourSelection(state.selectedColour || colorName, true);
         // click then change is one gesture. Re-arming on change either
         // resets the wait or, if the replacement already landed, hides
         // the gallery until the 1500ms safety with nothing left to replace.
@@ -5590,7 +5656,7 @@ console.log('[My Pet] script build=babae8ed loaded');
         // A thumbnail click names the colour the main image must show.
         // A design switch names it only for that hero. Every other slide
         // keeps the colour its own media id maps to.
-        var colorName = (state.colourPaint && state.colourPaint.url && activeHero && state.colourPaint.colour)
+        var picked = (state.colourPaint && state.colourPaint.url && activeHero && state.colourPaint.colour)
           || (activeHero && thumbPick)
           || (activeHero && forced)
           || ownColour
@@ -5598,9 +5664,17 @@ console.log('[My Pet] script build=babae8ed loaded');
           || ((swColor && info.colorName && swColor !== info.colorName)
             ? swColor
             : (info.colorName || swColor || null));
-        var expected = (state.colourPaint && state.colourPaint.url && activeHero)
-          ? state.colourPaint.url
-          : (colorName ? state.previewUrlByColor[colorName] : null);
+        var livePick = liveColourChoice();
+        var colorName = (activeHero && livePick.colour) ? livePick.colour : picked;
+        if (activeHero && picked && livePick.colour && !namesMatch(picked, livePick.colour)) {
+          logColourRace(hero.__appaiColourSeq || state.sectionFetchSeq || 0, livePick);
+        }
+        if (activeHero) hero.__appaiColourSeq = livePick.seq;
+        var expected = (activeHero && livePick.url)
+          ? livePick.url
+          : ((state.colourPaint && state.colourPaint.url && activeHero)
+            ? state.colourPaint.url
+            : (colorName ? state.previewUrlByColor[colorName] : null));
         // Src already matches: no write, no log. srcset leftovers are
         // stripped inside applyPreviewSrc with the observers paused.
         if (expected && srcAlready(hero, expected) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes')) return;
@@ -5795,6 +5869,8 @@ console.log('[My Pet] script build=babae8ed loaded');
           if (sawAdded) break;
         }
         if (sawAdded && state.previewUrlByColor && Object.keys(state.previewUrlByColor).length && addedTouchesGallery(mutations)) {
+          var liveGallery = liveColourChoice();
+          if (state.sectionFetchSeq && state.sectionFetchSeq !== liveGallery.seq) logColourRace(state.sectionFetchSeq, liveGallery);
           if (state.colourPaint && state.colourPaint.url) {
             repaintColourReplacement('mutation');
           } else {
@@ -5896,6 +5972,12 @@ console.log('[My Pet] script build=babae8ed loaded');
           info.colorName = swColor;
         }
         if (!info.colorName) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
+        var liveEvt = liveColourChoice();
+        if (liveEvt.colour && !namesMatch(info.colorName, liveEvt.colour)) {
+          logColourRace(state.sectionFetchSeq || 0, liveEvt);
+          if (liveEvt.url) reassertColourPreview('variant-evt', liveEvt.colour, liveEvt.url);
+          return;
+        }
         var expected = state.previewUrlByColor[info.colorName];
         if (expected) {
           console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', info.colorName);
@@ -5999,6 +6081,14 @@ console.log('[My Pet] script build=babae8ed loaded');
           return;
         }
         var previousColour = trackedColour;
+        if (state.selectedColour && effectiveColor && !namesMatch(effectiveColor, state.selectedColour)) {
+          var livePoll = liveColourChoice();
+          logColourRace(state.sectionFetchSeq || 0, livePoll);
+          var keepUrl = livePoll.url || state.previewUrlByColor[state.selectedColour];
+          if (keepUrl && !designTransitionActive()) reassertColourPreview('form-poll', livePoll.colour, keepUrl);
+          last = now;
+          return;
+        }
         trackedColour = effectiveColor;
         if (designTransitionActive()) {
           last = now; return;
