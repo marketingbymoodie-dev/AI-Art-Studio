@@ -2792,7 +2792,7 @@ console.log('[My Pet] script build=d7b06631 loaded');
     }
 
     function visibleHeroShowsCustom(url) {
-      return heroShowsCustom(findVisibleHeroImg() || state.inlineHero, url);
+      return heroShowsCustom(resolveActiveHero(), url);
     }
 
     function markHeroDecoded(url) {
@@ -2821,7 +2821,8 @@ console.log('[My Pet] script build=d7b06631 loaded');
     }
 
     function visibleHeroReady(url) {
-      return heroReady(findVisibleHeroImg() || state.inlineHero, url);
+      var t = state.designTransition;
+      return heroReady(resolveActiveHero(t && t.colour), url);
     }
 
     function nodeStamp(el) {
@@ -2987,34 +2988,87 @@ console.log('[My Pet] script build=d7b06631 loaded');
       return best;
     }
 
-    function findActiveSlideImg() {
-      var scope = mainMediaGallery() || productSectionScope();
-      var SELECTORS = [
-        '.product__media-item.is-active img',
-        '.product__media.is-active img',
-        'media-gallery .is-active img',
-        '[data-media-id].is-active img',
-        '.swiper-slide-active img',
-        '.is-selected img',
-      ];
+    function selectedHeroColour() {
+      var t = state.designTransition;
+      if (t && t.colour) return t.colour;
+      return currentColourName() || currentInlineColour() || '';
+    }
+
+    function mediaIdForColour(colour) {
+      var map = getMediaIdByColor(root);
+      if (!map || !colour) return '';
+      if (map[colour]) return String(map[colour]);
+      var want = String(colour).trim().toLowerCase();
+      var keys = Object.keys(map);
+      for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).trim().toLowerCase() === want) return String(map[keys[i]]);
+      }
+      return '';
+    }
+
+    function slideIsHidden(slide) {
+      if (!slide) return true;
+      if (slide.hasAttribute && (slide.hasAttribute('hidden') || slide.hasAttribute('inert'))) return true;
+      var aria = slide.getAttribute && slide.getAttribute('aria-hidden');
+      if (aria === 'true') return true;
+      try {
+        var cs = window.getComputedStyle(slide);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return true;
+      } catch (e) {}
+      return false;
+    }
+
+    function heroImgIn(node) {
+      if (!node || !node.querySelectorAll) return null;
+      var imgs;
+      try { imgs = node.querySelectorAll('img.product-media__image, img'); } catch (e) { return null; }
       var best = null;
       var bestArea = 0;
-      for (var s = 0; s < SELECTORS.length; s++) {
-        var nodes;
-        try { nodes = scope.querySelectorAll(SELECTORS[s]); } catch (e) { continue; }
-        for (var i = 0; i < nodes.length; i++) {
-          var img = nodes[i];
-          if (!img || img.tagName !== 'IMG') continue;
-          if (!galleryImgAllowed(img)) continue;
-          if (img.closest && img.closest('dialog, zoom-dialog')) continue;
-          var rect;
-          try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
-          var area = Math.max(0, rect.width) * Math.max(0, rect.height);
-          if (area > bestArea) { bestArea = area; best = img; }
-        }
-        if (best && bestArea >= 160 * 160) return best;
+      for (var i = 0; i < imgs.length; i++) {
+        var img = imgs[i];
+        if (!img || img.tagName !== 'IMG') continue;
+        if (!galleryImgAllowed(img)) continue;
+        if (looksLikeThumb(img)) continue;
+        if (img.closest && img.closest('dialog, zoom-dialog')) continue;
+        var rect;
+        try { rect = img.getBoundingClientRect(); } catch (e2) { continue; }
+        var area = Math.max(0, rect.width) * Math.max(0, rect.height);
+        if (area < 160 * 160) continue;
+        if (area > bestArea) { bestArea = area; best = img; }
       }
       return best;
+    }
+
+    // The slide for the selected colour. Horizon does not mark it .is-active,
+    // so the old selector list returned null and the guard stayed on the
+    // base/black slide. Never the first product-media__image.
+    function resolveActiveHero(colour) {
+      var want = colour || selectedHeroColour();
+      var mediaId = mediaIdForColour(want);
+      var scope = mainMediaGallery() || productSectionScope();
+      if (mediaId && scope && scope.querySelectorAll) {
+        var hosts = [];
+        try {
+          hosts = scope.querySelectorAll(
+            '[data-media-id="' + mediaId + '"], slideshow-slide[slide-id="' + mediaId + '"]'
+          );
+        } catch (e) {}
+        for (var h = 0; h < hosts.length; h++) {
+          var mapped = heroImgIn(hosts[h]);
+          if (mapped) return mapped;
+        }
+      }
+      var slides = pageGallerySlides();
+      for (var s = 0; s < slides.length; s++) {
+        if (slideIsHidden(slides[s])) continue;
+        var shown = heroImgIn(slides[s]);
+        if (shown) return shown;
+      }
+      return null;
+    }
+
+    function findActiveSlideImg() {
+      return resolveActiveHero();
     }
 
     function responsiveLeftovers(img) {
@@ -3226,16 +3280,11 @@ console.log('[My Pet] script build=d7b06631 loaded');
       }
     }
 
-    function heroAssertTargets() {
-      var raw = [state.inlineHero, findProductHeroImg(), findVisibleHeroImg(), findActiveSlideImg()];
-      var out = [];
-      for (var i = 0; i < raw.length; i++) {
-        var el = raw[i];
-        if (!el || out.indexOf(el) !== -1) continue;
-        try { if (!document.body.contains(el)) continue; } catch (e) { continue; }
-        out.push(el);
-      }
-      return out;
+    function heroAssertTargets(colour) {
+      var el = resolveActiveHero(colour);
+      if (!el) return [];
+      try { if (!document.body.contains(el)) return []; } catch (e) { return []; }
+      return [el];
     }
 
     function logHeroNodes(reason, colorName, expectedUrl) {
@@ -3257,7 +3306,7 @@ console.log('[My Pet] script build=d7b06631 loaded');
       setTimeout(function () {
         if (token !== state._heroVerifyToken || !state.inlineApplied) return;
         logHeroNodes('verify+300ms', colorName, expectedUrl);
-        var targets = heroAssertTargets();
+        var targets = heroAssertTargets(colorName);
         var fixed = 0;
         for (var i = 0; i < targets.length; i++) {
           if (previewWinning(targets[i], expectedUrl)) continue;
@@ -3280,14 +3329,8 @@ console.log('[My Pet] script build=d7b06631 loaded');
     // 300ms later in case srcset/sizes/<source> won the first paint.
     function reassertColourPreview(reason, colorName, url) {
       if (!url) return;
-      var targets = heroAssertTargets();
-      if (!targets.length) {
-        var fresh = findProductHeroImg();
-        if (fresh) {
-          state.inlineHero = fresh;
-          targets = [fresh];
-        }
-      }
+      var targets = heroAssertTargets(colorName);
+      if (!targets.length) return;
       var now = Date.now();
       var wrote = 0;
       for (var i = 0; i < targets.length; i++) {
@@ -3600,7 +3643,7 @@ console.log('[My Pet] script build=d7b06631 loaded');
       function tick() {
         var live = state.designTransition;
         if (!live || live.token !== token) return;
-        var hero = findVisibleHeroImg() || state.inlineHero;
+        var hero = resolveActiveHero(live.colour);
         if (Date.now() - live.startedAt >= 4000) {
           live.watching = false;
           endDesignTransition(token, 'cap');
@@ -3629,7 +3672,7 @@ console.log('[My Pet] script build=d7b06631 loaded');
 
     function coverWaitDetail(t) {
       if (!t || !t.url) return 'no-preview-url';
-      var hero = findVisibleHeroImg() || state.inlineHero;
+      var hero = resolveActiveHero(t.colour);
       if (!hero) return 'no-hero';
       var src = hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '';
       if (!src) return 'hero-empty';
@@ -3642,7 +3685,8 @@ console.log('[My Pet] script build=d7b06631 loaded');
       var t = state.designTransition;
       if (!t || t.token !== token) return;
       var elapsed = Date.now() - t.startedAt;
-      var heroNow = findVisibleHeroImg() || state.inlineHero;
+      var switchColour = t.colour || '';
+      var heroNow = resolveActiveHero(switchColour);
       var capped = reason === 'cap' || elapsed >= 4000;
       if (!capped && t.url && !heroReady(heroNow, t.url)) {
         if (!t.holdLogged) {
@@ -3672,7 +3716,7 @@ console.log('[My Pet] script build=d7b06631 loaded');
       state.designSwitchColour = null;
       state.designSwitchSize = null;
       console.log(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
-      var hero = findVisibleHeroImg() || findProductHeroImg();
+      var hero = resolveActiveHero(switchColour);
       if (hero && state.inlineApplied && state.renderId) {
         state.inlineHero = hero;
         installHeroGuard(hero);
@@ -5612,20 +5656,19 @@ console.log('[My Pet] script build=d7b06631 loaded');
       state.inlineGuardBackupTimer = setInterval(function () {
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
         if (designTransitionActive()) return;
+        var info = currentVariantInfo(root);
+        var pollSw = readSwatchColor(root);
+        var colorName = state.thumbColour
+          || state.designSwitchColour
+          || ((pollSw && info.colorName && pollSw !== info.colorName)
+            ? pollSw
+            : (info.colorName || pollSw || null));
+        var fresh = resolveActiveHero(colorName);
         var currentHero = state.inlineHero;
-        if (currentHero && document.body.contains(currentHero) && currentHero.__appaiMyPetObserver) return;
-        var fresh = findProductHeroImg();
-        if (fresh && fresh !== currentHero) {
+        if (!fresh) return;
+        if (fresh === currentHero && document.body.contains(fresh) && fresh.__appaiMyPetObserver) return;
+        if (fresh !== currentHero) {
           state.inlineHero = fresh;
-          // Re-apply preview + install observer on the new node.
-          var info = currentVariantInfo(root);
-          // STAGING-99 — swatch cross-check (see assert() rationale).
-          var pollSw = readSwatchColor(root);
-          var colorName = state.thumbColour
-            || state.designSwitchColour
-            || ((pollSw && info.colorName && pollSw !== info.colorName)
-              ? pollSw
-              : (info.colorName || pollSw || null));
           var expected = (colorName && state.previewUrlByColor[colorName]) || state.previewUrl;
           state.inlineHero = fresh;
           if (expected) reassertColourPreview('node-replaced', colorName, expected);
@@ -6193,11 +6236,30 @@ console.log('[My Pet] script build=d7b06631 loaded');
     function colourMockupUrl(colour, fallback) {
       var mapped = '';
       try { mapped = urlForColourMap(state.previewUrlByColor, colour) || ''; } catch (e) {}
-      var candidates = [mapped, fallback, state.previewUrl];
+      var shown = '';
+      try { shown = shownCustomPreviewUrl(); } catch (e2) {}
+      var candidates = [mapped, fallback, shown, state.previewUrl];
       for (var i = 0; i < candidates.length; i++) {
-        if (candidates[i] && String(candidates[i]).indexOf('https://') === 0) return String(candidates[i]);
+        var candidate = candidates[i] ? String(candidates[i]) : '';
+        if (candidate.indexOf('https://') === 0 && !isCatalogCdn(candidate)) return candidate;
       }
       return '';
+    }
+
+    function isCatalogCdn(url) {
+      var u = String(url || '');
+      return u.indexOf('cdn.shopify') !== -1 || u.indexOf('/cdn/shop/') !== -1;
+    }
+
+    // The colour file the shopper is looking at. Session reuse often has no
+    // stored mockup, and a catalog CDN url must not become the line property.
+    function shownCustomPreviewUrl() {
+      var hero = null;
+      try { hero = resolveActiveHero(); } catch (e) { return ''; }
+      if (!hero) return '';
+      var src = String(hero.currentSrc || (hero.getAttribute && hero.getAttribute('src')) || '');
+      if (src.indexOf('https://') !== 0 || isCatalogCdn(src)) return '';
+      return src;
     }
 
     function withMockupProperty(entry, colour, sizeName) {
@@ -6212,7 +6274,9 @@ console.log('[My Pet] script build=d7b06631 loaded');
       if (colour) props._color = colour;
       if (sizeName) props._size = sizeName;
       if (url) props._mockup_url = url;
-      else delete props._mockup_url;
+      else if (props._mockup_url && String(props._mockup_url).indexOf('https://') === 0 && !isCatalogCdn(props._mockup_url)) {
+        url = String(props._mockup_url);
+      } else delete props._mockup_url;
       entry.properties = props;
       if (url) entry.mockupUrl = url;
       return url;
@@ -6713,12 +6777,6 @@ console.log('[My Pet] script build=d7b06631 loaded');
     function noteCustomAddReturned() {
       try { window.dispatchEvent(new Event('appai:my-pet-added')); } catch (e) {}
     }
-    function replayThumbLines(click) {
-      var lines = window.__APPAI_CART_THUMB_LOGS__ || [];
-      var from = click._thumbFrom || 0;
-      for (var i = from; i < lines.length; i++) console.log(lines[i]);
-      click._thumbFrom = lines.length;
-    }
     function replayAtcLogs(click) {
       function reprint() {
         if (!click) return;
@@ -6743,12 +6801,9 @@ console.log('[My Pet] script build=d7b06631 loaded');
           console.log(TAG, 'create ms=' + click.createMs, 'reused=' + (click.createReused ? 'true' : 'false'), 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
         }
         if (click.elapsedMs != null) console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
-        replayThumbLines(click);
       }
       noteCustomAddReturned();
       setTimeout(reprint, 1500);
-      // The drawer pass can land after the first reprint. Print only the new lines.
-      setTimeout(function () { replayThumbLines(click); }, 3200);
     }
 
     function submitThemeOnce(form, entry, sel) {

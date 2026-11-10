@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.10';
+  var CART_IMG_VERSION = '3.11';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -284,9 +284,10 @@
     var id = String(variantId || '').replace(/\D/g, '');
     if (!id) return;
     var bag = awaitingBag();
-    if (waiting) bag[id] = Date.now();
-    else delete bag[id];
-    if (waiting) ensureImagePoll();
+    if (waiting) {
+      bag[id] = Date.now();
+      armImageWatch(20000);
+    } else delete bag[id];
   }
 
   function lineImgs(container) {
@@ -477,21 +478,31 @@
       return { source: 'none', reason: verdict.reason };
     }
     var paintedImg = ensureLineImage(cell, url);
+    if (paintedImg && variantId) {
+      paintedImg.setAttribute('data-appai-variant', String(variantId).replace(/\D/g, ''));
+    }
     noteAwaiting(variantId, true);
     verdict.wrote = !!(paintedImg && paintedImg.__appaiWrote);
     return verdict;
   }
 
   var imagePoll = null;
+  var imagePollUntil = 0;
   function ensureImagePoll() {
     if (imagePoll) return;
     imagePoll = setInterval(pollVariantImages, 800);
+  }
+  // Stays up past the add+1500 pass. A variant image can publish after that.
+  function armImageWatch(ms) {
+    imagePollUntil = Math.max(imagePollUntil, Date.now() + (ms || 20000));
+    ensureImagePoll();
   }
 
   function pollVariantImages() {
     var bag = awaitingBag();
     var ids = Object.keys(bag);
     if (!ids.length) {
+      if (Date.now() < imagePollUntil) return;
       clearInterval(imagePoll);
       imagePoll = null;
       return;
@@ -508,6 +519,7 @@
             var sized = cartSizedUrl(src);
             var nodes = deepQueryAll(document.documentElement, 'img[data-appai-awaiting="1"]');
             for (var n = 0; n < nodes.length; n++) {
+              if (nodes[n].getAttribute('data-appai-variant') !== id) continue;
               setImg(nodes[n], sized);
               nodes[n].removeAttribute('data-appai-awaiting');
             }
@@ -1252,6 +1264,7 @@
     var now = Date.now();
     if (now - addPassArmed < 2000) return;
     addPassArmed = now;
+    armImageWatch(20000);
     setTimeout(function () { applyMockups('add+500'); }, 500);
     setTimeout(function () { applyMockups('add+1500'); }, 1500);
   }
