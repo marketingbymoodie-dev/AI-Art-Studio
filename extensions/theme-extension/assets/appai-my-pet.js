@@ -6326,6 +6326,14 @@ console.log('[My Pet] script build=8ce6c79b loaded');
       return bag;
     }
 
+    var SHADOW_CACHE_MAX_MS = 30 * 60 * 1000;
+
+    function shadowEntryFresh(row) {
+      var at = Number(row && row.savedAt) || 0;
+      if (!at) return false;
+      return Date.now() - at < SHADOW_CACHE_MAX_MS;
+    }
+
     function shadowRowMatches(row, sel, key) {
       if (!row || !row.shadowId) return false;
       if (key && row.colour != null) {
@@ -6356,7 +6364,7 @@ console.log('[My Pet] script build=8ce6c79b loaded');
             }
           }
         }
-        if (!row || !row.shadowId) return null;
+        if (!row || !row.shadowId || !shadowEntryFresh(row)) return null;
         row.reused = true;
         return row;
       } catch (e) {
@@ -6372,6 +6380,7 @@ console.log('[My Pet] script build=8ce6c79b loaded');
         mockupUrl: entry.mockupUrl || '',
         colour: entry.colour || sel.colour || '',
         sizeName: entry.sizeName || sel.sizeName || '',
+        savedAt: Date.now(),
       };
       var key = shadowRadioKey(sel);
       function write(storage) {
@@ -6416,7 +6425,31 @@ console.log('[My Pet] script build=8ce6c79b loaded');
       );
     }
 
-    function prepareShadowFor(sel, reason) {
+    function dropShadowVariant(variantId) {
+      var id = String(variantId || '').replace(/\D/g, '');
+      if (!id) return;
+      var bag = state.shadowByKey || {};
+      var keys = Object.keys(bag);
+      for (var i = 0; i < keys.length; i++) {
+        if (bag[keys[i]] && String(bag[keys[i]].shadowId || '').replace(/\D/g, '') === id) delete bag[keys[i]];
+      }
+      function scrub(storage) {
+        var raw = storage.getItem(shadowStoreId());
+        if (!raw) return;
+        var parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return;
+        var storeKeys = Object.keys(parsed);
+        for (var k = 0; k < storeKeys.length; k++) {
+          var row = parsed[storeKeys[k]];
+          if (row && String(row.shadowId || '').replace(/\D/g, '') === id) delete parsed[storeKeys[k]];
+        }
+        storage.setItem(shadowStoreId(), JSON.stringify(parsed));
+      }
+      try { scrub(window.sessionStorage); } catch (e) {}
+      try { scrub(window.localStorage); } catch (e2) {}
+    }
+
+    function prepareShadowFor(sel, reason, opts) {
       if (reason !== 'click' && reason !== 'warm') return Promise.resolve(null);
       if (!designReadyForCart() || !sel || !sel.catalogId) return Promise.resolve(null);
       var epoch = state.shadowEpoch || 0;
@@ -6443,8 +6476,13 @@ console.log('[My Pet] script build=8ce6c79b loaded');
         );
       }
       var key = shadowCacheKey(sel);
-      var remembered = (state.shadowByKey && state.shadowByKey[key]) || readShadowStore(sel);
-      if (remembered && remembered.shadowId) {
+      var skipCache = !!(opts && opts.skipCache);
+      var remembered = null;
+      if (!skipCache) {
+        var mem = state.shadowByKey && state.shadowByKey[key];
+        remembered = mem && shadowEntryFresh(mem) ? mem : readShadowStore(sel);
+      }
+      if (remembered && remembered.shadowId && shadowEntryFresh(remembered)) {
         remembered.reused = true;
         withMockupProperty(remembered, sel.colour, sel.sizeName);
         state.shadowByKey = state.shadowByKey || {};
@@ -6480,6 +6518,7 @@ console.log('[My Pet] script build=8ce6c79b loaded');
             mockupUrl: (res.previewUrl && String(res.previewUrl).indexOf('https://') === 0) ? res.previewUrl : localUrl,
             colour: sel.colour,
             sizeName: sel.sizeName,
+            savedAt: Date.now(),
           };
           entry.reused = res.reused === true;
           withMockupProperty(entry, sel.colour, sel.sizeName);
@@ -6792,13 +6831,117 @@ console.log('[My Pet] script build=8ce6c79b loaded');
         try { reqUrl = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) {}
         return reqUrl.indexOf('/cart/add') !== -1;
       }
+      function retryHeader(init) {
+        if (!init || !init.headers) return false;
+        var headers = init.headers;
+        try {
+          if (typeof headers.get === 'function') return headers.get('X-Appai-Shadow-Retry') === '1';
+        } catch (e) {}
+        return headers['X-Appai-Shadow-Retry'] === '1';
+      }
+      function snapshotAdd(body) {
+        if (typeof FormData !== 'undefined' && body instanceof FormData) {
+          var entries = [];
+          var id = '';
+          body.forEach(function (value, key) {
+            entries.push([key, value]);
+            if (key === 'id') id = String(value || '');
+          });
+          return { kind: 'form', id: id, entries: entries };
+        }
+        if (typeof body === 'string') {
+          try {
+            var parsed = JSON.parse(body);
+            var item = Array.isArray(parsed.items) ? parsed.items[0] : parsed;
+            return { kind: 'json', id: String((item && item.id) || ''), json: parsed };
+          } catch (e) { return null; }
+        }
+        return null;
+      }
+      function staleVariantMessage(json) {
+        var text = String((json && (json.description || json.message)) || '').toLowerCase();
+        return text.indexOf('cannot find variant') !== -1 || text.indexOf('sold out') !== -1;
+      }
+      function recoverStaleAdd(snap) {
+        var oldId = String(snap.id || '').replace(/\D/g, '');
+        dropShadowVariant(oldId);
+        var sel = atcSelection();
+        var click = state.atcClick;
+        if (click) {
+          if (click.catalogId) sel.catalogId = String(click.catalogId);
+          if (click.colour) sel.colour = click.colour;
+          if (click.sizeName) sel.sizeName = click.sizeName;
+        }
+        return prepareShadowFor(sel, 'click', { skipCache: true }).then(function (entry) {
+          if (!entry || !entry.shadowId) return null;
+          var nextId = String(entry.shadowId);
+          if (nextId === oldId) return null;
+          console.log(TAG, 'reuse stale variant=' + oldId + ' → re-resolved=' + nextId);
+          rememberSubmittedMockup(nextId, (entry.properties && entry.properties._mockup_url) || entry.mockupUrl || '');
+          if (snap.kind === 'json') {
+            var body = JSON.parse(JSON.stringify(snap.json));
+            var numeric = Number(nextId) || nextId;
+            if (Array.isArray(body.items) && body.items[0]) body.items[0].id = numeric;
+            else body.id = numeric;
+            return origFetch('/cart/add.js', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'X-Appai-Shadow-Retry': '1' },
+              body: JSON.stringify(body),
+            });
+          }
+          var fd = new FormData();
+          var sawMockup = false;
+          for (var i = 0; i < snap.entries.length; i++) {
+            var key = snap.entries[i][0];
+            var val = snap.entries[i][1];
+            if (key === 'id') val = nextId;
+            if (key === 'properties[_mockup_url]') {
+              sawMockup = true;
+              var fresh = (entry.properties && entry.properties._mockup_url) || '';
+              if (fresh) val = fresh;
+            }
+            fd.append(key, val);
+          }
+          if (!sawMockup && entry.properties && entry.properties._mockup_url) {
+            fd.append('properties[_mockup_url]', entry.properties._mockup_url);
+          }
+          return origFetch('/cart/add.js', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'X-Appai-Shadow-Retry': '1' },
+            body: fd,
+          });
+        });
+      }
       var origFetch = window.fetch;
       if (typeof origFetch === 'function') {
         window.fetch = function (input, init) {
+          var snap = null;
+          var already = false;
+          try { already = retryHeader(init); } catch (e0) {}
           try {
-            if (isCartAdd(input) && init && init.body) init.body = injectBody(init.body);
+            if (!already && isCartAdd(input) && init && init.body) {
+              init.body = injectBody(init.body);
+              snap = snapshotAdd(init.body);
+            }
           } catch (e) {}
-          return origFetch.apply(this, arguments);
+          var pending = origFetch.apply(this, arguments);
+          if (already || !snap || !snap.id) return pending;
+          return pending.then(function (res) {
+            if (!res || res.status !== 422 || state.shadowAddRetry) return res;
+            return res.clone().json().then(function (json) {
+              if (!staleVariantMessage(json)) return res;
+              state.shadowAddRetry = true;
+              return recoverStaleAdd(snap).then(function (retryRes) {
+                state.shadowAddRetry = false;
+                return retryRes || res;
+              }, function () {
+                state.shadowAddRetry = false;
+                return res;
+              });
+            }, function () { return res; });
+          });
         };
       }
       var origOpen = XMLHttpRequest.prototype.open;

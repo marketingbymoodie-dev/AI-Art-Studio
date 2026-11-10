@@ -11763,7 +11763,6 @@ ${orientationExtra}
       if (source === "my-pet") {
         myPetLookedUp = true;
         const lookupStarted = Date.now();
-        const earlyPersist = reusableShadowDesignId(String(designId), String(variantId));
         const earlyKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
         for (const key of earlyKeys) {
           const row = await storage.getPublishedProduct(shop, key);
@@ -11775,63 +11774,9 @@ ${orientationExtra}
         }
         myPetLookupMs = Date.now() - lookupStarted;
         if (existing && existing.status === "active") {
-          // The My Pet proxy already checked this device against the render.
-          // A second ownership round-trip here was the ~800ms on a pure reuse.
-          console.log(`${resolveTag} [ResolveVariant] authorized cache=skipped`);
-          const steps = `lookup=${myPetLookupMs} authorized=0`;
-          console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms reused=fast`);
-          const reusedVariantId = existing.shopifyVariantId;
-          const reusedProductId = existing.shopifyProductId;
-          const reusedBaseId = existing.baseVariantId || String(variantId);
-          res.json({
-            success: true,
-            variantId: reusedVariantId,
-            reused: true,
-            designId: earlyPersist,
-            matchedKey: existingKey,
-            shadowImage: mockupUrl,
-            steps,
-          });
-          void (async () => {
-            try {
-              const cachedBg = takeAuthorizedShop(shop);
-              let bgToken = cachedBg?.accessToken || "";
-              if (!bgToken) {
-                const bgInstall = await getAuthorizedInstallation(shop);
-                if (!bgInstall) return;
-                const ready = await ensureValidOfflineAccessToken(bgInstall);
-                if (!ready.ok) return;
-                bgToken = ready.accessToken;
-                rememberAuthorizedShop(shop, ready.installation, bgToken);
-              }
-              await ensureShadowVariantPurchasable({
-                shop,
-                token: bgToken,
-                variantId: reusedVariantId,
-                baseVariantId: reusedBaseId,
-              });
-              if (reusedProductId && reusedVariantId) {
-                const apiBaseBg = `https://${shop}/admin/api/2025-10`;
-                await shadowFetch(
-                  `${apiBaseBg}/products/${reusedProductId}/images.json`,
-                  {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      "X-Shopify-Access-Token": bgToken,
-                    },
-                    body: JSON.stringify({
-                      image: { src: mockupUrl, variant_ids: [Number(reusedVariantId)] },
-                    }),
-                  },
-                  SHADOW_CREATE_FETCH_TIMEOUT_MS,
-                );
-              }
-            } catch (bgErr: any) {
-              console.warn(`${resolveTag} background reuse after early return failed:`, bgErr?.message || bgErr);
-            }
-          })();
-          return;
+          console.log(
+            `${resolveTag} [ResolveVariant] reuse candidate variant=${existing.shopifyVariantId} — confirm live before return`,
+          );
         }
       }
       // Shop row + offline token are cached for 5 minutes. The ownership
@@ -11955,7 +11900,7 @@ ${orientationExtra}
       if (myPetLookedUp) {
         resolveSteps.push(`lookup=${myPetLookupMs}`);
         resolveLap = Date.now();
-        console.log(`${resolveTag} lookup done existing=none +${Date.now() - resolveStarted}ms (${myPetLookupMs}ms)`);
+        console.log(`${resolveTag} lookup done existing=${existing ? existing.shopifyVariantId : "none"} +${Date.now() - resolveStarted}ms (${myPetLookupMs}ms)`);
       } else {
         const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
         for (const key of lookupKeys) {
@@ -11972,101 +11917,6 @@ ${orientationExtra}
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
-        // My Pet already has the row. Purchasable, the Ajax poll, price sync
-        // and the image upload were the 4–5s on a reused shadow. Return the id
-        // from this lookup and finish those in the background.
-        if (source === "my-pet") {
-          const reusedVariantId = existing.shopifyVariantId;
-          const reusedProductId = existing.shopifyProductId;
-          const reusedRowId = existing.id;
-          const reusedCartAdded = existing.cartAddedAt;
-          const reusedBaseId = existing.baseVariantId || String(variantId);
-          const steps = stepLine();
-          console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms reused=fast`);
-          logReusedShadowImage(reusedVariantId);
-          void (async () => {
-            const bg = (name: string, started: number) => {
-              console.log(`${resolveTag} background reuse ${name}=${Date.now() - started}ms`);
-            };
-            let t = Date.now();
-            try {
-              await ensureShadowVariantPurchasable({
-                shop,
-                token,
-                variantId: reusedVariantId,
-                baseVariantId: reusedBaseId,
-              });
-              bg("purchasable", t);
-            } catch (reuseErr: any) {
-              bg("purchasable", t);
-              console.warn(`${resolveTag} background reuse purchasable failed:`, reuseErr?.message || reuseErr);
-            }
-            t = Date.now();
-            try {
-              await assertAjaxVariantVisible({ shop, variantId: reusedVariantId, adminLive: true });
-              bg("visible-poll", t);
-            } catch (visErr: any) {
-              bg("visible-poll", t);
-              console.warn(`${resolveTag} background reuse visible-poll failed:`, visErr?.message || visErr);
-            }
-            if (!reusedCartAdded) {
-              t = Date.now();
-              try {
-                await storage.updatePublishedProduct(reusedRowId, {
-                  expiresAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
-                });
-                bg("expiry", t);
-              } catch (expErr: any) {
-                console.warn(`${resolveTag} background reuse expiry failed:`, expErr?.message || expErr);
-              }
-            }
-            t = Date.now();
-            try {
-              await syncShadowVariantPrice({
-                shop,
-                token,
-                shadowVariantId: reusedVariantId,
-                baseVariantId: String(variantId),
-                priceOverride: overridePriceFormatted,
-              });
-              bg("price", t);
-            } catch (priceErr: any) {
-              console.warn(`${resolveTag} background reuse price failed:`, priceErr?.message || priceErr);
-            }
-            if (reusedProductId && reusedVariantId) {
-              t = Date.now();
-              try {
-                const imgRes = await shadowFetch(
-                  `${apiBase}/products/${reusedProductId}/images.json`,
-                  {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify({
-                      image: { src: mockupUrl, variant_ids: [Number(reusedVariantId)] },
-                    }),
-                  },
-                  SHADOW_CREATE_FETCH_TIMEOUT_MS,
-                );
-                if (!imgRes.ok) {
-                  const errText = await imgRes.text();
-                  console.warn(`${resolveTag} background reuse image failed:`, imgRes.status, errText.substring(0, 160));
-                }
-                bg("image", t);
-              } catch (imgErr: any) {
-                console.warn(`${resolveTag} background reuse image failed:`, imgErr?.message || imgErr);
-              }
-            }
-          })();
-          return res.json({
-            success: true,
-            variantId: reusedVariantId,
-            reused: true,
-            designId: persistDesignId,
-            matchedKey: existingKey,
-            shadowImage: mockupUrl,
-            steps,
-          });
-        }
         // Re-read live base FRONT price, then apply both-tier override if sent.
         // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
         // Independent of purchasable/visibility, so it overlaps them (never rejects).
@@ -12105,19 +11955,23 @@ ${orientationExtra}
             });
           }
           if (reuseErr instanceof ShadowVariantNotPurchasableError) {
-            console.error(
-              `[ShadowProduct] reuse refused — shadow not live variant=${existing.shopifyVariantId}:`,
+            console.warn(
+              `[ShadowProduct] reuse variant missing ${existing.shopifyVariantId} — recreating:`,
               reuseErr.message,
             );
-            await storage.updatePublishedProduct(existing.id, { status: "archived" });
-            return res.json({
-              success: false,
-              error: ATC_SHADOW_STILL_PREPARING,
-              code: "still_preparing",
+            await storage.updatePublishedProduct(existing.id, {
+              status: "archived",
+              shopifyVariantId: existing.shopifyVariantId,
             });
+            existing = undefined;
+          } else {
+            throw reuseErr;
           }
-          throw reuseErr;
         }
+        if (!existing) {
+          // Dead Shopify variant. The archived row stays for the audit trail.
+          // Creation below inserts the replacement and becomes the active lookup.
+        } else {
         // Refresh expiry: if not yet cart-added, reset the 6h window from now
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
@@ -12213,6 +12067,7 @@ ${orientationExtra}
           priceSource: synced?.source ?? null,
           liveFrontPrice: synced?.front ?? null,
         });
+        }
       }
 
       // Join a PreShadow mint already running for THIS persist key (size-change
@@ -12230,6 +12085,7 @@ ${orientationExtra}
       }
       if (flight === "joined") {
         const after = await storage.getPublishedProduct(shop, persistDesignId);
+        let joinedDead = false;
         if (
           after?.status === "active" &&
           shadowMatchesBaseVariant(after.baseVariantId, variantId)
@@ -12258,29 +12114,34 @@ ${orientationExtra}
               });
             }
             if (joinErr instanceof ShadowVariantNotPurchasableError) {
+              console.warn(
+                `[ShadowProduct] joined reuse variant missing ${after.shopifyVariantId} — recreating:`,
+                joinErr.message,
+              );
               await storage.updatePublishedProduct(after.id, { status: "archived" });
-              return res.json({
-                success: false,
-                error: ATC_SHADOW_STILL_PREPARING,
-                code: "still_preparing",
-              });
+              joinedDead = true;
+            } else {
+              throw joinErr;
             }
-            throw joinErr;
           }
-          if (source === "my-pet") logReusedShadowImage(after.shopifyVariantId);
+          if (!joinedDead) {
+            if (source === "my-pet") logReusedShadowImage(after.shopifyVariantId);
+            return res.json({
+              success: true,
+              variantId: after.shopifyVariantId,
+              reused: true,
+              designId: persistDesignId,
+              matchedKey: persistDesignId,
+            });
+          }
+        }
+        if (!joinedDead) {
           return res.json({
-            success: true,
-            variantId: after.shopifyVariantId,
-            reused: true,
-            designId: persistDesignId,
-            matchedKey: persistDesignId,
+            success: false,
+            error: ATC_SHADOW_STILL_PREPARING,
+            code: "still_preparing",
           });
         }
-        return res.json({
-          success: false,
-          error: ATC_SHADOW_STILL_PREPARING,
-          code: "still_preparing",
-        });
       }
 
       // Claim this key so a debounce that fires during ATC create joins us
