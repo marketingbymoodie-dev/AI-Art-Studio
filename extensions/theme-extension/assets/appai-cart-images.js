@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.11';
+  var CART_IMG_VERSION = '3.12';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -147,9 +147,49 @@
       }
       return null;
     }
-    var u = props._mockup_url || props.mockup_url;
-    if (u && String(u).indexOf('https://') === 0) return String(u);
+    var keys = Object.keys(props);
+    for (var k = 0; k < keys.length; k++) {
+      var name = String(keys[k] || '').trim();
+      if (name !== '_mockup_url' && name !== 'mockup_url') continue;
+      var val = props[keys[k]];
+      if (val && String(val).indexOf('https://') === 0) return String(val);
+    }
     return null;
+  }
+
+  function propertyKeys(props) {
+    if (!props) return [];
+    if (Array.isArray(props)) {
+      var names = [];
+      for (var i = 0; i < props.length; i++) {
+        if (!props[i]) continue;
+        names.push(String(props[i].name || props[i].key || ''));
+      }
+      return names;
+    }
+    return Object.keys(props);
+  }
+
+  function logLineProps(it) {
+    var has = !!mockupUrlFromLineProperties(it && it.properties);
+    rememberThumbLine(
+      '[My Pet] cart thumb props line=' + ((it && it.key) || '') +
+      ' keys=' + propertyKeys(it && it.properties).join(',') +
+      ' mockup=' + (has ? 'yes' : 'no'),
+    );
+  }
+
+  function cachedMockupForVariant(variantId) {
+    var id = String(variantId || '').replace(/\D/g, '');
+    if (!id) return '';
+    var live = window.AppAI && window.AppAI.myPetMockupByVariant;
+    if (live && live[id] && String(live[id]).indexOf('https://') === 0) return String(live[id]);
+    try {
+      var raw = sessionStorage.getItem('appai:mockupByVariant');
+      var bag = raw ? JSON.parse(raw) : null;
+      if (bag && bag[id] && String(bag[id]).indexOf('https://') === 0) return String(bag[id]);
+    } catch (e) {}
+    return '';
   }
 
   function propEntries(props) {
@@ -163,6 +203,7 @@
   function lineIsCustomizer(it) {
     if (!it) return false;
     if (mockupUrlFromLineProperties(it.properties)) return true;
+    if (cachedMockupForVariant(it.variant_id)) return true;
     var entries = propEntries(it.properties);
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
@@ -367,7 +408,7 @@
   }
 
   function isAddPass(trigger) {
-    return trigger === 'add+500' || trigger === 'add+1500';
+    return trigger === 'add+500' || trigger === 'add+1500' || trigger === 'add+4000';
   }
 
   function logThumb(source, lineKey, reason) {
@@ -517,12 +558,21 @@
             var src = featured && typeof featured === 'object' ? featured.src : featured;
             if (!src) return;
             var sized = cartSizedUrl(src);
+            var wrote = 0;
             var nodes = deepQueryAll(document.documentElement, 'img[data-appai-awaiting="1"]');
             for (var n = 0; n < nodes.length; n++) {
               if (nodes[n].getAttribute('data-appai-variant') !== id) continue;
               setImg(nodes[n], sized);
               nodes[n].removeAttribute('data-appai-awaiting');
+              wrote++;
             }
+            var hosts = deepQueryAll(document.documentElement, '[data-appai-await-variant="' + id + '"]');
+            for (var h = 0; h < hosts.length; h++) {
+              ensureLineImage(mediaHost(hosts[h]), sized);
+              hosts[h].removeAttribute('data-appai-await-variant');
+              wrote++;
+            }
+            if (!wrote) return;
             noteAwaiting(id, false);
             try { console.info(LOG + ' variant image ready ' + id); } catch (_) {}
           })
@@ -975,6 +1025,21 @@
     return null;
   }
 
+  function soleCartRow() {
+    var nodes = deepQueryAll(document.documentElement, 'tr.cart-items__table-row, [id^="CartItem-"]');
+    var rows = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || !elInCartUi(el)) continue;
+      var nested = false;
+      for (var p = 0; p < nodes.length; p++) {
+        if (p !== i && nodes[p] && nodes[p].contains && nodes[p].contains(el)) nested = true;
+      }
+      if (!nested) rows.push(el);
+    }
+    return rows.length === 1 ? rows[0] : null;
+  }
+
   var lastThumbFp = '';
   var lastPassSig = '';
   var pendingFresh = false;
@@ -1034,18 +1099,25 @@
         try {
           for (var i = 0; i < items.length; i++) {
             var it = items[i];
-            if (!lineIsCustomizer(it)) continue;
+            if (addPass) logLineProps(it);
+            var cachedUrl = cachedMockupForVariant(it.variant_id);
+            if (!lineIsCustomizer(it) && !cachedUrl) continue;
             rememberCustomizerItem(it);
-            var url = mockupUrlFromLineProperties(it && it.properties);
+            var url = mockupUrlFromLineProperties(it && it.properties) || cachedUrl;
             var row = rowForKey(it.key);
+            if (!row && items.length === 1) row = soleCartRow();
             var img = row ? lineImgs(mediaHost(row))[0] : null;
             var variantImage = !!(img && !srcIsPlaceholder(imgSrc(img)) && shopifyCdnSrc(imgSrc(img)));
             if (!url && !variantImage) {
               logMissingMockup(it.key);
+              var awaitId = String(it.variant_id || '').replace(/\D/g, '');
+              if (row && awaitId) row.setAttribute('data-appai-await-variant', awaitId);
+              if (awaitId) noteAwaiting(it.variant_id, true);
               continue;
             }
             if (!row) {
               if (addPass) logThumb('none', it.key, 'img-missing');
+              if (it.variant_id) noteAwaiting(it.variant_id, true);
               continue;
             }
             var painted = paintLine(row, url, String(it.variant_id || ''), catalog);
@@ -1264,9 +1336,10 @@
     var now = Date.now();
     if (now - addPassArmed < 2000) return;
     addPassArmed = now;
-    armImageWatch(20000);
+    armImageWatch(30000);
     setTimeout(function () { applyMockups('add+500'); }, 500);
     setTimeout(function () { applyMockups('add+1500'); }, 1500);
+    setTimeout(function () { applyMockups('add+4000'); }, 4000);
   }
   window.__appaiCartThumbAfterAdd = passAfterCustomAdd;
   window.addEventListener('appai:my-pet-added', passAfterCustomAdd);

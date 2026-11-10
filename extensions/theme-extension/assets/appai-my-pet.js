@@ -6735,6 +6735,86 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
       for (var i = 0; i < forms.length; i++) restoreForm(forms[i], catalogId);
     }
 
+    function rememberSubmittedMockup(variantId, url) {
+      var id = String(variantId || '').replace(/\D/g, '');
+      var mock = String(url || '');
+      if (!id || mock.indexOf('https://') !== 0) return;
+      window.AppAI = window.AppAI || {};
+      window.AppAI.myPetMockupByVariant = window.AppAI.myPetMockupByVariant || {};
+      window.AppAI.myPetMockupByVariant[id] = mock;
+      try {
+        var raw = sessionStorage.getItem('appai:mockupByVariant');
+        var bag = raw ? JSON.parse(raw) : {};
+        if (!bag || typeof bag !== 'object') bag = {};
+        bag[id] = mock;
+        sessionStorage.setItem('appai:mockupByVariant', JSON.stringify(bag));
+      } catch (e) {}
+    }
+
+    function installCartAddInject() {
+      if (state.cartAddInjected) return;
+      state.cartAddInjected = true;
+      function pendingMockup() {
+        var click = state.atcClick;
+        return click && click.mockupUrl && String(click.mockupUrl).indexOf('https://') === 0 ? String(click.mockupUrl) : '';
+      }
+      function injectBody(body) {
+        var mock = pendingMockup();
+        if (!mock || body == null) return body;
+        if (typeof FormData !== 'undefined' && body instanceof FormData) {
+          if (!body.get('properties[_mockup_url]')) body.append('properties[_mockup_url]', mock);
+          console.log(TAG, 'atc formdata properties[_mockup_url]=' + (body.get('properties[_mockup_url]') ? 'yes' : 'no'));
+          return body;
+        }
+        if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+          if (!body.get('properties[_mockup_url]')) body.append('properties[_mockup_url]', mock);
+          console.log(TAG, 'atc formdata properties[_mockup_url]=yes');
+          return body;
+        }
+        if (typeof body === 'string') {
+          try {
+            var parsed = JSON.parse(body);
+            if (!parsed || typeof parsed !== 'object') return body;
+            var rows = Array.isArray(parsed.items) ? parsed.items : [parsed];
+            for (var i = 0; i < rows.length; i++) {
+              if (!rows[i] || typeof rows[i] !== 'object') continue;
+              rows[i].properties = rows[i].properties || {};
+              if (!rows[i].properties._mockup_url) rows[i].properties._mockup_url = mock;
+            }
+            console.log(TAG, 'atc formdata properties[_mockup_url]=yes');
+            return JSON.stringify(parsed);
+          } catch (e) {}
+        }
+        return body;
+      }
+      function isCartAdd(input) {
+        var reqUrl = '';
+        try { reqUrl = typeof input === 'string' ? input : (input && input.url) || ''; } catch (e) {}
+        return reqUrl.indexOf('/cart/add') !== -1;
+      }
+      var origFetch = window.fetch;
+      if (typeof origFetch === 'function') {
+        window.fetch = function (input, init) {
+          try {
+            if (isCartAdd(input) && init && init.body) init.body = injectBody(init.body);
+          } catch (e) {}
+          return origFetch.apply(this, arguments);
+        };
+      }
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        try { this.__appaiUrl = String(url || ''); } catch (e) {}
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function (body) {
+        try {
+          if (this.__appaiUrl && this.__appaiUrl.indexOf('/cart/add') !== -1) body = injectBody(body);
+        } catch (e) {}
+        return origSend.call(this, body);
+      };
+    }
+
     function noteAtcClick(entry, sel) {
       state.atcClickSeq = (state.atcClickSeq || 0) + 1;
       state.atcClick = {
@@ -6819,6 +6899,11 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
       }
       noteAtcClick(entry, sel);
       state.atcRelease = true;
+      var mockInput = target.querySelector('input[name="properties[_mockup_url]"]');
+      console.log(
+        TAG,
+        'atc form properties[_mockup_url]=' + (mockInput && String(mockInput.value || '').indexOf('https://') === 0 ? 'yes' : 'no'),
+      );
       var btn = target.querySelector('button[name="add"], button.product-form__submit');
       try {
         if (typeof target.requestSubmit === 'function') {
@@ -6858,6 +6943,7 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
       var sizeName = (sel && sel.sizeName) || entry.sizeName || '';
       var mockup = withMockupProperty(entry, colour, sizeName);
       var sentMockup = (entry.properties && entry.properties._mockup_url) || '';
+      rememberSubmittedMockup(entry.shadowId, sentMockup);
       console.log(TAG, 'atc path=' + path, 'mockup=' + (mockup ? 'yes' : 'no'), 'tail=' + srcTail(mockup));
       console.log(TAG, 'atc _mockup_url=' + sentMockup);
       if (path === 'fetch') {
@@ -6872,6 +6958,7 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
     function installInlineATCIntercept() {
       if (state.atcBound) return;
       state.atcBound = true;
+      installCartAddInject();
       // One theme submit per click. The shadow id and line properties are
       // written onto the form before that submit. We never call
       // handleSubmit ourselves — that second call was adding the catalogue
@@ -6915,6 +7002,7 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
             console.log(TAG, 'atc submit blocked', 'reason=catalog-variant');
             return;
           }
+          if (click.mockupUrl) setFormProperty(form, '_mockup_url', click.mockupUrl);
           click.submits += 1;
           click.elapsedMs = state.atcClickAt ? (Date.now() - state.atcClickAt) : 0;
           console.log(
@@ -6928,7 +7016,9 @@ console.log('[My Pet] script build=6e56d7d4 loaded');
           console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
           if (click.submits === 1) replayAtcLogs(click);
           var catalogId = click.catalogId;
-          setTimeout(function () { restoreAllForms(catalogId); }, 0);
+          // Horizon reads the form in its own submit listener. Leave the
+          // properties[_mockup_url] input in place until that read has run.
+          setTimeout(function () { restoreAllForms(catalogId); }, 50);
           markDismissed(state.renderId);
           markInCart(state.renderId);
           return;
