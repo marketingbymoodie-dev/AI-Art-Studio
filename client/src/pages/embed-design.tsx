@@ -13121,7 +13121,7 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
               sizeId: selectedSize,
               colorId: selectedFrameColor || "default",
               ...(anonSessionId ? { sessionId: anonSessionId } : {}),
-              ...(displayedRetailForAtc ? { price: displayedRetailForAtc } : {}),
+              printSides: printPlacementUsesBoth ? "both" : "front",
             }),
             signal: controller.signal,
           });

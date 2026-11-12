@@ -631,10 +631,10 @@ console.log('[My Pet] script build=f705bf83 loaded');
     for (var i = 0; i < variants.length; i++) {
       if (String(variants[i].id) === String(variantId)) { variant = variants[i]; break; }
     }
-    if (!variant) return { variantId: variantId, colorName: null, sizeId: null, price: null };
+    if (!variant) return { variantId: variantId, colorName: null, sizeId: null };
     var colorName = findOptionValue(variant, optionNames, ['color', 'colour']);
     var sizeId = findOptionValue(variant, optionNames, ['size']);
-    return { variantId: variantId, colorName: colorName, sizeId: sizeId, price: variant.price != null ? (variant.price / 100).toFixed(2) : null };
+    return { variantId: variantId, colorName: colorName, sizeId: sizeId };
   }
 
   /** All colour option values across the base product's variants (preserves order, deduped). */
@@ -6378,7 +6378,6 @@ console.log('[My Pet] script build=f705bf83 loaded');
         catalogId: String(info.variantId || ''),
         colour: currentColourName() || info.colorName || '',
         sizeName: currentSizeName() || info.sizeId || '',
-        price: info.price,
       };
     }
 
@@ -6495,12 +6494,10 @@ console.log('[My Pet] script build=f705bf83 loaded');
       var variant = findExactVariant(root, colour || null, size || null);
       var info = currentVariantInfo(root);
       var catalogId = variant && variant.id != null ? String(variant.id) : String(info.variantId || '');
-      var price = variant && variant.price != null ? (variant.price / 100).toFixed(2) : info.price;
       return {
         catalogId: catalogId,
         colour: colour || info.colorName || '',
         sizeName: size || info.sizeId || '',
-        price: price,
       };
     }
 
@@ -6592,7 +6589,7 @@ console.log('[My Pet] script build=f705bf83 loaded');
       }
       var promise = mockupForColour(sel.colour).then(function (localUrl) {
         if (!current()) return null;
-        return attemptResolveVariant(sel.catalogId, sel.price, 0, {
+        return attemptResolveVariant(sel.catalogId, 0, {
           colorName: sel.colour,
           sizeName: sel.sizeName,
           mockupUrl: localUrl,
@@ -7720,9 +7717,9 @@ console.log('[My Pet] script build=f705bf83 loaded');
      * Shopify-side variant just has not propagated yet. Retry with backoff;
      * show other `!success` responses as their actual error (Bug #3 fix).
      */
-    function attemptResolveVariant(variantId, price, attempt, extra) {
+    function attemptResolveVariant(variantId, attempt, extra) {
       if (extra && typeof extra.guard === 'function' && !extra.guard()) return Promise.resolve(null);
-      var body = { renderId: state.renderId, variantId: variantId, price: price };
+      var body = { renderId: state.renderId, variantId: variantId };
       if (extra) {
         if (extra.colorName) body.colorName = extra.colorName;
         if (extra.sizeName) body.sizeName = extra.sizeName;
@@ -7741,7 +7738,7 @@ console.log('[My Pet] script build=f705bf83 loaded');
               return new Promise(function (resolve, reject) {
                 setTimeout(function () {
                   if (extra && typeof extra.guard === 'function' && !extra.guard()) { resolve(null); return; }
-                  attemptResolveVariant(variantId, price, attempt + 1, extra).then(resolve, reject);
+                  attemptResolveVariant(variantId, attempt + 1, extra).then(resolve, reject);
                 }, backoffs[attempt]);
               });
             }
@@ -7788,7 +7785,6 @@ console.log('[My Pet] script build=f705bf83 loaded');
         return;
       }
       var exactVariantId = String(exact.id);
-      var exactPrice = exact.price != null ? (exact.price / 100).toFixed(2) : null;
 
       if (btn) btn.disabled = true;
       if (status) status.textContent = 'Setting up your cart line…';
@@ -7797,7 +7793,7 @@ console.log('[My Pet] script build=f705bf83 loaded');
       mockupForColour(modalColour)
         .then(function (localUrl) {
           console.log(TAG, 'atc colour=' + modalColour, 'size=' + modalSize, 'mockupTail=' + srcTail(localUrl));
-          return attemptResolveVariant(exactVariantId, exactPrice, 0, {
+          return attemptResolveVariant(exactVariantId, 0, {
             colorName: modalColour,
             sizeName: modalSize,
             mockupUrl: localUrl,

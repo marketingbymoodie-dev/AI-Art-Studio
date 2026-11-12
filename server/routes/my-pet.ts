@@ -269,7 +269,7 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
   // the app's own domain (catalogue products carry no ai_art_studio.app_url meta).
   app.post("/api/proxy/my-pet/resolve-variant", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
-    const { renderId, variantId, price, colorName, sizeName, mockupUrl: clientMockupRaw } = req.body || {};
+    const { renderId, variantId, colorName, sizeName, mockupUrl: clientMockupRaw } = req.body || {};
     if (!shop || !renderId || !variantId) {
       return res.status(400).json({ success: false, error: "renderId and variantId are required" });
     }
@@ -313,7 +313,6 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
           // Matches generationJobs.sessionId set at generate time — satisfies
           // resolve-design-variant's ownership check for this anonymous device.
           sessionId: deviceKey,
-          ...(price ? { price: String(price) } : {}),
         }),
       });
       const data = await upstream.json().catch(() => ({}));

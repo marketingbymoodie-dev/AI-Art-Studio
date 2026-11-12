@@ -12,7 +12,7 @@ import {
 import { storage } from "./storage";
 import { ensureShadowVariantPurchasable } from "./shadow-variant-purchasable";
 import { ShadowStorefrontNotReadyError, assertAjaxVariantVisible } from "./shadow-storefront-visible";
-import { syncShadowVariantPrice } from "./shadow-variant-price";
+import { decideShadowShopPrice, syncShadowVariantPrice } from "./shadow-variant-price";
 import type { PrintConfigFingerprintInput } from "@shared/printConfigFingerprint";
 import { PRE_SHADOW_AWAIT_MS } from "@shared/atcStorefrontRetry";
 import { SHADOW_CREATE_FETCH_TIMEOUT_MS, shadowFetch } from "./shadow-admin-fetch";
@@ -104,6 +104,12 @@ export async function awaitInFlightOrGenerate(
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }
+}
+
+function printSidesFromConfig(cfg: PrintConfigFingerprintInput | null | undefined): "both" | "front" {
+  if (cfg?.flat?.enabled?.back) return "both";
+  if (cfg?.tote?.printBack) return "both";
+  return "front";
 }
 
 export async function runPreShadowMint(args: {
@@ -240,7 +246,9 @@ export async function runPreShadowMint(args: {
         token,
         shadowVariantId: existing.shopifyVariantId,
         baseVariantId,
-        priceOverride,
+        printSides: printSidesFromConfig(cfgSnapshot),
+        productTypeId: (await storage.getGenerationJob(jobId))?.productTypeId,
+        clientPrice: priceOverride,
       });
     }
     return {
@@ -265,6 +273,20 @@ export async function runPreShadowMint(args: {
     return;
   }
 
+  const jobForPrice = await storage.getGenerationJob(jobId);
+  const decidedPrice = await decideShadowShopPrice({
+    shop,
+    token,
+    baseVariantId,
+    catalogueVariant: baseVariant,
+    printSides: printSidesFromConfig(cfgSnapshot),
+    productTypeId: jobForPrice?.productTypeId,
+    clientPrice: priceOverride,
+  });
+  if (!decidedPrice.written) {
+    console.warn(`[PreShadow] Base variant ${baseVariantId} has no shop-currency price`);
+    return;
+  }
   const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
     .filter((o: any) => o && o !== "Default Title" && o !== "base")
     .join(" / ");
@@ -282,7 +304,7 @@ export async function runPreShadowMint(args: {
           tags: "appai-shadow",
           variants: [
             {
-              price: priceOverride || baseVariant.price,
+              price: decidedPrice.written,
               compare_at_price: baseVariant.compare_at_price || null,
               taxable: baseVariant.taxable,
               requires_shipping: baseVariant.requires_shipping,

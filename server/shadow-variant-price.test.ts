@@ -1,36 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { resolveShadowSellPrice } from "./shadow-variant-price";
+import { pickShadowShopPrice } from "./shadow-variant-price";
 
-describe("resolveShadowSellPrice", () => {
-  it("writes live front when there is no both-tier override", () => {
-    expect(resolveShadowSellPrice("18.95", null)).toEqual({
+describe("pickShadowShopPrice", () => {
+  it("writes the catalogue shop-currency price and ignores any client amount", () => {
+    expect(pickShadowShopPrice("29.95", null, false)).toEqual({
+      front: "29.95",
+      written: "29.95",
+      source: "catalogue-variant",
+    });
+  });
+
+  it("does not treat a client-shaped both amount as the price unless applyBothTier is set by the server", () => {
+    expect(pickShadowShopPrice("29.95", "45.00", false)).toEqual({
+      front: "29.95",
+      written: "29.95",
+      source: "catalogue-variant",
+    });
+  });
+
+  it("uses the server both-tier shop price when the selection is both and the variant is still front", () => {
+    expect(pickShadowShopPrice("29.95", "34.95", true)).toEqual({
+      front: "29.95",
+      written: "34.95",
+      source: "catalogue-variant",
+    });
+  });
+
+  it("stays on the catalogue price when the both-tier lookup is empty", () => {
+    expect(pickShadowShopPrice("18.95", null, true)).toEqual({
       front: "18.95",
       written: "18.95",
-      source: "front",
+      source: "catalogue-variant",
     });
   });
 
-  it("applies both-tier after the front read and does not wipe it back to front", () => {
-    expect(resolveShadowSellPrice("18.95", "34.00")).toEqual({
-      front: "18.95",
-      written: "34.00",
-      source: "both",
-    });
-  });
-
-  it("falls back to both-tier when live front is missing", () => {
-    expect(resolveShadowSellPrice(null, "33.95")).toEqual({
+  it("rejects a zero catalogue price", () => {
+    expect(pickShadowShopPrice("0", "34.95", true)).toEqual({
       front: null,
-      written: "33.95",
-      source: "both",
+      written: "34.95",
+      source: "catalogue-variant",
     });
-  });
-
-  it("ignores zero / blank override so a stale $27 can be rewritten to live front", () => {
-    expect(resolveShadowSellPrice("18.95", "0")).toEqual({
-      front: "18.95",
-      written: "18.95",
-      source: "front",
+    expect(pickShadowShopPrice("0", null, false)).toEqual({
+      front: null,
+      written: null,
+      source: "catalogue-variant",
     });
   });
 });

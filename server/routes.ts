@@ -82,7 +82,7 @@ import {
   confirmShadowInventoryContinue,
   ensureShadowVariantPurchasable,
 } from "./shadow-variant-purchasable";
-import { syncShadowVariantPrice } from "./shadow-variant-price";
+import { decideShadowShopPrice, syncShadowVariantPrice } from "./shadow-variant-price";
 import {
   awaitExistingFlight,
   preShadowFlightKey,
@@ -10474,15 +10474,9 @@ ${orientationExtra}
         baseProductId,
         baseVariantId,
         productTypeId,
-        price,
         printConfig,
         designId: designIdHint,
       } = req.body;
-      const preShadowPriceNum = parseFloat(String(price ?? ""));
-      const preShadowClientPrice =
-        Number.isFinite(preShadowPriceNum) && preShadowPriceNum > 0
-          ? preShadowPriceNum.toFixed(2)
-          : null;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -10573,7 +10567,7 @@ ${orientationExtra}
             primaryMockupUrl,
             designId,
             cfgSnapshot,
-            priceOverride: preShadowClientPrice,
+            priceOverride: null,
           }, "Background"),
         ).catch((bgErr: any) => {
           console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
@@ -10596,7 +10590,6 @@ ${orientationExtra}
         jobId,
         baseProductId,
         baseVariantId,
-        price,
         printConfig,
         designId: designIdHint,
         mockupUrl,
@@ -10645,9 +10638,6 @@ ${orientationExtra}
           `[PreShadow] preshadow-variant hint mismatch hint=${String(designIdHint).slice(0, 120)} derived=${atomic.designId} — using derived`,
         );
       }
-      const priceNum = parseFloat(String(price ?? ""));
-      const priceOverride =
-        Number.isFinite(priceNum) && priceNum > 0 ? priceNum.toFixed(2) : null;
       const mode = normalizeAtcMode((installation as { atcMode?: string }).atcMode);
       // Join exact key or mint once. ATC tap during debounce hits this same key.
       // base-first enqueues instead; shadow-direct still mints inline.
@@ -10661,7 +10651,7 @@ ${orientationExtra}
           primaryMockupUrl,
           designId: atomic.designId,
           cfgSnapshot: atomic.snapshot,
-          priceOverride,
+          priceOverride: null,
         }, "preshadow-variant"),
       ).catch((e: any) => {
         console.error(`[PreShadow] preshadow-variant error jobId=${jobId}:`, e?.message);
@@ -11747,13 +11737,10 @@ ${orientationExtra}
       } catch (oosErr: any) {
         console.warn("[ShadowProduct] OOS guard skipped:", oosErr?.message || oosErr);
       }
-      // Optional retail override for front+back (or other surcharge tiers). Validated below.
-      const overridePriceNum =
-        priceOverride != null && String(priceOverride).trim() !== ""
-          ? parseFloat(String(priceOverride))
-          : NaN;
-      const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
-      const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
+      // Client price is presentment money (an AU page sends 45.00). It is never
+      // written. printSides "both" selects the shop-currency both-tier catalogue
+      // price inside decideShadowShopPrice.
+      const printSides = req.body?.printSides;
       // My Pet reuse is a database read. Do it before the shop-token fetch so
       // a shadow that already exists does not pay getAuthorizedInstallation.
       let myPetLookedUp = false;
@@ -11926,7 +11913,11 @@ ${orientationExtra}
               token,
               shadowVariantId: existing.shopifyVariantId,
               baseVariantId: String(variantId),
-              priceOverride: overridePriceFormatted,
+              printSides,
+              productTypeId: productTypeIdRaw,
+              sizeId,
+              colorId,
+              clientPrice: priceOverride,
             })
           : Promise.resolve(null);
         try {
@@ -12198,7 +12189,7 @@ ${orientationExtra}
         return res.status(variantLookupRes.status).json({ success: false, error: "Failed to fetch variant", fallback: true, variantId: String(variantId) });
       }
       const { variant: baseVariantRecord } = await variantLookupRes.json();
-      if (!hasPriceOverride && !hasPositiveRetailPrice(baseVariantRecord?.price)) {
+      if (!hasPositiveRetailPrice(baseVariantRecord?.price)) {
         return res.status(400).json({
           success: false,
           error: "This product is still $0.00. Set retail prices before adding to cart.",
@@ -12218,6 +12209,25 @@ ${orientationExtra}
       if (!baseVariant || String(baseVariant.id) !== String(variantId)) {
         console.warn(`[ShadowProduct] Base variant ${variantId} not found in variant lookup payload`);
         return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });
+      }
+      const decidedPrice = await decideShadowShopPrice({
+        shop,
+        token,
+        baseVariantId: String(variantId),
+        catalogueVariant: baseVariant,
+        printSides,
+        productTypeId: productTypeIdRaw,
+        sizeId,
+        colorId,
+        clientPrice: priceOverride,
+      });
+      const shadowPrice = decidedPrice.written;
+      if (!shadowPrice) {
+        return res.status(400).json({
+          success: false,
+          error: "This product is still $0.00. Set retail prices before adding to cart.",
+          code: "PRICES_REQUIRED",
+        });
       }
 
       // Best-effort product title lookup for a nicer shadow title (non-fatal).
@@ -12259,7 +12269,7 @@ ${orientationExtra}
           status: shopifyStatusForVisibility("hidden"),
           tags: 'appai-shadow',
           variants: [{
-            price: overridePriceFormatted || baseVariant.price,
+            price: shadowPrice,
             compare_at_price: baseVariant.compare_at_price || null,
             taxable: baseVariant.taxable,
             requires_shipping: baseVariant.requires_shipping,
@@ -12475,8 +12485,8 @@ ${orientationExtra}
           created: true,
           designId: persistDesignId,
           shadowImage: mockupUrl,
-          price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
-          priceSource: overridePriceFormatted ? "both" : "front",
+          price: shadowPrice,
+          priceSource: "catalogue-variant",
           liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
           steps,
         });
@@ -12584,8 +12594,8 @@ ${orientationExtra}
         created: true,
         designId: persistDesignId,
         shadowImage: createdShadowImage,
-        price: overridePriceFormatted || (baseVariant.price != null ? String(baseVariant.price) : null),
-        priceSource: overridePriceFormatted ? "both" : "front",
+        price: shadowPrice,
+        priceSource: "catalogue-variant",
         liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
       });
     } catch (error: any) {
