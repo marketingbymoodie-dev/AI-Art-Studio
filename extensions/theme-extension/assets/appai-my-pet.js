@@ -48,8 +48,8 @@ console.log('[My Pet] script build=e5a696a3 loaded');
   // UX 6 — same-device cross-session restore. Keyed by product + device key
   // (not just product) so two different devices/browsers sharing a computer
   // don't bleed into each other. Deliberately does NOT store previewUrl —
-  // signed URLs expire in an hour; the server's resolve-render endpoint
-  // re-signs on demand from the stored renderId.
+  // signed URLs expire; the server's resolve-render endpoint re-signs on
+  // demand from the stored renderId.
   var RENDER_STORAGE_PREFIX = 'appai_my_pet_render_v1:';
   var RENDER_STORAGE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
   function renderStorageKey(shopifyProductId) {
@@ -220,8 +220,8 @@ console.log('[My Pet] script build=e5a696a3 loaded');
       return parsed;
     } catch (e) { return null; }
   }
-  // Supabase signed URLs carry exp in the token JWT. Our 15-minute clock
-  // can still hand out a URL whose token already expired.
+  // Supabase signed URLs carry exp in the token JWT. A cached URL inside
+  // 5 minutes of exp is treated as expired so the page re-signs first.
   function signedUrlExpiryMs(url) {
     try {
       var q = String(url || '').split('?')[1] || '';
@@ -242,11 +242,13 @@ console.log('[My Pet] script build=e5a696a3 loaded');
       return exp ? exp * 1000 : 0;
     } catch (e) { return 0; }
   }
+  var SIGNED_URL_RENEW_MS = 5 * 60 * 1000;
+
   function signedUrlUsable(url) {
     if (!url) return false;
     var exp = signedUrlExpiryMs(url);
     if (!exp) return true;
-    return Date.now() < exp - 15000;
+    return Date.now() < exp - SIGNED_URL_RENEW_MS;
   }
   function signedMapUsable(map) {
     if (!map || typeof map !== 'object') return true;
@@ -274,7 +276,7 @@ console.log('[My Pet] script build=e5a696a3 loaded');
     var mapKeys = Object.keys(map);
     for (var i = 0; i < mapKeys.length; i++) if (map[mapKeys[i]]) urls.push(map[mapKeys[i]]);
     var tokenExp = earliestSignedExpiry(urls);
-    if (tokenExp && tokenExp - 15000 < expiresAt) expiresAt = tokenExp - 15000;
+    if (tokenExp && tokenExp - SIGNED_URL_RENEW_MS < expiresAt) expiresAt = tokenExp - SIGNED_URL_RENEW_MS;
     if (expiresAt <= Date.now()) return;
     try {
       window.sessionStorage.setItem(RESOLVE_CACHE_PREFIX + res.renderId, JSON.stringify({
@@ -1463,8 +1465,25 @@ console.log('[My Pet] script build=e5a696a3 loaded');
       }
       return '';
     }
-    var resignedEdited = {};
+    var resignByPath = {};
     var rendersRefreshFlight = null;
+    function myPetStoragePath(url) {
+      var path = '';
+      try { path = urlPath(url); } catch (e) { path = String(url || '').split('?')[0]; }
+      var at = path.indexOf('my-pet/');
+      if (at === -1) return '';
+      var rest = path.slice(at);
+      if (rest.indexOf('my-pet/my-pet/') === 0) rest = rest.slice('my-pet/'.length);
+      return rest;
+    }
+    function myPetRenderIdFromUrl(url) {
+      var match = myPetStoragePath(url).match(/^my-pet\/(?:edited|previews)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+      return match ? match[1] : '';
+    }
+    function isMyPetSignedPreview(url) {
+      var path = myPetStoragePath(url);
+      return path.indexOf('my-pet/edited/') === 0 || path.indexOf('my-pet/previews/') === 0;
+    }
     function forgetCachedThumb(url) {
       try {
         var key = 'appai_my_pet_thumbs_v1:' + shopifyProductId;
@@ -1484,31 +1503,112 @@ console.log('[My Pet] script build=e5a696a3 loaded');
         else if (changed) window.sessionStorage.setItem(key, JSON.stringify(parsed));
       } catch (e) {}
     }
-    function resignEditedUrl(url) {
-      var match = String(url || '').match(/my-pet\/edited\/([0-9a-f-]{8,})/i);
-      var renderId = match ? match[1] : '';
-      if (!renderId || resignedEdited[renderId]) return;
-      resignedEdited[renderId] = true;
-      console.log(TAG, 'signed url 400 render=' + renderId);
+    function freshPreviewForPath(res, list, path) {
+      var renderId = myPetRenderIdFromUrl(path);
+      if (list && path.indexOf('my-pet/edited/') === 0) {
+        for (var i = 0; i < list.length; i++) {
+          var item = list[i];
+          if (!item || item.renderId !== renderId) continue;
+          if (item.thumbnailUrl && signedUrlUsable(item.thumbnailUrl)) return item.thumbnailUrl;
+        }
+      }
+      if (res && res.previewUrl && myPetStoragePath(res.previewUrl) === path && signedUrlUsable(res.previewUrl)) {
+        return res.previewUrl;
+      }
+      var map = res && res.previewUrlsByColor;
+      if (map && typeof map === 'object') {
+        var keys = Object.keys(map);
+        for (var k = 0; k < keys.length; k++) {
+          if (map[keys[k]] && myPetStoragePath(map[keys[k]]) === path && signedUrlUsable(map[keys[k]])) {
+            return map[keys[k]];
+          }
+        }
+      }
+      if (list) {
+        for (var n = 0; n < list.length; n++) {
+          var row = list[n];
+          if (!row || row.renderId !== renderId) continue;
+          if (row.heroUrl && myPetStoragePath(row.heroUrl) === path && signedUrlUsable(row.heroUrl)) return row.heroUrl;
+        }
+      }
+      return '';
+    }
+    function paintResignedUrl(slot, fresh) {
+      if (!slot || !fresh) return;
+      var probe = new Image();
+      if (previewNeedsCors(fresh)) {
+        try { probe.crossOrigin = 'anonymous'; } catch (e) {}
+      }
+      probe.onload = function () {
+        for (var i = 0; i < slot.imgs.length; i++) {
+          var node = slot.imgs[i];
+          if (!node) continue;
+          try { node.onerror = null; } catch (eOff) {}
+          node.__appaiSrcHeld = false;
+          commitImgSrc(node, fresh);
+          node.__appaiAssertUrl = fresh;
+          node.__appaiAssertAt = Date.now();
+        }
+      };
+      probe.src = fresh;
+    }
+    function resignPreviewUrl(url, img) {
+      var path = myPetStoragePath(url);
+      var renderId = myPetRenderIdFromUrl(url);
+      if (!path || !renderId) return;
+      var slot = resignByPath[path];
+      if (!slot) slot = resignByPath[path] = { imgs: [], fresh: '', started: false };
+      if (img && slot.imgs.indexOf(img) === -1) slot.imgs.push(img);
+      if (slot.fresh) {
+        paintResignedUrl(slot, slot.fresh);
+        return;
+      }
+      if (slot.started) return;
+      slot.started = true;
       forgetCachedThumb(url);
       try { window.sessionStorage.removeItem(RESOLVE_CACHE_PREFIX + renderId); } catch (e) {}
-      getJson('my-pet/resolve-render', { renderId: renderId }).then(function (res) {
-        if (!res || !res.ok || !res.previewUrl) return;
-        writeResolveCache(res);
-        console.log(TAG, 'signed url refreshed render=' + renderId);
-      });
+      var resolveDone = getJson('my-pet/resolve-render', { renderId: renderId }).then(function (res) {
+        return res && res.ok ? res : null;
+      }, function () { return null; });
+      var listDone = rendersRefreshFlight || getJson('my-pet/renders', { productId: shopifyProductId }).then(function (res) {
+        return res && res.ok && Array.isArray(res.renders) ? res.renders : [];
+      }, function () { return []; });
       if (!rendersRefreshFlight) {
-        rendersRefreshFlight = getJson('my-pet/renders', { productId: shopifyProductId }).then(function (res) {
+        rendersRefreshFlight = listDone.then(function (list) {
           rendersRefreshFlight = null;
-          var list = res && res.ok && Array.isArray(res.renders) ? res.renders : [];
-          if (list.length) preloadDesignThumbs(list);
-        }, function () { rendersRefreshFlight = null; });
+          if (list && list.length) {
+            state.designs = list;
+            preloadDesignThumbs(list);
+          }
+          return list;
+        }, function () { rendersRefreshFlight = null; return []; });
+        listDone = rendersRefreshFlight;
       }
+      Promise.all([resolveDone, listDone]).then(function (pair) {
+        var res = pair[0];
+        var list = pair[1] || [];
+        if (!res || !res.previewUrl) {
+          slot.started = false;
+          return;
+        }
+        writeResolveCache(res);
+        if (state.renderId === renderId) {
+          state.previewUrl = res.previewUrl;
+          if (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object') {
+            state.previewUrlByColor = res.previewUrlsByColor;
+          }
+        }
+        var fresh = freshPreviewForPath(res, list, path);
+        console.log(TAG, 'signed url refreshed path=' + path);
+        if (!fresh) return;
+        slot.fresh = fresh;
+        paintResignedUrl(slot, fresh);
+      }, function () { slot.started = false; });
     }
     function preloadUrl(url) {
       if (!url || String(url).indexOf('http') !== 0) return;
       if (!signedUrlUsable(url)) {
-        resignEditedUrl(url);
+        if (isMyPetSignedPreview(url)) resignPreviewUrl(url);
         return;
       }
       try {
@@ -1516,8 +1616,8 @@ console.log('[My Pet] script build=e5a696a3 loaded');
         img.decoding = 'async';
         if (previewNeedsCors(url)) img.crossOrigin = 'anonymous';
         img.onerror = function () {
-          if (String(url).indexOf('my-pet/edited/') === -1) return;
-          resignEditedUrl(url);
+          if (!isMyPetSignedPreview(url)) return;
+          resignPreviewUrl(url);
         };
         img.src = url;
       } catch (e) {}
@@ -1764,19 +1864,17 @@ console.log('[My Pet] script build=e5a696a3 loaded');
         var parsed = JSON.parse(raw);
         var urls = parsed && parsed.urls;
         if (!urls) return;
-        // Signed thumbs last about an hour. A tab that stays open keeps
-        // sessionStorage, so a later load must not replay a dead token.
-        var stale = !parsed.at || (Date.now() - parsed.at > 50 * 60 * 1000);
         var ids = Object.keys(urls);
         var live = {};
         for (var i = 0; i < ids.length; i++) {
-          if (!stale && signedUrlUsable(urls[ids[i]])) live[ids[i]] = urls[ids[i]];
+          if (signedUrlUsable(urls[ids[i]])) live[ids[i]] = urls[ids[i]];
+          else resignPreviewUrl(urls[ids[i]]);
         }
         if (Object.keys(live).length !== ids.length) {
           if (!Object.keys(live).length) window.sessionStorage.removeItem(key);
           else window.sessionStorage.setItem(key, JSON.stringify({ at: parsed.at, urls: live }));
         }
-        if (stale || !Object.keys(live).length) return;
+        if (!Object.keys(live).length) return;
         ids = Object.keys(live);
         for (var j = 0; j < ids.length; j++) preloadUrl(live[ids[j]]);
       } catch (e) {}
@@ -1819,6 +1917,10 @@ console.log('[My Pet] script build=e5a696a3 loaded');
     function decodeHeroUrl(url) {
       var path = urlPath(url);
       if (!path) return Promise.resolve(false);
+      if (isMyPetSignedPreview(url) && !signedUrlUsable(url)) {
+        resignPreviewUrl(url);
+        return Promise.resolve(false);
+      }
       if (state.decodedHeroPaths && state.decodedHeroPaths[path]) return Promise.resolve(true);
       state.heroDecodeWait = state.heroDecodeWait || {};
       if (state.heroDecodeWait[path]) return state.heroDecodeWait[path];
@@ -1837,7 +1939,7 @@ console.log('[My Pet] script build=e5a696a3 loaded');
         };
         img.onerror = function () {
           delete state.heroDecodeFlight[path];
-          if (String(url).indexOf('my-pet/edited/') !== -1) resignEditedUrl(url);
+          if (isMyPetSignedPreview(url)) resignPreviewUrl(url);
           resolve(false);
         };
         img.src = url;
@@ -3314,12 +3416,37 @@ console.log('[My Pet] script build=e5a696a3 loaded');
       return true;
     }
 
-    function assignImgSrc(img, url) {
-      if (!img || !url) return;
+    function commitImgSrc(img, url) {
       if (previewNeedsCors(url)) {
         try { img.crossOrigin = 'anonymous'; } catch (e) {}
       }
       try { img.src = url; } catch (e2) {}
+    }
+    function assignImgSrc(img, url) {
+      if (!img || !url) return;
+      img.__appaiSrcHeld = false;
+      if (isMyPetSignedPreview(url) && !signedUrlUsable(url)) {
+        img.__appaiSrcHeld = true;
+        resignPreviewUrl(url, img);
+        return;
+      }
+      var previous = '';
+      try {
+        if (img.complete && img.naturalWidth > 0) previous = img.currentSrc || img.getAttribute('src') || '';
+      } catch (ePrev) {}
+      if (isMyPetSignedPreview(url)) {
+        img.onerror = function () {
+          if (img.__appaiResignUrl === url) return;
+          img.__appaiResignUrl = url;
+          img.__appaiSrcHeld = true;
+          if (previous) {
+            try { img.onerror = null; } catch (eOff) {}
+            commitImgSrc(img, previous);
+          }
+          resignPreviewUrl(url, img);
+        };
+      }
+      commitImgSrc(img, url);
     }
 
     function applyPreviewSrc(img, url) {
@@ -3346,6 +3473,7 @@ console.log('[My Pet] script build=e5a696a3 loaded');
           try { img.decoding = 'sync'; } catch (eDec) {}
         }
         assignImgSrc(img, url);
+        if (img.__appaiSrcHeld) return;
         img.__appaiAssertUrl = url;
         img.__appaiAssertAt = Date.now();
         img.setAttribute('data-appai-my-pet-preview', 'true');

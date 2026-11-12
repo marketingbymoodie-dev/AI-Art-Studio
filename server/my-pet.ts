@@ -56,7 +56,9 @@ const MY_PET_REPLICATE_CREDENTIAL = CREDENTIALS["replicate:shared"];
 const MY_PET_REPLICATE_MODEL = REPLICATE_ROUTE_MODELS["replicate-sunburst"];
 
 const PHOTO_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const EMAIL_PREVIEW_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** Storefront preview and picker URLs. Same 30-day window as a cart _mockup_url. */
+const STOREFRONT_PREVIEW_TTL_SECONDS = 30 * 24 * 60 * 60;
+const EMAIL_PREVIEW_RETENTION_MS = STOREFRONT_PREVIEW_TTL_SECONDS * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Settings
@@ -526,7 +528,7 @@ export async function generateMyPetRender(args: {
   // feeds the recomposite cache.
   const previewPath = `my-pet/previews/${renderId}.png`;
   await putMyPetObject(previewPath, previewPng, "image/png");
-  const previewUrl = await signedMyPetUrl(previewPath);
+  const previewUrl = await signedMyPetUrl(previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
 
   // Deterministic per-colour path matches recompositeMyPetRender's naming
   // scheme so a later `/recomposite` for the chosen (or any pre-composited)
@@ -596,7 +598,7 @@ export async function generateMyPetRender(args: {
             `designSrc=${editedPathTail} outputSrc=${otherPathTail} CACHE HIT (skipped compose)`,
         );
       }
-      const url = await signedMyPetUrl(otherPath);
+      const url = await signedMyPetUrl(otherPath, STOREFRONT_PREVIEW_TTL_SECONDS);
       return [other.name, url] as const;
     }),
   );
@@ -766,7 +768,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   // 6s down to a Supabase metadata-list + createSignedUrl round-trip.
   const cacheHit = await myPetObjectExists(previewPath);
   if (cacheHit) {
-    const previewUrl = await signedMyPetUrl(previewPath);
+    const previewUrl = await signedMyPetUrl(previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
     const afterSign = Date.now();
     if (render.jobId) {
       await storage.updateGenerationJob(render.jobId, {
@@ -807,7 +809,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   });
   const afterCompose = Date.now();
   await putMyPetObject(previewPath, png, "image/png");
-  const previewUrl = await signedMyPetUrl(previewPath);
+  const previewUrl = await signedMyPetUrl(previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
   const afterStorage = Date.now();
 
   if (render.jobId) {
@@ -920,7 +922,7 @@ export async function getMyPetRenderForAddToCart(args: {
       }
     }
   }
-  if (!previewUrl) previewUrl = await signedMyPetUrl(previewPath);
+  if (!previewUrl) previewUrl = await signedMyPetUrl(previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
   console.log(
     `[my-pet] atc colour=${colorName || "generation"} size=${sizeName || "?"} ` +
       `mockupTail=${myPetUrlTail(previewUrl)} path=${previewPath}`,
@@ -1017,7 +1019,7 @@ async function collectExistingPreviewUrlsByColor(args: {
     try {
       map[args.chosenColorName] = await signedMyPetUrl(
         args.chosenPreviewPath,
-        EMAIL_PREVIEW_RETENTION_MS / 1000,
+        STOREFRONT_PREVIEW_TTL_SECONDS,
       );
     } catch (err) {
       console.warn(`[my-pet] restore: chosen-colour sign failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
@@ -1038,7 +1040,7 @@ async function collectExistingPreviewUrlsByColor(args: {
         const exists = await myPetObjectExists(path).catch(() => false);
         if (!exists) return null;
         try {
-          const url = await signedMyPetUrl(path, EMAIL_PREVIEW_RETENTION_MS / 1000);
+          const url = await signedMyPetUrl(path, STOREFRONT_PREVIEW_TTL_SECONDS);
           return { name: c.name, url };
         } catch {
           return null;
@@ -1140,11 +1142,11 @@ export async function listMyPetRendersForDevice(args: {
       // artwork is the design itself; fall back to the mockup if it's gone.
       let thumbnailUrl: string;
       try {
-        thumbnailUrl = await signedLibraryUrl(`my-pet/edited/${row.id}.png`);
+        thumbnailUrl = await signedLibraryUrl(`my-pet/edited/${row.id}.png`, STOREFRONT_PREVIEW_TTL_SECONDS);
       } catch {
-        thumbnailUrl = await signedMyPetThumbnail(row.previewPath);
+        thumbnailUrl = await signedMyPetThumbnail(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
       }
-      const heroUrl = await signedMyPetUrl(row.previewPath);
+      const heroUrl = await signedMyPetUrl(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
       return {
         renderId: row.id,
         jobId: row.jobId,
@@ -1657,7 +1659,7 @@ export async function getMyPetOrderDetails(args: { shop: string; orderId?: strin
   const renders = await Promise.all(
     rows.map(async (row) => {
       let previewUrl: string | null = null;
-      try { previewUrl = await signedMyPetUrl(row.previewPath); } catch { previewUrl = null; }
+      try { previewUrl = await signedMyPetUrl(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS); } catch { previewUrl = null; }
       let artStyle: string | null = null;
       let species: string | null = null;
       try {
