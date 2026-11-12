@@ -699,6 +699,9 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
       var s = findOptionValue(v, optionNames, ['size']);
       if (preferSizeId && String(s) === String(preferSizeId)) { exact = v; break; }
     }
+    // A requested size that this colour does not sell must not resolve to
+    // another size. Callers that only asked for a colour still get one.
+    if (preferSizeId) return exact;
     return exact || colorOnly;
   }
 
@@ -718,6 +721,9 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
       var c = findOptionValue(v, optionNames, ['color', 'colour']);
       if (preferColorName && String(c) === String(preferColorName)) { exact = v; break; }
     }
+    // A requested colour that this size does not sell must not resolve to
+    // a different colour of the same size.
+    if (preferColorName) return exact;
     return exact || sizeOnly;
   }
 
@@ -2498,12 +2504,7 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
         for (var s = 0; s < sizes.length; s++) if (sameOption(sizes[s], sizeName)) size = sizes[s];
         var names = [];
         try { names = (root.getAttribute('data-option-names') || '').split('::'); } catch (e) {}
-        var variant = variantForColor(root, color, size);
-        var variantSize = variant ? findOptionValue(variant, names, ['size']) : null;
-        if (!variant || (size && !sameOption(variantSize, size))) {
-          var medium = variantForColor(root, color, 'M');
-          if (medium) variant = medium;
-        }
+        var variant = findExactVariant(root, color, size || null);
         if (!variant) return null;
         var actualColor = findOptionValue(variant, names, ['color', 'colour']) || colorName;
         var actualSize = findOptionValue(variant, names, ['size']) || sizeName;
@@ -4585,6 +4586,15 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
         var intent = colorFromSwatchEvent(event);
         if (!intent || !intent.colorName) return;
         var colorName = intent.colorName;
+        if (intent.kind === 'color') {
+          var sizeForColour = intent.sizeName || checkedProductOption('size') || '';
+          if (sizeForColour && !findExactVariant(root, colorName, sizeForColour)) {
+            event.preventDefault();
+            event.stopPropagation();
+            try { event.stopImmediatePropagation(); } catch (eStop) {}
+            return;
+          }
+        }
         if (event.type === 'click' && intent.kind === 'color') noteColourSelection(colorName, true);
         else if (event.type === 'click' && intent.kind === 'size') noteColourSelection(state.selectedColour || colorName, true);
         // click then change is one gesture. Re-arming on change either
@@ -6677,11 +6687,20 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
     }
 
     function atcSelection() {
-      var info = currentVariantInfo(root);
+      var size = currentSizeName();
+      var checked = checkedProductOption('colour');
+      var colour = (state.inlineApplied && !state.reverted && state.selectedColour)
+        ? state.selectedColour
+        : (currentColourName() || '');
+      var variant = findExactVariant(root, colour || null, size || null);
+      if (variant && colour && checked && !namesMatch(checked, colour)) variant = null;
+      if (!variant || variant.id == null) {
+        return { catalogId: '', colour: colour || '', sizeName: size || '' };
+      }
       return {
-        catalogId: String(info.variantId || ''),
-        colour: currentColourName() || info.colorName || '',
-        sizeName: currentSizeName() || info.sizeId || '',
+        catalogId: String(variant.id),
+        colour: colour,
+        sizeName: size,
       };
     }
 
@@ -6796,12 +6815,13 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
       var colour = combo.colour || checkedProductOption('colour') || '';
       var size = combo.size || checkedProductOption('size') || '';
       var variant = findExactVariant(root, colour || null, size || null);
-      var info = currentVariantInfo(root);
-      var catalogId = variant && variant.id != null ? String(variant.id) : String(info.variantId || '');
+      if (!variant || variant.id == null) {
+        return { catalogId: '', colour: colour || '', sizeName: size || '' };
+      }
       return {
-        catalogId: catalogId,
-        colour: colour || info.colorName || '',
-        sizeName: size || info.sizeId || '',
+        catalogId: String(variant.id),
+        colour: colour,
+        sizeName: size,
       };
     }
 
@@ -6961,6 +6981,13 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
 
     function scheduleShadowWarm(reason, override) {
       var combo = radioCombo(override);
+      if (state.inlineApplied && !state.reverted && state.selectedColour) {
+        if (combo.colour && !namesMatch(combo.colour, state.selectedColour)) {
+          logWarmDebounce(reason, 'cancelled=colour-mismatch', { colour: state.selectedColour, sizeName: combo.size });
+          return;
+        }
+        combo = { colour: state.selectedColour, size: combo.size };
+      }
       var logged = { colour: combo.colour, sizeName: combo.size };
       if (!designReadyForCart()) {
         logWarmDebounce(reason, 'cancelled=design-not-ready', logged);
@@ -7489,6 +7516,142 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
       return Promise.resolve({ ok: true, themed: true });
     }
 
+    function showComboToast() {
+      var existing = document.getElementById('appai-combo-toast');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var el = document.createElement('div');
+      el.id = 'appai-combo-toast';
+      el.setAttribute('role', 'status');
+      el.textContent = "That colour isn't available in this size. Please pick another colour or size.";
+      el.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483646;max-width:420px;width:calc(100% - 32px);padding:12px 16px;background:#1a1a1a;color:#fff;border-radius:8px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);';
+      document.body.appendChild(el);
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 4500);
+    }
+
+    function mainVariantPicker() {
+      var pickers;
+      try { pickers = document.querySelectorAll('variant-picker'); } catch (e) { return null; }
+      for (var p = 0; p < pickers.length; p++) {
+        if (pickers[p].getAttribute('data-template-product-match') !== 'true') continue;
+        if (pickers[p].closest && (pickers[p].closest('product-card') || pickers[p].closest('quick-add-dialog'))) continue;
+        return pickers[p];
+      }
+      return null;
+    }
+
+    function colourRadioFromEvent(event) {
+      var t = event && event.target;
+      if (!t || !t.closest) return null;
+      var picker = t.closest('variant-picker');
+      if (!picker || picker !== mainVariantPicker()) return null;
+      var radio = t.tagName === 'INPUT' && t.type === 'radio' ? t : null;
+      if (!radio) {
+        var label = t.closest('label');
+        radio = label ? label.querySelector('input[type="radio"]') : null;
+      }
+      if (!radio || radio.type !== 'radio') return null;
+      var ctx = String(radio.getAttribute('data-option-name') || radio.name || '').toLowerCase();
+      if (ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) return null;
+      return radio;
+    }
+
+    function setComboBlocked(on) {
+      var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button, .sticky-add-to-cart button');
+      for (var i = 0; i < nodes.length; i++) {
+        var btn = nodes[i];
+        if (btn.closest && btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
+        var section = mainProductSection();
+        var inSection = section && section.contains(btn);
+        var inSticky = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
+        if (!inSection && !inSticky) continue;
+        if (on) {
+          if (btn.getAttribute('data-appai-preparing') === '1') continue;
+          btn.disabled = true;
+          btn.setAttribute('data-appai-combo-blocked', '1');
+        } else if (btn.getAttribute('data-appai-combo-blocked') === '1') {
+          btn.removeAttribute('data-appai-combo-blocked');
+          if (btn.getAttribute('data-appai-preparing') !== '1') btn.disabled = false;
+        }
+      }
+    }
+
+    function syncColourAvailability() {
+      if (state.comboSyncing) return;
+      state.comboSyncing = true;
+      try {
+        var picker = mainVariantPicker();
+        var size = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
+        if (picker) {
+          var radios = picker.querySelectorAll('input[type="radio"]');
+          for (var i = 0; i < radios.length; i++) {
+            var radio = radios[i];
+            var ctx = String(radio.getAttribute('data-option-name') || radio.name || '').toLowerCase();
+            if (ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) continue;
+            var ok = !!(size && findExactVariant(root, radio.value, size));
+            if (!size) ok = !!findExactVariant(root, radio.value, null);
+            if (ok) {
+              radio.removeAttribute('aria-disabled');
+              radio.setAttribute('data-option-available', 'true');
+            } else {
+              radio.setAttribute('aria-disabled', 'true');
+              radio.setAttribute('data-option-available', 'false');
+            }
+          }
+        }
+        var purchase = atcSelection();
+        var custom = !!(state.renderId && state.inlineApplied && !state.reverted);
+        if (custom) setComboBlocked(!purchase.catalogId);
+        else {
+          var checkedColour = checkedProductOption('colour');
+          var stockOk = !checkedColour || !!findExactVariant(root, checkedColour, size || null);
+          setComboBlocked(!stockOk);
+        }
+      } finally {
+        state.comboSyncing = false;
+      }
+    }
+
+    function installComboGuard() {
+      if (state.comboGuard) return;
+      state.comboGuard = true;
+      function blockUnavailable(event) {
+        var radio = colourRadioFromEvent(event);
+        if (!radio) return;
+        var size = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
+        if (!size || findExactVariant(root, radio.value, size)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        try { event.stopImmediatePropagation(); } catch (e) {}
+      }
+      document.addEventListener('pointerdown', blockUnavailable, true);
+      document.addEventListener('click', blockUnavailable, true);
+      var picker = mainVariantPicker();
+      if (picker && window.MutationObserver) {
+        var queued = 0;
+        var observer = new MutationObserver(function () {
+          if (state.comboSyncing) return;
+          if (queued) return;
+          queued = 1;
+          setTimeout(function () {
+            queued = 0;
+            syncColourAvailability();
+          }, 0);
+        });
+        observer.observe(picker, { subtree: true, attributes: true, attributeFilter: ['aria-disabled', 'data-option-available', 'checked'], childList: true });
+        state.comboObserver = observer;
+      }
+      document.addEventListener('change', function (event) {
+        var t = event.target;
+        if (!t || !t.closest || !t.closest('variant-picker')) return;
+        syncColourAvailability();
+        setTimeout(syncColourAvailability, 400);
+        setTimeout(syncColourAvailability, 1200);
+      }, true);
+      syncColourAvailability();
+    }
+
     function installInlineATCIntercept() {
       if (state.atcBound) return;
       state.atcBound = true;
@@ -7512,6 +7675,16 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
         var inSection = !!(section && section.contains(btn));
         var inSticky = !!btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) return;
+        var early = atcSelection();
+        if (!early.catalogId) {
+          e.preventDefault();
+          e.stopPropagation();
+          try { e.stopImmediatePropagation(); } catch (_) {}
+          console.log(TAG, 'atc blocked unavailable colour=' + (early.colour || '') + ' size=' + (early.sizeName || ''));
+          showComboToast();
+          syncColourAvailability();
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
@@ -7567,9 +7740,17 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
 
     function holdAndSubmit(form) {
       if (state.atcBusy) return;
+      var sel = atcSelection();
+      if (!sel.catalogId) {
+        state.atcBusy = false;
+        setPreparing(false);
+        console.log(TAG, 'atc blocked unavailable colour=' + (sel.colour || '') + ' size=' + (sel.sizeName || ''));
+        showComboToast();
+        syncColourAvailability();
+        return;
+      }
       state.atcBusy = true;
       setPreparing(true);
-      var sel = atcSelection();
       console.log(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
       setTimeout(function () {
         prepareShadow('click')
@@ -8084,6 +8265,8 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
       // isn't available" message if we come back empty.
       var exact = findExactVariant(root, state.swatchColor, state.swatchSize);
       if (!exact) {
+        console.log(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
+        showComboToast();
         checkComboAvailable(body);
         return;
       }
@@ -8468,6 +8651,7 @@ console.log('[My Pet] script build=5b2e01c8 loaded');
     });
 
     // Show attempts-remaining caption on first load.
+    installComboGuard();
     refreshCapStatus();
   }
 

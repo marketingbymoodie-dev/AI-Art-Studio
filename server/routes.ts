@@ -11698,7 +11698,27 @@ ${orientationExtra}
         sizeId,
         colorId,
         source: sourceRaw,
+        colorName: requestedColourRaw,
+        sizeName: requestedSizeRaw,
       } = req.body;
+      const requestedColour = String(requestedColourRaw || "").trim();
+      const requestedSize = String(requestedSizeRaw || "").trim();
+      const normComboPart = (value: unknown) => String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+      const requestedComboMatches = (variant: { option1?: unknown; option2?: unknown; option3?: unknown } | null | undefined) => {
+        if (!requestedColour && !requestedSize) return true;
+        const options = [variant?.option1, variant?.option2, variant?.option3].map(normComboPart).filter(Boolean);
+        if (requestedColour && !options.includes(normComboPart(requestedColour))) return false;
+        if (requestedSize && !options.includes(normComboPart(requestedSize))) return false;
+        return true;
+      };
+      const refuseUnavailableCombo = () => {
+        console.log(`[ResolveVariant] combo unavailable colour=${requestedColour} size=${requestedSize}`);
+        return res.status(409).json({
+          success: false,
+          error: "That colour isn't available in this size. Please pick another colour or size.",
+          code: "combo_unavailable",
+        });
+      };
       const source = String(sourceRaw || "");
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
@@ -11883,6 +11903,19 @@ ${orientationExtra}
           ? shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers })
           : null;
       if (basePromise) void basePromise.catch(() => {});
+      const readRequestedBaseVariant = async () => {
+        if (!requestedColour && !requestedSize) return null;
+        try {
+          const lookup = basePromise
+            ? await basePromise
+            : await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+          if (!lookup?.ok) return null;
+          const body = (await lookup.clone().json()) as { variant?: { option1?: unknown; option2?: unknown; option3?: unknown } };
+          return body?.variant || null;
+        } catch {
+          return null;
+        }
+      };
       const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
       if (myPetLookedUp) {
         resolveSteps.push(`lookup=${myPetLookupMs}`);
@@ -11901,6 +11934,10 @@ ${orientationExtra}
         step(`lookup done existing=${existing ? existing.shopifyVariantId : "none"}`);
       }
       if (existing && existing.status === "active") {
+        if (requestedColour || requestedSize) {
+          const requestedBase = await readRequestedBaseVariant();
+          if (!requestedComboMatches(requestedBase)) return refuseUnavailableCombo();
+        }
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
         );
@@ -12206,6 +12243,9 @@ ${orientationExtra}
       // 3. Use variant payload as canonical metadata for shadow variant creation.
       //    This avoids hard-failing on /products/{id}.json when productId is stale/unavailable.
       const baseVariant = baseVariantRecord;
+      if ((requestedColour || requestedSize) && !requestedComboMatches(baseVariant)) {
+        return refuseUnavailableCombo();
+      }
       if (!baseVariant || String(baseVariant.id) !== String(variantId)) {
         console.warn(`[ShadowProduct] Base variant ${variantId} not found in variant lookup payload`);
         return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });

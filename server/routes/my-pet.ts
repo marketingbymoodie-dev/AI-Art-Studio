@@ -310,6 +310,8 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
           designId: shadowDesignId,
           mockupUrl,
           source: "my-pet",
+          colorName: colour,
+          sizeName: size,
           // Matches generationJobs.sessionId set at generate time — satisfies
           // resolve-design-variant's ownership check for this anonymous device.
           sessionId: deviceKey,
