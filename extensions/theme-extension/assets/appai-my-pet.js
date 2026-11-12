@@ -7577,40 +7577,130 @@ console.log('[My Pet] script build=e95f1b44 loaded');
       }
     }
 
-    function syncColourAvailability() {
-      if (state.comboSyncing) return;
+    function optionKind(radio) {
+      if (!radio) return '';
+      var ctx = String(radio.getAttribute('data-option-name') || radio.name || '').toLowerCase();
+      if (ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1) return 'colour';
+      if (ctx.indexOf('size') !== -1) return 'size';
+      return '';
+    }
+
+    function radioFromEvent(event, kind) {
+      var t = event && event.target;
+      if (!t || !t.closest) return null;
+      var picker = t.closest('variant-picker');
+      if (!picker || picker !== mainVariantPicker()) return null;
+      var radio = t.tagName === 'INPUT' && t.type === 'radio' ? t : null;
+      if (!radio) {
+        var label = t.closest('label');
+        radio = label ? label.querySelector('input[type="radio"]') : null;
+      }
+      if (!radio || radio.type !== 'radio') return null;
+      if (optionKind(radio) !== kind) return null;
+      return radio;
+    }
+
+    function soldOutMark() {
+      var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', '0 0 100 46');
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+      svg.setAttribute('class', 'variant-option__strikethrough');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('data-appai-sold-out', '1');
+      for (var n = 0; n < 2; n++) {
+        var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', '100');
+        line.setAttribute('y1', '0');
+        line.setAttribute('x2', '0');
+        line.setAttribute('y2', '46');
+        line.setAttribute('vector-effect', 'non-scaling-stroke');
+        svg.appendChild(line);
+      }
+      return svg;
+    }
+
+    function colourChosen() {
+      if (state.inlineApplied && !state.reverted && state.selectedColour) return state.selectedColour;
+      return checkedProductOption('colour') || '';
+    }
+
+    function keepChosenColour(colour) {
+      if (!colour) return;
+      var picker = mainVariantPicker();
+      if (!picker) return;
+      var radios = picker.querySelectorAll('input[type="radio"]');
+      var match = null;
+      for (var i = 0; i < radios.length; i++) {
+        if (optionKind(radios[i]) !== 'colour') continue;
+        if (String(radios[i].value) !== String(colour)) continue;
+        match = radios[i];
+        break;
+      }
+      if (!match || match.checked) return;
+      for (var j = 0; j < radios.length; j++) {
+        if (optionKind(radios[j]) !== 'colour' || radios[j] === match) continue;
+        radios[j].checked = false;
+        radios[j].removeAttribute('data-current-checked');
+      }
+      match.checked = true;
+      match.setAttribute('data-current-checked', 'true');
+    }
+
+    // Local product.variants JSON. A size click must not wait for Horizon's
+    // fetchUpdatedSection. The strikethrough is part of the sold-out look;
+    // the attribute alone does not draw it.
+    function applySwatchAvailability(sizeName, reason) {
+      var started = (window.performance && performance.now) ? performance.now() : Date.now();
+      var picker = mainVariantPicker();
+      var size = String(sizeName || '').trim();
+      if (!picker || !size || state.comboSyncing) return;
+      if (reason === 'size') {
+        state.swatchPaintSize = size;
+        state.swatchPaintAt = Date.now();
+      }
       state.comboSyncing = true;
       try {
-        var picker = mainVariantPicker();
-        var size = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
-        if (picker) {
-          var radios = picker.querySelectorAll('input[type="radio"]');
-          for (var i = 0; i < radios.length; i++) {
-            var radio = radios[i];
-            var ctx = String(radio.getAttribute('data-option-name') || radio.name || '').toLowerCase();
-            if (ctx.indexOf('color') === -1 && ctx.indexOf('colour') === -1) continue;
-            var ok = !!(size && findExactVariant(root, radio.value, size));
-            if (!size) ok = !!findExactVariant(root, radio.value, null);
-            if (ok) {
-              radio.removeAttribute('aria-disabled');
-              radio.setAttribute('data-option-available', 'true');
-            } else {
-              radio.setAttribute('aria-disabled', 'true');
-              radio.setAttribute('data-option-available', 'false');
-            }
+        var radios = picker.querySelectorAll('input[type="radio"]');
+        for (var i = 0; i < radios.length; i++) {
+          var radio = radios[i];
+          if (optionKind(radio) !== 'colour') continue;
+          var ok = !!findExactVariant(root, radio.value, size);
+          var label = radio.closest ? radio.closest('label') : null;
+          var mark = label ? label.querySelector('svg.variant-option__strikethrough') : null;
+          var spoken = radio.getAttribute('aria-label') || radio.value || '';
+          if (ok) {
+            radio.removeAttribute('aria-disabled');
+            radio.setAttribute('data-option-available', 'true');
+            if (spoken.indexOf(' - Sold out') !== -1) radio.setAttribute('aria-label', spoken.replace(' - Sold out', ''));
+            if (mark && mark.parentNode) mark.parentNode.removeChild(mark);
+          } else {
+            radio.setAttribute('aria-disabled', 'true');
+            radio.setAttribute('data-option-available', 'false');
+            if (spoken.indexOf('Sold out') === -1) radio.setAttribute('aria-label', spoken + ' - Sold out');
+            if (label && !mark) label.appendChild(soldOutMark());
           }
         }
-        var purchase = atcSelection();
-        var custom = !!(state.renderId && state.inlineApplied && !state.reverted);
-        if (custom) setComboBlocked(!purchase.catalogId);
-        else {
-          var checkedColour = checkedProductOption('colour');
-          var stockOk = !checkedColour || !!findExactVariant(root, checkedColour, size || null);
-          setComboBlocked(!stockOk);
+        var chosen = state.heldSwatchColour || colourChosen();
+        if (chosen) keepChosenColour(chosen);
+        var chosenOk = !chosen || !!findExactVariant(root, chosen, size);
+        setComboBlocked(!chosenOk);
+        if (reason === 'size' && !chosenOk && state.swatchToastSize !== size) {
+          state.swatchToastSize = size;
+          showComboToast();
         }
+        if (reason === 'size' && chosenOk) state.swatchToastSize = '';
       } finally {
         state.comboSyncing = false;
       }
+      if (reason === 'size') {
+        var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - started);
+        console.log(TAG, 'swatch availability updated size=' + size + ' ms=' + ms);
+      }
+    }
+
+    function syncColourAvailability() {
+      var size = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
+      applySwatchAvailability(size, 'sync');
     }
 
     function installComboGuard() {
@@ -7620,34 +7710,41 @@ console.log('[My Pet] script build=e95f1b44 loaded');
         var radio = colourRadioFromEvent(event);
         if (!radio) return;
         var size = checkedProductOption('size') || (currentVariantInfo(root).sizeId || '');
-        if (!size || findExactVariant(root, radio.value, size)) return;
+        if (!size || findExactVariant(root, radio.value, size)) {
+          state.heldSwatchColour = radio.value;
+          return;
+        }
         event.preventDefault();
         event.stopPropagation();
         try { event.stopImmediatePropagation(); } catch (e) {}
       }
-      document.addEventListener('pointerdown', blockUnavailable, true);
+      document.addEventListener('pointerdown', function (event) {
+        var sizeRadio = radioFromEvent(event, 'size');
+        if (!sizeRadio || !sizeRadio.value) {
+          blockUnavailable(event);
+          return;
+        }
+        state.heldSwatchColour = colourChosen();
+        applySwatchAvailability(sizeRadio.value, 'size');
+      }, true);
       document.addEventListener('click', blockUnavailable, true);
       var picker = mainVariantPicker();
       if (picker && window.MutationObserver) {
-        var queued = 0;
         var observer = new MutationObserver(function () {
           if (state.comboSyncing) return;
-          if (queued) return;
-          queued = 1;
-          setTimeout(function () {
-            queued = 0;
-            syncColourAvailability();
-          }, 0);
+          var size = state.swatchPaintSize || checkedProductOption('size') || '';
+          if (!size) return;
+          applySwatchAvailability(size, 'morph');
         });
-        observer.observe(picker, { subtree: true, attributes: true, attributeFilter: ['aria-disabled', 'data-option-available', 'checked'], childList: true });
+        observer.observe(picker, { subtree: true, childList: true });
         state.comboObserver = observer;
       }
       document.addEventListener('change', function (event) {
-        var t = event.target;
-        if (!t || !t.closest || !t.closest('variant-picker')) return;
-        syncColourAvailability();
-        setTimeout(syncColourAvailability, 400);
-        setTimeout(syncColourAvailability, 1200);
+        var sizeRadio = radioFromEvent(event, 'size');
+        if (!sizeRadio || !sizeRadio.value) return;
+        if (!state.heldSwatchColour) state.heldSwatchColour = colourChosen();
+        var repeat = state.swatchPaintSize === sizeRadio.value && (Date.now() - (state.swatchPaintAt || 0)) < 300;
+        applySwatchAvailability(sizeRadio.value, repeat ? 'change' : 'size');
       }, true);
       syncColourAvailability();
     }
