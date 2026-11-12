@@ -2116,8 +2116,10 @@ console.log('[My Pet] script build=7aa56816 loaded');
           'selected size=' + (fallbackSize || '(none)'));
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
+        lockProductGallery();
         if (state.previewUrlByColor) swapVariantSlides(state.previewUrlByColor);
-        showColourSlide(colorName);
+        var sameUrl = previewUrlForColour(colorName);
+        if (sameUrl) paintColourNow(colorName, sameUrl);
         fillMissingColours(state.renderId, gen);
         return;
       }
@@ -3054,6 +3056,7 @@ console.log('[My Pet] script build=7aa56816 loaded');
     // slide's <img>. Colour changes use this so the visible hero and the
     // slide swap never write the same node.
     function showColourSlide(colorName) {
+      if (customGalleryLocked()) return false;
       if (!colorName || !perColourSlides()) return false;
       var mediaId = mediaIdForColour(colorName);
       if (!mediaId) return false;
@@ -3088,6 +3091,11 @@ console.log('[My Pet] script build=7aa56816 loaded');
     // so the old selector list returned null and the guard stayed on the
     // base/black slide. Never the first product-media__image.
     function resolveActiveHero(colour) {
+      if (customGalleryLocked()) {
+        var pinned = state.inlineHero;
+        if (pinned && document.body.contains(pinned)) return pinned;
+        return findVisibleHeroImg();
+      }
       var want = colour || selectedHeroColour();
       var mediaId = want ? mediaIdForColour(want) : '';
       if (mediaId) {
@@ -3338,10 +3346,38 @@ console.log('[My Pet] script build=7aa56816 loaded');
         'sameAsVisible=' + (active === visible));
     }
 
+    function heroAssertGiveUp(node, colour) {
+      if (!node) return false;
+      var now = Date.now();
+      var id = nodeStamp(node);
+      var stop = state.heroAssertStop;
+      if (stop && stop.id === id && now - stop.t < 8000) return true;
+      var hits = state.heroAssertHits || [];
+      var kept = [];
+      var same = 0;
+      for (var i = 0; i < hits.length; i++) {
+        if (now - hits[i].t >= 1500) continue;
+        kept.push(hits[i]);
+        if (hits[i].id === id) same++;
+      }
+      kept.push({ id: id, t: now });
+      state.heroAssertHits = kept;
+      if (same >= 3) {
+        state.heroAssertStop = { id: id, t: now, colour: colour || '' };
+        console.log(TAG, 'hero-assert loop broken colour=' + (colour || ''));
+        return true;
+      }
+      return false;
+    }
+
     function scheduleHeroVerify(colorName, expectedUrl) {
+      if (customGalleryLocked()) return;
       var token = (state._heroVerifyToken = (state._heroVerifyToken || 0) + 1);
       setTimeout(function () {
         if (token !== state._heroVerifyToken || !state.inlineApplied) return;
+        var liveVerify = liveColourChoice();
+        colorName = liveVerify.colour || colorName;
+        expectedUrl = liveVerify.url || expectedUrl;
         logHeroNodes('verify+300ms', colorName, expectedUrl);
         var targets = heroAssertTargets(colorName);
         var fixed = 0;
@@ -3364,6 +3400,19 @@ console.log('[My Pet] script build=7aa56816 loaded');
     // never given another colour's file; the slideshow selects that slide.
     function reassertColourPreview(reason, colorName, url) {
       var liveNow = liveColourChoice();
+      if (customGalleryLocked()) {
+        colorName = liveNow.colour || colorName;
+        url = liveNow.url || url;
+        var pinned = (state.inlineHero && document.body.contains(state.inlineHero))
+          ? state.inlineHero
+          : findVisibleHeroImg();
+        if (!pinned || !url) return;
+        if (srcAlready(pinned, url) && !pinned.getAttribute('srcset') && !pinned.getAttribute('sizes')) return;
+        if (heroAssertGiveUp(pinned, colorName)) return;
+        applyPreviewSrc(pinned, url);
+        state.inlineHero = pinned;
+        return;
+      }
       if (colorName && liveNow.colour && !namesMatch(colorName, liveNow.colour)) {
         logColourRace(state.sectionFetchSeq || 0, liveNow);
         if (perColourSlides()) showColourSlide(liveNow.colour);
@@ -3679,7 +3728,9 @@ console.log('[My Pet] script build=7aa56816 loaded');
       finally { t.allowSwap = false; }
       if (t.colour) {
         noteColourSelection(t.colour, false);
-        showColourSlide(t.colour);
+        lockProductGallery();
+        var lockedUrl = previewUrlForColour(t.colour) || t.url;
+        if (lockedUrl) paintColourNow(t.colour, lockedUrl);
       }
       watchOpeningCover(token);
     }
@@ -3887,7 +3938,11 @@ console.log('[My Pet] script build=7aa56816 loaded');
       if (!img) return;
       var own = mediaColourForImg(img);
       var ownUrl = own ? previewUrlForColour(own) : '';
-      if (perColourSlides() && ownUrl) {
+      if (customGalleryLocked()) {
+        var liveLocked = liveColourChoice();
+        if (liveLocked.url) url = liveLocked.url;
+        ownUrl = '';
+      } else if (perColourSlides() && ownUrl) {
         if (!srcAlready(img, ownUrl)) applyPreviewSrc(img, ownUrl);
         var liveNow = liveColourChoice();
         if (liveNow.colour && !namesMatch(own, liveNow.colour)) {
@@ -3966,6 +4021,14 @@ console.log('[My Pet] script build=7aa56816 loaded');
       }
       var own = mediaColourForImg(img);
       var ownUrl = own ? previewUrlForColour(own) : '';
+      if (customGalleryLocked() && (img === state.inlineHero || img === findVisibleHeroImg())) {
+        var liveImg = liveColourChoice();
+        if (!liveImg.url) return false;
+        if (srcAlready(img, liveImg.url) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
+        applyPreviewSrc(img, liveImg.url);
+        state.inlineHero = img;
+        return true;
+      }
       if (perColourSlides()) {
         if (!ownUrl) return false;
         if (srcAlready(img, ownUrl) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
@@ -4222,7 +4285,11 @@ console.log('[My Pet] script build=7aa56816 loaded');
     function noteColourSelection(colour, bump) {
       var name = colour ? (canonicalPreviewColor(colour) || colour) : (state.selectedColour || '');
       if (name) state.selectedColour = name;
-      if (bump) state.colourSeq = (state.colourSeq || 0) + 1;
+      if (bump) {
+        state.colourSeq = (state.colourSeq || 0) + 1;
+        state.heroAssertHits = [];
+        state.heroAssertStop = null;
+      }
       return state.colourSeq || 0;
     }
 
@@ -4274,6 +4341,85 @@ console.log('[My Pet] script build=7aa56816 loaded');
 
     function customDesignActive() {
       return !!(state.renderId && state.inlineApplied && !state.reverted);
+    }
+
+    function customGalleryLocked() {
+      return !!(state.galleryLocked && state.renderId && !state.reverted);
+    }
+
+    function productSlideshow() {
+      var gallery = mainMediaGallery();
+      if (!gallery) return null;
+      return gallery.slideshow || (gallery.querySelector && gallery.querySelector('slideshow-component'));
+    }
+
+    // Custom designs use the colour swatches and one hero image. The product
+    // gallery's thumbnail strip and slideshow selection stay available on
+    // the stock page, and come back when the design is reverted.
+    function lockProductGallery() {
+      if (state.reverted || !state.renderId) return;
+      var gallery = mainMediaGallery();
+      if (!gallery) return;
+      state.galleryLocked = true;
+      gallery.setAttribute('data-appai-gallery-lock', '1');
+      if (!state.galleryLockStyle) {
+        var style = document.createElement('style');
+        style.setAttribute('data-appai-gallery-lock', '1');
+        style.textContent = 'media-gallery[data-appai-gallery-lock] slideshow-component > slideshow-controls,media-gallery[data-appai-gallery-lock] slideshow-component > slideshow-arrows,media-gallery[data-appai-gallery-lock] slideshow-component > .slideshow-controls{display:none !important;}';
+        (document.head || document.documentElement).appendChild(style);
+        state.galleryLockStyle = style;
+      }
+      var show = productSlideshow();
+      if (show && !show.__appaiSelectLocked) {
+        show.__appaiSelectLocked = true;
+        show.__appaiSelect = show.select;
+        show.__appaiNext = show.next;
+        show.__appaiPrev = show.previous;
+        var ignore = function () {};
+        try { show.select = ignore; } catch (e) {}
+        try { show.next = ignore; } catch (e2) {}
+        try { show.previous = ignore; } catch (e3) {}
+      }
+      var strips = gallery.querySelectorAll('slideshow-controls, slideshow-arrows, .slideshow-controls');
+      for (var s = 0; s < strips.length; s++) {
+        if (strips[s].closest && strips[s].closest('dialog, zoom-dialog')) continue;
+        if (strips[s].getAttribute('data-appai-thumbs-hidden') === '1') continue;
+        strips[s].setAttribute('data-appai-thumbs-hidden', '1');
+        strips[s].__appaiThumbsDisplay = strips[s].style.display;
+        strips[s].style.display = 'none';
+      }
+      if (!state.galleryLockClick) {
+        state.galleryLockClick = function (event) {
+          if (!customGalleryLocked()) return;
+          var t = event.target;
+          if (!t || !t.closest) return;
+          var host = mainMediaGallery();
+          if (!host || !host.contains(t)) return;
+          if (t.closest('dialog, zoom-dialog')) return;
+          if (!t.closest('slideshow-controls, slideshow-arrows, .slideshow-controls, button.slideshow-controls__thumbnail')) return;
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        document.addEventListener('click', state.galleryLockClick, true);
+      }
+    }
+
+    function unlockProductGallery() {
+      state.galleryLocked = false;
+      var gallery = mainMediaGallery();
+      if (gallery) gallery.removeAttribute('data-appai-gallery-lock');
+      var show = productSlideshow();
+      if (show && show.__appaiSelectLocked) {
+        if (show.__appaiSelect) show.select = show.__appaiSelect;
+        if (show.__appaiNext) show.next = show.__appaiNext;
+        if (show.__appaiPrev) show.previous = show.__appaiPrev;
+        show.__appaiSelectLocked = false;
+      }
+      var hiddenStrips = document.querySelectorAll('[data-appai-thumbs-hidden]');
+      for (var h = 0; h < hiddenStrips.length; h++) {
+        hiddenStrips[h].style.display = hiddenStrips[h].__appaiThumbsDisplay || '';
+        hiddenStrips[h].removeAttribute('data-appai-thumbs-hidden');
+      }
     }
 
     // Horizon's media-gallery replaces itself from the variant-picker HTML
@@ -4404,7 +4550,14 @@ console.log('[My Pet] script build=7aa56816 loaded');
       if (!state.gallerySyncing) {
         try { swapped = swapVariantSlides(state.previewUrlByColor) || 0; } catch (e) {}
       }
-      if (paint.colour) showColourSlide(paint.colour);
+      if (paint.colour) {
+        var livePaint = liveColourChoice();
+        if (customGalleryLocked()) {
+          if (livePaint.url) paintColourNow(livePaint.colour, livePaint.url);
+        } else {
+          showColourSlide(paint.colour);
+        }
+      }
       colourMark('re-swap', 'nodes=' + swapped + ' slide=' + (paint.colour || '') + ' ' + (reason || ''));
       return swapped;
     }
@@ -4810,6 +4963,11 @@ console.log('[My Pet] script build=7aa56816 loaded');
         var btn = t.closest('button.slideshow-controls__thumbnail, button.dialog-thumbnails-list__thumbnail');
         if (!btn) return;
         var isZoom = surface === 'zoom-thumb' || (btn.classList && btn.classList.contains('dialog-thumbnails-list__thumbnail'));
+        if (customGalleryLocked() && !isZoom) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
         var zoomOpen = zoomDialogOpen(zoomObserveTarget());
         if (isZoom || zoomOpen) {
           var zoomColour = colourForThumbButton(btn);
@@ -5158,7 +5316,10 @@ console.log('[My Pet] script build=7aa56816 loaded');
       var stash = state.inlineSlideStash || [];
       var seen = [];
       var singleSlot = !perColourSlides();
-      var visibleHero = singleSlot ? (findVisibleHeroImg() || state.inlineHero) : null;
+      var pinnedHero = customGalleryLocked()
+        ? ((state.inlineHero && document.body.contains(state.inlineHero)) ? state.inlineHero : findVisibleHeroImg())
+        : null;
+      var visibleHero = pinnedHero || (singleSlot ? (findVisibleHeroImg() || state.inlineHero) : null);
       for (var color in urlsByColor) {
         if (!Object.prototype.hasOwnProperty.call(urlsByColor, color)) continue;
         var url = urlsByColor[color];
@@ -5466,28 +5627,20 @@ console.log('[My Pet] script build=7aa56816 loaded');
       }
       var effectiveUrl = (effectiveColor && state.previewUrlByColor[effectiveColor]) || previewUrl;
       preloadPreviewUrls(state.previewUrlByColor);
+      lockProductGallery();
       if (effectiveColor) noteColourSelection(effectiveColor, false);
       if (effectiveUrl) decodeHeroUrl(effectiveUrl);
-      showColourSlide(effectiveColor);
+      var heroNow = findVisibleHeroImg() || hero;
+      if (heroNow && effectiveUrl) {
+        swapInlineHero(heroNow, effectiveUrl);
+        state.inlineHero = heroNow;
+      }
       if (state.selectionOnce === (state.renderGeneration || 0)) consumeSelectionSwap(state.previewUrlByColor);
       else swapVariantSlides(state.previewUrlByColor);
-      if (perColourSlides()) {
-        var selectedHero = effectiveColor ? resolveActiveHero(effectiveColor) : null;
-        if (selectedHero) state.inlineHero = selectedHero;
-      } else {
-        swapInlineHero(hero, effectiveUrl);
-      }
       var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
       console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
         ' urlTail=' + tail +
         (effectiveUrl !== previewUrl ? ' (overrode passed url with effective-colour cache)' : ''));
-      // STAGING-100 — pre-swap every per-variant slide + thumbnail so
-      // Ritual's carousel (and Horizon/Impulse-family multi-slide galleries)
-      // show OUR composite on whichever slide the native swatch handler
-      // scrolls to. Idempotent — safe to call again on every activate /
-      // every gallery mutation / every recomposite success.
-      if (state.selectionOnce === (state.renderGeneration || 0)) consumeSelectionSwap(state.previewUrlByColor);
-      else swapVariantSlides(state.previewUrlByColor);
       // MutationObserver install/refresh on EVERY activation — even when
       // already attached, because the hero node may have been replaced since
       // the last activation (theme section re-render, "Try another photo"
@@ -5646,6 +5799,7 @@ console.log('[My Pet] script build=7aa56816 loaded');
       clearHeroHold();
       state.reverted = true;
       state.inlineApplied = false;
+      unlockProductGallery();
       state.thumbColour = null;
       state.designSwitchColour = null;
       state.designSwitchSize = null;
@@ -5782,13 +5936,21 @@ console.log('[My Pet] script build=7aa56816 loaded');
         if (designTransitionActive()) return;
         if (state.holdOldHero && hero === state.holdOldHero) return;
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
+        if (customGalleryLocked()) {
+          var liveGuard = liveColourChoice();
+          if (hero !== state.inlineHero && hero !== findVisibleHeroImg()) return;
+          if (!liveGuard.url) return;
+          if (srcAlready(hero, liveGuard.url) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes')) return;
+          reassertColourPreview('guard', liveGuard.colour, liveGuard.url);
+          return;
+        }
         var info = currentVariantInfo(root);
         // STAGING-99 — swatch cross-check. If the form is the wrong one
         // (Ritual multi-form PDP), info.colorName will be frozen on the
         // wrong variant; the checked swatch is the shopper's actual intent.
         var swColor = readSwatchColor(root);
         var ownColour = mediaColourForImg(hero);
-        if (ownColour && perColourSlides()) {
+        if (ownColour && perColourSlides() && !customGalleryLocked()) {
           var ownUrl = previewUrlForColour(ownColour);
           var liveSlide = liveColourChoice();
           if (ownUrl && !(srcAlready(hero, ownUrl) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes'))) {
@@ -5881,10 +6043,22 @@ console.log('[My Pet] script build=7aa56816 loaded');
       state.inlineGuardBackupTimer = setInterval(function () {
         if (!state.renderId || !state.inlineApplied || state.reverted) return;
         if (designTransitionActive()) return;
+        if (customGalleryLocked()) {
+          if (state.heroAssertStop) return;
+          var livePollNow = liveColourChoice();
+          var pinnedNow = state.inlineHero;
+          if (pinnedNow && document.body.contains(pinnedNow) && pinnedNow.__appaiMyPetObserver) return;
+          var freshLocked = findVisibleHeroImg();
+          if (!freshLocked || freshLocked === pinnedNow) return;
+          state.inlineHero = freshLocked;
+          if (livePollNow.url) reassertColourPreview('node-replaced', livePollNow.colour, livePollNow.url);
+          installHeroGuard(freshLocked);
+          return;
+        }
         var info = currentVariantInfo(root);
         var pollSw = readSwatchColor(root);
-        var colorName = state.thumbColour
-          || state.designSwitchColour
+        var livePoll = liveColourChoice();
+        var colorName = livePoll.colour
           || ((pollSw && info.colorName && pollSw !== info.colorName)
             ? pollSw
             : (info.colorName || pollSw || null));
@@ -6122,23 +6296,19 @@ console.log('[My Pet] script build=7aa56816 loaded');
           console.log(TAG, 'inline variant evt:', evtType, '→ form had no colorName, using swatch', swColor);
           info.colorName = swColor;
         }
-        if (!info.colorName) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
         var liveEvt = liveColourChoice();
-        if (liveEvt.colour && !namesMatch(info.colorName, liveEvt.colour)) {
-          logColourRace(state.sectionFetchSeq || 0, liveEvt);
-          if (liveEvt.url) reassertColourPreview('variant-evt', liveEvt.colour, liveEvt.url);
-          return;
-        }
-        var expected = state.previewUrlByColor[info.colorName];
+        if (!info.colorName && !liveEvt.colour) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
+        var chosen = liveEvt.colour || info.colorName;
+        var expected = liveEvt.url || state.previewUrlByColor[chosen];
         if (expected) {
-          console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', info.colorName);
+          console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', chosen);
           state.previewUrl = expected;
-          reassertColourPreview('variant-evt', info.colorName, expected);
+          reassertColourPreview('variant-evt', chosen, expected);
         } else {
-          console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', info.colorName, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
-          swapInlineColor(info.colorName);
+          console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', chosen, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
+          swapInlineColor(chosen);
         }
-        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, info.colorName))) {
+        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, chosen))) {
           scheduleGallerySync('colour');
         }
       };
@@ -6181,24 +6351,8 @@ console.log('[My Pet] script build=7aa56816 loaded');
       var last = currentVariantInfo(root);
       var trackedSize = '';
       var trackedColour = '';
-      var tickCount = 0;
       state.inlineFormPollTimer = setInterval(function () {
         if (state.reverted || !state.inlineApplied || !state.inlineHero || !state.renderId) return;
-        tickCount++;
-        // Heartbeat every 5s (10 × 500ms) so if the form id is frozen the
-        // value it's reading is still visible in the console. Strip after
-        // the first few diagnostic cycles ship green — keep for now so
-        // STAGING-99 debugging has a trace.
-        if (tickCount % 10 === 0) {
-          var hbForm = findMainProductForm(root);
-          var hbIdInput = hbForm ? hbForm.querySelector('input[name="id"], select[name="id"]') : null;
-          var hbVid = hbIdInput ? hbIdInput.value : '(no id)';
-          var hbInfo = currentVariantInfo(root);
-          var hbSw = readSwatchColor(root);
-          console.log(TAG, 'inline form poll heartbeat: variantId=' + hbVid +
-            ' variantColor=' + (hbInfo.colorName || '(none)') +
-            ' swatchColor=' + (hbSw || '(none)'));
-        }
         var now = currentVariantInfo(root);
         var swColor = readSwatchColor(root);
         // STAGING-99 cross-check — colour change can come from the swatch
@@ -6246,16 +6400,18 @@ console.log('[My Pet] script build=7aa56816 loaded');
           '(formId=' + now.variantId + ' formColor=' + (now.colorName || '(none)') +
           ' swatch=' + (swColor || '(none)') + ')');
         last = now;
-        var expected = state.previewUrlByColor[effectiveColor];
+        var liveForm = liveColourChoice();
+        var paintColour = liveForm.colour || effectiveColor;
+        var expected = liveForm.url || state.previewUrlByColor[paintColour];
         if (expected) {
-          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', effectiveColor);
+          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', paintColour);
           state.previewUrl = expected;
-          reassertColourPreview('form-poll', effectiveColor, expected);
+          reassertColourPreview('form-poll', paintColour, expected);
         } else {
-          console.log(TAG, 'inline form poll: no cached URL for', effectiveColor, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
-          swapInlineColor(effectiveColor);
+          console.log(TAG, 'inline form poll: no cached URL for', paintColour, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
+          swapInlineColor(paintColour);
         }
-        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, effectiveColor))) {
+        if (!(state.colourPaint && namesMatch(state.colourPaint.colour, paintColour))) {
           scheduleGallerySync('colour');
         }
         scheduleShadowWarm('colour');
