@@ -58,6 +58,7 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
+import { lookupShadowOrderHold, protectShadowsOnPaidOrder } from "./shadow-reaper-guard";
 import {
   hasPrintConfigSuffix,
   reusableShadowDesignId,
@@ -11579,19 +11580,20 @@ ${orientationExtra}
   app.post("/api/storefront/shadow-product/cart-added", async (req: Request, res: Response) => {
     try {
       const { shop: shopRaw, shadowProductId } = req.body;
+      const shadowVariantId = req.body?.shadowVariantId || req.body?.variantId;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
-      if (!shop || !shadowProductId) return res.status(400).json({ error: "shop and shadowProductId required" });
+      if (!shop || (!shadowProductId && !shadowVariantId)) {
+        return res.status(400).json({ error: "shop and shadowProductId or variantId required" });
+      }
       const installation = await getAuthorizedInstallation(shop);
       if (!installation || installation.status !== "active") return res.status(403).json({ error: "Shop not authorized" });
-      // Find the published product record by shopifyProductId
-      const rows = await db
-        .select()
-        .from(publishedProducts)
-        .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.shopifyProductId, String(shadowProductId))))
-        .limit(1);
-      if (rows.length > 0) {
-        await storage.markShadowProductCartAdded(rows[0].id);
-        console.log(`[ShadowProduct] Extended expiry to 7d for product ${shadowProductId} (cart-added)`);
+      const row = await storage.findActiveShadowProduct(shop, {
+        productId: shadowProductId ? String(shadowProductId) : "",
+        variantId: shadowVariantId ? String(shadowVariantId) : "",
+      });
+      if (row) {
+        await storage.markShadowProductCartAdded(row.id);
+        console.log(`[ShadowProduct] Extended expiry to 7d for product ${row.shopifyProductId} variant ${row.shopifyVariantId} (cart-added)`);
       }
       return res.json({ success: true });
     } catch (e: any) {
@@ -13905,6 +13907,9 @@ ${orientationExtra}
           .catch((e: any) =>
             console.warn("[Shopify Orders Paid] my-pet sale recording failed:", e?.message || e),
           );
+        void protectShadowsOnPaidOrder(shop, order, storage).catch((e: any) =>
+          console.warn("[Shopify Orders Paid] shadow protect failed:", e?.message || e),
+        );
       }
 
       // ── Creator Marketplace financial ledger (Phase 5) ─────────────────────
@@ -14366,6 +14371,20 @@ ${orientationExtra}
         }
         for (const row of rows) {
           try {
+            const hold = await lookupShadowOrderHold({
+              shop: shopDomain,
+              token: installation.accessToken,
+              variantId: row.shopifyVariantId,
+            });
+            if (hold !== "clear") {
+              if (hold === "hold") {
+                await storage.protectShadowProductOrder(row.id);
+                console.log(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=order`);
+              } else {
+                console.warn(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=unverified`);
+              }
+              continue;
+            }
             // Delete the shadow product from Shopify (also removes its variant + images)
             const delRes = await fetch(
               `https://${shopDomain}/admin/api/2025-10/products/${row.shopifyProductId}.json`,

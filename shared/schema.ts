@@ -1313,6 +1313,7 @@ export const publishedProducts = pgTable("published_products", {
   status: text("status").notNull().default("active"), // active | archived
   expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
   cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
+  orderProtectedAt: timestamp("order_protected_at"),   // set on orders/paid; the reaper must not delete this shadow
   readyAt: timestamp("ready_at"),                     // set when the shadow is purchasable and Ajax-visible
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),

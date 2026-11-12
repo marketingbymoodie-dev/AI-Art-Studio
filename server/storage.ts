@@ -1612,7 +1612,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return row;
   }
 
-  /** Expired shadows that were never added to a cart. cartAddedAt rows stay. */
+  /** Expired shadows that were never added to a cart and never paid for. */
   async getExpiredShadowProducts(): Promise<PublishedProduct[]> {
     return db
       .select()
@@ -1621,17 +1621,87 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
         and(
           eq(publishedProducts.status, "active"),
           isNull(publishedProducts.cartAddedAt),
+          isNull(publishedProducts.orderProtectedAt),
           lte(publishedProducts.expiresAt, new Date())
         )
       );
   }
 
-  /** Mark a shadow product as added-to-cart and extend its expiry to 7 days from now */
+  async findActiveShadowProduct(
+    shop: string,
+    ids: { productId?: string; variantId?: string },
+  ): Promise<PublishedProduct | undefined> {
+    const productId = String(ids.productId || "").replace(/\D/g, "");
+    const variantId = String(ids.variantId || "").replace(/\D/g, "");
+    if (productId) {
+      const [byProduct] = await db
+        .select()
+        .from(publishedProducts)
+        .where(
+          and(
+            eq(publishedProducts.shop, shop),
+            eq(publishedProducts.shopifyProductId, productId),
+            eq(publishedProducts.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (byProduct) return byProduct;
+    }
+    if (!variantId) return undefined;
+    const [byVariant] = await db
+      .select()
+      .from(publishedProducts)
+      .where(
+        and(
+          eq(publishedProducts.shop, shop),
+          eq(publishedProducts.shopifyVariantId, variantId),
+          eq(publishedProducts.status, "active"),
+        ),
+      )
+      .limit(1);
+    return byVariant;
+  }
+
+  /** Mark a shadow product as added-to-cart and extend its expiry to 7 days from now.
+   *  A paid order stays permanent: cart-added must not put an expiry back on it. */
   async markShadowProductCartAdded(id: string): Promise<void> {
-    const sevenDays = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const sevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const [row] = await db
+      .select({ orderProtectedAt: publishedProducts.orderProtectedAt })
+      .from(publishedProducts)
+      .where(eq(publishedProducts.id, id))
+      .limit(1);
     await db
       .update(publishedProducts)
-      .set({ cartAddedAt: new Date(), expiresAt: sevenDays, updatedAt: new Date() })
+      .set({
+        cartAddedAt: now,
+        ...(row?.orderProtectedAt ? {} : { expiresAt: sevenDays }),
+        updatedAt: now,
+      })
+      .where(eq(publishedProducts.id, id));
+  }
+
+  /** Paid-order lock. expiresAt null means the hourly reaper has no expiry to act on. */
+  async protectShadowProductOrder(id: string): Promise<void> {
+    const now = new Date();
+    const [row] = await db
+      .select({
+        cartAddedAt: publishedProducts.cartAddedAt,
+        orderProtectedAt: publishedProducts.orderProtectedAt,
+      })
+      .from(publishedProducts)
+      .where(eq(publishedProducts.id, id))
+      .limit(1);
+    if (!row) return;
+    await db
+      .update(publishedProducts)
+      .set({
+        orderProtectedAt: row.orderProtectedAt || now,
+        cartAddedAt: row.cartAddedAt || now,
+        expiresAt: null,
+        updatedAt: now,
+      })
       .where(eq(publishedProducts.id, id));
   }
 

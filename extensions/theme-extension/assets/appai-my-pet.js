@@ -7294,6 +7294,7 @@ console.log('[My Pet] script build=d9ac8ed1 loaded');
           if (!entry || !entry.shadowId) return null;
           var nextId = String(entry.shadowId);
           if (nextId === oldId) return null;
+          state.shadowRetryVariant = nextId;
           console.log(TAG, 'reuse stale variant=' + oldId + ' → re-resolved=' + nextId);
           rememberSubmittedMockup(nextId, (entry.properties && entry.properties._mockup_url) || entry.mockupUrl || '');
           if (snap.kind === 'json') {
@@ -7347,12 +7348,15 @@ console.log('[My Pet] script build=d9ac8ed1 loaded');
           var pending = origFetch.apply(this, arguments);
           if (already || !snap || !snap.id) return pending;
           return pending.then(function (res) {
+            if (res && res.ok) noteShadowCartAdded(knownShadowId(snap.id));
             if (!res || res.status !== 422 || state.shadowAddRetry) return res;
             return res.clone().json().then(function (json) {
               if (!staleVariantMessage(json)) return res;
               state.shadowAddRetry = true;
+              state.shadowRetryVariant = '';
               return recoverStaleAdd(snap).then(function (retryRes) {
                 state.shadowAddRetry = false;
+                if (retryRes && retryRes.ok) noteShadowCartAdded(state.shadowRetryVariant);
                 return retryRes || res;
               }, function () {
                 state.shadowAddRetry = false;
@@ -7498,6 +7502,36 @@ console.log('[My Pet] script build=d9ac8ed1 loaded');
 
     // The only custom-add submit. Page clicks use the theme form (one
     // requestSubmit). The modal uses one fetch. Both stamp _mockup_url first.
+    function knownShadowId(id) {
+      var clean = String(id || '').replace(/\D/g, '');
+      if (!clean) return '';
+      if (state.atcClick && String(state.atcClick.shadowId || '').replace(/\D/g, '') === clean) return clean;
+      try {
+        var bag = readShadowBag();
+        var keys = Object.keys(bag);
+        for (var i = 0; i < keys.length; i++) {
+          if (String((bag[keys[i]] && bag[keys[i]].shadowId) || '').replace(/\D/g, '') === clean) return clean;
+        }
+      } catch (e) {}
+      return '';
+    }
+
+    // Theme submit, modal fetch, reuse, and a stale-variant retry all come
+    // through here. The server extends that shadow from 6h to 7d.
+    function noteShadowCartAdded(variantId) {
+      var id = String(variantId || '').replace(/\D/g, '');
+      if (!id) return;
+      if (state.cartAddedNoted === id && (Date.now() - (state.cartAddedNotedAt || 0)) < 5000) return;
+      state.cartAddedNoted = id;
+      state.cartAddedNotedAt = Date.now();
+      postJson('my-pet/cart-added', { variantId: id }).then(function (res) {
+        if (res && res.ok) console.log(TAG, 'cart-added variant=' + id + ' expiry=7d');
+        else console.warn(TAG, 'cart-added failed variant=' + id);
+      }, function () {
+        console.warn(TAG, 'cart-added failed variant=' + id);
+      });
+    }
+
     function submitCustomLine(path, entry, sel, form) {
       if (!entry || !entry.shadowId) throw new Error('Could not add this design to cart.');
       var colour = (sel && sel.colour) || entry.colour || '';
@@ -7509,9 +7543,11 @@ console.log('[My Pet] script build=d9ac8ed1 loaded');
       console.log(TAG, 'atc _mockup_url=' + sentMockup);
       if (path === 'fetch') {
         return fallbackCartAdd({ variantId: entry.shadowId }, entry.properties).then(function () {
+          noteShadowCartAdded(entry.shadowId);
           return { ok: true, themed: false };
         });
       }
+      noteShadowCartAdded(entry.shadowId);
       submitThemeOnce(form, entry, sel);
       return Promise.resolve({ ok: true, themed: true });
     }

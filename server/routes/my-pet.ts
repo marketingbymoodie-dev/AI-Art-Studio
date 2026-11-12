@@ -267,6 +267,23 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
   // Thin server-to-server forward to the existing shadow-SKU endpoint every other
   // customizer flow already uses — keeps the storefront JS from needing to know
   // the app's own domain (catalogue products carry no ai_art_studio.app_url meta).
+  // Theme and modal adds both land here. Extends the shadow from 6h to 7d.
+  app.post("/api/proxy/my-pet/cart-added", myPetProxyAuth, async (req: Request, res: Response) => {
+    const shop = (req as any).proxyShop as string;
+    const variantId = String(req.body?.variantId || "");
+    if (!shop || !variantId) return res.status(400).json({ ok: false, error: "variantId is required" });
+    try {
+      const row = await storage.findActiveShadowProduct(shop, { variantId });
+      if (!row) return res.json({ ok: false, error: "shadow not found" });
+      await storage.markShadowProductCartAdded(row.id);
+      console.log(`[ShadowProduct] Extended expiry to 7d for variant ${row.shopifyVariantId} (my-pet cart-added)`);
+      return res.json({ ok: true, variantId: row.shopifyVariantId });
+    } catch (err: any) {
+      console.error("[ShadowProduct] my-pet cart-added error:", err?.message);
+      return res.status(500).json({ ok: false, error: "Internal server error" });
+    }
+  });
+
   app.post("/api/proxy/my-pet/resolve-variant", myPetProxyAuth, async (req: Request, res: Response) => {
     const shop = (req as any).proxyShop as string;
     const { renderId, variantId, colorName, sizeName, mockupUrl: clientMockupRaw } = req.body || {};
