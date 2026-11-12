@@ -37,6 +37,7 @@
     data-page-url="{{ shop.url }}{{ product.url }}"
     data-preview-mode="{{ preview_mode | escape }}"
   >
+    <button type="button" class="appai-my-pet__designs" data-appai-my-pet-designs hidden>Your designs</button>
     <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
       {{ button_label | escape }}
     </button>
@@ -53,7 +54,6 @@
     {% endcomment %}
     <div class="appai-my-pet__meta">
       <p class="appai-my-pet__caption" data-subtitle="{{ button_subtitle | escape }}">{{ button_subtitle | escape }}</p>
-      <button type="button" class="appai-my-pet__designs" data-appai-my-pet-designs hidden>Your designs</button>
     </div>
   </div>
   {% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
@@ -150,8 +150,26 @@
     margin: 0.4em 0 0;
     min-height: 1.35em;
   }
-  .appai-my-pet__meta:has(.appai-my-pet__caption:empty):not(:has(.appai-my-pet__designs:not([hidden]))) {
+  .appai-my-pet__meta:has(.appai-my-pet__caption:empty) {
     display: none;
+  }
+  /* Selected size stays the normal dark pill even when Horizon marks that
+     size sold out because the current colour has no variant. */
+  .variant-option__button-label:has([data-appai-size-selected="1"]) {
+    color: var(--color-selected-variant-text, #fff) !important;
+    background-color: var(--color-selected-variant-background, #000) !important;
+    opacity: 1 !important;
+    transition: none !important;
+  }
+  .variant-option__button-label:has([data-appai-size-selected="1"]) .variant-option__button-label__text {
+    color: var(--color-selected-variant-text, #fff) !important;
+    opacity: 1 !important;
+    -webkit-text-fill-color: var(--color-selected-variant-text, #fff) !important;
+  }
+  .variant-option__button-label:has([data-appai-size-selected="1"]) .variant-option__button-label__pill {
+    background: var(--color-selected-variant-background, #000) !important;
+    transform: none !important;
+    opacity: 1 !important;
   }
   .appai-my-pet__caption {
     margin: 0 !important;
@@ -269,34 +287,25 @@
     cursor: not-allowed !important;
   }
   .appai-my-pet__designs {
-    position: relative;
-    z-index: 1;
-    flex: 0 0 auto;
-    margin: 0;
-    padding: 0;
+    display: block;
+    width: 100%;
+    margin: 0 0 0.6rem;
+    padding: 0.85em 1.5em;
     border: 0;
-    background: none;
+    border-radius: 6px;
+    background: var(--color-secondary-button-background, #fff);
+    color: var(--color-secondary-button-text, #000);
+    box-shadow: 0 0 0 1px currentColor inset;
     font: inherit;
-    font-size: 0.9em;
-    font-weight: 500;
-    line-height: 1.35em;
-    color: var(--appai-my-pet-caption-fg, #666666);
-    text-decoration: underline;
-    text-underline-offset: 0.15em;
+    font-weight: 700;
+    font-size: 1em;
+    line-height: 1.2;
+    text-align: center;
+    text-decoration: none;
     cursor: pointer;
     white-space: nowrap;
   }
   .appai-my-pet__designs[hidden] { display: none !important; }
-  .appai-my-pet__designs::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 100%;
-    min-width: 44px;
-    height: 44px;
-    transform: translate(-50%, -50%);
-  }
   .appai-my-pet-designs-backdrop {
     position: fixed;
     inset: 0;
@@ -464,9 +473,9 @@
       text-overflow: unset;
     }
     .appai-my-pet__designs {
-      display: inline;
-      margin-left: 0.45rem;
-      vertical-align: baseline;
+      display: block;
+      width: 100%;
+      margin: 0 0 0.6rem;
     }
     .appai-my-pet-designs-backdrop.appai-my-pet-designs--sheet {
       pointer-events: auto;

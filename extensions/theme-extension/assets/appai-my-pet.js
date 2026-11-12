@@ -1141,7 +1141,31 @@ console.log('[My Pet] script build=ff10ef94 loaded');
     var defaultSubtitle = caption
       ? (caption.getAttribute('data-subtitle') || caption.textContent || '')
       : '';
+    var captionT0 = (window.performance && performance.now) ? performance.now() : Date.now();
     if (!openBtn) return;
+
+    function storedDesignOnPage() {
+      var stored = readStoredRender(shopifyProductId);
+      return !!(stored && stored.renderId && !stored.reverted && !revertedFlagOn(shopifyProductId));
+    }
+
+    // Caption is on the page with the button. Cap status updates the tries
+    // line later; it must not be the first time the caption appears.
+    function showCaptionNow() {
+      if (!caption || state.captionPainted) return;
+      var hasDesign = storedDesignOnPage();
+      var text = hasDesign ? 'Try another photo' : (String(defaultSubtitle || '').trim() || 'Add your pet photo');
+      caption.textContent = text;
+      caption.classList.remove('appai-shimmer');
+      if (hasDesign) {
+        openBtn.textContent = 'Try another photo';
+        openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
+      }
+      state.captionPainted = true;
+      var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - captionT0);
+      console.log(TAG, 'caption shown ms=' + ms);
+      refreshDesignList();
+    }
 
     // UX 4 — run once on init, before anything else reads the form's variant.
     preferUniversalSize(root);
@@ -1215,7 +1239,9 @@ console.log('[My Pet] script build=ff10ef94 loaded');
       // composite onto; each carries data-appai-my-pet-slide-original-src
       // (+ -srcset) so revertVariantSlides can restore them cleanly.
       inlineSlideStash: [],
+      captionPainted: false,
     };
+    showCaptionNow();
 
     function markDismissed(renderId) {
       if (renderId) state.dismissedRenderIds[renderId] = true;
@@ -1506,15 +1532,14 @@ console.log('[My Pet] script build=ff10ef94 loaded');
     function refreshDesignList() {
       if (!designsBtn) return;
       warmCachedDesignThumbs();
-      var count = state.capStatus && state.capStatus.perListingCount;
-      if (typeof count !== 'number' || count < 2) {
-        designsBtn.hidden = true;
-        return;
+      if (storedDesignOnPage() && designsBtn.hidden) {
+        designsBtn.hidden = false;
+        designsBtn.textContent = 'Your designs (1)';
       }
       getJson('my-pet/renders', { productId: shopifyProductId }).then(function (res) {
         var list = res && res.ok && Array.isArray(res.renders) ? res.renders : [];
         state.designs = list;
-        if (list.length < 2) {
+        if (list.length < 1) {
           designsBtn.hidden = true;
           closeDesigns();
           return;
@@ -1524,7 +1549,9 @@ console.log('[My Pet] script build=ff10ef94 loaded');
         preloadDesignThumbs(list);
         preloadDesignHeroes(list);
         if (designsPop && !designsPop.hidden) fillDesigns(list);
-      }).catch(function () { designsBtn.hidden = true; });
+      }).catch(function () {
+        if (!storedDesignOnPage()) designsBtn.hidden = true;
+      });
     }
 
     function closeDesigns() {
@@ -2406,6 +2433,7 @@ console.log('[My Pet] script build=ff10ef94 loaded');
         var apply = function () {
           state.restorePending = false;
           if (!ok && state.inlineApplied) revertToOriginalDesign();
+          else if (!ok && !state.inlineApplied && openBtn) openBtn.textContent = openBtnOriginalLabel;
           clearRestoreChrome();
           if (state.capStatus) renderAttemptsCaption(state.capStatus);
         };
@@ -7682,6 +7710,50 @@ console.log('[My Pet] script build=ff10ef94 loaded');
       match.setAttribute('data-current-checked', 'true');
     }
 
+    // Horizon drops the dark size pill when the selected colour has no variant
+    // in that size, leaving white text on the white label. Put the selected
+    // face back in the same turn. Colour swatches are unchanged.
+    function pinSelectedSizeFace(picker, size) {
+      var colour = state.heldSwatchColour || colourChosen();
+      var comboMissing = !!(colour && size && !findExactVariant(root, colour, size));
+      var radios = picker.querySelectorAll('input[type="radio"]');
+      for (var i = 0; i < radios.length; i++) {
+        var radio = radios[i];
+        if (optionKind(radio) !== 'size') continue;
+        var host = radio.closest ? radio.closest('label') : null;
+        if (!host) continue;
+        var text = host.querySelector('.variant-option__button-label__text');
+        var keep = comboMissing && radio.checked;
+        if (!keep) {
+          if (radio.getAttribute('data-appai-size-selected')) radio.removeAttribute('data-appai-size-selected');
+          host.style.removeProperty('background-color');
+          host.style.removeProperty('color');
+          if (text) {
+            text.style.removeProperty('color');
+            text.style.removeProperty('opacity');
+          }
+          var ours = host.querySelector('[data-appai-size-pill]');
+          if (ours && ours.parentNode) ours.parentNode.removeChild(ours);
+          continue;
+        }
+        radio.setAttribute('data-appai-size-selected', '1');
+        host.style.setProperty('--pill-offset', '0');
+        host.style.setProperty('background-color', 'var(--color-selected-variant-background, #000)', 'important');
+        host.style.setProperty('color', 'var(--color-selected-variant-text, #fff)', 'important');
+        if (text) {
+          text.style.setProperty('color', 'var(--color-selected-variant-text, #fff)', 'important');
+          text.style.setProperty('opacity', '1', 'important');
+        }
+        if (!host.querySelector('.variant-option__button-label__pill')) {
+          var pill = document.createElement('span');
+          pill.className = 'variant-option__button-label__pill';
+          pill.setAttribute('data-appai-size-pill', '1');
+          if (radio.nextSibling) host.insertBefore(pill, radio.nextSibling);
+          else host.appendChild(pill);
+        }
+      }
+    }
+
     // Local product.variants JSON. A size click must not wait for Horizon's
     // fetchUpdatedSection. The strikethrough is part of the sold-out look;
     // the attribute alone does not draw it.
@@ -7730,6 +7802,7 @@ console.log('[My Pet] script build=ff10ef94 loaded');
             if (label && !mark) label.appendChild(soldOutMark());
           }
         }
+        pinSelectedSizeFace(picker, size);
         var chosen = state.heldSwatchColour || colourChosen();
         if (chosen) keepChosenColour(chosen);
         var chosenOk = !chosen || !!findExactVariant(root, chosen, size);
