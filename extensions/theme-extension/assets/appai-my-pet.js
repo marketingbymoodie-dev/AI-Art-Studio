@@ -135,15 +135,20 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
     writeStoredRecord(shopifyProductId, prev);
     console.log(TAG, on ? 'revert stored' : 'revert cleared', renderStorageKey(shopifyProductId));
   }
-  function writeStoredVariantChoice(shopifyProductId, colorName, sizeName) {
+  function writeStoredVariantChoice(shopifyProductId, colorName, sizeName, reason) {
     var prev = readStoredRecord(shopifyProductId);
     if (!prev || !prev.renderId) return;
     var choices = choicesFromRecord(prev);
-    choices[prev.renderId] = { colorName: colorName || '', sizeName: sizeName || '' };
+    var own = choices[prev.renderId] || { colorName: '', sizeName: '' };
+    var colour = colorName || own.colorName || '';
+    var size = sizeName || own.sizeName || '';
+    choices[prev.renderId] = { colorName: colour, sizeName: size };
     prev.choices = choices;
-    if (colorName) prev.colorName = colorName;
-    if (sizeName) prev.sizeName = sizeName;
+    if (colour) prev.colorName = colour;
+    if (size) prev.sizeName = size;
     writeStoredRecord(shopifyProductId, prev);
+    console.log(TAG, 'design pref write render=' + prev.renderId +
+      ' colour=' + colour + ' size=' + size + ' reason=' + (reason || ''));
   }
   // Make renderId active. Use its saved colour and size, or the pair on
   // screen when this design has never saved one. Returns the pair to select.
@@ -152,9 +157,8 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
     var choices = choicesFromRecord(prev);
     var own = choices[renderId];
     var hadOwn = !!(own && (own.colorName || own.sizeName));
-    var colorName = hadOwn && own.colorName ? own.colorName : (fallbackColor || '');
-    var sizeName = hadOwn && own.sizeName ? own.sizeName : (fallbackSize || '');
-    if (colorName || sizeName) choices[renderId] = { colorName: colorName, sizeName: sizeName };
+    var colorName = hadOwn && own.colorName ? own.colorName : '';
+    var sizeName = hadOwn && own.sizeName ? own.sizeName : '';
     var next = {
       renderId: renderId,
       jobId: jobId || null,
@@ -165,7 +169,13 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
     if (sizeName) next.sizeName = sizeName;
     if (revertedFlagOn(shopifyProductId)) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
-    return { colorName: colorName, sizeName: sizeName, hadOwn: hadOwn };
+    console.log(TAG, 'design pref write render=' + renderId +
+      ' colour=' + colorName + ' size=' + sizeName + ' reason=activate');
+    return {
+      colorName: colorName || fallbackColor || '',
+      sizeName: sizeName || fallbackSize || '',
+      hadOwn: hadOwn,
+    };
   }
   function storedChoiceFor(shopifyProductId, renderId) {
     var prev = readStoredRecord(shopifyProductId);
@@ -2073,6 +2083,7 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       var fallbackSize = currentSizeName();
       var colorName = saved.colorName || fallbackColor;
       var sizeName = saved.sizeName || fallbackSize;
+      if (colorName) noteColourSelection(colorName, false);
       var same = item.renderId === state.renderId
         && namesMatch(colorName, fallbackColor)
         && namesMatch(sizeName, fallbackSize);
@@ -2098,9 +2109,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
         }
       }
       if (same && !wasReverted) {
-        if (!saved.colorName && !saved.sizeName && state.renderId) {
-          writeStoredVariantChoice(shopifyProductId, fallbackColor, fallbackSize);
-        }
         console.log(TAG, 'design select', item.renderId,
           'stored colour=' + (saved.colorName || '(none)'),
           'stored size=' + (saved.sizeName || '(none)'),
@@ -2109,6 +2117,7 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
         if (state.previewUrlByColor) swapVariantSlides(state.previewUrlByColor);
+        showColourSlide(colorName);
         fillMissingColours(state.renderId, gen);
         return;
       }
@@ -2149,7 +2158,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
           'stored size=' + (saved.sizeName || '(none)'),
           'selected colour=' + (selectedColour || '(none)'),
           'selected size=' + (selectedSize || '(none)'));
-        writeStoredVariantChoice(shopifyProductId, state.designSwitchColour, state.designSwitchSize);
         showResolvedDesign(res, state.designSwitchColour || selectedColour, true);
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
@@ -2284,29 +2292,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       return '';
     }
 
-    function rememberVariantChoice() {
-      if (state.restorePending || window.__appaiSelectingDefaultSize || state.designHovering) return;
-      if (state.designSwitchColour || state.designSwitchSize) {
-        writeStoredVariantChoice(shopifyProductId, state.designSwitchColour || '', state.designSwitchSize || '');
-        return;
-      }
-      if (!state.renderId) return;
-      var info = currentVariantInfo(root);
-      var color = checkedProductOption('colour') || currentInlineColour() || info.colorName;
-      var size = checkedProductOption('size') || info.sizeId;
-      if (!color && !size) return;
-      writeStoredVariantChoice(shopifyProductId, color, size);
-    }
-
-    document.addEventListener('change', function (event) {
-      if (window.__appaiSelectingDefaultSize || state.restorePending) return;
-      if (!state.renderId) return;
-      var node = event.target;
-      if (!node || node.nodeType !== 1 || !node.closest) return;
-      if (!node.closest('variant-picker, form[action*="/cart/add"], .appai-my-pet-modal')) return;
-      rememberVariantChoice();
-    }, false);
-
     // Related-product colour chips are not the main product's swatches.
     // Capture handlers log them and leave the click alone. A real card
     // link still reaches the leave guard.
@@ -2414,7 +2399,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
           state.restorePending = false;
           if (!ok && state.inlineApplied) revertToOriginalDesign();
           clearRestoreChrome();
-          if (ok && !window.__appaiVariantOnLoad) rememberVariantChoice();
           if (state.capStatus) renderAttemptsCaption(state.capStatus);
         };
         if (ok && window.requestAnimationFrame) {
@@ -3039,24 +3023,77 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       return best;
     }
 
+    // Hidden slides have no layout box, so the visible-area search cannot
+    // see them. The colour's own <img> still has to be the one we read.
+    function imgForMediaId(mediaId) {
+      var scope = mainMediaGallery() || productSectionScope();
+      if (!scope || !mediaId || !scope.querySelectorAll) return null;
+      var hosts = [];
+      try {
+        hosts = scope.querySelectorAll(
+          '[data-media-id="' + mediaId + '"], slideshow-slide[slide-id="' + mediaId + '"]'
+        );
+      } catch (e) { return null; }
+      for (var i = 0; i < hosts.length; i++) {
+        var host = hosts[i];
+        if (host.closest && host.closest('button, dialog, zoom-dialog')) continue;
+        var img = null;
+        try { img = host.querySelector('img.product-media__image, img'); } catch (e2) {}
+        if (!img || img.tagName !== 'IMG') continue;
+        if (!galleryImgAllowed(img) || looksLikeThumb(img)) continue;
+        return img;
+      }
+      return null;
+    }
+
+    function perColourSlides() {
+      return pageGallerySlides().length > 1;
+    }
+
+    // Horizon's slideshow scrolls to a slide. It does not change that
+    // slide's <img>. Colour changes use this so the visible hero and the
+    // slide swap never write the same node.
+    function showColourSlide(colorName) {
+      if (!colorName || !perColourSlides()) return false;
+      var mediaId = mediaIdForColour(colorName);
+      if (!mediaId) return false;
+      var gallery = mainMediaGallery();
+      var shows = [];
+      var main = gallery && (gallery.slideshow || (gallery.querySelector && gallery.querySelector('slideshow-component')));
+      if (main) shows.push(main);
+      var zoom = mainZoomDialog();
+      if (zoom && (zoom.open || zoom.hasAttribute && zoom.hasAttribute('open'))) {
+        var zoomShow = zoom.querySelector && zoom.querySelector('slideshow-component');
+        if (zoomShow) shows.push(zoomShow);
+      }
+      var selected = false;
+      for (var i = 0; i < shows.length; i++) {
+        if (!shows[i] || typeof shows[i].select !== 'function') continue;
+        try {
+          shows[i].select({ id: String(mediaId) }, null, { animate: false });
+          selected = true;
+        } catch (e3) {}
+      }
+      if (!selected) return false;
+      var hero = imgForMediaId(mediaId);
+      if (hero) {
+        state.inlineHero = hero;
+        installHeroGuard(hero);
+      }
+      colourMark('slide select', colorName + ' media=' + mediaId);
+      return true;
+    }
+
     // The slide for the selected colour. Horizon does not mark it .is-active,
     // so the old selector list returned null and the guard stayed on the
     // base/black slide. Never the first product-media__image.
     function resolveActiveHero(colour) {
       var want = colour || selectedHeroColour();
-      var mediaId = mediaIdForColour(want);
-      var scope = mainMediaGallery() || productSectionScope();
-      if (mediaId && scope && scope.querySelectorAll) {
-        var hosts = [];
-        try {
-          hosts = scope.querySelectorAll(
-            '[data-media-id="' + mediaId + '"], slideshow-slide[slide-id="' + mediaId + '"]'
-          );
-        } catch (e) {}
-        for (var h = 0; h < hosts.length; h++) {
-          var mapped = heroImgIn(hosts[h]);
-          if (mapped) return mapped;
-        }
+      var mediaId = want ? mediaIdForColour(want) : '';
+      if (mediaId) {
+        var mapped = imgForMediaId(mediaId);
+        if (mapped) return mapped;
+        if (colour) return null;
       }
       var slides = pageGallerySlides();
       for (var s = 0; s < slides.length; s++) {
@@ -3323,39 +3360,35 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       }, 300);
     }
 
-    // Colour-change entry point. Writes the preview onto the guard node AND
-    // the visible hero AND the active carousel slide — those can be three
-    // different <img>s after a theme gallery rebuild — then checks currentSrc
-    // 300ms later in case srcset/sizes/<source> won the first paint.
+    // Writes a slide's own colour file onto that slide. A visible slide is
+    // never given another colour's file; the slideshow selects that slide.
     function reassertColourPreview(reason, colorName, url) {
       var liveNow = liveColourChoice();
       if (colorName && liveNow.colour && !namesMatch(colorName, liveNow.colour)) {
         logColourRace(state.sectionFetchSeq || 0, liveNow);
-        colorName = liveNow.colour;
-        url = liveNow.url || url;
+        if (perColourSlides()) showColourSlide(liveNow.colour);
+        else {
+          colorName = liveNow.colour;
+          url = liveNow.url || url;
+        }
       }
+      if (!url && colorName) url = previewUrlForColour(colorName);
       if (!url) return;
       var targets = heroAssertTargets(colorName);
       if (!targets.length) return;
       var now = Date.now();
       var wrote = 0;
+      var slides = perColourSlides();
       for (var i = 0; i < targets.length; i++) {
         var el = targets[i];
-        // The outgoing hero stays on screen until the new img has decoded.
         if (state.swapMaskWaiting && state.holdOldHero && el === state.holdOldHero) continue;
-        // A slide that belongs to another colour keeps that colour's preview.
-        // Writing the selected swatch here is what blocked thumbnail clicks.
         var own = mediaColourForImg(el);
-        var paintUrl = state.colourPaint && state.colourPaint.url;
-        var visibleNow = paintUrl ? (findVisibleHeroImg() || state.inlineHero) : null;
-        var slideNow = el.closest ? el.closest('slideshow-slide') : null;
-        var showing = !slideNow || !slideIsHidden(slideNow);
-        var liveUrl = liveColourChoice().url;
-        var useUrl = (showing && liveUrl)
-          ? liveUrl
-          : ((paintUrl && el === visibleNow)
-            ? paintUrl
-            : ((own && state.previewUrlByColor && state.previewUrlByColor[own]) || url));
+        var ownUrl = own ? previewUrlForColour(own) : '';
+        var useUrl = url;
+        if (slides) {
+          if (!ownUrl || (own && colorName && !namesMatch(own, colorName))) continue;
+          useUrl = ownUrl;
+        }
         if (!useUrl) continue;
         // Skip a node we just wrote. currentSrc lags the attribute write, so
         // the guard observer would otherwise re-enter until the stack melts.
@@ -3644,6 +3677,10 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       t.allowSwap = true;
       try { swapVariantSlides(map); }
       finally { t.allowSwap = false; }
+      if (t.colour) {
+        noteColourSelection(t.colour, false);
+        showColourSlide(t.colour);
+      }
       watchOpeningCover(token);
     }
 
@@ -3848,11 +3885,24 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
     // is what painted the previous colour for about a second on desktop.
     function revealPaintedHero(img, url) {
       if (!img) return;
+      var own = mediaColourForImg(img);
+      var ownUrl = own ? previewUrlForColour(own) : '';
+      if (perColourSlides() && ownUrl) {
+        if (!srcAlready(img, ownUrl)) applyPreviewSrc(img, ownUrl);
+        var liveNow = liveColourChoice();
+        if (liveNow.colour && !namesMatch(own, liveNow.colour)) {
+          img.style.visibility = '';
+          showColourSlide(liveNow.colour);
+          return;
+        }
+        url = ownUrl;
+      }
       if (img.__appaiRevealTimer) {
         clearInterval(img.__appaiRevealTimer);
         img.__appaiRevealTimer = 0;
       }
       function want() {
+        if (ownUrl) return ownUrl;
         var live = liveColourChoice();
         return (live && live.url) || url || '';
       }
@@ -3875,7 +3925,11 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       img.__appaiRevealTimer = setInterval(function () {
         tries += 1;
         var expected = want();
-        if (expected && !srcAlready(img, expected)) applyPreviewSrc(img, expected);
+        if (perColourSlides() && ownUrl) {
+          if (!srcAlready(img, ownUrl)) applyPreviewSrc(img, ownUrl);
+        } else if (expected && !srcAlready(img, expected)) {
+          applyPreviewSrc(img, expected);
+        }
         if (typeof img.decode === 'function' && srcAlready(img, expected)) {
           img.decode().then(show, show);
         }
@@ -3903,11 +3957,19 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
         var map = getMediaIdByColor(root);
         if (colour && map && map[colour]) expectedMedia = String(map[colour]);
       } catch (e) {}
-      if (state.colourPaint && state.colourPaint.url && img === findVisibleHeroImg()) {
+      if (state.colourPaint && state.colourPaint.url && img === findVisibleHeroImg() && !perColourSlides()) {
         if (!(srcAlready(img, state.colourPaint.url) && !img.getAttribute('srcset') && !img.getAttribute('sizes'))) {
           applyPreviewSrc(img, state.colourPaint.url);
         }
         state.inlineHero = img;
+        return true;
+      }
+      var own = mediaColourForImg(img);
+      var ownUrl = own ? previewUrlForColour(own) : '';
+      if (perColourSlides()) {
+        if (!ownUrl) return false;
+        if (srcAlready(img, ownUrl) && !img.getAttribute('srcset') && !img.getAttribute('sizes')) return true;
+        applyPreviewSrc(img, ownUrl);
         return true;
       }
       if (!force && mediaId && expectedMedia && mediaId !== expectedMedia) return false;
@@ -4342,10 +4404,8 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       if (!state.gallerySyncing) {
         try { swapped = swapVariantSlides(state.previewUrlByColor) || 0; } catch (e) {}
       }
-      var heroes = onScreenHeroImgs();
-      var hero = heroes[0] || findVisibleHeroImg() || state.inlineHero;
-      if (hero) applyPreviewSrc(hero, paint.url);
-      colourMark('re-swap', 'nodes=' + swapped + ' hero=' + (hero ? nodeStamp(hero) : 'none') + ' ' + (reason || ''));
+      if (paint.colour) showColourSlide(paint.colour);
+      colourMark('re-swap', 'nodes=' + swapped + ' slide=' + (paint.colour || '') + ' ' + (reason || ''));
       return swapped;
     }
 
@@ -4396,7 +4456,9 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
             events: [],
           };
           colourMark('swatch click captured', 'colour=' + colorName);
-          paintColourNow(colorName, url);
+          if (!showColourSlide(colorName)) paintColourNow(colorName, url);
+          var prefSize = intent.sizeName || checkedProductOption('size') || '';
+          writeStoredVariantChoice(shopifyProductId, colorName, prefSize, 'colour-click');
           watchColourVisible(swapStarted, colorName, url);
           var paintSeq = state.colourPaintSeq;
           setTimeout(function () {
@@ -4407,6 +4469,11 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
           }, 6000);
         } else if (intent.kind === 'color' && !url) {
           swapInlineColor(colorName);
+          if (event.type === 'click') {
+            writeStoredVariantChoice(shopifyProductId, colorName, intent.sizeName || checkedProductOption('size') || '', 'colour-click');
+          }
+        } else if (event.type === 'click' && intent.kind === 'size') {
+          writeStoredVariantChoice(shopifyProductId, state.selectedColour || colorName, intent.sizeName || '', 'size-click');
         }
         scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour', {
           colour: intent.kind === 'color' ? colorName : (intent.colorName || ''),
@@ -5090,6 +5157,8 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       if (!scope) return 0;
       var stash = state.inlineSlideStash || [];
       var seen = [];
+      var singleSlot = !perColourSlides();
+      var visibleHero = singleSlot ? (findVisibleHeroImg() || state.inlineHero) : null;
       for (var color in urlsByColor) {
         if (!Object.prototype.hasOwnProperty.call(urlsByColor, color)) continue;
         var url = urlsByColor[color];
@@ -5113,6 +5182,9 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
             if (state.holdOldHero && img === state.holdOldHero) continue;
             if (isCoverImg(img)) continue;
             if (inHiddenZoom(img)) continue;
+            if (visibleHero && img === visibleHero) continue;
+            var ownColour = mediaColourForImg(img);
+            if (ownColour && !namesMatch(ownColour, color)) continue;
             if (swapOneSlideImage(img, url, color, mediaId, stash)) matched++;
           }
         }
@@ -5394,8 +5466,17 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
       }
       var effectiveUrl = (effectiveColor && state.previewUrlByColor[effectiveColor]) || previewUrl;
       preloadPreviewUrls(state.previewUrlByColor);
+      if (effectiveColor) noteColourSelection(effectiveColor, false);
       if (effectiveUrl) decodeHeroUrl(effectiveUrl);
-      swapInlineHero(hero, effectiveUrl);
+      showColourSlide(effectiveColor);
+      if (state.selectionOnce === (state.renderGeneration || 0)) consumeSelectionSwap(state.previewUrlByColor);
+      else swapVariantSlides(state.previewUrlByColor);
+      if (perColourSlides()) {
+        var selectedHero = effectiveColor ? resolveActiveHero(effectiveColor) : null;
+        if (selectedHero) state.inlineHero = selectedHero;
+      } else {
+        swapInlineHero(hero, effectiveUrl);
+      }
       var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
       console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
         ' urlTail=' + tail +
@@ -5707,6 +5788,18 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
         // wrong variant; the checked swatch is the shopper's actual intent.
         var swColor = readSwatchColor(root);
         var ownColour = mediaColourForImg(hero);
+        if (ownColour && perColourSlides()) {
+          var ownUrl = previewUrlForColour(ownColour);
+          var liveSlide = liveColourChoice();
+          if (ownUrl && !(srcAlready(hero, ownUrl) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes'))) {
+            reassertColourPreview('guard', ownColour, ownUrl);
+          }
+          var showingThis = hero === findVisibleHeroImg() || hero === state.inlineHero;
+          if (showingThis && liveSlide.colour && !namesMatch(ownColour, liveSlide.colour)) {
+            showColourSlide(liveSlide.colour);
+          }
+          return;
+        }
         var forced = state.designSwitchColour ? (canonicalPreviewColor(state.designSwitchColour) || state.designSwitchColour) : null;
         var thumbPick = state.thumbColour ? (canonicalPreviewColor(state.thumbColour) || state.thumbColour) : null;
         var visibleHero = findVisibleHeroImg();
@@ -6045,7 +6138,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
           console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', info.colorName, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(info.colorName);
         }
-        rememberVariantChoice();
         if (!(state.colourPaint && namesMatch(state.colourPaint.colour, info.colorName))) {
           scheduleGallerySync('colour');
         }
@@ -6124,7 +6216,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
             if (designTransitionActive()) {
               last = now; return;
             }
-            rememberVariantChoice();
             scheduleGallerySync('size');
             scheduleShadowWarm('size');
           }
@@ -6164,7 +6255,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
           console.log(TAG, 'inline form poll: no cached URL for', effectiveColor, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(effectiveColor);
         }
-        rememberVariantChoice();
         if (!(state.colourPaint && namesMatch(state.colourPaint.colour, effectiveColor))) {
           scheduleGallerySync('colour');
         }
@@ -7467,7 +7557,6 @@ console.log('[My Pet] script build=4a6c20c8 loaded');
             // re-ask on this generation even if an earlier one was dismissed
             // (bug 10: re-ask across different generations).
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
-            rememberVariantChoice();
             probeCartForRender(genRes.renderId);
             picker.overlay.remove();
             // Bugs 3 + 11 — await the refresh before opening the preview so
