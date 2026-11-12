@@ -3843,16 +3843,48 @@ console.log('[My Pet] script build=5d8bf994 loaded');
       return node ? String(node.getAttribute('data-media-id') || '') : '';
     }
 
-    // Only the newly inserted hero for the selected colour. Other slides
-    // keep the colour swapVariantSlides wrote from their own media id.
-    function revealPaintedHero(img) {
+    // A replaced hero stays hidden until currentSrc is the selected colour
+    // file and that file has decoded. Revealing on the cached stock decode
+    // is what painted the previous colour for about a second on desktop.
+    function revealPaintedHero(img, url) {
       if (!img) return;
-      function show() { img.style.visibility = ''; }
-      if (img.complete && img.naturalWidth > 0) show();
-      else {
-        img.addEventListener('load', show, { once: true });
-        setTimeout(show, 350);
+      if (img.__appaiRevealTimer) {
+        clearInterval(img.__appaiRevealTimer);
+        img.__appaiRevealTimer = 0;
       }
+      function want() {
+        var live = liveColourChoice();
+        return (live && live.url) || url || '';
+      }
+      function show() {
+        var expected = want();
+        if (!expected || !heroReady(img, expected)) return;
+        img.style.visibility = '';
+        if (img.__appaiRevealTimer) {
+          clearInterval(img.__appaiRevealTimer);
+          img.__appaiRevealTimer = 0;
+        }
+      }
+      img.style.visibility = 'hidden';
+      if (heroReady(img, want())) {
+        show();
+        return;
+      }
+      img.addEventListener('load', show, { once: true });
+      var tries = 0;
+      img.__appaiRevealTimer = setInterval(function () {
+        tries += 1;
+        var expected = want();
+        if (expected && !srcAlready(img, expected)) applyPreviewSrc(img, expected);
+        if (typeof img.decode === 'function' && srcAlready(img, expected)) {
+          img.decode().then(show, show);
+        }
+        if (heroReady(img, expected)) show();
+        else if (tries > 80) {
+          clearInterval(img.__appaiRevealTimer);
+          img.__appaiRevealTimer = 0;
+        }
+      }, 50);
     }
 
     function paintProductMediaImage(img, colorName, force) {
@@ -4022,11 +4054,13 @@ console.log('[My Pet] script build=5d8bf994 loaded');
                 var slide = imgs[k].closest ? imgs[k].closest('slideshow-slide') : null;
                 var showNow = !slide || !slideIsHidden(slide);
                 if (showNow) imgs[k].style.visibility = 'hidden';
-                if (!paintProductMediaImage(imgs[k], fresh.colour, showNow)) {
-                  if (showNow) imgs[k].style.visibility = '';
+                var painted = paintProductMediaImage(imgs[k], fresh.colour, showNow);
+                if (!painted && showNow && fresh.url) applyPreviewSrc(imgs[k], fresh.url);
+                if (showNow) revealPaintedHero(imgs[k], fresh.url);
+                if (!painted && !fresh.url) {
+                  imgs[k].style.visibility = '';
                   continue;
                 }
-                if (showNow) revealPaintedHero(imgs[k]);
                 var area = 0;
                 try {
                   var rect = imgs[k].getBoundingClientRect();
@@ -4176,6 +4210,29 @@ console.log('[My Pet] script build=5d8bf994 loaded');
       return false;
     }
 
+    function customDesignActive() {
+      return !!(state.renderId && state.inlineApplied && !state.reverted);
+    }
+
+    // Horizon's media-gallery replaces itself from the variant-picker HTML
+    // on every colour and size change. While a custom design is showing,
+    // that HTML is the stock image. Price, variant id, and the form still
+    // update from the same response. Stock pages are not patched.
+    function installMediaReplacementGuard() {
+      if (state.mediaReplaceGuard) return;
+      state.mediaReplaceGuard = true;
+      var orig = Element.prototype.replaceWith;
+      Element.prototype.replaceWith = function () {
+        var main = null;
+        try { main = mainMediaGallery(); } catch (e) {}
+        if (customDesignActive() && main && this === main) {
+          console.log(TAG, 'media gallery replacement skipped');
+          return;
+        }
+        return orig.apply(this, arguments);
+      };
+    }
+
     function installColourFetchWatch() {
       if (state.colourFetchWatch) return;
       state.colourFetchWatch = true;
@@ -4296,6 +4353,7 @@ console.log('[My Pet] script build=5d8bf994 loaded');
       if (state.swatchPreemptInstalled) return;
       state.swatchPreemptInstalled = true;
       installColourFetchWatch();
+      installMediaReplacementGuard();
       installProductMediaObserver();
       var handler = function (event) {
         if (logRelatedSwatch('swatch', event)) return;
