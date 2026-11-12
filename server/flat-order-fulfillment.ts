@@ -94,6 +94,17 @@ import {
   petFailureIsRetryable,
   planMyPetRetry,
 } from "./my-pet-printify-retry";
+import { catalogueVariantForShopifyVariant } from "./catalogue-variant-fulfillment";
+import {
+  classifyPrintifySubmitError,
+  fetchShopifyOrderRecipient,
+  mergePrintifyRecipient,
+  missingPrintifyRecipientFields,
+  printifyAddressFromShopifyOrder,
+  rememberManualApprovalShop,
+  sanitizePrintifyRecipient,
+  shopRequiresManualApproval,
+} from "./printify-order-recipient";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
@@ -254,6 +265,8 @@ export type ResolvedPetDesign = {
   petPhotoId: string | null;
   sizeId: string;
   colorId: string;
+  /** Catalogue variant_map id. The line colour name ("Blue") is not this. */
+  printifyVariantId?: number | null;
 };
 
 export type ResolveResult =
@@ -447,7 +460,7 @@ async function findPublishedProductByVariant(
 async function findDesignProductByVariant(
   shop: string,
   variantId: string,
-): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null } | null> {
+): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null; printifyVariantId: number | null } | null> {
   const numeric = variantId.replace("gid://shopify/ProductVariant/", "");
   const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null; product_type_id: number | null }>(
     `SELECT job_id, variant_map, printify_product_id, product_type_id
@@ -459,14 +472,16 @@ async function findDesignProductByVariant(
   );
   const row = result.rows[0];
   if (!row) return null;
-  const map = parseJson<Record<string, { sizeId?: string; colorId?: string }>>(row.variant_map, {});
+  const map = parseJson<Record<string, { sizeId?: string; colorId?: string; printifyVariantId?: number | string }>>(row.variant_map, {});
   const entry = map[numeric];
+  const printifyVariantId = Number(entry?.printifyVariantId);
   return {
     jobId: row.job_id,
     sizeId: entry?.sizeId ?? null,
     colorId: entry?.colorId ?? null,
     printifyProductId: row.printify_product_id ?? null,
     productTypeId: row.product_type_id ?? null,
+    printifyVariantId: Number.isFinite(printifyVariantId) && printifyVariantId > 0 ? printifyVariantId : null,
   };
 }
 
@@ -504,9 +519,10 @@ async function resolveDesignForOrderLineInner(
   //    → designId (fallback to line properties for older/legacy carts)
   let designId: string | null = null;
   let resolvedShop = shop;
-  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null } | null = null;
+  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null; printifyVariantId: number | null } | null = null;
   let publishedDesignId: string | null = null;
   let shadowShop: string | null = null;
+  let shadowBaseVariantId: string | null = null;
   let designProductJobId: string | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
@@ -514,12 +530,13 @@ async function resolveDesignForOrderLineInner(
       publishedDesignId = pp.designId;
       shadowShop = pp.shop || "";
       resolvedShop = pp.shop || shop;
+      shadowBaseVariantId = pp.baseVariantId || null;
     } else {
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
         publishedDesignId = dp.jobId;
         designProductJobId = dp.jobId;
-        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId, productTypeId: dp.productTypeId };
+        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId, productTypeId: dp.productTypeId, printifyVariantId: dp.printifyVariantId };
       }
     }
   }
@@ -631,9 +648,12 @@ async function resolveDesignForOrderLineInner(
     if (!editedArtworkPath) {
       return { ok: false, skip: false, pet: true, reason: `my-pet design ${designId} has no stored edited artwork` };
     }
+    const bought = shadowBaseVariantId
+      ? await catalogueVariantForShopifyVariant(resolvedShop || shop, shadowBaseVariantId)
+      : null;
     const { sizeId, colorId } = pickFlatOrderSizeColor({
-      designProductSizeId: designProductOverride?.sizeId,
-      designProductColorId: designProductOverride?.colorId,
+      designProductSizeId: bought?.sizeId || designProductOverride?.sizeId,
+      designProductColorId: bought?.colorId || designProductOverride?.colorId,
       designStateSize: designState?.sizeId,
       designStateColor: designState?.colorName,
       lineSize: line.properties["_size"] || line.properties["Size"],
@@ -655,6 +675,7 @@ async function resolveDesignForOrderLineInner(
         petPhotoId: designState.petPhotoId ? String(designState.petPhotoId) : null,
         sizeId,
         colorId,
+        printifyVariantId: bought?.printifyVariantId || designProductOverride?.printifyVariantId || null,
       },
     };
   }
@@ -1234,7 +1255,7 @@ async function recordSubmission(row: {
         print_file_paths, attempt_count, next_attempt_at, metadata)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15, 0),$16,$17)
      ON CONFLICT (idempotency_key) DO UPDATE SET
-        printify_order_id = EXCLUDED.printify_order_id,
+        printify_order_id = COALESCE(EXCLUDED.printify_order_id, flat_order_submissions.printify_order_id),
         status = EXCLUDED.status,
         sent_to_production = EXCLUDED.sent_to_production,
         print_file_urls = EXCLUDED.print_file_urls,
@@ -1288,7 +1309,7 @@ export type SubmitFlatOrderArgs = {
 };
 
 export type SubmitFlatOrderResult = {
-  status: "submitted" | "skipped" | "duplicate" | "failed" | "retrying";
+  status: "submitted" | "skipped" | "duplicate" | "failed" | "retrying" | "awaiting_approval" | "needs_address";
   printifyOrderId?: string | null;
   eligibleLines: number;
   skippedReasons: string[];
@@ -1318,13 +1339,23 @@ export async function submitFlatOrderToPrintify(
   // Idempotency: a submitted order is never sent again. A retry that is already
   // scheduled or in flight is left to the poller, unless this call IS the poller.
   const existing = await findExistingSubmission(args.idempotencyKey);
-  if (existing && existing.status === "submitted") {
+  if (existing && (existing.status === "submitted" || existing.status === "awaiting_approval")) {
     return {
       status: "duplicate",
       printifyOrderId: existing.printifyOrderId,
       eligibleLines: 0,
       skippedReasons: [],
-      sentToProduction: sendToProduction,
+      sentToProduction: existing.status === "submitted" && sendToProduction,
+    };
+  }
+  if (existing && existing.status === "needs_address" && !args.resumeRetry) {
+    return {
+      status: "needs_address",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? "shipping address unavailable",
+      sentToProduction: false,
     };
   }
   if (existing && !args.resumeRetry && (existing.status === "retrying" || existing.status === "submitting")) {
@@ -1425,12 +1456,22 @@ export async function submitFlatOrderToPrintify(
     const productType = resolved.design.productType;
     const designId = resolved.design.designId;
     const merchant = resolved.design.merchant;
-    const target = resolvePrintifyTargetForOrderLine(
+    const mappedTarget = resolvePrintifyTargetForOrderLine(
       productType,
       resolved.design.sizeId,
       resolved.design.colorId,
       line.properties,
     );
+    const catalogueVariantId = resolved.kind === "pet_design" ? Number(resolved.design.printifyVariantId) : NaN;
+    const blueprintId = Number(productType.printifyBlueprintId);
+    const target =
+      Number.isFinite(catalogueVariantId) && catalogueVariantId > 0 && Number.isFinite(blueprintId) && blueprintId > 0
+        ? {
+            blueprintId,
+            providerId: Number(productType.printifyProviderId ?? mappedTarget?.providerId ?? 1),
+            printifyVariantId: catalogueVariantId,
+          }
+        : mappedTarget;
     if (!target) {
       const reason = `no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`;
       if (resolved.kind === "pet_design") {
@@ -1611,6 +1652,10 @@ export async function submitFlatOrderToPrintify(
       });
       founderAlerted = true;
     }
+    const keptOrderId =
+      (typeof extra.printifyOrderId === "string" && extra.printifyOrderId) ||
+      existing?.printifyOrderId ||
+      null;
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1618,6 +1663,7 @@ export async function submitFlatOrderToPrintify(
       designId: firstDesignId,
       productTypeId: firstProductTypeId,
       printifyShopId,
+      printifyOrderId: keptOrderId,
       status: plan.status,
       sentToProduction: false,
       isTest: args.isTest === true,
@@ -1630,6 +1676,7 @@ export async function submitFlatOrderToPrintify(
     });
     return {
       status: plan.status,
+      printifyOrderId: keptOrderId,
       eligibleLines: lineItems.length,
       skippedReasons,
       needsAttention,
@@ -1666,108 +1713,258 @@ export async function submitFlatOrderToPrintify(
     };
   }
 
+  let addressTo = args.isTest
+    ? args.addressTo
+    : mergePrintifyRecipient(
+        sanitizePrintifyRecipient(args.addressTo),
+        printifyAddressFromShopifyOrder(args.shopifyOrder),
+      );
+  if (!args.isTest) {
+    const fetched = await fetchShopifyOrderRecipient(resolvedShop || shopHeader, shopifyOrderId);
+    if (fetched) addressTo = mergePrintifyRecipient(addressTo, sanitizePrintifyRecipient(fetched));
+  }
+  handoffSnapshot.addressTo = addressTo;
+  const missingAddress = args.isTest ? [] : missingPrintifyRecipientFields(addressTo);
+  const knownOrderId =
+    existing?.printifyOrderId ||
+    classifyPrintifySubmitError(existing?.error || "").existingOrderId;
+  if (missingAddress.length > 0) {
+    const message = `shipping address unavailable to the app (${missingAddress.join(", ")}). Printify order was not given a blank recipient.`;
+    const shopifyFlag = needsAttention.length
+      ? await flagAttention()
+      : await flagOrderNeedsAttention({
+          shop: shopHeader,
+          shopifyOrder: args.shopifyOrder,
+          lines: [],
+          isTest: args.isTest === true,
+        });
+    await recordSubmission({
+      idempotencyKey: args.idempotencyKey,
+      shop: resolvedShop,
+      shopifyOrderId,
+      designId: firstDesignId,
+      productTypeId: firstProductTypeId,
+      printifyShopId,
+      printifyOrderId: knownOrderId,
+      status: "needs_address",
+      sentToProduction: false,
+      isTest: false,
+      printFileUrls: allUrls,
+      printFilePaths: petPaths,
+      nextAttemptAt: null,
+      error: message,
+      metadata: { skippedReasons, needsAttention, shopifyFlag, retry: handoffSnapshot },
+    });
+    console.error(`[flat-order-fulfillment] ${message} order=${shopifyOrderId || "?"}`);
+    return {
+      status: "needs_address",
+      printifyOrderId: knownOrderId,
+      eligibleLines: lineItems.length,
+      skippedReasons,
+      needsAttention,
+      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+      error: message,
+      sentToProduction: false,
+    };
+  }
+
   const orderBody = {
     external_id: args.idempotencyKey,
     label: shopifyOrderId ? `Shopify ${shopifyOrderId}` : `AppAI test ${Date.now()}`,
     line_items: lineItems,
     shipping_method: args.shippingMethod ?? 1,
     send_shipping_notification: false,
-    address_to: args.addressTo,
+    address_to: addressTo,
   };
 
-  try {
-    const created = await pf<{ id: string }>(`/shops/${printifyShopId}/orders.json`, printifyToken, {
-      method: "POST",
-      body: JSON.stringify(orderBody),
-    });
-    const printifyOrderId = String(created.id);
-
-    if (sendToProduction) {
-      await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}/send_to_production.json`, printifyToken, {
+  let printifyOrderId = knownOrderId;
+  if (!printifyOrderId) {
+    try {
+      const created = await pf<{ id: string }>(`/shops/${printifyShopId}/orders.json`, printifyToken, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(orderBody),
       });
+      printifyOrderId = String(created.id);
+    } catch (e: any) {
+      const error = e?.message || String(e);
+      const conflict = classifyPrintifySubmitError(error);
+      if (conflict.existingOrderId) {
+        printifyOrderId = conflict.existingOrderId;
+      } else {
+        for (const q of queuedLines) {
+          needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
+        }
+        const shopifyFlag = await flagAttention();
+        if (hadPetLine) {
+          return recordPetHandoffFailure([error, ...petErrors], { skippedReasons, needsAttention, shopifyFlag });
+        }
+        await recordSubmission({
+          idempotencyKey: args.idempotencyKey,
+          shop: resolvedShop,
+          shopifyOrderId,
+          designId: firstDesignId,
+          productTypeId: firstProductTypeId,
+          printifyShopId,
+          status: "failed",
+          sentToProduction: false,
+          isTest: args.isTest === true,
+          printFileUrls: allUrls,
+          error,
+          nextAttemptAt: null,
+          metadata: { skippedReasons, needsAttention, shopifyFlag },
+        });
+        return {
+          status: "failed",
+          eligibleLines: lineItems.length,
+          skippedReasons,
+          needsAttention,
+          error,
+          sentToProduction: false,
+        };
+      }
     }
-
-    const shopifyFlag = await flagAttention();
-    let founderAlerted = existing?.metadata?.founderAlerted === true;
-    if (hadPetLine && petErrors.length > 0 && !founderAlerted) {
-      await alertMyPetHandoffFailed({
-        shop: resolvedShop || null,
-        shopifyOrderId: shopifyOrderId || null,
-        idempotencyKey: args.idempotencyKey,
-        attempts: existing?.attemptCount ?? 1,
-        error: `Submitted without every My Pet line: ${petErrors.join("; ")}`,
-        alreadyAlerted: false,
+  } else {
+    try {
+      await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}.json`, printifyToken, {
+        method: "PUT",
+        body: JSON.stringify({ address_to: addressTo }),
       });
-      founderAlerted = true;
+    } catch (e: any) {
+      console.warn(
+        `[flat-order-fulfillment] could not update recipient on Printify order ${printifyOrderId}:`,
+        e?.message || e,
+      );
     }
-    await recordSubmission({
-      idempotencyKey: args.idempotencyKey,
-      shop: resolvedShop,
-      shopifyOrderId,
-      designId: firstDesignId,
-      productTypeId: firstProductTypeId,
-      printifyShopId,
-      printifyOrderId,
-      status: "submitted",
-      sentToProduction: sendToProduction,
-      isTest: args.isTest === true,
-      printFileUrls: allUrls,
-      printFilePaths: petPaths,
-      nextAttemptAt: null,
-      metadata: {
-        skippedReasons,
-        lineCount: lineItems.length,
-        needsAttention,
-        shopifyFlag,
-        founderAlerted,
-      },
-    });
+  }
 
-    return {
-      status: "submitted",
-      printifyOrderId,
-      eligibleLines: lineItems.length,
-      skippedReasons,
-      needsAttention,
-      printFileUrls: allUrls,
-      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
-      sentToProduction: sendToProduction,
-    };
-  } catch (e: any) {
-    const error = e?.message || String(e);
-    for (const q of queuedLines) {
-      needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
-    }
-    const shopifyFlag = await flagAttention();
-    if (hadPetLine) {
-      return recordPetHandoffFailure([error, ...petErrors], { skippedReasons, needsAttention, shopifyFlag });
-    }
-    await recordSubmission({
-      idempotencyKey: args.idempotencyKey,
-      shop: resolvedShop,
-      shopifyOrderId,
-      designId: firstDesignId,
-      productTypeId: firstProductTypeId,
-      printifyShopId,
-      status: "failed",
-      sentToProduction: false,
-      isTest: args.isTest === true,
-      printFileUrls: allUrls,
-      error,
-      nextAttemptAt: null,
-      metadata: { skippedReasons, needsAttention, shopifyFlag },
-    });
+  if (!printifyOrderId) {
     return {
       status: "failed",
       eligibleLines: lineItems.length,
       skippedReasons,
       needsAttention,
-      error,
+      error: "Printify order id missing after create",
       sentToProduction: false,
     };
   }
+
+  let sentToProduction = false;
+  let awaitingApproval = false;
+  if (sendToProduction) {
+    if (shopRequiresManualApproval(String(printifyShopId))) {
+      awaitingApproval = true;
+    } else {
+      try {
+        await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}/send_to_production.json`, printifyToken, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        sentToProduction = true;
+      } catch (e: any) {
+        const error = e?.message || String(e);
+        const hold = classifyPrintifySubmitError(error);
+        if (hold.manualHold) {
+          rememberManualApprovalShop(String(printifyShopId));
+          awaitingApproval = true;
+        } else {
+          for (const q of queuedLines) {
+            needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
+          }
+          const shopifyFlag = await flagAttention();
+          if (hadPetLine) {
+            return recordPetHandoffFailure([error, ...petErrors], {
+              skippedReasons,
+              needsAttention,
+              shopifyFlag,
+              printifyOrderId,
+            });
+          }
+          await recordSubmission({
+            idempotencyKey: args.idempotencyKey,
+            shop: resolvedShop,
+            shopifyOrderId,
+            designId: firstDesignId,
+            productTypeId: firstProductTypeId,
+            printifyShopId,
+            printifyOrderId,
+            status: "failed",
+            sentToProduction: false,
+            isTest: args.isTest === true,
+            printFileUrls: allUrls,
+            error,
+            nextAttemptAt: null,
+            metadata: { skippedReasons, needsAttention, shopifyFlag },
+          });
+          return {
+            status: "failed",
+            printifyOrderId,
+            eligibleLines: lineItems.length,
+            skippedReasons,
+            needsAttention,
+            error,
+            sentToProduction: false,
+          };
+        }
+      }
+    }
+  }
+
+  const shopifyFlag = needsAttention.length
+    ? await flagAttention()
+    : await flagOrderNeedsAttention({
+        shop: shopHeader,
+        shopifyOrder: args.shopifyOrder,
+        lines: [],
+        isTest: args.isTest === true,
+      });
+  let founderAlerted = existing?.metadata?.founderAlerted === true;
+  if (hadPetLine && petErrors.length > 0 && !founderAlerted) {
+    await alertMyPetHandoffFailed({
+      shop: resolvedShop || null,
+      shopifyOrderId: shopifyOrderId || null,
+      idempotencyKey: args.idempotencyKey,
+      attempts: existing?.attemptCount ?? 1,
+      error: `Submitted without every My Pet line: ${petErrors.join("; ")}`,
+      alreadyAlerted: false,
+    });
+    founderAlerted = true;
+  }
+  const status = awaitingApproval ? "awaiting_approval" : "submitted";
+  await recordSubmission({
+    idempotencyKey: args.idempotencyKey,
+    shop: resolvedShop,
+    shopifyOrderId,
+    designId: firstDesignId,
+    productTypeId: firstProductTypeId,
+    printifyShopId,
+    printifyOrderId,
+    status,
+    sentToProduction,
+    isTest: args.isTest === true,
+    printFileUrls: allUrls,
+    printFilePaths: petPaths,
+    nextAttemptAt: null,
+    error: awaitingApproval ? "Printify order is awaiting manual approval" : null,
+    metadata: {
+      skippedReasons,
+      lineCount: lineItems.length,
+      needsAttention,
+      shopifyFlag,
+      founderAlerted,
+      manualApproval: awaitingApproval,
+    },
+  });
+
+  return {
+    status,
+    printifyOrderId,
+    eligibleLines: lineItems.length,
+    skippedReasons,
+    needsAttention,
+    printFileUrls: allUrls,
+    printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+    sentToProduction,
+  };
 }
 
 /**

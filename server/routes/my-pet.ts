@@ -34,6 +34,7 @@ import { designProducts } from "@shared/schema";
 import { storage } from "../storage";
 import { ensureValidOfflineAccessToken } from "../shopify-offline-token";
 import { setProductMyPetEnabled } from "../my-pet-metafields";
+import { fulfillableCatalogueVariantIds } from "../catalogue-variant-fulfillment";
 
 function friendlyGenerateError(err: unknown): string {
   const category = generationErrorCategory(err);
@@ -160,7 +161,11 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
     const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
     const clientIp = clientIpFromReq(req);
     const result = await checkMyPetCap({ shop, shopifyProductId, deviceKey, clientIp });
-    res.json({ ...result, deviceKey: signed });
+    const fulfilment = await fulfillableCatalogueVariantIds(shop, shopifyProductId).catch(() => ({
+      catalogue: false,
+      fulfillableVariantIds: [] as string[],
+    }));
+    res.json({ ...result, ...fulfilment, deviceKey: signed });
   });
 
   app.post("/api/proxy/my-pet/upload-photo", myPetProxyAuth, async (req: Request, res: Response) => {

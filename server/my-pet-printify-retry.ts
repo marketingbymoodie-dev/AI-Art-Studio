@@ -22,7 +22,7 @@ export function nextPetRetryDelayMs(attempt: number): number | null {
 }
 
 export function petFailureIsRetryable(message: string): boolean {
-  if (/no stored edited artwork|has no print path|no productTypeId|product type .* not found|missing Printify credentials|tenant check failed|REFUSED/i.test(message)) {
+  if (/no stored edited artwork|has no print path|no productTypeId|product type .* not found|missing Printify credentials|tenant check failed|REFUSED|8502|not allowed to sent order to production|shipping address unavailable/i.test(message)) {
     return false;
   }
   return true;

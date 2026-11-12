@@ -34,7 +34,15 @@ function attentionNote(lines: AttentionLine[]): string {
   const body = lines
     .map((l) => `• line ${l.lineId} (qty ${l.quantity}): ${l.reason}`)
     .join("\n");
-  return `AppAI did not send ${lines.length} item(s) to Printify — fulfil manually or contact support:\n${body}`;
+  return `AppAI did not send these item(s) to Printify — fulfil manually or contact support:\n${body}`;
+}
+
+function noteWithoutAttention(existing: string): string {
+  return existing
+    .split(/\n\n/)
+    .filter((part) => !part.startsWith("AppAI did not send"))
+    .join("\n\n")
+    .trim();
 }
 
 export async function flagOrderNeedsAttention(args: {
@@ -59,21 +67,28 @@ export async function flagOrderNeedsAttention(args: {
     const read = await adminGraphql<any>(shop, token, `query($id: ID!) { order(id: $id) { note tags } }`, { id: gid });
     const order = read?.order;
     if (!order) return { state: "error", error: "order not found" };
-    // Webhook retries re-run a skipped order; the tag marks it already noted.
-    if ((order.tags ?? []).includes(NEEDS_ATTENTION_TAG)) return { state: "already-tagged" };
 
     const existing = String(order.note || "").trim();
-    const note = [existing, attentionNote(args.lines)].filter(Boolean).join("\n\n").slice(0, NOTE_MAX);
+    const kept = noteWithoutAttention(existing);
+    if (!args.lines.length && kept === existing) return { state: "already-tagged" };
+    const note = (args.lines.length ? [kept, attentionNote(args.lines)] : [kept])
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, NOTE_MAX);
+    if ((order.tags ?? []).includes(NEEDS_ATTENTION_TAG) && note === existing && args.lines.length) {
+      return { state: "already-tagged" };
+    }
+    const tagField = args.lines.length ? "tagsAdd" : "tagsRemove";
     const res = await adminGraphql<any>(
       shop,
       token,
       `mutation($id: ID!, $tags: [String!]!, $input: OrderInput!) {
-        tagsAdd(id: $id, tags: $tags) { userErrors { message } }
+        ${tagField}(id: $id, tags: $tags) { userErrors { message } }
         orderUpdate(input: $input) { userErrors { message } }
       }`,
       { id: gid, tags: [NEEDS_ATTENTION_TAG], input: { id: gid, note } },
     );
-    const errs = [...(res?.tagsAdd?.userErrors ?? []), ...(res?.orderUpdate?.userErrors ?? [])]
+    const errs = [...(res?.[tagField]?.userErrors ?? []), ...(res?.orderUpdate?.userErrors ?? [])]
       .map((e: any) => e?.message)
       .filter(Boolean);
     if (errs.length) return { state: "error", error: errs.join("; ") };

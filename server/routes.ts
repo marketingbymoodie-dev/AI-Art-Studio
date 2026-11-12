@@ -1,4 +1,5 @@
 import { shopifyStatusForVisibility } from "@shared/productVisibility";
+import { catalogueVariantGate } from "./catalogue-variant-fulfillment";
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import {
   applyRendererOverride,
@@ -11721,6 +11722,14 @@ ${orientationExtra}
           code: "combo_unavailable",
         });
       };
+      const refuseNoPrintifyVariant = () => {
+        console.log(`[ResolveVariant] no printify variant colour=${requestedColour} size=${requestedSize} variant=${variantId}`);
+        return res.status(409).json({
+          success: false,
+          error: "That colour isn't available in this size. Please pick another colour or size.",
+          code: "no_printify_variant",
+        });
+      };
       const source = String(sourceRaw || "");
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
@@ -11939,6 +11948,9 @@ ${orientationExtra}
         if (requestedColour || requestedSize) {
           const requestedBase = await readRequestedBaseVariant();
           if (!requestedComboMatches(requestedBase)) return refuseUnavailableCombo();
+        }
+        if (source === "my-pet" && (await catalogueVariantGate(shop, String(variantId))) === "refuse") {
+          return refuseNoPrintifyVariant();
         }
         console.log(
           `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
@@ -12241,6 +12253,9 @@ ${orientationExtra}
         return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
       }
       console.log(`[ShadowProduct] Using canonical productId=${productId} resolved from variantId=${variantId}`);
+      if (source === "my-pet" && (await catalogueVariantGate(shop, String(variantId), productId)) === "refuse") {
+        return refuseNoPrintifyVariant();
+      }
 
       // 3. Use variant payload as canonical metadata for shadow variant creation.
       //    This avoids hard-failing on /products/{id}.json when productId is stale/unavailable.
@@ -13842,22 +13857,10 @@ ${orientationExtra}
       // shop's real job id printed that shop's artwork. See docs/launch-notes.md.
       if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
-        const shippingAddress = order.shipping_address || order.customer?.default_address || {};
-        // Map the Shopify shipping address → Printify address_to. NOTE: this
-        // path depends on Protected Customer Data access; until approved, the
-        // flag stays OFF. We never source the address from an unverified body.
-        const addressTo = {
-          first_name: String(shippingAddress.first_name || order.customer?.first_name || "Customer"),
-          last_name: String(shippingAddress.last_name || order.customer?.last_name || ""),
-          email: String(order.email || order.contact_email || ""),
-          phone: String(shippingAddress.phone || order.phone || ""),
-          country: String(shippingAddress.country_code || shippingAddress.country || "US"),
-          region: String(shippingAddress.province_code || shippingAddress.province || ""),
-          address1: String(shippingAddress.address1 || ""),
-          address2: String(shippingAddress.address2 || ""),
-          city: String(shippingAddress.city || ""),
-          zip: String(shippingAddress.zip || ""),
-        };
+        // Shopify redacts name, street, zip and phone until Protected Customer
+        // Data is approved. Submit re-reads the order and refuses a blank recipient.
+        const { printifyAddressFromShopifyOrder } = await import("./printify-order-recipient");
+        const addressTo = printifyAddressFromShopifyOrder(order);
         const normalizedLines = rawLines.map((l) => normalizeShopifyOrderLine(l));
         // Fire-and-forget: respond 200 first, run Printify work in the background.
         void (async () => {

@@ -1424,9 +1424,30 @@ console.log('[My Pet] script build=aaf5568d loaded');
           state.capStatus = status || null;
           renderAttemptsCaption(state.capStatus);
           refreshDesignList();
+          applyCatalogueFulfillment(status);
           return state.capStatus;
         })
         .catch(function () { return null; });
+    }
+
+    // Combos with no Printify variant are not purchasable. findExactVariant
+    // already skips available:false, so this only feeds that data.
+    function applyCatalogueFulfillment(status) {
+      if (!status || status.catalogue !== true || !Array.isArray(status.fulfillableVariantIds)) return;
+      var allowed = {};
+      for (var i = 0; i < status.fulfillableVariantIds.length; i++) allowed[String(status.fulfillableVariantIds[i])] = true;
+      var variants = [];
+      try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) { return; }
+      var blocked = 0;
+      for (var j = 0; j < variants.length; j++) {
+        if (allowed[String(variants[j].id)]) continue;
+        if (variants[j].available !== false) blocked += 1;
+        variants[j].available = false;
+      }
+      if (!blocked) return;
+      root.setAttribute('data-variants', JSON.stringify(variants));
+      console.log(TAG, 'unfulfillable variants blocked n=' + blocked);
+      if (typeof state.reapplySwatches === 'function') state.reapplySwatches();
     }
 
     var designSwitchToken = 0;
@@ -7998,6 +8019,7 @@ console.log('[My Pet] script build=aaf5568d loaded');
         applySwatchAvailability(sizeRadio.value, repeat ? 'change' : 'size');
       }, true);
       syncColourAvailability();
+      state.reapplySwatches = function () { syncColourAvailability(); };
     }
 
     function installInlineATCIntercept() {
