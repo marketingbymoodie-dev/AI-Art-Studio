@@ -4,7 +4,7 @@
  * garment → add to cart via the same shadow-SKU endpoint every other
  * customizer flow uses. See docs/ (My Pet plan) for the full spec.
  */
-console.log('[My Pet] script build=5b2e01c8 loaded');
+console.log('[My Pet] script build=e95f1b44 loaded');
 (function () {
   'use strict';
   var TAG = '[My Pet]';
