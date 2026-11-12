@@ -7663,6 +7663,20 @@ console.log('[My Pet] script build=a3a7af20 loaded');
         var radios = picker.querySelectorAll('input[type="radio"]');
         for (var i = 0; i < radios.length; i++) {
           var radio = radios[i];
+          if (optionKind(radio) === 'size') {
+            // Horizon marks the clicked size sold out when the current colour
+            // has no variant. The size still sells other colours, so leave it
+            // selectable. Colour swatches carry the sold-out state.
+            if (!findExactVariant(root, null, radio.value)) continue;
+            radio.removeAttribute('aria-disabled');
+            radio.setAttribute('data-option-available', 'true');
+            var sizeLabel = radio.getAttribute('aria-label') || '';
+            if (sizeLabel.indexOf(' - Sold out') !== -1) radio.setAttribute('aria-label', sizeLabel.replace(' - Sold out', ''));
+            var sizeHost = radio.closest ? radio.closest('label') : null;
+            var sizeMark = sizeHost ? sizeHost.querySelector('svg.variant-option__strikethrough') : null;
+            if (sizeMark && sizeMark.parentNode) sizeMark.parentNode.removeChild(sizeMark);
+            continue;
+          }
           if (optionKind(radio) !== 'colour') continue;
           var ok = !!findExactVariant(root, radio.value, size);
           var label = radio.closest ? radio.closest('label') : null;
