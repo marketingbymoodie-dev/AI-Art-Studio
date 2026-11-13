@@ -45,6 +45,7 @@ import {
 } from "../shipping-reconciler";
 import { shippingStoreProfiles, shippingStoreSettings, shippingStoreVariants } from "@shared/schema";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
+import { parseFreeShippingCountries } from "@shared/shipping-desired-state";
 
 type AuthMw = RequestHandler;
 
@@ -496,6 +497,9 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
           shopDomain: s.shopDomain,
           shippingMode: s.shippingMode,
           manageVariantWeights: s.manageVariantWeights,
+          freeShippingEnabled: s.freeShippingEnabled,
+          freeShippingThresholdCents: s.freeShippingThresholdCents,
+          freeShippingCountries: s.freeShippingCountries,
           probedMaxRatesPerZone: s.probedMaxRatesPerZone,
           lastReconcileAt: s.lastReconcileAt,
           lastReconcileStatus: s.lastReconcileStatus,
@@ -536,6 +540,23 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
         }
         if ("manageVariantWeights" in body) {
           patch.manageVariantWeights = !!body.manageVariantWeights;
+        }
+        if ("freeShippingEnabled" in body) {
+          patch.freeShippingEnabled = !!body.freeShippingEnabled;
+        }
+        if ("freeShippingThresholdCents" in body) {
+          const cents = Number(body.freeShippingThresholdCents);
+          if (!Number.isInteger(cents) || cents < 1 || cents > 10_000_000) {
+            return res.status(400).json({ error: "freeShippingThresholdCents must be a positive integer" });
+          }
+          patch.freeShippingThresholdCents = cents;
+        }
+        if ("freeShippingCountries" in body) {
+          const countries = parseFreeShippingCountries(String(body.freeShippingCountries ?? ""));
+          if (countries.length === 0) {
+            return res.status(400).json({ error: "freeShippingCountries needs at least one ISO code" });
+          }
+          patch.freeShippingCountries = countries.join(",");
         }
         const settings = await updateStoreShippingSettings(shop, patch);
         return res.json({ ok: true, settings });

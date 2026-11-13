@@ -2918,6 +2918,16 @@ export const shippingStoreSettings = pgTable(
     lastReconcileStatus: text("last_reconcile_status"),
     lastReconcileError: text("last_reconcile_error"),
     lastReconcileSummaryJson: text("last_reconcile_summary_json").notNull().default("{}"),
+    /**
+     * $0 "Free Shipping" above an order subtotal, for the listed countries only.
+     * Off (the default) leaves desired state identical to the weight bands.
+     * Threshold is shop-currency minor units (7500 = 75.00). Countries are
+     * comma-separated ISO codes. The theme free-shipping bar is a separate
+     * theme setting and is not read from this row.
+     */
+    freeShippingEnabled: boolean("free_shipping_enabled").notNull().default(false),
+    freeShippingThresholdCents: integer("free_shipping_threshold_cents").notNull().default(7500),
+    freeShippingCountries: text("free_shipping_countries").notNull().default("US"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

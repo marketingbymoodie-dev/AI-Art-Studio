@@ -47,12 +47,15 @@ import {
 import {
   buildShopDesiredState,
   classifyShippingCoverageGaps,
+  deliveryMethodDefinitionInputs,
   inheritCatalogueMemberships,
   maxRatesPerZone,
+  parseFreeShippingCountries,
   type DesiredClassInput,
   type DesiredProfile,
   type DesiredShopState,
   type DesiredZone,
+  type FreeShippingOffer,
   type MembershipVariant,
 } from "@shared/shipping-desired-state";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
@@ -545,7 +548,12 @@ async function collectCoverageGapWarnings(shop: string, warnings: string[]): Pro
 
 export async function loadDesiredShopState(
   shop: string,
-  opts: { shopCurrency: string; fxRate: number; warnings?: string[] },
+  opts: {
+    shopCurrency: string;
+    fxRate: number;
+    warnings?: string[];
+    freeShipping?: FreeShippingOffer | null;
+  },
 ): Promise<DesiredShopState> {
   const stale = new Map<string, StaleClassTable>();
   const classInputs = await loadClassInputs(stale);
@@ -566,6 +574,7 @@ export async function loadDesiredShopState(
     memberships,
     shopCurrency: opts.shopCurrency,
     usdPerShopUnit: opts.fxRate,
+    freeShipping: opts.freeShipping,
   });
 }
 
@@ -640,28 +649,11 @@ async function fetchLiveProfileZones(
 // ── Mutation input builders ───────────────────────────────────────────────────
 
 function methodDefinitionInputs(zone: DesiredZone, currency: string): any[] {
-  return zone.rates.map((r) => {
-    const conditions: any[] = [
-      {
-        criteria: { unit: "GRAMS", value: r.lowerGrams },
-        operator: "GREATER_THAN_OR_EQUAL_TO",
-      },
-    ];
-    if (r.upperGrams != null) {
-      conditions.push({
-        criteria: { unit: "GRAMS", value: r.upperGrams },
-        operator: "LESS_THAN_OR_EQUAL_TO",
-      });
-    }
-    return {
-      // Identical name across every profile — Shopify sums same-named rates
-      // into one checkout line (plan §desired-state).
-      name: RATE_NAME,
-      active: true,
-      rateDefinition: { price: { amount: (r.priceCents / 100).toFixed(2), currencyCode: currency } },
-      weightConditionsToCreate: conditions,
-    };
-  });
+  // Identical paid name across every profile — Shopify sums same-named rates
+  // into one checkout line (plan §desired-state). The free rate uses its own
+  // name so it does not add to a paid band. Price conditions are omitted
+  // entirely when the offer is off.
+  return deliveryMethodDefinitionInputs(zone, currency, RATE_NAME);
 }
 
 function zoneCreateInput(zone: DesiredZone, currency: string): any {
@@ -861,6 +853,11 @@ async function reconcileShopShippingCore(
     shopCurrency: basics.currencyCode,
     fxRate,
     warnings: summary.warnings,
+    freeShipping: {
+      enabled: settings.freeShippingEnabled,
+      thresholdCents: settings.freeShippingThresholdCents,
+      countries: parseFreeShippingCountries(settings.freeShippingCountries),
+    },
   });
   summary.desiredProfiles = desired.profiles.length;
   summary.unresolvedVariants = desired.unresolvedVariants.length;
@@ -920,7 +917,10 @@ async function reconcileShopShippingCore(
     });
   }
   if (cap && neededRates > cap) {
-    throw new Error(`Pre-flight: desired ${neededRates} rates/zone exceeds shop cap ${cap}`);
+    const msg =
+      `desired ${neededRates} rates/zone exceeds stored cap ${cap}; apply re-probes before writing`;
+    if (!opts.dryRun) throw new Error(`Pre-flight: ${msg}`);
+    summary.warnings.push(msg);
   }
 
   if (opts.dryRun) {

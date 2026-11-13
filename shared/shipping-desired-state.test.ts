@@ -14,9 +14,14 @@ import {
   type ExclusionSet,
 } from "./shipping-bands";
 import {
+  applyFreeShippingToZones,
   buildShopDesiredState,
+  deliveryMethodDefinitionInputs,
+  FREE_SHIPPING_RATE_NAME,
   maxRatesPerZone,
+  stableHash,
   type DesiredClassInput,
+  type DesiredZone,
   type MembershipVariant,
 } from "./shipping-desired-state";
 
@@ -244,5 +249,132 @@ describe("buildShopDesiredState", () => {
       usdPerShopUnit: 1,
     });
     expect(maxRatesPerZone(state)).toBe(DEFAULT_BAND_CONFIG.maxBands + 1);
+  });
+
+  it("leaves desired state identical when free shipping is off", () => {
+    const args = {
+      classes: [teeInput],
+      memberships: [member(tee.classKey, "g1", "222")],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+    };
+    const plain = buildShopDesiredState(args);
+    const off = buildShopDesiredState({
+      ...args,
+      freeShipping: { enabled: false, thresholdCents: 7500, countries: ["US"] },
+    });
+    expect(off.profiles.map((p) => p.hash)).toEqual(plain.profiles.map((p) => p.hash));
+    expect(JSON.stringify(off.profiles)).toBe(JSON.stringify(plain.profiles));
+    for (const zone of plain.profiles[0].zones) {
+      for (const rate of zone.rates) {
+        expect(rate.maxSubtotalCents).toBeUndefined();
+        expect(rate.name).toBeUndefined();
+      }
+    }
+  });
+
+  it("adds a mutually exclusive free rate on the listed country only", () => {
+    const args = {
+      classes: [teeInput],
+      memberships: [member(tee.classKey, "g1", "222")],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+    };
+    const plain = buildShopDesiredState(args);
+    const on = buildShopDesiredState({
+      ...args,
+      freeShipping: { enabled: true, thresholdCents: 7500, countries: ["US"] },
+    });
+    const plainProfile = plain.profiles[0];
+    const onProfile = on.profiles[0];
+    expect(onProfile.hash).not.toBe(plainProfile.hash);
+
+    const plainUs = plainProfile.zones.find((z) => z.countries.includes("US"))!;
+    const onUs = onProfile.zones.find((z) => z.countries.join() === "US")!;
+    expect(onUs.rates).toHaveLength(plainUs.rates.length + 1);
+    for (let i = 0; i < plainUs.rates.length; i++) {
+      expect(onUs.rates[i].priceCents).toBe(plainUs.rates[i].priceCents);
+      expect(onUs.rates[i].lowerGrams).toBe(plainUs.rates[i].lowerGrams);
+      expect(onUs.rates[i].upperGrams).toBe(plainUs.rates[i].upperGrams);
+      expect(onUs.rates[i].maxSubtotalCents).toBe(7499);
+      expect(onUs.rates[i].minSubtotalCents).toBeUndefined();
+    }
+    const free = onUs.rates[onUs.rates.length - 1];
+    expect(free).toMatchObject({
+      priceCents: 0,
+      minSubtotalCents: 7500,
+      name: FREE_SHIPPING_RATE_NAME,
+      weightConditions: false,
+    });
+    expect(free.maxSubtotalCents).toBeUndefined();
+
+    const others = (zones: typeof plainProfile.zones) =>
+      zones.filter((z) => !z.countries.includes("US"));
+    expect(JSON.stringify(others(onProfile.zones))).toBe(JSON.stringify(others(plainProfile.zones)));
+
+    const methods = deliveryMethodDefinitionInputs(onUs, "USD", "Standard Shipping");
+    const paid = methods[0];
+    expect(paid.name).toBe("Standard Shipping");
+    expect(paid.priceConditionsToCreate).toEqual([
+      {
+        criteria: { amount: "74.99", currencyCode: "USD" },
+        operator: "LESS_THAN_OR_EQUAL_TO",
+      },
+    ]);
+    expect(paid).toHaveProperty("weightConditionsToCreate");
+    const freeMethod = methods[methods.length - 1];
+    expect(freeMethod.name).toBe("Free Shipping");
+    expect(freeMethod.rateDefinition).toEqual({
+      price: { amount: "0.00", currencyCode: "USD" },
+    });
+    expect(freeMethod.priceConditionsToCreate).toEqual([
+      {
+        criteria: { amount: "75.00", currencyCode: "USD" },
+        operator: "GREATER_THAN_OR_EQUAL_TO",
+      },
+    ]);
+    expect(freeMethod.weightConditionsToCreate).toBeUndefined();
+
+    const plainMethod = deliveryMethodDefinitionInputs(plainUs, "USD", "Standard Shipping")[0];
+    expect(plainMethod.priceConditionsToCreate).toBeUndefined();
+    expect(plainMethod.name).toBe("Standard Shipping");
+  });
+
+  it("splits a mixed zone so an unlisted country keeps uncapped bands", () => {
+    const zones: DesiredZone[] = [
+      {
+        zoneKey: stableHash(["CA", "US"].join(",")),
+        name: "CA +1",
+        countries: ["CA", "US"],
+        restOfWorld: false,
+        blocked: false,
+        rates: [{ bandIndex: 0, lowerGrams: 0, upperGrams: 240, priceCents: 495 }],
+      },
+      {
+        zoneKey: "ROW",
+        name: "Rest of world",
+        countries: [],
+        restOfWorld: true,
+        blocked: false,
+        rates: [{ bandIndex: 0, lowerGrams: 0, upperGrams: null, priceCents: 1095 }],
+      },
+    ];
+    const next = applyFreeShippingToZones(zones, {
+      enabled: true,
+      thresholdCents: 7500,
+      countries: ["US"],
+    });
+    const us = next.find((z) => z.countries.join() === "US")!;
+    const ca = next.find((z) => z.countries.join() === "CA")!;
+    const row = next.find((z) => z.restOfWorld)!;
+    expect(us.rates).toHaveLength(2);
+    expect(us.rates[0].maxSubtotalCents).toBe(7499);
+    expect(ca.rates[0].maxSubtotalCents).toBeUndefined();
+    expect(ca.rates[0].priceCents).toBe(495);
+    expect(row.rates[0].maxSubtotalCents).toBeUndefined();
+    expect(row.rates).toHaveLength(1);
+    expect(applyFreeShippingToZones(zones, { enabled: true, thresholdCents: 0, countries: ["US"] })).toBe(
+      zones,
+    );
   });
 });

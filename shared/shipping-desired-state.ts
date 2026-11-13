@@ -43,6 +43,18 @@ export type DesiredClassInput = {
   config: BandConfig;
 };
 
+/** Checkout name for the optional $0 rate. Distinct from the paid band name. */
+export const FREE_SHIPPING_RATE_NAME = "Free Shipping";
+
+export type FreeShippingOffer = {
+  /** Off leaves every zone's rates untouched. */
+  enabled: boolean;
+  /** Shop-currency minor units. Paid bands in the listed countries cap at this minus one minor unit. */
+  thresholdCents: number;
+  /** ISO 3166-1 alpha-2. A zone is eligible only when every country in it is listed. */
+  countries: string[];
+};
+
 export type DesiredRate = {
   bandIndex: number;
   lowerGrams: number;
@@ -50,6 +62,14 @@ export type DesiredRate = {
   upperGrams: number | null;
   /** Shop-currency minor units (post-FX, post-rounding). */
   priceCents: number;
+  /** Shop-currency minor units. Absent = no minimum subtotal. */
+  minSubtotalCents?: number;
+  /** Shop-currency minor units. Absent = no maximum subtotal. */
+  maxSubtotalCents?: number;
+  /** Absent = the reconciler's standard rate name. */
+  name?: string;
+  /** False = price condition only. Absent = weight conditions, as before. */
+  weightConditions?: boolean;
 };
 
 export type DesiredZone = {
@@ -113,6 +133,159 @@ function serializeBands(bands: Band[]): string {
   return bands.map((b) => `${b.lowerGrams}-${b.upperGrams ?? "inf"}:${b.priceCents}`).join("|");
 }
 
+/**
+ * Weight-only rates keep the historical hash fragment. Subtotal bounds and a
+ * custom name are appended only when present, so a shop with the offer off
+ * hashes exactly as it did before the offer existed.
+ */
+export function rateHashPart(rate: DesiredRate): string {
+  const base = `${rate.lowerGrams}-${rate.upperGrams ?? "inf"}:${rate.priceCents}`;
+  if (
+    rate.minSubtotalCents == null &&
+    rate.maxSubtotalCents == null &&
+    !rate.name &&
+    rate.weightConditions !== false
+  ) {
+    return base;
+  }
+  return `${base}:min${rate.minSubtotalCents ?? ""}:max${rate.maxSubtotalCents ?? ""}:${rate.name ?? ""}:w${rate.weightConditions === false ? 0 : 1}`;
+}
+
+export function parseFreeShippingCountries(raw: string | null | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of String(raw || "").split(",")) {
+    const code = part.trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code) || seen.has(code)) continue;
+    seen.add(code);
+    out.push(code);
+  }
+  return out;
+}
+
+function offerCountries(offer: FreeShippingOffer): Set<string> {
+  return new Set(parseFreeShippingCountries(offer.countries.join(",")));
+}
+
+function decorateZone(zone: DesiredZone, thresholdCents: number): DesiredZone {
+  const maxSubtotalCents = thresholdCents - 1;
+  const paid = zone.rates.map((rate) => ({ ...rate, maxSubtotalCents }));
+  paid.push({
+    bandIndex: paid.length,
+    lowerGrams: 0,
+    upperGrams: null,
+    priceCents: 0,
+    minSubtotalCents: thresholdCents,
+    name: FREE_SHIPPING_RATE_NAME,
+    weightConditions: false,
+  });
+  return { ...zone, rates: paid };
+}
+
+/**
+ * Adds the $0 rate to zones whose countries are all in the offer, and caps
+ * every paid band in those zones at one minor unit under the threshold.
+ * A zone that mixes a listed country with any other country is split, so the
+ * other country keeps today's weight bands with no subtotal condition.
+ * ROW and blocked zones are never eligible.
+ * Returns the same array when the offer is off or unusable.
+ */
+export function applyFreeShippingToZones(
+  zones: DesiredZone[],
+  offer: FreeShippingOffer | null | undefined,
+): DesiredZone[] {
+  if (!offer?.enabled) return zones;
+  const thresholdCents = Math.round(offer.thresholdCents);
+  if (!Number.isFinite(thresholdCents) || thresholdCents < 1) return zones;
+  const allowed = offerCountries(offer);
+  if (allowed.size === 0) return zones;
+
+  const next: DesiredZone[] = [];
+  for (const zone of zones) {
+    if (zone.blocked || zone.restOfWorld || zone.countries.length === 0 || zone.rates.length === 0) {
+      next.push(zone);
+      continue;
+    }
+    const eligible = zone.countries.filter((code) => allowed.has(code));
+    const rest = zone.countries.filter((code) => !allowed.has(code));
+    if (eligible.length === 0) {
+      next.push(zone);
+      continue;
+    }
+    if (rest.length === 0) {
+      next.push(decorateZone(zone, thresholdCents));
+      continue;
+    }
+    const eligibleSorted = eligible.slice().sort();
+    const restSorted = rest.slice().sort();
+    next.push(
+      decorateZone(
+        {
+          ...zone,
+          zoneKey: stableHash(eligibleSorted.join(",")),
+          name: zoneName(eligibleSorted, false, false),
+          countries: eligibleSorted,
+        },
+        thresholdCents,
+      ),
+    );
+    next.push({
+      ...zone,
+      zoneKey: stableHash(restSorted.join(",")),
+      name: zoneName(restSorted, false, false),
+      countries: restSorted,
+      rates: zone.rates.map((rate) => ({ ...rate })),
+    });
+  }
+  return next;
+}
+
+/** Shopify DeliveryMethodDefinitionInput list for one zone. */
+export function deliveryMethodDefinitionInputs(
+  zone: DesiredZone,
+  currency: string,
+  standardName: string,
+): Array<Record<string, unknown>> {
+  const amount = (cents: number) => (cents / 100).toFixed(2);
+  return zone.rates.map((rate) => {
+    const input: Record<string, unknown> = {
+      name: rate.name || standardName,
+      active: true,
+      rateDefinition: { price: { amount: amount(rate.priceCents), currencyCode: currency } },
+    };
+    if (rate.weightConditions !== false) {
+      const weight: Array<Record<string, unknown>> = [
+        {
+          criteria: { unit: "GRAMS", value: rate.lowerGrams },
+          operator: "GREATER_THAN_OR_EQUAL_TO",
+        },
+      ];
+      if (rate.upperGrams != null) {
+        weight.push({
+          criteria: { unit: "GRAMS", value: rate.upperGrams },
+          operator: "LESS_THAN_OR_EQUAL_TO",
+        });
+      }
+      input.weightConditionsToCreate = weight;
+    }
+    const price: Array<Record<string, unknown>> = [];
+    if (rate.minSubtotalCents != null) {
+      price.push({
+        criteria: { amount: amount(rate.minSubtotalCents), currencyCode: currency },
+        operator: "GREATER_THAN_OR_EQUAL_TO",
+      });
+    }
+    if (rate.maxSubtotalCents != null) {
+      price.push({
+        criteria: { amount: amount(rate.maxSubtotalCents), currencyCode: currency },
+        operator: "LESS_THAN_OR_EQUAL_TO",
+      });
+    }
+    if (price.length) input.priceConditionsToCreate = price;
+    return input;
+  });
+}
+
 function toDesiredRates(
   bands: Band[],
   shopCurrency: string,
@@ -141,6 +314,8 @@ export function buildShopDesiredState(params: {
   shopCurrency: string;
   /** Buffered/pinned USD→shop-unit FX rate (1 for USD shops). */
   usdPerShopUnit: number;
+  /** Omitted or disabled: desired zones match the pre-offer generator. */
+  freeShipping?: FreeShippingOffer | null;
 }): DesiredShopState {
   const { classes, memberships, shopCurrency, usdPerShopUnit } = params;
   const byClassKey = new Map(classes.map((c) => [c.table.classKey, c]));
@@ -238,6 +413,8 @@ export function buildShopDesiredState(params: {
       }
       if (zones.filter((z) => !z.blocked).length === 0) continue; // nothing shippable
 
+      const offeredZones = applyFreeShippingToZones(zones, params.freeShipping);
+
       const groupLabel =
         profile.groups.length === 1
           ? profile.groups[0].label || profile.groups[0].group
@@ -246,12 +423,12 @@ export function buildShopDesiredState(params: {
 
       const hashInput = JSON.stringify({
         name,
-        zones: zones.map((z) => ({
+        zones: offeredZones.map((z) => ({
           k: z.zoneKey,
           c: z.countries,
           row: z.restOfWorld,
           b: z.blocked,
-          r: z.rates.map((r) => `${r.lowerGrams}-${r.upperGrams ?? "inf"}:${r.priceCents}`),
+          r: z.rates.map((r) => rateHashPart(r)),
         })),
       });
 
@@ -262,7 +439,7 @@ export function buildShopDesiredState(params: {
         classKey: table.classKey,
         variantGroup: profile.groups.length === 1 ? profile.groups[0].group : null,
         variants,
-        zones,
+        zones: offeredZones,
         hash: stableHash(hashInput),
       });
     }

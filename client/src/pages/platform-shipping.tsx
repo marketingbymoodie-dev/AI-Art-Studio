@@ -109,6 +109,9 @@ type StoreRow = {
   shopDomain: string;
   shippingMode: string;
   manageVariantWeights: boolean;
+  freeShippingEnabled: boolean;
+  freeShippingThresholdCents: number;
+  freeShippingCountries: string;
   probedMaxRatesPerZone: number | null;
   lastReconcileAt: string | null;
   lastReconcileStatus: string | null;
@@ -155,6 +158,72 @@ function formatClassAge(ms: number): string {
   if (hours < 48) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return `${days}d ${hours % 24}h`;
+}
+
+function FreeShippingFields({
+  store,
+  pending,
+  onSave,
+}: {
+  store: StoreRow;
+  pending: boolean;
+  onSave: (patch: {
+    freeShippingEnabled: boolean;
+    freeShippingThresholdCents: number;
+    freeShippingCountries: string;
+  }) => void;
+}) {
+  const [enabled, setEnabled] = useState(store.freeShippingEnabled);
+  const [threshold, setThreshold] = useState((store.freeShippingThresholdCents / 100).toFixed(2));
+  const [countries, setCountries] = useState(store.freeShippingCountries || "US");
+  useEffect(() => {
+    setEnabled(store.freeShippingEnabled);
+    setThreshold((store.freeShippingThresholdCents / 100).toFixed(2));
+    setCountries(store.freeShippingCountries || "US");
+  }, [store.freeShippingEnabled, store.freeShippingThresholdCents, store.freeShippingCountries]);
+  const cents = Math.round(Number(threshold) * 100);
+  const invalid = !Number.isFinite(cents) || cents < 1 || !countries.trim();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label className="flex items-center gap-1 text-xs">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={pending}
+          onChange={(e) => setEnabled(e.target.checked)}
+        />
+        On
+      </label>
+      <Input
+        className="h-8 w-20"
+        value={threshold}
+        disabled={pending}
+        aria-label="Free shipping threshold"
+        onChange={(e) => setThreshold(e.target.value)}
+      />
+      <Input
+        className="h-8 w-24"
+        value={countries}
+        disabled={pending}
+        aria-label="Free shipping countries"
+        onChange={(e) => setCountries(e.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="secondary"
+        disabled={pending || invalid}
+        onClick={() =>
+          onSave({
+            freeShippingEnabled: enabled,
+            freeShippingThresholdCents: cents,
+            freeShippingCountries: countries,
+          })
+        }
+      >
+        Save
+      </Button>
+    </div>
+  );
 }
 
 function usd(cents: number | null | undefined): string {
@@ -247,6 +316,9 @@ export default function PlatformShippingPage() {
       shop: string;
       shippingMode?: string;
       manageVariantWeights?: boolean;
+      freeShippingEnabled?: boolean;
+      freeShippingThresholdCents?: number;
+      freeShippingCountries?: string;
     }) => {
       const { shop, ...patch } = payload;
       const res = await apiRequest("PATCH", `/api/platform/shipping/stores/${shop}`, patch);
@@ -644,6 +716,7 @@ export default function PlatformShippingPage() {
                       <th className="py-2 pr-4">Profiles</th>
                       <th className="py-2 pr-4">Budget</th>
                       <th className="py-2 pr-4">Weights</th>
+                      <th className="py-2 pr-4">Free over</th>
                       <th className="py-2 pr-4">Last reconcile</th>
                       <th className="py-2 pr-0 text-right">Actions</th>
                     </tr>
@@ -701,6 +774,15 @@ export default function PlatformShippingPage() {
                                   shop: s.shopDomain,
                                   manageVariantWeights: e.target.checked,
                                 })
+                              }
+                            />
+                          </td>
+                          <td className="py-2 pr-4">
+                            <FreeShippingFields
+                              store={s}
+                              pending={storePatchMutation.isPending}
+                              onSave={(patch) =>
+                                storePatchMutation.mutate({ shop: s.shopDomain, ...patch })
                               }
                             />
                           </td>
