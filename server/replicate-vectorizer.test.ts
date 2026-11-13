@@ -377,6 +377,55 @@ describe("Recraft vectorizer client", () => {
     expect(cleaned).toContain('fill="#C800FF"');
     expect(countNearKeySvgFills(Buffer.from(cleaned))).toBe(0);
   });
+
+  it("punchEnclosedCounters cuts a fill-none counter out of the solid glyph", async () => {
+    const sharp = (await import("sharp")).default;
+    const { punchEnclosedCounters } = await import("./replicate-vectorizer");
+    const width = 40;
+    const height = 40;
+    const raw = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const ring = x >= 8 && x < 32 && y >= 8 && y < 32;
+        const hole = x >= 16 && x < 24 && y >= 16 && y < 24;
+        raw[i + 3] = ring && !hole ? 255 : 0;
+      }
+    }
+    const source = await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const svg = Buffer.from(
+      '<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">' +
+        '<path fill="rgb(10,30,20)" d="M8 8 L32 8 L32 32 L8 32 Z"/>' +
+        '<path fill="none" d="M16 16 L24 16 L24 24 L16 24 Z"/>' +
+        "</svg>",
+    );
+    const punched = (await punchEnclosedCounters(svg, source)).toString("utf8");
+    expect(punched.match(/<path\b/g)).toHaveLength(1);
+    expect(punched).toContain('fill-rule="evenodd"');
+    const raster = await sharp(Buffer.from(punched)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const alpha = (x: number, y: number) => {
+      const sx = Math.round(x * raster.info.width / width);
+      const sy = Math.round(y * raster.info.height / height);
+      return raster.data[(sy * raster.info.width + sx) * raster.info.channels + 3];
+    };
+    expect(alpha(20, 20)).toBe(0);
+    expect(alpha(10, 20)).toBeGreaterThan(200);
+  });
+
+  it("leaves a fill-none path alone when the source has no enclosed hole there", async () => {
+    const sharp = (await import("sharp")).default;
+    const { punchEnclosedCounters } = await import("./replicate-vectorizer");
+    const source = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 10, g: 30, b: 20, alpha: 1 } },
+    }).png().toBuffer();
+    const svg = Buffer.from(
+      '<svg viewBox="0 0 40 40"><path fill="rgb(10,30,20)" d="M8 8 L32 8 L32 32 L8 32 Z"/>' +
+        '<path fill="none" d="M16 16 L24 16 L24 24 L16 24 Z"/></svg>',
+    );
+    const punched = (await punchEnclosedCounters(svg, source)).toString("utf8");
+    expect(punched.match(/<path\b/g)).toHaveLength(2);
+    expect(punched).not.toContain("evenodd");
+  });
 });
 
 function jsonResponse(body: unknown): Response {

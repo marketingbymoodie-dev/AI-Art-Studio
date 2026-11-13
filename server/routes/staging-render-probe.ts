@@ -57,7 +57,7 @@ import { behaviourObject, generateArtStyleDevices, generateArtStyleTruths } from
 import { ART_STYLE_DEVICE_STRUCTURES, adminCandidateDraft, flywheelShopDomain, flywheelSpecies } from "@shared/flywheelRecipe";
 import { getDesignCandidate, insertAdminDesignCandidate, listDesignCandidates } from "../design-candidates";
 import { buildFlywheelPrintFile, lastPrintFileBilling, placedArtworkBounds, printCanvasFromStoredPlaceholders, printFilePathForStyle } from "../flywheel-print-file";
-import { isNearChromaKeyFill, lastRecraftCallBilling } from "../replicate-vectorizer";
+import { countEnclosedCounters, isNearChromaKeyFill, lastRecraftCallBilling } from "../replicate-vectorizer";
 import { petSwapRenderInput } from "../flywheel-pet-swap";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
@@ -323,6 +323,7 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         transparency,
         nearKeyPathsBefore: print.nearKeyPathsBefore,
         nearKeyPathsAfter: print.nearKeyPathsAfter,
+        enclosedCounters: await countEnclosedCounters(print.buffer),
         svg: svg && svgPath ? { ...svg, path: svgPath, url: await signedLibraryUrl(svgPath, ttl) } : null,
         durationMs,
         costUsd: billing?.costUsd ?? null,

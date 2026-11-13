@@ -294,6 +294,214 @@ export function dropNearKeySvgShapes(svg: Buffer): Buffer {
   return sanitizeVectorSvg(Buffer.from(text, "utf8"), isNearChromaKeyColorValue);
 }
 
+type SvgBox = { minX: number; minY: number; maxX: number; maxY: number };
+
+function pathDBox(d: string): SvgBox | null {
+  const nums = d.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)?.map(Number) ?? [];
+  if (nums.length < 2) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i + 1 < nums.length; i += 2) {
+    const x = nums[i];
+    const y = nums[i + 1];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function boxArea(box: SvgBox): number {
+  return Math.max(0, box.maxX - box.minX) * Math.max(0, box.maxY - box.minY);
+}
+
+function boxInside(inner: SvgBox, outer: SvgBox): boolean {
+  return inner.minX >= outer.minX && inner.minY >= outer.minY && inner.maxX <= outer.maxX && inner.maxY <= outer.maxY;
+}
+
+function readSvgAttr(tag: string, name: string): string {
+  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(["'])([^"']*)\\1`, "i"));
+  return match?.[2] ?? "";
+}
+
+function setSvgAttr(tag: string, name: string, value: string): string {
+  const existing = new RegExp(`\\b${name}\\s*=\\s*(["'])[^"']*\\1`, "i");
+  if (existing.test(tag)) return tag.replace(existing, `${name}="${value}"`);
+  return tag.replace(/\/?>$/, (end) => ` ${name}="${value}"${end}`);
+}
+
+function isCounterFill(fill: string): boolean {
+  const value = fill.trim().toLowerCase();
+  if (!value) return false;
+  if (value === "none" || value === "transparent") return true;
+  return isNearChromaKeyColorValue(value);
+}
+
+/** Enclosed transparent regions. These are the letter counters in a keyed plate. */
+export async function enclosedHoleMask(
+  source: Buffer,
+  minArea = 12,
+): Promise<{ mask: Uint8Array; width: number; height: number; count: number }> {
+  const { data, info } = await sharp(source).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const total = width * height;
+  const clear = new Uint8Array(total);
+  for (let p = 0; p < total; p++) {
+    if (data[p * channels + 3] < 10) clear[p] = 1;
+  }
+  const exterior = new Uint8Array(total);
+  const queue: number[] = [];
+  const seed = (x: number, y: number) => {
+    const p = y * width + x;
+    if (!clear[p] || exterior[p]) return;
+    exterior[p] = 1;
+    queue.push(p);
+  };
+  for (let x = 0; x < width; x++) {
+    seed(x, 0);
+    seed(x, height - 1);
+  }
+  for (let y = 0; y < height; y++) {
+    seed(0, y);
+    seed(width - 1, y);
+  }
+  while (queue.length) {
+    const p = queue.pop()!;
+    const x = p % width;
+    const y = (p - x) / width;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const np = ny * width + nx;
+      if (!clear[np] || exterior[np]) continue;
+      exterior[np] = 1;
+      queue.push(np);
+    }
+  }
+  const seen = new Uint8Array(total);
+  const mask = new Uint8Array(total);
+  let count = 0;
+  for (let p = 0; p < total; p++) {
+    if (!clear[p] || exterior[p] || seen[p]) continue;
+    const stack = [p];
+    seen[p] = 1;
+    const component = [p];
+    while (stack.length) {
+      const q = stack.pop()!;
+      const x = q % width;
+      const y = (q - x) / width;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const np = ny * width + nx;
+        if (!clear[np] || exterior[np] || seen[np]) continue;
+        seen[np] = 1;
+        stack.push(np);
+        component.push(np);
+      }
+    }
+    if (component.length < minArea) continue;
+    count++;
+    for (const q of component) mask[q] = 1;
+  }
+  return { mask, width, height, count };
+}
+
+export async function countEnclosedCounters(image: Buffer, minArea = 12): Promise<number> {
+  return (await enclosedHoleMask(image, minArea)).count;
+}
+
+function counterCenterInHole(
+  box: SvgBox,
+  viewWidth: number,
+  viewHeight: number,
+  holes: { mask: Uint8Array; width: number; height: number },
+): boolean {
+  const cx = Math.round(((box.minX + box.maxX) / 2) * holes.width / viewWidth);
+  const cy = Math.round(((box.minY + box.maxY) / 2) * holes.height / viewHeight);
+  const hits = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < holes.width && y < holes.height && holes.mask[y * holes.width + x] === 1;
+  if (hits(cx, cy)) return true;
+  for (const [dx, dy] of [[3, 0], [-3, 0], [0, 3], [0, -3], [6, 0], [0, 6]] as const) {
+    if (hits(cx + dx, cy + dy)) return true;
+  }
+  return false;
+}
+
+/**
+ * Recraft draws a letter counter as its own path on top of a solid glyph.
+ * Setting that path to fill="none" leaves the glyph underneath, so the hole
+ * stays filled. Append the counter as an evenodd subpath of the glyph.
+ * Only a path that sits inside the glyph and on a real enclosed hole is punched.
+ */
+export async function punchEnclosedCounters(svg: Buffer, source: Buffer): Promise<Buffer> {
+  const text = svg.toString("utf8");
+  if (!text.includes("<svg")) return svg;
+  const viewBox = text.match(/viewBox\s*=\s*["']([^"']+)["']/i)?.[1] ?? "";
+  const parts = viewBox.split(/[\s,]+/).map(Number);
+  const viewWidth = parts[2];
+  const viewHeight = parts[3];
+  if (!(viewWidth > 0) || !(viewHeight > 0)) return svg;
+
+  const holes = await enclosedHoleMask(source, 12);
+  if (holes.count === 0) return svg;
+  const viewArea = viewWidth * viewHeight;
+  const matches = [...text.matchAll(/<path\b[^>]*>/gi)];
+  if (matches.length === 0) return svg;
+
+  type PathInfo = { index: number; length: number; tag: string; d: string; fill: string; box: SvgBox; area: number; remove: boolean };
+  const paths: PathInfo[] = [];
+  for (const match of matches) {
+    const tag = match[0];
+    const d = readSvgAttr(tag, "d");
+    const box = pathDBox(d);
+    if (!box) continue;
+    paths.push({
+      index: match.index ?? 0,
+      length: tag.length,
+      tag,
+      d,
+      fill: readSvgAttr(tag, "fill"),
+      box,
+      area: boxArea(box),
+      remove: false,
+    });
+  }
+
+  for (let i = 0; i < paths.length; i++) {
+    const counter = paths[i];
+    if (counter.remove || !isCounterFill(counter.fill) || counter.area <= 0 || counter.area > viewArea * 0.25) continue;
+    let glyphAt = i - 1;
+    while (glyphAt >= 0 && (paths[glyphAt].remove || isCounterFill(paths[glyphAt].fill))) glyphAt--;
+    if (glyphAt < 0) continue;
+    const glyph = paths[glyphAt];
+    if (!boxInside(counter.box, glyph.box) || counter.area >= glyph.area * 0.85) continue;
+    if (!counterCenterInHole(counter.box, viewWidth, viewHeight, holes)) continue;
+    const d = `${glyph.d} ${counter.d}`;
+    glyph.d = d;
+    glyph.tag = setSvgAttr(setSvgAttr(glyph.tag, "d", d), "fill-rule", "evenodd");
+    counter.remove = true;
+  }
+
+  if (!paths.some((path) => path.remove)) return svg;
+  let out = "";
+  let cursor = 0;
+  for (const path of paths) {
+    out += text.slice(cursor, path.index);
+    if (!path.remove) out += path.tag;
+    cursor = path.index + path.length;
+  }
+  out += text.slice(cursor);
+  return Buffer.from(out, "utf8");
+}
+
 export type CanvasCornerRgb = { r: number; g: number; b: number };
 
 /** Manhattan RGB distance — shared tolerance semantics with apparel chroma key. */

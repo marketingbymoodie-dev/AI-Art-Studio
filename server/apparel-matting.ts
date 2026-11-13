@@ -819,6 +819,7 @@ function despeckleAlpha(
   height: number,
   channels: number,
   minIslandPixels: number,
+  fillTransparentIslands = true,
 ): void {
   const total = width * height;
   const visited = new Uint8Array(total);
@@ -858,6 +859,7 @@ function despeckleAlpha(
     }
 
     if (component.length < minIslandPixels) {
+      if (!isOpaque && !fillTransparentIslands) continue;
       for (const p of component) {
         const idx = p * channels;
         if (isOpaque) {
@@ -873,7 +875,7 @@ function despeckleAlpha(
 /** Deterministic flat-graphic cleanup after chroma keying. */
 export async function cleanupFlatGraphicAlpha(
   buffer: Buffer,
-  opts?: { bgRemovalSensitivity?: number; erodeAfterCleanup?: boolean },
+  opts?: { bgRemovalSensitivity?: number; erodeAfterCleanup?: boolean; preserveEnclosedHoles?: boolean },
 ): Promise<Buffer> {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
@@ -894,7 +896,7 @@ export async function cleanupFlatGraphicAlpha(
     px[i + 3] = px[i + 3] < 128 ? 0 : 255;
   }
 
-  despeckleAlpha(px, info.width, info.height, ch, 12);
+  despeckleAlpha(px, info.width, info.height, ch, 12, opts?.preserveEnclosedHoles !== true);
 
   let out = await sharp(px, {
     raw: { width: info.width, height: info.height, channels: ch },

@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
 import { cleanupFlatGraphicAlpha, EXPANDED_CHROMA_TOLERANCE, removeChromaKeyBackground } from "./apparel-matting";
 import { readPlatformReplicateToken } from "./generation-providers";
-import { countNearKeySvgFills, dropNearKeySvgShapes, lastRecraftCallBilling, vectorizeWithRecraft } from "./replicate-vectorizer";
+import { countNearKeySvgFills, dropNearKeySvgShapes, lastRecraftCallBilling, punchEnclosedCounters, vectorizeWithRecraft } from "./replicate-vectorizer";
 
 /** Replicate list price when a Real-ESRGAN prediction does not include a billed amount. */
 export const REAL_ESRGAN_LIST_USD = 0.0023;
@@ -238,7 +238,7 @@ export async function prepareVectorPrintSource(source: Buffer): Promise<Buffer> 
       chromaFloodFill: true,
     });
   }
-  return cleanupFlatGraphicAlpha(keyed.buffer, { erodeAfterCleanup: false });
+  return cleanupFlatGraphicAlpha(keyed.buffer, { erodeAfterCleanup: false, preserveEnclosedHoles: true });
 }
 
 export async function buildFlywheelPrintFile(
@@ -267,6 +267,7 @@ export async function buildFlywheelPrintFile(
       const keyed = await prepareVectorPrintSource(source);
       svg = await vectorizeWithRecraft({ imageBuffer: keyed });
       nearKeyPathsBefore = countNearKeySvgFills(svg);
+      svg = await punchEnclosedCounters(svg, keyed);
       svg = dropNearKeySvgShapes(svg);
     } catch (err) {
       throw new Error(`${styleId} print file failed: ${(err as Error).message}`);

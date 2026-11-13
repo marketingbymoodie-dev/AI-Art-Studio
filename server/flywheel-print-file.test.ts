@@ -9,7 +9,7 @@ import {
   printCanvasFromStoredPlaceholders,
   printFilePathForStyle,
 } from "./flywheel-print-file";
-import { isNearChromaKeyFill } from "./replicate-vectorizer";
+import { countEnclosedCounters, isNearChromaKeyFill } from "./replicate-vectorizer";
 
 /** The size a harvest is expected to store. The stage itself does not contain it. */
 const HARVEST = { width: 3852, height: 4398 };
@@ -111,6 +111,25 @@ describe("flywheel print file", () => {
       expect(softAlpha).toBe(0);
       expect(darkOpaque).toBeGreaterThan(0);
     }
+  });
+
+  it("keeps a small enclosed hole through the vector-print harden step", async () => {
+    const width = 30;
+    const height = 30;
+    const raw = Buffer.alloc(width * height * 4, 255);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const hole = x >= 14 && x < 17 && y >= 14 && y < 17;
+        raw[i] = 10;
+        raw[i + 1] = 12;
+        raw[i + 2] = 14;
+        raw[i + 3] = hole ? 0 : 255;
+      }
+    }
+    const source = await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const prepared = await prepareVectorPrintSource(source);
+    expect(await countEnclosedCounters(prepared, 4)).toBe(1);
   });
 
   it("fits a square source to the canvas width and leaves the height short", () => {
