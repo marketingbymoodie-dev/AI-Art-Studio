@@ -56,7 +56,8 @@ import { composeArtStyleProbe } from "../art-style-probe";
 import { behaviourObject, generateArtStyleDevices, generateArtStyleTruths } from "../art-style-writers";
 import { ART_STYLE_DEVICE_STRUCTURES, adminCandidateDraft, flywheelShopDomain, flywheelSpecies } from "@shared/flywheelRecipe";
 import { getDesignCandidate, insertAdminDesignCandidate, listDesignCandidates } from "../design-candidates";
-import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "../flywheel-print-file";
+import { buildFlywheelPrintFile, lastPrintFileBilling, placedArtworkBounds, printCanvasFromStoredPlaceholders, printFilePathForStyle } from "../flywheel-print-file";
+import { lastRecraftCallBilling } from "../replicate-vectorizer";
 import { petSwapRenderInput } from "../flywheel-pet-swap";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
@@ -69,6 +70,84 @@ export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<strin
 
 function stagingOnly(env: Record<string, string | undefined> = process.env): boolean {
   return String(env.RAILWAY_ENVIRONMENT_NAME ?? "").toLowerCase() === "staging" && (env.STAGING_PROBE_TOKEN ?? "").length >= 24;
+}
+
+async function readProbeImage(probeId: number): Promise<Buffer> {
+  const [row] = await (await db()).select({ storagePath: renderProbeResults.storagePath }).from(renderProbeResults).where(eq(renderProbeResults.id, probeId)).limit(1);
+  if (!row?.storagePath) throw new Error(`Probe ${probeId} has no image`);
+  const c = sb();
+  if (!c) throw new Error("Supabase is not configured");
+  const { data, error } = await c.storage.from(BUCKET).download(row.storagePath);
+  if (error || !data) throw new Error(error?.message || `Probe ${probeId} image is missing`);
+  return Buffer.from(await data.arrayBuffer());
+}
+
+async function readPublicImage(imageUrl: string): Promise<Buffer> {
+  let url: URL;
+  try {
+    url = new URL(imageUrl);
+  } catch {
+    throw new Error("Image URL is not valid");
+  }
+  if (url.protocol !== "https:") throw new Error("Image URL must be https");
+  const host = url.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".local") || host === "0.0.0.0" || host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) {
+    throw new Error("Image URL is not public");
+  }
+  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`Image download HTTP ${response.status}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 25 * 1024 * 1024) throw new Error("Image is larger than 25MB");
+  return bytes;
+}
+
+async function printTransparency(image: Buffer) {
+  const { data, info } = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let transparent = 0;
+  let opaque = 0;
+  let nearWhiteOpaque = 0;
+  let borderOpaque = 0;
+  const border = 8;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const i = (y * info.width + x) * info.channels;
+      const alpha = data[i + 3];
+      const edge = x < border || y < border || x >= info.width - border || y >= info.height - border;
+      if (alpha < 10) {
+        transparent++;
+        continue;
+      }
+      opaque++;
+      if (edge) borderOpaque++;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = (r + g + b) / 3;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      if (alpha > 200 && lum >= 245 && chroma <= 12) nearWhiteOpaque++;
+    }
+  }
+  const corners = [0, info.width - 1, (info.height - 1) * info.width, info.height * info.width - 1].map((px) => data[px * info.channels + 3]);
+  return {
+    cornersAlpha: corners,
+    transparent,
+    opaque,
+    nearWhiteOpaque,
+    borderOpaque,
+    transparentFraction: Number((transparent / Math.max(1, transparent + opaque)).toFixed(4)),
+  };
+}
+
+function svgDetail(svg: Buffer) {
+  const text = svg.toString("utf8");
+  const count = (tag: string) => (text.match(new RegExp(`<${tag}\\b`, "g")) || []).length;
+  const paths = count("path");
+  const polygons = count("polygon");
+  const polylines = count("polyline");
+  const circles = count("circle");
+  const rects = count("rect");
+  const ellipses = count("ellipse");
+  return { bytes: svg.length, paths, nodes: paths + polygons + polylines + circles + rects + ellipses };
 }
 
 export type EdgeSide = { palePct: number; uniformPct: number };
@@ -164,6 +243,81 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return res.status(502).json({ error: message });
+    }
+  });
+
+  // Staging QA for the print-file builder. Writes a test object only.
+  // Does not update a candidate, a stored print path, Shopify, or Printify.
+  app.post("/api/staging/print-file-test", async (req: Request, res: Response) => {
+    if (!stagingProbeAllowed(req)) return res.status(404).json({ error: "Not found" });
+    const body = (req.body ?? {}) as { probeId?: unknown; imageUrl?: unknown; style?: unknown };
+    const style = str(body.style, 40);
+    try {
+      printFilePathForStyle(style);
+    } catch (err) {
+      return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    const probeId = Number(body.probeId);
+    const imageUrl = str(body.imageUrl, 2000);
+    if (!(Number.isInteger(probeId) && probeId > 0) && !imageUrl) {
+      return res.status(400).json({ error: "probeId or imageUrl is required" });
+    }
+    try {
+      const source = probeId > 0 ? await readProbeImage(probeId) : await readPublicImage(imageUrl);
+      const { db } = await import("../db");
+      const { productTypes } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+      const { signedLibraryUrl, softstyleType, writeLibraryObject } = await import("../mockup-library-store");
+      const garment = await softstyleType();
+      const [typeRow] = await db
+        .select({ placeholderPositions: productTypes.placeholderPositions })
+        .from(productTypes)
+        .where(eq(productTypes.id, garment.id))
+        .limit(1);
+      const canvas = printCanvasFromStoredPlaceholders(typeRow?.placeholderPositions, garment.name);
+      const sourceMeta = await sharp(source).metadata();
+      const started = Date.now();
+      const print = await buildFlywheelPrintFile(style, source, canvas);
+      const durationMs = Date.now() - started;
+      const placed = await sharp(print.buffer).metadata();
+      const bounds = await placedArtworkBounds(print.buffer);
+      const transparency = await printTransparency(print.buffer);
+      const billing = lastPrintFileBilling();
+      const recraft = lastRecraftCallBilling();
+      const stamp = `${Date.now()}-${style}`;
+      const pngPath = `print-files/test/${stamp}.png`;
+      await writeLibraryObject(pngPath, print.buffer, "image/png");
+      let svgPath = "";
+      let svg: ReturnType<typeof svgDetail> | null = null;
+      if (print.svg) {
+        svgPath = `print-files/test/${stamp}.svg`;
+        await writeLibraryObject(svgPath, print.svg, "image/svg+xml");
+        svg = svgDetail(print.svg);
+      }
+      const ttl = 7 * 24 * 60 * 60;
+      return res.json({
+        style,
+        path: print.path,
+        canvas,
+        source: { width: sourceMeta.width ?? 0, height: sourceMeta.height ?? 0 },
+        png: {
+          width: placed.width ?? 0,
+          height: placed.height ?? 0,
+          bytes: print.buffer.length,
+          path: pngPath,
+          url: await signedLibraryUrl(pngPath, ttl),
+        },
+        bounds,
+        transparency,
+        svg: svg && svgPath ? { ...svg, path: svgPath, url: await signedLibraryUrl(svgPath, ttl) } : null,
+        durationMs,
+        costUsd: billing?.costUsd ?? null,
+        costEstimated: billing?.estimated ?? null,
+        predictTimeSec: recraft?.predictTimeSec ?? null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: message.slice(0, 500) });
     }
   });
 

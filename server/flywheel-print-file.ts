@@ -221,7 +221,7 @@ export async function buildFlywheelPrintFile(
   styleId: string,
   source: Buffer,
   canvas: PrintCanvas,
-): Promise<{ path: FlywheelPrintPath; buffer: Buffer }> {
+): Promise<{ path: FlywheelPrintPath; buffer: Buffer; svg: Buffer | null }> {
   lastPrintBilling = null;
   const path = printFilePathForStyle(styleId);
   if (!(canvas?.width > 0) || !(canvas?.height > 0)) {
@@ -243,7 +243,7 @@ export async function buildFlywheelPrintFile(
       costUsd: billing?.costUsd ?? VECTORIZE_COST_PER_GEN_USD,
       estimated: billing?.costSource !== "replicate",
     };
-    return { path, buffer: await placeOnPrintCanvas(raster, canvas) };
+    return { path, buffer: await placeOnPrintCanvas(raster, canvas), svg };
   }
-  return { path, buffer: await upscaleForPrint(source, styleId, canvas) };
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas), svg: null };
 }
