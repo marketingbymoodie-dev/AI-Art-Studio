@@ -57,7 +57,7 @@ import { behaviourObject, generateArtStyleDevices, generateArtStyleTruths } from
 import { ART_STYLE_DEVICE_STRUCTURES, adminCandidateDraft, flywheelShopDomain, flywheelSpecies } from "@shared/flywheelRecipe";
 import { getDesignCandidate, insertAdminDesignCandidate, listDesignCandidates } from "../design-candidates";
 import { buildFlywheelPrintFile, lastPrintFileBilling, placedArtworkBounds, printCanvasFromStoredPlaceholders, printFilePathForStyle } from "../flywheel-print-file";
-import { lastRecraftCallBilling } from "../replicate-vectorizer";
+import { isNearChromaKeyFill, lastRecraftCallBilling } from "../replicate-vectorizer";
 import { petSwapRenderInput } from "../flywheel-pet-swap";
 
 export function stagingProbeAllowed(req: Pick<Request, "get">, env: Record<string, string | undefined> = process.env): boolean {
@@ -106,8 +106,14 @@ async function printTransparency(image: Buffer) {
   let transparent = 0;
   let opaque = 0;
   let nearWhiteOpaque = 0;
+  let nearMagentaOpaque = 0;
+  let nearMagentaTouchingClear = 0;
   let borderOpaque = 0;
   const border = 8;
+  const clear = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= info.width || y >= info.height) return true;
+    return data[(y * info.width + x) * info.channels + 3] < 10;
+  };
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
       const i = (y * info.width + x) * info.channels;
@@ -125,6 +131,10 @@ async function printTransparency(image: Buffer) {
       const lum = (r + g + b) / 3;
       const chroma = Math.max(r, g, b) - Math.min(r, g, b);
       if (alpha > 200 && lum >= 245 && chroma <= 12) nearWhiteOpaque++;
+      if (isNearChromaKeyFill(r, g, b)) {
+        nearMagentaOpaque++;
+        if (clear(x - 1, y) || clear(x + 1, y) || clear(x, y - 1) || clear(x, y + 1)) nearMagentaTouchingClear++;
+      }
     }
   }
   const corners = [0, info.width - 1, (info.height - 1) * info.width, info.height * info.width - 1].map((px) => data[px * info.channels + 3]);
@@ -133,6 +143,8 @@ async function printTransparency(image: Buffer) {
     transparent,
     opaque,
     nearWhiteOpaque,
+    nearMagentaOpaque,
+    nearMagentaTouchingClear,
     borderOpaque,
     transparentFraction: Number((transparent / Math.max(1, transparent + opaque)).toFixed(4)),
   };
@@ -309,6 +321,8 @@ export function registerStagingRenderProbeRoutes(app: Express): void {
         },
         bounds,
         transparency,
+        nearKeyPathsBefore: print.nearKeyPathsBefore,
+        nearKeyPathsAfter: print.nearKeyPathsAfter,
         svg: svg && svgPath ? { ...svg, path: svgPath, url: await signedLibraryUrl(svgPath, ttl) } : null,
         durationMs,
         costUsd: billing?.costUsd ?? null,

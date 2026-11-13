@@ -5,8 +5,9 @@
  */
 import sharp from "sharp";
 import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
+import { cleanupFlatGraphicAlpha, EXPANDED_CHROMA_TOLERANCE, removeChromaKeyBackground } from "./apparel-matting";
 import { readPlatformReplicateToken } from "./generation-providers";
-import { lastRecraftCallBilling, vectorizeWithRecraft } from "./replicate-vectorizer";
+import { countNearKeySvgFills, dropNearKeySvgShapes, lastRecraftCallBilling, vectorizeWithRecraft } from "./replicate-vectorizer";
 
 /** Replicate list price when a Real-ESRGAN prediction does not include a billed amount. */
 export const REAL_ESRGAN_LIST_USD = 0.0023;
@@ -217,11 +218,40 @@ function dollarsFromPrediction(prediction: ReplicatePrediction): number | null {
   return null;
 }
 
+/**
+ * Key a magenta canvas and harden soft edges before Recraft sees the image.
+ * prepareOpaquePlateForVectorize composites whatever it is given onto #FF00FF.
+ * A semi-transparent edge blends with that plate and the tracer keeps the blend
+ * as a purple shape. Upscale styles do not call this.
+ */
+export async function prepareVectorPrintSource(source: Buffer): Promise<Buffer> {
+  let keyed = await removeChromaKeyBackground(source, {
+    allowWhiteKey: false,
+    borderFloodFill: false,
+    chromaFloodFill: true,
+  });
+  if (keyed.cornerIsMagentaCanvas && keyed.chromaRemovedPct < 20) {
+    keyed = await removeChromaKeyBackground(source, {
+      allowWhiteKey: false,
+      tolerance: EXPANDED_CHROMA_TOLERANCE,
+      borderFloodFill: false,
+      chromaFloodFill: true,
+    });
+  }
+  return cleanupFlatGraphicAlpha(keyed.buffer, { erodeAfterCleanup: false });
+}
+
 export async function buildFlywheelPrintFile(
   styleId: string,
   source: Buffer,
   canvas: PrintCanvas,
-): Promise<{ path: FlywheelPrintPath; buffer: Buffer; svg: Buffer | null }> {
+): Promise<{
+  path: FlywheelPrintPath;
+  buffer: Buffer;
+  svg: Buffer | null;
+  nearKeyPathsBefore: number | null;
+  nearKeyPathsAfter: number | null;
+}> {
   lastPrintBilling = null;
   const path = printFilePathForStyle(styleId);
   if (!(canvas?.width > 0) || !(canvas?.height > 0)) {
@@ -232,8 +262,12 @@ export async function buildFlywheelPrintFile(
   const srcHeight = meta.height || 0;
   if (path === "vectorize") {
     let svg: Buffer;
+    let nearKeyPathsBefore = 0;
     try {
-      svg = await vectorizeWithRecraft({ imageBuffer: source });
+      const keyed = await prepareVectorPrintSource(source);
+      svg = await vectorizeWithRecraft({ imageBuffer: keyed });
+      nearKeyPathsBefore = countNearKeySvgFills(svg);
+      svg = dropNearKeySvgShapes(svg);
     } catch (err) {
       throw new Error(`${styleId} print file failed: ${(err as Error).message}`);
     }
@@ -243,7 +277,13 @@ export async function buildFlywheelPrintFile(
       costUsd: billing?.costUsd ?? VECTORIZE_COST_PER_GEN_USD,
       estimated: billing?.costSource !== "replicate",
     };
-    return { path, buffer: await placeOnPrintCanvas(raster, canvas), svg };
+    return {
+      path,
+      buffer: await placeOnPrintCanvas(raster, canvas),
+      svg,
+      nearKeyPathsBefore,
+      nearKeyPathsAfter: countNearKeySvgFills(svg),
+    };
   }
-  return { path, buffer: await upscaleForPrint(source, styleId, canvas), svg: null };
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
 }

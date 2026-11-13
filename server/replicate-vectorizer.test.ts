@@ -354,6 +354,29 @@ describe("Recraft vectorizer client", () => {
     const count = await countOpaqueWhereSourceTransparent(source, raster);
     expect(count).toBeGreaterThan(1000);
   });
+
+  it("dropNearKeySvgShapes removes plate and soft-edge magenta fills and keeps violet", async () => {
+    const { countNearKeySvgFills, dropNearKeySvgShapes } = await import("./replicate-vectorizer");
+    const raw = Buffer.from(
+      "<svg>" +
+        '<path fill="rgb(229,14,223)" d="M0 0"/>' +
+        '<path fill="rgb(195,49,175)" d="M1 1"/>' +
+        '<path fill="#000000" d="M2 2"/>' +
+        '<path fill="#800080" d="M3 3"/>' +
+        '<path fill="#C800FF" d="M4 4"/>' +
+        '<g fill="#FF00FF"><path d="M5 5"/></g>' +
+        "</svg>",
+    );
+    expect(countNearKeySvgFills(raw)).toBe(2);
+    const cleaned = dropNearKeySvgShapes(raw).toString("utf8");
+    expect(cleaned).not.toContain("rgb(229,14,223)");
+    expect(cleaned).not.toContain("rgb(195,49,175)");
+    expect(cleaned).not.toContain("#FF00FF");
+    expect(cleaned).toContain('fill="#000000"');
+    expect(cleaned).toContain('fill="#800080"');
+    expect(cleaned).toContain('fill="#C800FF"');
+    expect(countNearKeySvgFills(Buffer.from(cleaned))).toBe(0);
+  });
 });
 
 function jsonResponse(body: unknown): Response {

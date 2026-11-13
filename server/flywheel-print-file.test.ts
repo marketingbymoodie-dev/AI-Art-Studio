@@ -5,9 +5,11 @@ import {
   buildFlywheelPrintFile,
   fittedPrintPixels,
   placeOnPrintCanvas,
+  prepareVectorPrintSource,
   printCanvasFromStoredPlaceholders,
   printFilePathForStyle,
 } from "./flywheel-print-file";
+import { isNearChromaKeyFill } from "./replicate-vectorizer";
 
 /** The size a harvest is expected to store. The stage itself does not contain it. */
 const HARVEST = { width: 3852, height: 4398 };
@@ -55,6 +57,60 @@ describe("flywheel print file", () => {
     expect(fitted.width).toBe(HARVEST.width);
     expect(fitted.height).toBeLessThan(HARVEST.height);
     expect(fitted.width / fitted.height).toBeCloseTo(2, 2);
+  });
+
+  it("keys a magenta canvas and hardens a soft edge before vectorizing", async () => {
+    const magenta = await sharp({
+      create: { width: 24, height: 24, channels: 4, background: { r: 255, g: 0, b: 255, alpha: 1 } },
+    })
+      .composite([{
+        input: await sharp({
+          create: { width: 8, height: 8, channels: 4, background: { r: 10, g: 12, b: 14, alpha: 1 } },
+        }).png().toBuffer(),
+        left: 8,
+        top: 8,
+      }])
+      .png()
+      .toBuffer();
+    const soft = await sharp({
+      create: { width: 24, height: 24, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: 8, height: 8, channels: 4, background: { r: 10, g: 12, b: 14, alpha: 1 } },
+          }).png().toBuffer(),
+          left: 8,
+          top: 8,
+        },
+        {
+          input: await sharp({
+            create: { width: 1, height: 1, channels: 4, background: { r: 20, g: 38, b: 32, alpha: 0.7 } },
+          }).png().toBuffer(),
+          left: 16,
+          top: 12,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    for (const source of [magenta, soft]) {
+      const prepared = await prepareVectorPrintSource(source);
+      const { data, info } = await sharp(prepared).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let nearKey = 0;
+      let softAlpha = 0;
+      let darkOpaque = 0;
+      for (let i = 0; i < data.length; i += info.channels) {
+        const a = data[i + 3];
+        if (a > 0 && a < 255) softAlpha++;
+        if (a < 10) continue;
+        if (isNearChromaKeyFill(data[i], data[i + 1], data[i + 2])) nearKey++;
+        if (data[i] < 40 && data[i + 1] < 40 && data[i + 2] < 40) darkOpaque++;
+      }
+      expect(nearKey).toBe(0);
+      expect(softAlpha).toBe(0);
+      expect(darkOpaque).toBeGreaterThan(0);
+    }
   });
 
   it("fits a square source to the canvas width and leaves the height short", () => {

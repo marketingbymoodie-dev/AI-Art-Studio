@@ -237,9 +237,61 @@ export function isChromaPlateRgb(r: number, g: number, b: number): boolean {
   return r >= 220 && b >= 220 && g <= 90 && Math.abs(r - b) <= 50;
 }
 
+/**
+ * Plate, tracer-quantized plate, and the magenta blend Recraft draws when a
+ * soft edge was composited onto #FF00FF. Used only as the print-file safety
+ * net. A violet with a wide red/blue split (#C800FF) stays; so does #800080.
+ */
+export function isNearChromaKeyFill(r: number, g: number, b: number): boolean {
+  if (isChromaPlateRgb(r, g, b)) return true;
+  const spill = Math.min(r, b) - g;
+  return r >= 170 && b >= 150 && g <= 80 && spill >= 100 && Math.abs(r - b) <= 50;
+}
+
 function isChromaPlateColorValue(value: string): boolean {
   const c = parseSvgColor(value);
   return !!c && isChromaPlateRgb(c.r, c.g, c.b);
+}
+
+function isNearChromaKeyColorValue(value: string): boolean {
+  const c = parseSvgColor(value);
+  return !!c && isNearChromaKeyFill(c.r, c.g, c.b);
+}
+
+function elementFillIsNearKey(el: string): boolean {
+  const fillAttr = el.match(/\bfill\s*=\s*(["'])([^"']*)\1/i);
+  if (fillAttr && isNearChromaKeyColorValue(fillAttr[2])) return true;
+  const style = el.match(/\bstyle\s*=\s*(["'])([^"']*)\1/i);
+  if (!style) return false;
+  const decls = style[2].match(/fill\s*:\s*[^;]+/gi) || [];
+  return decls.some((decl) => isNearChromaKeyColorValue(decl.split(":").slice(1).join(":")));
+}
+
+/** Paths (and the same shape tags) whose own fill is near the chroma key. */
+export function countNearKeySvgFills(svg: Buffer): number {
+  const text = svg.toString("utf8");
+  const tags = text.match(/<(?:path|polygon|polyline|circle|rect|ellipse)\b[^>]*>/gi) || [];
+  let count = 0;
+  for (const el of tags) {
+    if (elementFillIsNearKey(el)) count++;
+  }
+  return count;
+}
+
+/**
+ * Remove shapes whose fill is the key or the soft-edge blend, then clear any
+ * leftover near-key fill/stroke (a group fill, a plate stroke).
+ */
+export function dropNearKeySvgShapes(svg: Buffer): Buffer {
+  let text = svg.toString("utf8");
+  if (!text.includes("<svg")) return svg;
+  for (const tag of ["path", "polygon", "polyline", "circle", "rect", "ellipse"]) {
+    const paired = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, "gi");
+    text = text.replace(paired, (el) => (elementFillIsNearKey(el) ? "" : el));
+    const selfClosing = new RegExp(`<${tag}\\b[^>]*\\/>`, "gi");
+    text = text.replace(selfClosing, (el) => (elementFillIsNearKey(el) ? "" : el));
+  }
+  return sanitizeVectorSvg(Buffer.from(text, "utf8"), isNearChromaKeyColorValue);
 }
 
 export type CanvasCornerRgb = { r: number; g: number; b: number };
