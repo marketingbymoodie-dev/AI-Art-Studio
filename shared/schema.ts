@@ -1171,6 +1171,7 @@ export const designSkuMappings = pgTable("design_sku_mappings", {
   mockupUrl: text("mockup_url").notNull(),
   shadowShopifyProductId: text("shadow_shopify_product_id").notNull(),
   shadowShopifyVariantId: text("shadow_shopify_variant_id").notNull(),
+  cleanupStatus: text("cleanup_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   expiresAt: timestamp("expires_at").notNull(),
 });
@@ -1310,7 +1311,7 @@ export const publishedProducts = pgTable("published_products", {
   shopifyVariantId: text("shopify_variant_id").notNull(), // the purchasable variant for /cart/add.js
   shopifyProductHandle: text("shopify_product_handle"),
   baseVariantId: text("base_variant_id").notNull(), // the original base variant
-  status: text("status").notNull().default("active"), // active | archived
+  status: text("status").notNull().default("active"), // active | archived | skipped_not_shadow
   expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
   cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
   orderProtectedAt: timestamp("order_protected_at"),   // set on orders/paid; the reaper must not delete this shadow

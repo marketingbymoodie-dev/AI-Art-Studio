@@ -59,7 +59,8 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
-import { lookupShadowOrderHold, protectShadowsOnPaidOrder } from "./shadow-reaper-guard";
+import { protectShadowsOnPaidOrder } from "./shadow-reaper-guard";
+import { runDesignSkuCleanup, runShadowProductCleanup } from "./scheduled-shadow-cleanup";
 import {
   hasPrintConfigSuffix,
   reusableShadowDesignId,
@@ -14290,131 +14291,14 @@ ${orientationExtra}
     }
   });
 
-  // ==================== SHADOW SKU CLEANUP ====================
-  // Deletes expired shadow products from Shopify and removes DB mapping rows.
-  // Runs automatically every 6 hours and can be triggered manually via the admin endpoint below.
-  async function runDesignSkuCleanup(): Promise<{ deleted: number; errors: number }> {
-    let deleted = 0;
-    let errors = 0;
-    try {
-      const expired = await storage.getExpiredDesignSkuMappings(new Date());
-      if (expired.length === 0) return { deleted, errors };
-
-      // Group by shop so we can batch-delete per installation
-      const byShop: Record<string, typeof expired> = {};
-      for (const row of expired) {
-        if (!byShop[row.shopDomain]) byShop[row.shopDomain] = [];
-        byShop[row.shopDomain].push(row);
-      }
-
-      for (const shopDomain of Object.keys(byShop)) {
-        const rows = byShop[shopDomain];
-        const installation = await storage.getShopifyInstallationByShop(shopDomain);
-        if (!installation?.accessToken) {
-          errors += rows.length;
-          continue;
-        }
-
-        for (const row of rows) {
-          try {
-            // Delete the shadow product from Shopify (also deletes its variant + images)
-            await fetch(
-              `https://${shopDomain}/admin/api/2024-10/products/${row.shadowShopifyProductId}.json`,
-              {
-                method: "DELETE",
-                headers: { "X-Shopify-Access-Token": installation.accessToken },
-              }
-            );
-            await storage.deleteDesignSkuMapping(row.id);
-            deleted++;
-          } catch (e: any) {
-            console.warn(`[Design SKU Cleanup] Failed for product ${row.shadowShopifyProductId}:`, e.message);
-            errors++;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error("[Design SKU Cleanup] Unexpected error:", e);
-      errors++;
-    }
-    console.log(`[Design SKU Cleanup] Done: deleted=${deleted} errors=${errors}`);
-    return { deleted, errors };
-  }
+  // Design-SKU and shadow-product cleanup live in scheduled-shadow-cleanup.ts.
+  // Both confirm the live product is still an appai-shadow before deleting it.
 
   // Manual trigger endpoint (ops/testing)
   app.post("/api/admin/design-sku-cleanup", isAuthenticated, async (_req: any, res: Response) => {
     const result = await runDesignSkuCleanup();
     res.json({ ok: true, ...result });
   });
-
-  // ── Shadow product cleanup ──────────────────────────────────────────────────
-  // Runs every hour. Deletes Shopify shadow products whose expiresAt has passed
-  // and marks them as archived in the DB.
-  async function runShadowProductCleanup(): Promise<{ deleted: number; errors: number }> {
-    let deleted = 0;
-    let errors = 0;
-    try {
-      const expired = await storage.getExpiredShadowProducts();
-      if (expired.length === 0) return { deleted, errors };
-      console.log(`[ShadowProduct Cleanup] Found ${expired.length} expired shadow products to clean up`);
-
-      // Group by shop for efficient token lookup
-      const byShop: Record<string, typeof expired> = {};
-      for (const row of expired) {
-        if (!byShop[row.shop]) byShop[row.shop] = [];
-        byShop[row.shop].push(row);
-      }
-
-      for (const shopDomain of Object.keys(byShop)) {
-        const rows = byShop[shopDomain];
-        const installation = await storage.getShopifyInstallationByShop(shopDomain);
-        if (!installation?.accessToken) {
-          errors += rows.length;
-          continue;
-        }
-        for (const row of rows) {
-          try {
-            const hold = await lookupShadowOrderHold({
-              shop: shopDomain,
-              token: installation.accessToken,
-              variantId: row.shopifyVariantId,
-            });
-            if (hold !== "clear") {
-              if (hold === "hold") {
-                await storage.protectShadowProductOrder(row.id);
-                console.log(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=order`);
-              } else {
-                console.warn(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=unverified`);
-              }
-              continue;
-            }
-            // Delete the shadow product from Shopify (also removes its variant + images)
-            const delRes = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${row.shopifyProductId}.json`,
-              { method: "DELETE", headers: { "X-Shopify-Access-Token": installation.accessToken } }
-            );
-            if (delRes.ok || delRes.status === 404) {
-              // 404 = already gone from Shopify, still clean up our record
-              await storage.updatePublishedProduct(row.id, { status: "archived" });
-              deleted++;
-            } else {
-              const errText = await delRes.text();
-              console.warn(`[ShadowProduct Cleanup] Shopify DELETE failed (${delRes.status}) for product ${row.shopifyProductId}: ${errText.substring(0, 150)}`);
-              errors++;
-            }
-          } catch (e: any) {
-            console.warn(`[ShadowProduct Cleanup] Error deleting product ${row.shopifyProductId}:`, e?.message);
-            errors++;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error("[ShadowProduct Cleanup] Unexpected error:", e);
-      errors++;
-    }
-    console.log(`[ShadowProduct Cleanup] Done: deleted=${deleted} errors=${errors}`);
-    return { deleted, errors };
-  }
 
   // Manual trigger endpoint
   app.post("/api/admin/printify-test-artifact-cleanup", isAuthenticated, async (req: any, res: Response) => {

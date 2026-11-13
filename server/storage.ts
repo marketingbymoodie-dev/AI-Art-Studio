@@ -25,7 +25,7 @@ import {
 } from "@shared/schema";
 import { isForbiddenGenerationLedgerDebit } from "@shared/studio-credit-spend-guard";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
+import { eq, and, gte, lte, desc, asc, inArray, sql, isNull, or, ne } from "drizzle-orm";
 import { computeGenerationConsume, getEffectivePlan, resolveGenerationQuota } from "./customizer-plans";
 
 export interface IStorage {
@@ -1413,7 +1413,10 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return db
       .select()
       .from(designSkuMappings)
-      .where(lte(designSkuMappings.expiresAt, before));
+      .where(and(
+        lte(designSkuMappings.expiresAt, before),
+        or(isNull(designSkuMappings.cleanupStatus), ne(designSkuMappings.cleanupStatus, "skipped_not_shadow")),
+      ));
   }
 
   async deleteDesignSkuMapping(id: number): Promise<void> {
