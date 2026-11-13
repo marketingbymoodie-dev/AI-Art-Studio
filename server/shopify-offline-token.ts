@@ -229,6 +229,17 @@ export async function ensureValidOfflineAccessToken(
   const sessionToken = options.sessionToken?.trim() || null;
 
   if (!hasShopifyAppCredentials()) {
+    // A still-valid offline token does not need the client secret. Refresh and
+    // session exchange below still require it.
+    if (
+      !options.forceRefresh &&
+      installation.accessToken &&
+      installation.accessToken !== "NEEDS_RECONNECT" &&
+      hasRefreshToken(installation) &&
+      !needsAccessRefresh(installation)
+    ) {
+      return { ok: true, accessToken: installation.accessToken, installation };
+    }
     return { ok: false, needsReinstall: false, error: "Shopify API credentials not configured" };
   }
 

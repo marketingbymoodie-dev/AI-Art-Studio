@@ -84,24 +84,36 @@ async function applyProduct(product: DesignRow, availability: Record<string, any
     token,
     `query($id: ID!) {
       product(id: $id) {
-        variants(first: 100) { nodes { id inventoryPolicy } }
+        variants(first: 100) { nodes { id inventoryPolicy inventoryItem { tracked } } }
       }
     }`,
     { id: `gid://shopify/Product/${productId}` },
   );
-  const nodes: Array<{ id?: string; inventoryPolicy?: string }> = data?.product?.variants?.nodes || [];
+  const nodes: Array<{ id?: string; inventoryPolicy?: string; inventoryItem?: { tracked?: boolean } }> =
+    data?.product?.variants?.nodes || [];
   if (!data?.product) {
     console.log(`${TAG} product="${product.title}" shopify product ${productId} missing`);
     return 0;
   }
-  const current = new Map(nodes.map((node) => [numericId(node.id || ""), String(node.inventoryPolicy || "").toUpperCase()]));
-  const updates: Array<{ id: string; inventoryPolicy: "CONTINUE" | "DENY" }> = [];
-  const flips: Array<{ id: string; from: string; to: "CONTINUE" | "DENY" }> = [];
+  const current = new Map(nodes.map((node) => [
+    numericId(node.id || ""),
+    { policy: String(node.inventoryPolicy || "").toUpperCase(), tracked: node.inventoryItem?.tracked === true },
+  ]));
+  const updates: Array<{ id: string; inventoryPolicy: "CONTINUE" | "DENY"; inventoryItem?: { tracked: true } }> = [];
+  const flips: Array<{ id: string; from: string; to: "CONTINUE" | "DENY"; tracked: boolean }> = [];
   for (const [id, desired] of desiredById) {
-    const from = current.get(id);
-    if (!from || from === desired) continue;
-    updates.push({ id: `gid://shopify/ProductVariant/${id}`, inventoryPolicy: desired });
-    flips.push({ id, from, to: desired });
+    const row = current.get(id);
+    if (!row?.policy) continue;
+    // Untracked inventory ignores DENY, so a sold-out combo has to start tracking
+    // (quantity stays 0) or the swatch never greys.
+    const track = desired === "DENY" && !row.tracked;
+    if (row.policy === desired && !track) continue;
+    updates.push({
+      id: `gid://shopify/ProductVariant/${id}`,
+      inventoryPolicy: desired,
+      ...(track ? { inventoryItem: { tracked: true } } : {}),
+    });
+    flips.push({ id, from: row.policy, to: desired, tracked: track });
   }
   if (updates.length === 0) {
     console.log(`${TAG} product="${product.title}" policy changes=0`);
@@ -124,7 +136,11 @@ async function applyProduct(product: DesignRow, availability: Record<string, any
     throw new Error(userErrors.map((e: { message?: string }) => e.message || "userError").join("; "));
   }
   for (const flip of flips) {
-    console.log(`${TAG} product="${product.title}" variant=${flip.id} ${flip.from}→${flip.to}`);
+    const policyNote = flip.from === flip.to ? "" : `${flip.from}→${flip.to}`;
+    const trackNote = flip.tracked ? "tracked=false→true" : "";
+    console.log(
+      `${TAG} product="${product.title}" variant=${flip.id} ${[policyNote, trackNote].filter(Boolean).join(" ")}`,
+    );
   }
   return flips.length;
 }
