@@ -1,0 +1,33 @@
+name: Staging catalogue sync
+
+# Once a day, outside the web process, so a Railway deploy cannot skip the
+# stock scan. Both routes keep their 20-hour guard, so this and the in-process
+# timers do not double-run. Secret is the same OOS_SCAN_SECRET set on the
+# staging Railway service (product-intelligence-sync accepts that header too).
+on:
+  schedule:
+    - cron: "15 13 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STAGING_URL: https://ai-art-studio-staging.up.railway.app
+      OOS_SCAN_SECRET: ${{ secrets.OOS_SCAN_SECRET }}
+    steps:
+      - name: Product intelligence sync
+        run: |
+          if [ -z "$OOS_SCAN_SECRET" ]; then
+            echo "::error::GitHub secret OOS_SCAN_SECRET is not set"
+            exit 1
+          fi
+          curl -sfS --max-time 300 -X POST "$STAGING_URL/api/internal/product-intelligence-sync" \
+            -H "x-oos-scan-secret: $OOS_SCAN_SECRET" \
+            -H "x-product-sync-secret: $OOS_SCAN_SECRET"
+
+      - name: OOS catalogue scan
+        run: |
+          curl -sfS --max-time 300 -X POST "$STAGING_URL/api/internal/oos-catalogue-scan" \
+            -H "x-oos-scan-secret: $OOS_SCAN_SECRET"
