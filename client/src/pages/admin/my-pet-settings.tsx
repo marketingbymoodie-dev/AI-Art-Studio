@@ -126,6 +126,7 @@ export default function MyPetSettingsPage() {
   const [capPerListing, setCapPerListing] = useState("2");
   const [capPerDay, setCapPerDay] = useState("20");
   const [capEmailBonus, setCapEmailBonus] = useState("2");
+  const [surcharge, setSurcharge] = useState("0.00");
   const [renderParams, setRenderParams] = useState<MyPetRenderParams>({ ...MY_PET_DEFAULT_RENDER_PARAMS });
 
   useEffect(() => {
@@ -135,6 +136,7 @@ export default function MyPetSettingsPage() {
     setCapPerListing(String(data.settings.caps.perListing));
     setCapPerDay(String(data.settings.caps.perDay));
     setCapEmailBonus(String(data.settings.caps.emailBonus));
+    setSurcharge(((data.settings.surchargeCents || 0) / 100).toFixed(2));
     if (data.settings.renderParams) setRenderParams({ ...data.settings.renderParams });
   }, [data]);
 
@@ -149,6 +151,7 @@ export default function MyPetSettingsPage() {
           emailBonus: Number(capEmailBonus) || 0,
         },
         renderParams,
+        surchargeCents: Math.round(Number(surcharge) * 100) || 0,
       });
       return res.json();
     },
@@ -237,6 +240,26 @@ export default function MyPetSettingsPage() {
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{MY_PET_LOCKED_PRINT_RULES}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Custom price</CardTitle>
+                <CardDescription>
+                  Added to the catalogue price in the store currency when a new My Pet shadow is minted. Existing shadows keep the price they were created with. 0 hides the storefront “+” label.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="max-w-xs space-y-1.5">
+                <Label>Surcharge</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={surcharge}
+                  onChange={(e) => setSurcharge(e.target.value)}
+                  data-testid="input-my-pet-surcharge"
+                />
               </CardContent>
             </Card>
 

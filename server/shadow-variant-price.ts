@@ -19,14 +19,24 @@ export function formatShopPrice(price: string | number | null | undefined): stri
  * is on and the catalogue variant itself is still the front variant.
  * There is no client-price argument.
  */
+export function addShopSurcharge(price: string | null, surchargeCents: number): string | null {
+  if (!price) return price;
+  const extra = Math.round(Number(surchargeCents) || 0);
+  if (extra <= 0) return price;
+  const cents = Math.round(parseFloat(price) * 100);
+  if (!Number.isFinite(cents)) return price;
+  return ((cents + extra) / 100).toFixed(2);
+}
+
 export function pickShadowShopPrice(
   cataloguePrice: string | number | null | undefined,
   bothShopPrice: string | number | null | undefined,
   applyBothTier: boolean,
+  surchargeCents = 0,
 ): { front: string | null; written: string | null; source: "catalogue-variant" } {
   const front = formatShopPrice(cataloguePrice);
   const both = applyBothTier ? formatShopPrice(bothShopPrice) : null;
-  return { front, written: both || front, source: "catalogue-variant" };
+  return { front, written: addShopSurcharge(both || front, surchargeCents), source: "catalogue-variant" };
 }
 
 const currencyCache = new Map<string, { code: string; at: number }>();
@@ -154,6 +164,8 @@ export async function decideShadowShopPrice(opts: {
   colorId?: unknown;
   /** Present only so the log can say ignored. Never used as a price. */
   clientPrice?: unknown;
+  /** Shop-currency minor units. 0 on the stock path and on shadows minted before the surcharge. */
+  surchargeCents?: number;
 }): Promise<{ front: string | null; written: string | null; source: "catalogue-variant" }> {
   const shop = String(opts.shop || "").trim();
   const token = String(opts.token || "").trim();
@@ -178,7 +190,7 @@ export async function decideShadowShopPrice(opts: {
         colorId: opts.colorId,
       })
     : null;
-  const decided = pickShadowShopPrice(catalogue, both, applyBoth);
+  const decided = pickShadowShopPrice(catalogue, both, applyBoth, opts.surchargeCents || 0);
   if (decided.written) {
     const currency = await readShopCurrency(shop, token);
     logResolveShadowPrice(decided.written, currency, clientSentPrice(opts.clientPrice));
@@ -196,6 +208,7 @@ export async function syncShadowVariantPrice(opts: {
   sizeId?: unknown;
   colorId?: unknown;
   clientPrice?: unknown;
+  surchargeCents?: number;
 }): Promise<{ front: string | null; written: string | null; source: "catalogue-variant" } | null> {
   const shop = String(opts.shop || "").trim();
   const token = String(opts.token || "").trim();
@@ -212,6 +225,7 @@ export async function syncShadowVariantPrice(opts: {
     sizeId: opts.sizeId,
     colorId: opts.colorId,
     clientPrice: opts.clientPrice,
+    surchargeCents: opts.surchargeCents,
   });
   if (!decided.written) {
     console.warn(

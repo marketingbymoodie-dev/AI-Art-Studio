@@ -34,6 +34,16 @@ describe("pickShadowShopPrice", () => {
     });
   });
 
+  it("adds a shop-currency surcharge only when one is passed", () => {
+    expect(pickShadowShopPrice("29.95", null, false, 100)).toEqual({
+      front: "29.95",
+      written: "30.95",
+      source: "catalogue-variant",
+    });
+    expect(pickShadowShopPrice("29.95", "34.95", true, 100).written).toBe("35.95");
+    expect(pickShadowShopPrice("29.95", null, false, 0).written).toBe("29.95");
+  });
+
   it("rejects a zero catalogue price", () => {
     expect(pickShadowShopPrice("0", "34.95", true)).toEqual({
       front: null,

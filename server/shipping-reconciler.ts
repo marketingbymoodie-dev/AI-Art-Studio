@@ -856,6 +856,7 @@ async function reconcileShopShippingCore(
     freeShipping: {
       enabled: settings.freeShippingEnabled,
       thresholdCents: settings.freeShippingThresholdCents,
+      flatCents: settings.freeShippingFlatCents,
       countries: parseFreeShippingCountries(settings.freeShippingCountries),
     },
   });

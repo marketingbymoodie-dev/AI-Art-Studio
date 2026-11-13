@@ -41,6 +41,7 @@
     <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
       {{ button_label | escape }}
     </button>
+    <p class="appai-my-pet__plus" data-appai-my-pet-plus hidden></p>
     {% comment %}
       Single caption slot that swaps between two messages at different moments:
       — Pre-first-generation (perListingCount === 0): the theme-setting subtitle
@@ -58,8 +59,8 @@
   </div>
   {% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
   {% assign appai_my_pet_js = 'appai-my-pet.js' | asset_url %}
-  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=e0efac11" defer></script>
-  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=e0efac11" defer></script>
+  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus" defer></script>
+  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus" defer></script>
 {% endif %}
 
 {% schema %}
@@ -170,6 +171,13 @@
     background: var(--color-selected-variant-background, #000) !important;
     transform: none !important;
     opacity: 1 !important;
+  }
+  .appai-my-pet__plus {
+    margin: 0.15rem 0 0 !important;
+    font-size: 0.85em !important;
+    font-weight: 600 !important;
+    text-align: center !important;
+    color: var(--appai-my-pet-caption-fg, #666666) !important;
   }
   .appai-my-pet__caption {
     margin: 0 !important;

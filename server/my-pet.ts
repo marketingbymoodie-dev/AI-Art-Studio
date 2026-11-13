@@ -76,6 +76,7 @@ function rowToSettings(row: MyPetSettingsRow): MyPetSettings {
     styleTweaks: (row.styleTweaks as Record<string, string>) || {},
     caps: { perListing: row.capPerListing, perDay: row.capPerDay, emailBonus: row.capEmailBonus },
     renderParams,
+    surchargeCents: Math.max(0, Math.round(row.surchargeCents || 0)),
   };
 }
 
@@ -104,6 +105,7 @@ export async function getMyPetSettings(shopDomain: string): Promise<MyPetSetting
         styleTweaks: {},
         caps: { ...MY_PET_DEFAULT_CAPS },
         renderParams: { ...MY_PET_DEFAULT_RENDER_PARAMS },
+        surchargeCents: 0,
       };
 }
 
@@ -117,7 +119,7 @@ function MY_PET_DEFAULT_CAPS_COLUMNS() {
 
 export async function updateMyPetSettings(
   shopDomain: string,
-  patch: { basePrompt?: string; styleTweaks?: unknown; caps?: unknown; renderParams?: unknown },
+  patch: { basePrompt?: string; styleTweaks?: unknown; caps?: unknown; renderParams?: unknown; surchargeCents?: unknown },
 ): Promise<MyPetSettings> {
   const current = await getMyPetSettings(shopDomain);
   const basePrompt = typeof patch.basePrompt === "string" && patch.basePrompt.trim() ? patch.basePrompt.trim().slice(0, 4000) : current.basePrompt;
@@ -125,6 +127,8 @@ export async function updateMyPetSettings(
   const caps = patch.caps !== undefined ? sanitizeMyPetCaps(patch.caps, current.caps) : current.caps;
   const renderParams =
     patch.renderParams !== undefined ? sanitizeMyPetRenderParams(patch.renderParams, current.renderParams) : current.renderParams;
+  const surchargeRaw = patch.surchargeCents !== undefined ? Math.round(Number(patch.surchargeCents)) : current.surchargeCents;
+  const surchargeCents = Number.isFinite(surchargeRaw) ? Math.min(100_000, Math.max(0, surchargeRaw)) : current.surchargeCents;
   await db
     .insert(myPetSettings)
     .values({
@@ -135,6 +139,7 @@ export async function updateMyPetSettings(
       capPerDay: caps.perDay,
       capEmailBonus: caps.emailBonus,
       renderParams,
+      surchargeCents,
     })
     .onConflictDoUpdate({
       target: myPetSettings.shopDomain,
@@ -145,10 +150,11 @@ export async function updateMyPetSettings(
         capPerDay: caps.perDay,
         capEmailBonus: caps.emailBonus,
         renderParams,
+        surchargeCents,
         updatedAt: new Date(),
       },
     });
-  return { shopDomain, basePrompt, styleTweaks, caps, renderParams };
+  return { shopDomain, basePrompt, styleTweaks, caps, renderParams, surchargeCents };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

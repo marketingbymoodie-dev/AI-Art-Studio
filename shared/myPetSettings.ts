@@ -94,6 +94,8 @@ export type MyPetSettings = {
   styleTweaks: MyPetStyleTweaks;
   caps: MyPetCaps;
   renderParams: MyPetRenderParams;
+  /** Shop-currency minor units added to a newly minted My Pet shadow. */
+  surchargeCents: number;
 };
 
 export function defaultMyPetSettings(shopDomain: string): MyPetSettings {
@@ -103,6 +105,7 @@ export function defaultMyPetSettings(shopDomain: string): MyPetSettings {
     styleTweaks: {},
     caps: { ...MY_PET_DEFAULT_CAPS },
     renderParams: { ...MY_PET_DEFAULT_RENDER_PARAMS },
+    surchargeCents: 0,
   };
 }
 

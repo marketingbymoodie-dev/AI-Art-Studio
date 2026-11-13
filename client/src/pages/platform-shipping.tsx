@@ -112,6 +112,7 @@ type StoreRow = {
   freeShippingEnabled: boolean;
   freeShippingThresholdCents: number;
   freeShippingCountries: string;
+  freeShippingFlatCents: number;
   probedMaxRatesPerZone: number | null;
   lastReconcileAt: string | null;
   lastReconcileStatus: string | null;
@@ -171,18 +172,22 @@ function FreeShippingFields({
     freeShippingEnabled: boolean;
     freeShippingThresholdCents: number;
     freeShippingCountries: string;
+    freeShippingFlatCents: number;
   }) => void;
 }) {
   const [enabled, setEnabled] = useState(store.freeShippingEnabled);
   const [threshold, setThreshold] = useState((store.freeShippingThresholdCents / 100).toFixed(2));
+  const [flat, setFlat] = useState((store.freeShippingFlatCents / 100).toFixed(2));
   const [countries, setCountries] = useState(store.freeShippingCountries || "US");
   useEffect(() => {
     setEnabled(store.freeShippingEnabled);
     setThreshold((store.freeShippingThresholdCents / 100).toFixed(2));
+    setFlat(((store.freeShippingFlatCents ?? 495) / 100).toFixed(2));
     setCountries(store.freeShippingCountries || "US");
-  }, [store.freeShippingEnabled, store.freeShippingThresholdCents, store.freeShippingCountries]);
+  }, [store.freeShippingEnabled, store.freeShippingThresholdCents, store.freeShippingFlatCents, store.freeShippingCountries]);
   const cents = Math.round(Number(threshold) * 100);
-  const invalid = !Number.isFinite(cents) || cents < 1 || !countries.trim();
+  const flatCents = Math.round(Number(flat) * 100);
+  const invalid = !Number.isFinite(cents) || cents < 1 || !Number.isFinite(flatCents) || flatCents < 0 || !countries.trim();
   return (
     <div className="flex flex-wrap items-center gap-2">
       <label className="flex items-center gap-1 text-xs">
@@ -194,6 +199,13 @@ function FreeShippingFields({
         />
         On
       </label>
+      <Input
+        className="h-8 w-20"
+        value={flat}
+        disabled={pending}
+        aria-label="Paid flat shipping amount"
+        onChange={(e) => setFlat(e.target.value)}
+      />
       <Input
         className="h-8 w-20"
         value={threshold}
@@ -216,6 +228,7 @@ function FreeShippingFields({
           onSave({
             freeShippingEnabled: enabled,
             freeShippingThresholdCents: cents,
+            freeShippingFlatCents: flatCents,
             freeShippingCountries: countries,
           })
         }
@@ -319,6 +332,7 @@ export default function PlatformShippingPage() {
       freeShippingEnabled?: boolean;
       freeShippingThresholdCents?: number;
       freeShippingCountries?: string;
+      freeShippingFlatCents?: number;
     }) => {
       const { shop, ...patch } = payload;
       const res = await apiRequest("PATCH", `/api/platform/shipping/stores/${shop}`, patch);

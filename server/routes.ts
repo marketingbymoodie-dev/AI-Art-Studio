@@ -11970,6 +11970,7 @@ ${orientationExtra}
               sizeId,
               colorId,
               clientPrice: priceOverride,
+              surchargeCents: existing.priceSurchargeCents ?? 0,
             })
           : Promise.resolve(null);
         try {
@@ -12268,6 +12269,11 @@ ${orientationExtra}
         console.warn(`[ShadowProduct] Base variant ${variantId} not found in variant lookup payload`);
         return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });
       }
+      let myPetSurchargeCents = 0;
+      if (source === "my-pet") {
+        const { getMyPetSettings } = await import("./my-pet");
+        myPetSurchargeCents = (await getMyPetSettings(shop)).surchargeCents;
+      }
       const decidedPrice = await decideShadowShopPrice({
         shop,
         token,
@@ -12278,6 +12284,7 @@ ${orientationExtra}
         sizeId,
         colorId,
         clientPrice: priceOverride,
+        surchargeCents: myPetSurchargeCents,
       });
       const shadowPrice = decidedPrice.written;
       if (!shadowPrice) {
@@ -12408,6 +12415,7 @@ ${orientationExtra}
         status: 'active',
         expiresAt: sixHoursFromNow,
         cartAddedAt: null,
+        priceSurchargeCents: source === "my-pet" ? myPetSurchargeCents : null,
       } as any);
       step("persisted");
 

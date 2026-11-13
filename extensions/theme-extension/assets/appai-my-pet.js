@@ -1140,6 +1140,58 @@ console.log('[My Pet] script build=e0efac11 loaded');
       });
   }
 
+  function presentmentCents(shopCents, rate) {
+    var r = rate > 0 ? rate : 1;
+    return Math.round(shopCents * r);
+  }
+
+  function shopCentsMatchingPresentment(presentment, rate) {
+    var r = rate > 0 ? rate : 1;
+    if (Math.abs(r - 1) < 1e-9) return presentment;
+    var guess = Math.round(presentment / r);
+    for (var cents = guess - 4; cents <= guess + 4; cents++) {
+      if (cents > 0 && Math.round(cents * r) === presentment) return cents;
+    }
+    return guess;
+  }
+
+  /** Presentment custom price minus the presentment catalogue price. Mirrors shared/myPetSurcharge.ts. */
+  function myPetPlusCents(cataloguePresentmentCents, surchargeShopCents, rate) {
+    var extra = Math.round(surchargeShopCents || 0);
+    if (extra <= 0) return 0;
+    var shop = shopCentsMatchingPresentment(cataloguePresentmentCents, rate);
+    return presentmentCents(shop + extra, rate) - cataloguePresentmentCents;
+  }
+
+  function currencyRate() {
+    var rate = window.Shopify && Shopify.currency && Number(Shopify.currency.rate);
+    return rate > 0 ? rate : 1;
+  }
+
+  function formatPlus(cents) {
+    if (!cents) return '';
+    var code = (window.Shopify && Shopify.currency && Shopify.currency.active) || 'USD';
+    try {
+      return '+' + new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(cents / 100);
+    } catch (e) {
+      return '+' + (cents / 100).toFixed(2);
+    }
+  }
+
+  function plusLabelForRoot(root, surchargeCents) {
+    if (!surchargeCents) return '';
+    var info = currentVariantInfo(root);
+    var variants = [];
+    try { variants = JSON.parse(root.getAttribute('data-variants') || '[]'); } catch (e) {}
+    var variant = null;
+    for (var i = 0; i < variants.length; i++) {
+      if (String(variants[i].id) === String(info.variantId)) { variant = variants[i]; break; }
+    }
+    var presentment = variant ? Math.round(Number(variant.price)) : 0;
+    if (!presentment) return '';
+    return formatPlus(myPetPlusCents(presentment, surchargeCents, currencyRate()));
+  }
+
   function init(root) {
     injectModalStyles();
     applyThemeVars(root);
@@ -1303,6 +1355,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
       // (+ -srcset) so revertVariantSlides can restore them cleanly.
       inlineSlideStash: [],
       captionPainted: false,
+      surchargeCents: 0,
     };
     showCaptionNow();
 
@@ -1479,11 +1532,27 @@ console.log('[My Pet] script build=e0efac11 loaded');
       }
     }
 
+    function paintPlus() {
+      var label = plusLabelForRoot(root, state.surchargeCents);
+      var el = root.querySelector('[data-appai-my-pet-plus]');
+      if (el) {
+        el.textContent = label;
+        el.hidden = !label;
+      }
+      var preview = document.querySelector('[data-appai-my-pet-plus-preview]');
+      if (preview) {
+        preview.textContent = label;
+        preview.hidden = !label;
+      }
+    }
+
     function refreshCapStatus() {
       return getJson('my-pet/cap-status', { productId: shopifyProductId })
         .then(function (status) {
           state.capStatus = status || null;
+          state.surchargeCents = status && Number(status.surchargeCents) > 0 ? Math.round(Number(status.surchargeCents)) : 0;
           renderAttemptsCaption(state.capStatus);
+          paintPlus();
           refreshDesignList();
           applyCatalogueFulfillment(status);
           return state.capStatus;
@@ -8451,12 +8520,14 @@ console.log('[My Pet] script build=e0efac11 loaded');
       body.innerHTML =
         '<h3>Your design</h3>' +
         '<img src="' + previewUrl + '" class="appai-preview-img" alt="Your pet on this design (tap to enlarge)" />' +
+        '<p class="appai-my-pet__plus" data-appai-my-pet-plus-preview hidden></p>' +
         colorSwatchesHtml +
         sizeSwatchesHtml +
         '<button type="button" class="appai-primary" data-action="add-to-cart">Add to cart</button>' +
         '<button type="button" class="appai-secondary" data-action="change-photo">Try another photo</button>' +
         attemptsHtml +
         '<p id="appai-my-pet-status" class="appai-my-pet-msg"></p>';
+      paintPlus();
       body.querySelector('.appai-preview-img').addEventListener('click', function (e) {
         showZoom(e.currentTarget.src);
       });
@@ -8644,6 +8715,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
           selectColor(body, now.colorName);
         }
         last = now;
+        paintPlus();
       }, 600);
     }
 
@@ -9106,6 +9178,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
     // Show attempts-remaining caption on first load.
     installComboGuard();
     refreshCapStatus();
+    setInterval(paintPlus, 800);
   }
 
   function boot() {

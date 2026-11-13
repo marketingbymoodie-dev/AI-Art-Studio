@@ -165,7 +165,8 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
       catalogue: false,
       fulfillableVariantIds: [] as string[],
     }));
-    res.json({ ...result, ...fulfilment, deviceKey: signed });
+    const settings = await getMyPetSettings(shop);
+    res.json({ ...result, ...fulfilment, surchargeCents: settings.surchargeCents, deviceKey: signed });
   });
 
   app.post("/api/proxy/my-pet/upload-photo", myPetProxyAuth, async (req: Request, res: Response) => {

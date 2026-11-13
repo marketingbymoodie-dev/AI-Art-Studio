@@ -213,6 +213,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shipping_store_settings",   column: "free_shipping_enabled",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "shipping_store_settings",   column: "free_shipping_threshold_cents", type: "INTEGER NOT NULL DEFAULT 7500" },
   { table: "shipping_store_settings",   column: "free_shipping_countries", type: "TEXT NOT NULL DEFAULT 'US'" },
+  { table: "shipping_store_settings",   column: "free_shipping_flat_cents", type: "INTEGER NOT NULL DEFAULT 495" },
+  { table: "my_pet_settings",           column: "surcharge_cents",         type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "published_products",        column: "price_surcharge_cents",   type: "INTEGER" },
   // Merchant own-key entitlement (unused until merchant own-key mode ships).
   { table: "merchants",                 column: "can_use_own_api_keys",    type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   // Style-example batches on the staging render probe. Null on verbatim rows.
@@ -2146,6 +2149,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "free_shipping_enabled" boolean NOT NULL DEFAULT FALSE,
         "free_shipping_threshold_cents" integer NOT NULL DEFAULT 7500,
         "free_shipping_countries" text NOT NULL DEFAULT 'US',
+        "free_shipping_flat_cents" integer NOT NULL DEFAULT 495,
         "created_at" timestamp DEFAULT NOW() NOT NULL,
         "updated_at" timestamp DEFAULT NOW() NOT NULL
       )

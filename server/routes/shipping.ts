@@ -500,6 +500,7 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
           freeShippingEnabled: s.freeShippingEnabled,
           freeShippingThresholdCents: s.freeShippingThresholdCents,
           freeShippingCountries: s.freeShippingCountries,
+          freeShippingFlatCents: s.freeShippingFlatCents,
           probedMaxRatesPerZone: s.probedMaxRatesPerZone,
           lastReconcileAt: s.lastReconcileAt,
           lastReconcileStatus: s.lastReconcileStatus,
@@ -550,6 +551,13 @@ export function registerShippingRoutes(app: Express, deps: { isAuthenticated: Au
             return res.status(400).json({ error: "freeShippingThresholdCents must be a positive integer" });
           }
           patch.freeShippingThresholdCents = cents;
+        }
+        if ("freeShippingFlatCents" in body) {
+          const cents = Number(body.freeShippingFlatCents);
+          if (!Number.isInteger(cents) || cents < 0 || cents > 10_000_000) {
+            return res.status(400).json({ error: "freeShippingFlatCents must be a non-negative integer" });
+          }
+          patch.freeShippingFlatCents = cents;
         }
         if ("freeShippingCountries" in body) {
           const countries = parseFreeShippingCountries(String(body.freeShippingCountries ?? ""));

@@ -1313,6 +1313,8 @@ export const publishedProducts = pgTable("published_products", {
   baseVariantId: text("base_variant_id").notNull(), // the original base variant
   status: text("status").notNull().default("active"), // active | archived | skipped_not_shadow
   expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
+  /** Shop-currency minor units added when this shadow was minted. Null on rows from before the surcharge. */
+  priceSurchargeCents: integer("price_surcharge_cents"),
   cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
   orderProtectedAt: timestamp("order_protected_at"),   // set on orders/paid; the reaper must not delete this shadow
   readyAt: timestamp("ready_at"),                     // set when the shadow is purchasable and Ajax-visible
@@ -1449,6 +1451,8 @@ export const myPetSettings = pgTable("my_pet_settings", {
   capPerListing: integer("cap_per_listing").notNull().default(2),
   capPerDay: integer("cap_per_day").notNull().default(20),
   capEmailBonus: integer("cap_email_bonus").notNull().default(2),
+  /** Shop-currency minor units added to a new My Pet shadow. 0 leaves the catalogue price. */
+  surchargeCents: integer("surcharge_cents").notNull().default(0),
   /**
    * Per-call Replicate parameters for the pet-swap image edit (Sunburst).
    * See shared/myPetSettings.ts → MyPetRenderParams. Defaults are the measured
@@ -2927,6 +2931,8 @@ export const shippingStoreSettings = pgTable(
      */
     freeShippingEnabled: boolean("free_shipping_enabled").notNull().default(false),
     freeShippingThresholdCents: integer("free_shipping_threshold_cents").notNull().default(7500),
+    /** Shop-currency minor units for the paid flat rate when the offer is on. */
+    freeShippingFlatCents: integer("free_shipping_flat_cents").notNull().default(495),
     freeShippingCountries: text("free_shipping_countries").notNull().default("US"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),

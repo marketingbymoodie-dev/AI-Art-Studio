@@ -49,8 +49,10 @@ export const FREE_SHIPPING_RATE_NAME = "Free Shipping";
 export type FreeShippingOffer = {
   /** Off leaves every zone's rates untouched. */
   enabled: boolean;
-  /** Shop-currency minor units. Paid bands in the listed countries cap at this minus one minor unit. */
+  /** Shop-currency minor units. The paid flat rate applies below this. */
   thresholdCents: number;
+  /** Shop-currency minor units for the paid flat rate. Default 495 ($4.95). */
+  flatCents: number;
   /** ISO 3166-1 alpha-2. A zone is eligible only when every country in it is listed. */
   countries: string[];
 };
@@ -167,27 +169,40 @@ function offerCountries(offer: FreeShippingOffer): Set<string> {
   return new Set(parseFreeShippingCountries(offer.countries.join(",")));
 }
 
-function decorateZone(zone: DesiredZone, thresholdCents: number): DesiredZone {
-  const maxSubtotalCents = thresholdCents - 1;
-  const paid = zone.rates.map((rate) => ({ ...rate, maxSubtotalCents }));
-  paid.push({
-    bandIndex: paid.length,
-    lowerGrams: 0,
-    upperGrams: null,
-    priceCents: 0,
-    minSubtotalCents: thresholdCents,
-    name: FREE_SHIPPING_RATE_NAME,
-    weightConditions: false,
-  });
-  return { ...zone, rates: paid };
+function flatShippingRates(thresholdCents: number, flatCents: number): DesiredRate[] {
+  return [
+    {
+      bandIndex: 0,
+      lowerGrams: 0,
+      upperGrams: null,
+      priceCents: flatCents,
+      minSubtotalCents: 0,
+      maxSubtotalCents: thresholdCents - 1,
+      weightConditions: false,
+    },
+    {
+      bandIndex: 1,
+      lowerGrams: 0,
+      upperGrams: null,
+      priceCents: 0,
+      minSubtotalCents: thresholdCents,
+      name: FREE_SHIPPING_RATE_NAME,
+      weightConditions: false,
+    },
+  ];
+}
+
+function decorateZone(zone: DesiredZone, thresholdCents: number, flatCents: number): DesiredZone {
+  return { ...zone, rates: flatShippingRates(thresholdCents, flatCents) };
 }
 
 /**
- * Adds the $0 rate to zones whose countries are all in the offer, and caps
- * every paid band in those zones at one minor unit under the threshold.
- * A zone that mixes a listed country with any other country is split, so the
- * other country keeps today's weight bands with no subtotal condition.
- * ROW and blocked zones are never eligible.
+ * Replaces weight bands in listed zones with two flat rates: Standard Shipping
+ * from $0 up to one minor unit under the threshold, and Free Shipping from the
+ * threshold up. The two subtotal ranges do not overlap, so same-named rates
+ * summed across profiles cannot charge both. A zone that mixes a listed
+ * country with any other country is split; the other country keeps today's
+ * weight bands. ROW and blocked zones are never eligible.
  * Returns the same array when the offer is off or unusable.
  */
 export function applyFreeShippingToZones(
@@ -196,7 +211,9 @@ export function applyFreeShippingToZones(
 ): DesiredZone[] {
   if (!offer?.enabled) return zones;
   const thresholdCents = Math.round(offer.thresholdCents);
+  const flatCents = Math.round(offer.flatCents);
   if (!Number.isFinite(thresholdCents) || thresholdCents < 1) return zones;
+  if (!Number.isFinite(flatCents) || flatCents < 0) return zones;
   const allowed = offerCountries(offer);
   if (allowed.size === 0) return zones;
 
@@ -213,7 +230,7 @@ export function applyFreeShippingToZones(
       continue;
     }
     if (rest.length === 0) {
-      next.push(decorateZone(zone, thresholdCents));
+      next.push(decorateZone(zone, thresholdCents, flatCents));
       continue;
     }
     const eligibleSorted = eligible.slice().sort();
@@ -227,6 +244,7 @@ export function applyFreeShippingToZones(
           countries: eligibleSorted,
         },
         thresholdCents,
+        flatCents,
       ),
     );
     next.push({
