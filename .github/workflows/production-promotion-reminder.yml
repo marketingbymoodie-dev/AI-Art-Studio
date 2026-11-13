@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - production
+    paths-ignore:
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
