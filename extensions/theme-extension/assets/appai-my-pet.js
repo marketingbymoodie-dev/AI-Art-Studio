@@ -685,6 +685,67 @@ console.log('[My Pet] script build=39452292 loaded');
     return out;
   }
 
+  var SIZE_RANK = ['xs', 's', 'm', 'l', 'xl', '2xl', '3xl', '4xl', '5xl'];
+
+  function optionKey(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+  }
+
+  function canonicalOption(list, value) {
+    var key = optionKey(value);
+    for (var i = 0; i < list.length; i++) {
+      if (optionKey(list[i]) === key) return list[i];
+    }
+    return value || '';
+  }
+
+  function sizeDistance(listed, fromSize, toSize) {
+    function indexOf(name) {
+      var key = optionKey(name);
+      for (var i = 0; i < listed.length; i++) {
+        if (optionKey(listed[i]) === key) return i;
+      }
+      var rank = SIZE_RANK.indexOf(key);
+      return rank === -1 ? listed.length + 8 : rank;
+    }
+    return Math.abs(indexOf(fromSize) - indexOf(toSize));
+  }
+
+  /**
+   * Saved colour/size that Shopify can still sell. Same colour at the closest
+   * available size first, otherwise the saved size in another colour.
+   * Returns null when nothing is purchasable. Does not write the preference.
+   */
+  function resolveSavedCombo(root, colorName, sizeName) {
+    if (!colorName) return null;
+    var colours = allColorOptions(root);
+    var sizes = allSizeOptions(root);
+    var color = canonicalOption(colours, colorName);
+    var size = canonicalOption(sizes, sizeName || 'M');
+    if (findExactVariant(root, color, size)) {
+      return { color: color, size: size, swapped: false };
+    }
+    var bestSize = '';
+    var bestDist = 999;
+    for (var s = 0; s < sizes.length; s++) {
+      if (!findExactVariant(root, color, sizes[s])) continue;
+      var dist = sizeDistance(sizes, size, sizes[s]);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestSize = sizes[s];
+      }
+    }
+    if (bestSize) {
+      return { color: color, size: bestSize, swapped: true, fromColor: color, fromSize: size };
+    }
+    for (var c = 0; c < colours.length; c++) {
+      if (optionKey(colours[c]) === optionKey(color)) continue;
+      if (!findExactVariant(root, colours[c], size)) continue;
+      return { color: colours[c], size: size, swapped: true, fromColor: color, fromSize: size };
+    }
+    return null;
+  }
+
   /** Find the first variant that matches the given colour (and current size if possible). */
   function variantForColor(root, colorName, preferSizeId) {
     var variants = [];
@@ -2237,8 +2298,12 @@ console.log('[My Pet] script build=39452292 loaded');
       var saved = storedChoiceFor(shopifyProductId, item.renderId);
       var fallbackColor = currentColourName();
       var fallbackSize = currentSizeName();
-      var colorName = saved.colorName || fallbackColor;
-      var sizeName = saved.sizeName || fallbackSize;
+      var wantedColor = saved.colorName || fallbackColor;
+      var wantedSize = saved.sizeName || fallbackSize;
+      var pair = resolveSavedCombo(root, wantedColor, wantedSize);
+      if (pair && pair.swapped) showSwapToast(pair);
+      var colorName = pair ? pair.color : wantedColor;
+      var sizeName = pair ? pair.size : wantedSize;
       if (colorName) noteColourSelection(colorName, false);
       var same = item.renderId === state.renderId
         && namesMatch(colorName, fallbackColor)
@@ -2705,9 +2770,13 @@ console.log('[My Pet] script build=39452292 loaded');
         var color = (storedRender && storedRender.colorName) || (res && res.colorName) || '';
         var size = (storedRender && storedRender.sizeName) || 'M';
         if (!color) return applyExactVariant(restoredColour(), 'M') || restoredColour();
+        var pair = resolveSavedCombo(root, color, size);
+        if (pair && pair.swapped) showSwapToast(pair);
+        var useColor = pair ? pair.color : color;
+        var useSize = pair ? pair.size : size;
         var info = currentVariantInfo(root);
-        if (sameOption(info.colorName, color) && sameOption(info.sizeId, size)) return info.colorName;
-        return applyExactVariant(color, size) || restoredColour();
+        if (sameOption(info.colorName, useColor) && sameOption(info.sizeId, useSize)) return info.colorName;
+        return applyExactVariant(useColor, useSize) || useColor || restoredColour();
       }
 
       function waitForHero(url, fromCache) {
@@ -7727,6 +7796,20 @@ console.log('[My Pet] script build=39452292 loaded');
       noteShadowCartAdded(entry.shadowId);
       submitThemeOnce(form, entry, sel);
       return Promise.resolve({ ok: true, themed: true });
+    }
+
+    function showSwapToast(pair) {
+      var existing = document.getElementById('appai-combo-toast');
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      var el = document.createElement('div');
+      el.id = 'appai-combo-toast';
+      el.setAttribute('role', 'status');
+      el.textContent = pair.fromColor + ' in ' + pair.fromSize + ' is sold out. Showing ' + pair.color + ' in ' + pair.size + '.';
+      el.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483646;max-width:420px;width:calc(100% - 32px);padding:12px 16px;background:#1a1a1a;color:#fff;border-radius:8px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);';
+      document.body.appendChild(el);
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 4500);
     }
 
     function showComboToast() {

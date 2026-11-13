@@ -485,6 +485,13 @@ export async function syncProductTypeIntelligence(
       }),
     } as Partial<ProductType>);
 
+    try {
+      const { applyCatalogueInventoryPolicy } = await import("./catalogue-inventory-policy");
+      await applyCatalogueInventoryPolicy(pt.id);
+    } catch (policyErr: any) {
+      console.error(`${TAG} shopify policy update failed for product type ${pt.id}:`, policyErr?.message || policyErr);
+    }
+
     return {
       productTypeId: pt.id,
       ok: true,
