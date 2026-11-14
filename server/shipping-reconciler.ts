@@ -63,6 +63,7 @@ import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
 import { parseVariantAvailabilityMap } from "@shared/productIntelligence";
 import { storage } from "./storage";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
+import { matchAppaiProfilesByName } from "./shipping-profile-match";
 
 const ADMIN_API = "2025-10";
 const CARRIER_NAME = "AI Art Studio";
@@ -666,6 +667,136 @@ function zoneCreateInput(zone: DesiredZone, currency: string): any {
   };
 }
 
+type NamedDeliveryProfile = {
+  id: string;
+  name: string;
+  default: boolean;
+  locationGroupId: string | null;
+};
+
+async function listDeliveryProfiles(shop: string, token: string): Promise<NamedDeliveryProfile[]> {
+  const out: NamedDeliveryProfile[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 5; page++) {
+    const data: {
+      deliveryProfiles: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: Array<{
+          id: string;
+          name: string;
+          default: boolean;
+          profileLocationGroups: Array<{ locationGroup: { id: string } }>;
+        }>;
+      };
+    } = await gql(
+      shop,
+      token,
+      `query($cursor: String) {
+        deliveryProfiles(first: 50, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            id
+            name
+            default
+            profileLocationGroups { locationGroup { id } }
+          }
+        }
+      }`,
+      { cursor },
+    );
+    for (const node of data.deliveryProfiles.nodes) {
+      out.push({
+        id: node.id,
+        name: node.name,
+        default: !!node.default,
+        locationGroupId: node.profileLocationGroups?.[0]?.locationGroup?.id || null,
+      });
+    }
+    if (!data.deliveryProfiles.pageInfo.hasNextPage) break;
+    cursor = data.deliveryProfiles.pageInfo.endCursor;
+  }
+  return out;
+}
+
+/**
+ * When the ID map has no Shopify ids but this active shop already has AppAI
+ * delivery profiles, attach those ids instead of planning creates. A partial
+ * or ambiguous match is left alone; profile creation still refuses a name
+ * that already exists.
+ */
+async function adoptExistingAppaiProfiles(
+  shop: string,
+  token: string,
+  desired: DesiredShopState,
+): Promise<void> {
+  const rows = await db
+    .select()
+    .from(shippingStoreProfiles)
+    .where(eq(shippingStoreProfiles.shopDomain, shop));
+  if (rows.some((row) => row.shopifyProfileId)) return;
+  const installation = await storage.getShopifyInstallationByShop(shop);
+  if (!installation || installation.status !== "active") return;
+
+  const live = (await listDeliveryProfiles(shop, token)).filter(
+    (profile) => !profile.default && profile.name.startsWith("AppAI · "),
+  );
+  if (live.length === 0) return;
+  const matched = matchAppaiProfilesByName(desired.profiles, live);
+  if (!matched.ok) {
+    console.warn(`[shipping-reconciler] ${shop} did not adopt existing profiles: ${matched.reason}`);
+    return;
+  }
+  if (matched.pairs.some((pair) => !pair.live.locationGroupId)) {
+    console.warn(`[shipping-reconciler] ${shop} did not adopt existing profiles: a profile has no location group`);
+    return;
+  }
+  const byKey = new Map(rows.map((row) => [row.profileKey, row]));
+  for (const pair of matched.pairs) {
+    const locationGroupId = pair.live.locationGroupId!;
+    const existing = byKey.get(pair.desired.profileKey);
+    if (existing) {
+      await db
+        .update(shippingStoreProfiles)
+        .set({
+          shopifyProfileId: pair.live.id,
+          shopifyLocationGroupId: locationGroupId,
+          desiredHash: null,
+          status: "pending",
+          updatedAt: new Date(),
+        })
+        .where(eq(shippingStoreProfiles.id, existing.id));
+    } else {
+      await db.insert(shippingStoreProfiles).values({
+        shopDomain: shop,
+        profileKey: pair.desired.profileKey,
+        shippingClassId: pair.desired.shippingClassId,
+        variantGroup: pair.desired.variantGroup,
+        shopifyProfileId: pair.live.id,
+        shopifyLocationGroupId: locationGroupId,
+        desiredHash: null,
+        status: "pending",
+      });
+    }
+  }
+  console.log(`[shipping-reconciler] ${shop} adopted ${matched.pairs.length} existing AppAI profiles into the empty map`);
+}
+
+async function findAppaiProfileByName(
+  shop: string,
+  token: string,
+  name: string,
+): Promise<NamedDeliveryProfile | null> {
+  const hits = (await listDeliveryProfiles(shop, token)).filter(
+    (profile) => !profile.default && profile.name === name,
+  );
+  if (hits.length > 1) {
+    throw new ShopifyGqlError(
+      `Refusing to create "${name}": ${hits.length} Shopify profiles already use that name`,
+    );
+  }
+  return hits[0] || null;
+}
+
 // ── Reconcile ────────────────────────────────────────────────────────────────
 
 export type ReconcileSummary = {
@@ -867,6 +998,10 @@ async function reconcileShopShippingCore(
       `${desired.unresolvedVariants.length} variant(s) belong to classes without ingested tables`,
     );
   }
+
+  // An empty ID map must not be treated as "create 32 new profiles" when the
+  // shop already has the AppAI profiles. Rebuild the map by name first.
+  await adoptExistingAppaiProfiles(shop, token, desired);
 
   // Pre-flight R1: profile budget.
   const mapped = await db
@@ -1116,6 +1251,28 @@ async function applyProfile(
 
   let profileId = row.shopifyProfileId;
   let locationGroupId = row.shopifyLocationGroupId || live.locationGroupId;
+
+  if (!profileId) {
+    const named = await findAppaiProfileByName(shop, token, desired.name);
+    if (named) {
+      if (!named.locationGroupId) throw new Error(`existing profile ${desired.name} has no location group`);
+      profileId = named.id;
+      locationGroupId = named.locationGroupId;
+      await db
+        .update(shippingStoreProfiles)
+        .set({
+          shopifyProfileId: profileId,
+          shopifyLocationGroupId: locationGroupId,
+          updatedAt: new Date(),
+        })
+        .where(eq(shippingStoreProfiles.id, row.id));
+      row = { ...row, shopifyProfileId: profileId, shopifyLocationGroupId: locationGroupId };
+      live = await fetchLiveProfileZones(shop, token, profileId);
+      if (!live.exists) {
+        throw new Error(`existing profile ${desired.name} could not be loaded after it was matched by name`);
+      }
+    }
+  }
 
   if (!profileId) {
     // Create with the first zone chunk.

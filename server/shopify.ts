@@ -162,7 +162,7 @@ function isValidShopDomain(shop: string): boolean {
 }
 
 // Validate that an access token is still valid by making a simple API call
-export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; error?: string }> {
+export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; status: number; error?: string }> {
   try {
     const response = await fetch(
       `https://${shop}/admin/api/2025-10/shop.json`,
@@ -175,20 +175,20 @@ export async function validateShopifyToken(shop: string, accessToken: string): P
     );
     
     if (response.ok) {
-      return { valid: true };
+      return { valid: true, status: response.status };
     }
     
     if (response.status === 401) {
-      return { valid: false, error: "Token expired or revoked - reinstall required" };
+      return { valid: false, status: response.status, error: "Token expired or revoked - reinstall required" };
     }
     
     if (response.status === 403) {
-      return { valid: false, error: "Insufficient permissions - reinstall with updated scopes required" };
+      return { valid: false, status: response.status, error: "Insufficient permissions - reinstall with updated scopes required" };
     }
     
-    return { valid: false, error: `Unexpected status: ${response.status}` };
+    return { valid: false, status: response.status, error: `Unexpected status: ${response.status}` };
   } catch (error: any) {
-    return { valid: false, error: error.message || "Network error" };
+    return { valid: false, status: 0, error: error.message || "Network error" };
   }
 }
 
@@ -545,20 +545,37 @@ if (res.locals.shopify?.session?.shop) {
         );
         return res.status(200).send("OK");
       }
-      // Stronger guard: if the stored token still works, the app was reinstalled
-      // and this webhook is stale (can arrive well after the 90s window).
-      if (
-        installation.accessToken &&
-        installation.accessToken !== "NEEDS_RECONNECT" &&
-        installation.status === "active"
-      ) {
-        const stillValid = await validateShopifyToken(shop, installation.accessToken);
-        if (stillValid.valid) {
-          console.warn(
-            `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
-          );
-          return res.status(200).send("OK");
-        }
+      // An expired offline token is not an uninstall. Refresh it first. Only a
+      // rejected refresh token, or a shop that still rejects the token after
+      // refresh, may delete the shipping maps.
+      const { ensureValidOfflineAccessToken } = await import("./shopify-offline-token");
+      const { decideUninstallCleanup } = await import("./uninstall-shipping-guard");
+      const tokenReady = await ensureValidOfflineAccessToken(installation);
+      let shopStatus: number | null = null;
+      if (tokenReady.ok) {
+        const stillValid = await validateShopifyToken(shop, tokenReady.accessToken);
+        shopStatus = stillValid.status;
+      }
+      const decision = decideUninstallCleanup({
+        tokenReady: tokenReady.ok,
+        needsReinstall: tokenReady.ok ? false : tokenReady.needsReinstall,
+        shopStatus,
+      });
+      if (decision === "skip") {
+        console.warn(
+          `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
+        );
+        return res.status(200).send("OK");
+      }
+      if (decision === "reauth") {
+        await storage.updateShopifyInstallation(installation.id, {
+          status: "token_invalid",
+          embedConfirmedAt: null,
+        });
+        console.warn(
+          `[uninstall-webhook] Not clearing shipping for ${shop} — token could not be confirmed revoked (${tokenReady.ok ? "shop status " + shopStatus : tokenReady.error})`,
+        );
+        return res.status(200).send("OK");
       }
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",
@@ -567,9 +584,8 @@ if (res.locals.shopify?.session?.shop) {
       });
       console.log(`[uninstall-webhook] Marked ${shop} as uninstalled`);
 
-      // Phase 3 shipping cleanup: token is revoked so no Shopify calls — clear
-      // the delivery-profile ID map + flip mode off (Shopify removes app-owned
-      // shipping resources itself). Never block the webhook response.
+      // Confirmed uninstall: the token is revoked, so no Shopify calls — clear
+      // the delivery-profile ID map + flip mode off. Never block the webhook response.
       import("./shipping-reconciler")
         .then((m) => m.clearShopShippingState(shop))
         .then(() => console.log(`[uninstall-webhook] Cleared shipping state for ${shop}`))
