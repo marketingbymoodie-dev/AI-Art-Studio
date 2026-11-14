@@ -82,6 +82,7 @@ const platformMenuItems = [
   { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
   { title: "Shipping Coverage", url: "/admin/platform/shipping", icon: Truck },
   { title: "Design Studio", url: "/admin/catalogue-studio", icon: Shirt },
+  { title: "Colour blanks", url: "/admin/catalogue-studio/colour-blanks", icon: Palette },
   { title: "Catalogue import", url: "/admin/catalogue-import", icon: Upload },
   // Operator-only today (gated server-side by isMyPetSettingsShop, independently
   // of platform-admin access, so it can open to a merchant later on its own).
@@ -107,6 +108,7 @@ const customerLinks = [
 const WIDE_CONTENT_PREFIXES = [
   "/admin/create-product",
   "/admin/design-studio",
+  "/admin/catalogue-studio/colour-blanks",
   "/designs",
   "/my-designs",
 ] as const;

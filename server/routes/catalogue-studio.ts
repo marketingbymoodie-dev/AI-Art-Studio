@@ -18,6 +18,7 @@ import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
 import { PENDING_CANDIDATE } from "../catalogue-studio-preview";
+import { registerColourBlankRoutes } from "./colour-blanks";
 import { getProductRestCompat } from "../shopify-product-graphql";
 import { storage } from "../storage";
 import {
@@ -166,6 +167,7 @@ async function candidateIdFor(res: Response, value: unknown): Promise<string | n
 
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
   const { isAuthenticated } = deps;
+  registerColourBlankRoutes(app, deps);
 
   app.get("/api/platform/catalogue-studio/panels", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;

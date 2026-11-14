@@ -4,10 +4,11 @@
  */
 import { randomUUID } from "crypto";
 import sharp from "sharp";
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { catalogueCandidateChoices, designCandidates, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
+import { medianShadingLuminance } from "./mockup-compositor";
 import "./load-env";
 import {
   backgroundAgrees,
@@ -21,6 +22,7 @@ import {
   measurePlacedInk,
   maskToPng,
   printRectForMask,
+  recolorGarment,
   renderArtworkOnPanel,
   resolvePanelColour,
   scaleMask,
@@ -264,7 +266,7 @@ async function insertPanel(args: {
   maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-reference";
   isDefault: boolean;
   uploadedBy: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const colorSlug = slug(args.garmentColor);
   const stamp = Date.now();
   const base = `product-types/${args.productTypeId}/views/${VIEW}/panels/${args.panelId}/${colorSlug}`;
@@ -285,7 +287,7 @@ async function insertPanel(args: {
       .set({ isDefault: false })
       .where(and(eq(mockupPanels.productTypeId, args.productTypeId), eq(mockupPanels.view, VIEW)));
   }
-  await db.insert(mockupPanels).values({
+  const [inserted] = await db.insert(mockupPanels).values({
     panelId: args.panelId,
     productTypeId: args.productTypeId,
     view: VIEW,
@@ -304,13 +306,15 @@ async function insertPanel(args: {
     printRotationDeg: String(DEFAULT_PRINT_FRACTIONS.rotationDeg),
     isDefault: makeDefault,
     uploadedBy: args.uploadedBy,
-  });
+  }).returning({ id: mockupPanels.id });
   if (makeDefault) {
     await db
       .update(mockupPanels)
       .set({ isDefault: true })
       .where(and(eq(mockupPanels.productTypeId, args.productTypeId), eq(mockupPanels.view, VIEW), eq(mockupPanels.panelId, args.panelId)));
   }
+  if (!inserted) throw new Error("The blank was not stored");
+  return inserted.id;
 }
 
 export async function storeSegmentedPanel(args: {
@@ -888,4 +892,189 @@ export async function approveCandidateChoice(args: {
     .update(catalogueCandidateChoices)
     .set({ approvedAt: now, updatedAt: now, mockupImages })
     .where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+}
+
+export async function panelsForType(productTypeId: number) {
+  return db
+    .select()
+    .from(mockupPanels)
+    .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, VIEW)))
+    .orderBy(desc(mockupPanels.createdAt));
+}
+
+async function loadWhiteMaster(productTypeId: number, panelId: string) {
+  const white = (await sceneRows(productTypeId, panelId)).find((row) => row.kind === "white-master");
+  if (!white) throw new Error(`${panelId} has no white master to paint from`);
+  return white;
+}
+
+async function paintWhiteMaster(productTypeId: number, panelId: string, hex: string) {
+  const white = await loadWhiteMaster(productTypeId, panelId);
+  const decoded = await decodeRgba(await getObject(white.storagePath));
+  const mask = await maskFromPng(await getObject(white.maskPath), decoded.width, decoded.height);
+  const median = medianShadingLuminance(Buffer.from(decoded.rgba), decoded.width, decoded.height, mask);
+  const rgba = recolorGarment(decoded.rgba, decoded.width, decoded.height, mask, hex.replace(/^#/, "").toUpperCase(), median);
+  const png = await sharp(Buffer.from(rgba), { raw: { width: decoded.width, height: decoded.height, channels: 4 } }).png().toBuffer();
+  const jpeg = await sharp(png).jpeg({ quality: 82 }).toBuffer();
+  return { png, jpeg, mask, width: decoded.width, height: decoded.height, label: white.label };
+}
+
+/** Preview only. The caller saves a produced row with approvePaintedBlank. */
+export async function previewPaintedBlank(productTypeId: number, panelId: string, hex: string) {
+  const painted = await paintWhiteMaster(productTypeId, panelId, hex);
+  return { jpegBase64: painted.jpeg.toString("base64"), width: painted.width, height: painted.height };
+}
+
+/** Re-renders on the server and stores a produced blank under the exact colour name. */
+export async function approvePaintedBlank(args: {
+  productTypeId: number;
+  panelId: string;
+  garmentColor: string;
+  garmentHex: string;
+  uploadedBy: string | null;
+}) {
+  const painted = await paintWhiteMaster(args.productTypeId, args.panelId, args.garmentHex);
+  const id = await insertPanel({
+    productTypeId: args.productTypeId,
+    panelId: args.panelId,
+    label: painted.label,
+    garmentColor: args.garmentColor,
+    garmentHex: args.garmentHex,
+    kind: "produced",
+    photo: painted.png,
+    mask: painted.mask,
+    width: painted.width,
+    height: painted.height,
+    maskSource: "copied-from-white",
+    isDefault: false,
+    uploadedBy: args.uploadedBy,
+  });
+  return { id, panelId: args.panelId };
+}
+
+export async function approveUploadedBlank(args: {
+  productTypeId: number;
+  panelId: string;
+  garmentColor: string;
+  garmentHex: string;
+  imageBase64: string;
+  uploadedBy: string | null;
+  confirmMask?: boolean;
+}): Promise<
+  | { stored: true; id: string; maskSource: "copied-from-white" | "operator-confirmed" }
+  | { needsConfirm: true; message: string }
+> {
+  const photo = decodeImage(args.imageBase64);
+  const decoded = await decodeRgba(photo);
+  const white = await loadWhiteMaster(args.productTypeId, args.panelId);
+  const whiteDecoded = await decodeRgba(await getObject(white.storagePath));
+  const whiteMask = await maskFromPng(await getObject(white.maskPath), whiteDecoded.width, whiteDecoded.height);
+  const check = backgroundAgrees(
+    whiteDecoded.rgba,
+    decoded.rgba,
+    whiteMask,
+    whiteDecoded.width,
+    whiteDecoded.height,
+    decoded.width,
+    decoded.height,
+  );
+  let mask: Uint8Array;
+  let maskSource: "copied-from-white" | "operator-confirmed";
+  if (check.agree) {
+    mask = whiteMask;
+    maskSource = "copied-from-white";
+  } else if (args.confirmMask) {
+    mask = whiteDecoded.width === decoded.width && whiteDecoded.height === decoded.height
+      ? whiteMask
+      : scaleMask(whiteMask, whiteDecoded.width, whiteDecoded.height, decoded.width, decoded.height);
+    maskSource = "operator-confirmed";
+  } else {
+    const detail = check.mean == null
+      ? `The file is ${decoded.width}×${decoded.height} and the white master is ${whiteDecoded.width}×${whiteDecoded.height}.`
+      : `The background differs from the white master (mean ${check.mean.toFixed(1)}).`;
+    return { needsConfirm: true, message: `${detail} Save anyway to use the white master's mask.` };
+  }
+  const id = await insertPanel({
+    productTypeId: args.productTypeId,
+    panelId: args.panelId,
+    label: white.label,
+    garmentColor: args.garmentColor,
+    garmentHex: args.garmentHex,
+    kind: "produced",
+    photo,
+    mask,
+    width: decoded.width,
+    height: decoded.height,
+    maskSource,
+    isDefault: false,
+    uploadedBy: args.uploadedBy,
+  });
+  return { stored: true, id, maskSource };
+}
+
+/** Renames stored blank rows only. Products, variants, and hex tags stay put. */
+export async function renameStoredBlankColour(productTypeId: number, fromName: string, toName: string) {
+  const from = fromName.trim();
+  const to = toName.trim();
+  if (!from || !to) throw new Error("Both names are required");
+  if (from.toLowerCase() === to.toLowerCase()) throw new Error("Those names already match");
+  const rows = await db
+    .select({ id: mockupPanels.id, panelId: mockupPanels.panelId })
+    .from(mockupPanels)
+    .where(and(
+      eq(mockupPanels.productTypeId, productTypeId),
+      eq(mockupPanels.view, VIEW),
+      sql`lower(trim(${mockupPanels.garmentColor})) = ${from.toLowerCase()}`,
+    ));
+  if (!rows.length) throw new Error(`No stored blanks are named ${from}`);
+  await db
+    .update(mockupPanels)
+    .set({ garmentColor: to })
+    .where(and(
+      eq(mockupPanels.productTypeId, productTypeId),
+      eq(mockupPanels.view, VIEW),
+      sql`lower(trim(${mockupPanels.garmentColor})) = ${from.toLowerCase()}`,
+    ));
+  return { rows: rows.length, scenes: new Set(rows.map((row) => row.panelId)).size, from, to };
+}
+
+/** A new row pointing at the same files, so this copy becomes the one compose uses. */
+export async function restoreBlankRevision(rowId: string) {
+  const [row] = await db.select().from(mockupPanels).where(eq(mockupPanels.id, rowId)).limit(1);
+  if (!row) throw new Error("That blank is not stored");
+  const [inserted] = await db.insert(mockupPanels).values({
+    panelId: row.panelId,
+    productTypeId: row.productTypeId,
+    view: row.view,
+    label: row.label,
+    garmentColor: row.garmentColor,
+    garmentHex: row.garmentHex,
+    kind: row.kind,
+    storagePath: row.storagePath,
+    maskPath: row.maskPath,
+    maskSource: row.maskSource,
+    width: row.width,
+    height: row.height,
+    printWidthOfH: row.printWidthOfH,
+    printHeightOfH: row.printHeightOfH,
+    printTopOfH: row.printTopOfH,
+    printRotationDeg: row.printRotationDeg,
+    isDefault: row.isDefault,
+    uploadedBy: row.uploadedBy,
+  }).returning({ id: mockupPanels.id });
+  if (!inserted) throw new Error("The older blank was not restored");
+  return { id: inserted.id, panelId: row.panelId, garmentColor: row.garmentColor };
+}
+
+export async function signedBlankPhoto(rowId: string) {
+  const [row] = await db.select().from(mockupPanels).where(eq(mockupPanels.id, rowId)).limit(1);
+  if (!row) throw new Error("That blank is not stored");
+  return {
+    url: await signedLibraryUrl(row.storagePath),
+    createdAt: row.createdAt.toISOString(),
+    garmentColor: row.garmentColor,
+    garmentHex: row.garmentHex,
+    kind: row.kind,
+    panelId: row.panelId,
+  };
 }

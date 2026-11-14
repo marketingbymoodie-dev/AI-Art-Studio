@@ -384,6 +384,10 @@ export default function CatalogueStudioPage() {
         />
         <p className="mt-2 text-xs text-muted-foreground">
           Panels on file: {panels.data ? panels.data.scenes.length : "…"}
+          {" · "}
+          <Link href="/admin/catalogue-studio/colour-blanks" className="underline" data-testid="colour-blanks-link">
+            Colour blanks
+          </Link>
         </p>
       </div>
       <div className={showAdmin ? "grid gap-8 xl:grid-cols-[minmax(0,1fr)_420px]" : ""}>

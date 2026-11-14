@@ -1,0 +1,638 @@
+import { useEffect, useState } from "react";
+import { Link } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import AdminLayout from "@/components/admin-layout";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { apiFetch } from "@/lib/queryClient";
+
+type Finish = "solid" | "heather";
+
+type Colour = {
+  id: string;
+  name: string;
+  printifyOptionId: number | null;
+  printifyTitle: string;
+  hex: string;
+  finish: Finish;
+  linkStoredName: string | null;
+  match: "present" | "name-mismatch" | "missing";
+  storedName: string | null;
+  storedRows: number;
+  storedScenes: number;
+};
+
+type Revision = { id: string; name: string; hex: string; kind: string; createdAt: string };
+
+type Cell = {
+  colourId: string;
+  state: "present" | "missing";
+  photoUrl: string | null;
+  compose: { mode: "produced" | "recolour" | "unavailable"; sourceName: string; usesThisBlank: boolean };
+  current: Revision | null;
+  history: Revision[];
+};
+
+type Scene = { panelId: string; label: string; isDefault: boolean; cells: Cell[] };
+
+type Grid = {
+  productType: { id: number; name: string };
+  types: Array<{ id: number; name: string }>;
+  colours: Colour[];
+  scenes: Scene[];
+};
+
+type Preview = { src: string; kind: "paint" | "upload"; raw?: string; confirm?: string };
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "colour";
+}
+
+function cellKey(panelId: string, colourId: string): string {
+  return `${panelId}::${colourId}`;
+}
+
+function composeLabel(cell: Cell): string {
+  if (cell.compose.usesThisBlank) return "Compose uses this blank";
+  if (cell.compose.mode === "recolour") return "Compose would repaint the white master";
+  if (cell.compose.mode === "produced") return `Compose uses ${cell.compose.sourceName}`;
+  return "Compose has no blank";
+}
+
+async function readError(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text) as { error?: string };
+    return body.error || text;
+  } catch {
+    return text || res.statusText;
+  }
+}
+
+function readFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read that file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+export default function ColourBlanksPage() {
+  const [typeId, setTypeId] = useState(54);
+  const [drafts, setDrafts] = useState<Record<string, Colour>>({});
+  const [previews, setPreviews] = useState<Record<string, Preview>>({});
+  const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState("");
+
+  const grid = useQuery<Grid>({
+    queryKey: ["/api/platform/catalogue-studio/colour-blanks", typeId],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks?productTypeId=${typeId}`);
+      if (!res.ok) throw new Error(await readError(res));
+      return res.json();
+    },
+  });
+
+  useEffect(() => {
+    const next: Record<string, Colour> = {};
+    for (const colour of grid.data?.colours ?? []) next[colour.id] = colour;
+    setDrafts(next);
+  }, [grid.data]);
+
+  function patchDraft(id: string, patch: Partial<Colour>) {
+    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  }
+
+  async function saveColour(colour: Colour) {
+    setBusy(colour.id);
+    setStatus("");
+    try {
+      const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/colours/${colour.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: colour.name,
+          printifyTitle: colour.printifyTitle,
+          printifyOptionId: colour.printifyOptionId,
+          hex: colour.hex,
+          finish: colour.finish,
+          linkStoredName: colour.linkStoredName,
+        }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      await grid.refetch();
+      setStatus(`Saved ${colour.name}. Stored blanks were not renamed.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function addColour(form: HTMLFormElement) {
+    const data = new FormData(form);
+    setBusy("add");
+    setStatus("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/colours", {
+        method: "POST",
+        body: JSON.stringify({
+          productTypeId: typeId,
+          name: String(data.get("name") || ""),
+          printifyTitle: String(data.get("printifyTitle") || ""),
+          printifyOptionId: String(data.get("printifyOptionId") || ""),
+          hex: String(data.get("hex") || ""),
+          finish: String(data.get("finish") || "solid"),
+          linkStoredName: String(data.get("linkStoredName") || ""),
+        }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      form.reset();
+      await grid.refetch();
+      setStatus("Colour added. No blanks were created.");
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function paintOne(panelId: string, colour: Colour) {
+    const key = cellKey(panelId, colour.id);
+    setBusy(key);
+    setStatus(`Painting ${colour.name} on ${panelId}…`);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/paint", {
+        method: "POST",
+        body: JSON.stringify({ colourId: colour.id, panelId }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json() as { jpegBase64: string };
+      setPreviews((current) => ({
+        ...current,
+        [key]: { kind: "paint", src: `data:image/jpeg;base64,${body.jpegBase64}` },
+      }));
+      setStatus(`${colour.name} on ${panelId} is a preview. Nothing is saved until you approve it.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function paintMany(pairs: Array<{ panelId: string; colour: Colour }>, label: string) {
+    setBusy("many");
+    let done = 0;
+    const next = { ...previews };
+    try {
+      for (const pair of pairs) {
+        done += 1;
+        setStatus(`Painting ${done} of ${pairs.length} (${label})…`);
+        const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/paint", {
+          method: "POST",
+          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
+        });
+        if (!res.ok) throw new Error(await readError(res));
+        const body = await res.json() as { jpegBase64: string };
+        next[cellKey(pair.panelId, pair.colour.id)] = { kind: "paint", src: `data:image/jpeg;base64,${body.jpegBase64}` };
+        setPreviews({ ...next });
+      }
+      setStatus(`${pairs.length} previews ready. Nothing is saved until you approve.`);
+    } catch (e: any) {
+      setPreviews({ ...next });
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function approvePaint(panelId: string, colour: Colour) {
+    const key = cellKey(panelId, colour.id);
+    setBusy(key);
+    setStatus(`Saving ${colour.name} on ${panelId}…`);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/approve", {
+        method: "POST",
+        body: JSON.stringify({ colourId: colour.id, panelId }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      setPreviews((current) => {
+        const copy = { ...current };
+        delete copy[key];
+        return copy;
+      });
+      await grid.refetch();
+      setStatus(`${colour.name} on ${panelId} is stored as a produced blank.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function approvePainted(pairs: Array<{ panelId: string; colour: Colour }>) {
+    setBusy("many");
+    try {
+      for (const pair of pairs) {
+        setStatus(`Saving ${pair.colour.name} on ${pair.panelId}…`);
+        const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/approve", {
+          method: "POST",
+          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
+        });
+        if (!res.ok) throw new Error(await readError(res));
+      }
+      setPreviews((current) => {
+        const copy = { ...current };
+        for (const pair of pairs) delete copy[cellKey(pair.panelId, pair.colour.id)];
+        return copy;
+      });
+      await grid.refetch();
+      setStatus(`Saved ${pairs.length} produced blanks.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function stageUpload(panelId: string, colour: Colour, file: File) {
+    const raw = await readFile(file);
+    setPreviews((current) => ({
+      ...current,
+      [cellKey(panelId, colour.id)]: { kind: "upload", src: raw, raw },
+    }));
+    setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}. Nothing is saved until you approve it.`);
+  }
+
+  async function approveUpload(panelId: string, colour: Colour, confirmMask = false) {
+    const key = cellKey(panelId, colour.id);
+    const preview = previews[key];
+    if (!preview?.raw) return;
+    setBusy(key);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload", {
+        method: "POST",
+        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: preview.raw, confirmMask }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json() as { stored?: boolean; needsConfirm?: boolean; message?: string };
+      if (body.needsConfirm) {
+        setPreviews((current) => ({ ...current, [key]: { ...preview, confirm: body.message } }));
+        setStatus(body.message || "Confirm the mask before saving.");
+        return;
+      }
+      setPreviews((current) => {
+        const copy = { ...current };
+        delete copy[key];
+        return copy;
+      });
+      await grid.refetch();
+      setStatus(`${colour.name} on ${panelId} is stored as a produced blank.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function linkColour(colour: Colour) {
+    const from = colour.storedName || colour.linkStoredName;
+    if (!window.confirm(`Rename stored blanks from ${from} to ${colour.name}? Products and variants stay as they are.`)) return;
+    setBusy(colour.id);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/link", {
+        method: "POST",
+        body: JSON.stringify({ colourId: colour.id }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json() as { rows: number; scenes: number };
+      await grid.refetch();
+      setStatus(`Linked ${body.rows} blanks on ${body.scenes} scenes as ${colour.name}.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function showHistory(rowId: string) {
+    const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/rows/${rowId}`);
+    if (!res.ok) {
+      setStatus(await readError(res));
+      return;
+    }
+    const body = await res.json() as { url: string };
+    setHistoryUrl((current) => ({ ...current, [rowId]: body.url }));
+  }
+
+  async function rollback(row: Revision) {
+    if (!window.confirm(`Use the ${row.createdAt.slice(0, 16).replace("T", " ")} copy of ${row.name}? The current blank stays in history.`)) return;
+    setBusy(row.id);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/rollback", {
+        method: "POST",
+        body: JSON.stringify({ rowId: row.id }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      await grid.refetch();
+      setStatus(`Rolled ${row.name} back. The newer copy is still in history.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const data = grid.data;
+  const colours = data?.colours ?? [];
+  const scenes = data?.scenes ?? [];
+  const solids = colours.filter((colour) => colour.finish === "solid");
+  const paintedPairs = scenes.flatMap((scene) => solids
+    .filter((colour) => previews[cellKey(scene.panelId, colour.id)]?.kind === "paint")
+    .map((colour) => ({ panelId: scene.panelId, colour })));
+
+  return (
+    <AdminLayout>
+      <div className="space-y-4" data-testid="colour-blanks-page">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold">Colour blanks</h1>
+            <p className="text-sm text-muted-foreground">
+              <Link href="/admin/catalogue-studio" className="underline">Mockup library</Link>
+              {" · "}
+              {data ? `${data.productType.name} (${data.productType.id})` : "Loading…"}
+              . A painted preview is not stored until you approve it.
+            </p>
+          </div>
+          {data && data.types.length > 1 ? (
+            <label className="text-sm">
+              Product type{" "}
+              <select
+                className="ml-1 rounded-md border bg-background px-2 py-1"
+                value={typeId}
+                onChange={(event) => setTypeId(Number(event.target.value))}
+                data-testid="colour-blanks-type"
+              >
+                {data.types.map((type) => (
+                  <option key={type.id} value={type.id}>{type.name} ({type.id})</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
+
+        {status ? <p className="text-sm" data-testid="colour-blanks-status">{status}</p> : null}
+        {grid.error ? <p className="text-sm text-destructive">{String((grid.error as Error).message || grid.error)}</p> : null}
+
+        <details className="rounded-md border p-3" open>
+          <summary className="cursor-pointer text-sm font-medium">Colour list</summary>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Saving a name here does not rename stored blanks. Heather colours have no paint button.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="p-1 font-medium">Name</th>
+                  <th className="p-1 font-medium">Printify colour</th>
+                  <th className="p-1 font-medium">Option</th>
+                  <th className="p-1 font-medium">Hex</th>
+                  <th className="p-1 font-medium">Finish</th>
+                  <th className="p-1 font-medium">Stored as</th>
+                  <th className="p-1" />
+                </tr>
+              </thead>
+              <tbody>
+                {colours.map((colour) => {
+                  const draft = drafts[colour.id] || colour;
+                  return (
+                    <tr key={colour.id} data-testid={`colour-row-${slug(colour.name)}`}>
+                      <td className="p-1"><Input value={draft.name} onChange={(event) => patchDraft(colour.id, { name: event.target.value })} /></td>
+                      <td className="p-1"><Input value={draft.printifyTitle} onChange={(event) => patchDraft(colour.id, { printifyTitle: event.target.value })} /></td>
+                      <td className="p-1 w-24">
+                        <Input
+                          value={draft.printifyOptionId ?? ""}
+                          onChange={(event) => patchDraft(colour.id, { printifyOptionId: event.target.value === "" ? null : Number(event.target.value) })}
+                        />
+                      </td>
+                      <td className="p-1 w-32">
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block h-4 w-4 rounded-sm border" style={{ background: `#${draft.hex}` }} />
+                          <Input value={draft.hex} onChange={(event) => patchDraft(colour.id, { hex: event.target.value.replace(/^#/, "") })} />
+                        </span>
+                      </td>
+                      <td className="p-1">
+                        <select
+                          className="rounded-md border bg-background px-2 py-1"
+                          value={draft.finish}
+                          onChange={(event) => patchDraft(colour.id, { finish: event.target.value === "heather" ? "heather" : "solid" })}
+                        >
+                          <option value="solid">Solid</option>
+                          <option value="heather">Heather</option>
+                        </select>
+                      </td>
+                      <td className="p-1">
+                        <Input
+                          value={draft.linkStoredName || ""}
+                          placeholder="exact blank name"
+                          onChange={(event) => patchDraft(colour.id, { linkStoredName: event.target.value })}
+                        />
+                      </td>
+                      <td className="p-1">
+                        <Button type="button" size="sm" variant="outline" disabled={busy === colour.id} onClick={() => void saveColour(draft)}>
+                          Save
+                        </Button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <form
+            className="mt-3 flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addColour(event.currentTarget);
+            }}
+          >
+            <Input name="name" placeholder="Name" className="w-36" required />
+            <Input name="printifyTitle" placeholder="Printify colour" className="w-36" />
+            <Input name="printifyOptionId" placeholder="Option id" className="w-24" />
+            <Input name="hex" placeholder="Hex" className="w-24" required />
+            <select name="finish" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="solid">
+              <option value="solid">Solid</option>
+              <option value="heather">Heather</option>
+            </select>
+            <Input name="linkStoredName" placeholder="Stored blank name" className="w-40" />
+            <Button type="submit" size="sm" variant="outline" disabled={busy === "add"}>Add colour</Button>
+          </form>
+        </details>
+
+        {colours.filter((colour) => colour.match === "name-mismatch").map((colour) => (
+          <div key={colour.id} className="rounded-md border border-amber-500 bg-amber-50 p-3 text-sm text-amber-950" data-testid={`colour-mismatch-${slug(colour.name)}`}>
+            <p>
+              <strong>{colour.name}</strong> has no blank with that name.
+              {" "}{colour.storedRows} stored {colour.storedRows === 1 ? "blank is" : "blanks are"} named <strong>{colour.storedName}</strong>
+              {colour.storedScenes ? ` across ${colour.storedScenes} ${colour.storedScenes === 1 ? "scene" : "scenes"}` : ""}.
+              Compose will repaint the white master until you link them.
+            </p>
+            <Button type="button" size="sm" className="mt-2" variant="outline" data-testid={`colour-link-${slug(colour.name)}`} disabled={busy === colour.id} onClick={() => void linkColour(colour)}>
+              Link {colour.storedName} blanks as {colour.name}
+            </Button>
+          </div>
+        ))}
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="colour-paint-grid"
+            disabled={busy !== "" || solids.length === 0 || scenes.length === 0}
+            onClick={() => void paintMany(scenes.flatMap((scene) => solids.map((colour) => ({ panelId: scene.panelId, colour }))), "grid")}
+          >
+            Paint all solids from the white master
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            data-testid="colour-approve-grid"
+            disabled={busy !== "" || paintedPairs.length === 0}
+            onClick={() => void approvePainted(paintedPairs)}
+          >
+            Approve painted previews ({paintedPairs.length})
+          </Button>
+        </div>
+
+        <div className="overflow-x-auto rounded-md border">
+          <table className="border-collapse text-xs">
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 min-w-36 border-b bg-background p-2 text-left">Scene</th>
+                {colours.map((colour) => (
+                  <th key={colour.id} className="min-w-40 border-b border-l p-2 text-left align-top">
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block h-3 w-3 rounded-sm border" style={{ background: `#${colour.hex}` }} />
+                      {colour.name}
+                    </span>
+                    <span className="block font-normal text-muted-foreground">
+                      {colour.finish === "heather" ? "Heather" : "Solid"} · #{colour.hex}
+                    </span>
+                    {colour.finish === "solid" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-1"
+                        data-testid={`colour-paint-column-${slug(colour.name)}`}
+                        disabled={busy !== ""}
+                        onClick={() => void paintMany(scenes.map((scene) => ({ panelId: scene.panelId, colour })), colour.name)}
+                      >
+                        Paint column
+                      </Button>
+                    ) : null}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {scenes.map((scene) => (
+                <tr key={scene.panelId}>
+                  <th className="sticky left-0 z-10 border-t bg-background p-2 text-left font-medium">
+                    {scene.label || scene.panelId}
+                    {scene.isDefault ? <span className="mt-1 block font-normal text-muted-foreground">Default</span> : null}
+                  </th>
+                  {scene.cells.map((cell) => {
+                    const colour = colours.find((item) => item.id === cell.colourId);
+                    if (!colour) return null;
+                    const key = cellKey(scene.panelId, colour.id);
+                    const preview = previews[key];
+                    const id = `${slug(scene.panelId)}-${slug(colour.name)}`;
+                    return (
+                      <td key={colour.id} className="border-l border-t p-2 align-top" data-testid={`colour-cell-${id}`}>
+                        {cell.state === "present" && cell.photoUrl ? (
+                          <img src={cell.photoUrl} alt="" className="h-28 w-full object-contain bg-white" />
+                        ) : (
+                          <p className="flex h-28 items-center justify-center rounded-sm bg-muted text-muted-foreground" data-testid={`colour-missing-${id}`}>missing</p>
+                        )}
+                        <p className="mt-1" data-testid={`colour-compose-${id}`}>{composeLabel(cell)}</p>
+                        {cell.current ? (
+                          <p className="text-muted-foreground">In use · {cell.current.kind} · {cell.current.createdAt.slice(0, 16).replace("T", " ")}</p>
+                        ) : null}
+                        {preview ? (
+                          <div className="mt-2 space-y-1">
+                            <img src={preview.src} alt="" className="h-28 w-full object-contain bg-white" data-testid={`colour-preview-${id}`} />
+                            <p className="text-muted-foreground">Preview only</p>
+                            {preview.confirm ? <p>{preview.confirm}</p> : null}
+                            {preview.kind === "paint" ? (
+                              <Button type="button" size="sm" data-testid={`colour-approve-${id}`} disabled={busy !== ""} onClick={() => void approvePaint(scene.panelId, colour)}>
+                                Approve
+                              </Button>
+                            ) : (
+                              <Button type="button" size="sm" data-testid={`colour-approve-upload-${id}`} disabled={busy !== ""} onClick={() => void approveUpload(scene.panelId, colour, Boolean(preview.confirm))}>
+                                {preview.confirm ? "Save with the white mask" : "Approve upload"}
+                              </Button>
+                            )}
+                            <Button type="button" size="sm" variant="ghost" onClick={() => setPreviews((current) => {
+                              const copy = { ...current };
+                              delete copy[key];
+                              return copy;
+                            })}
+                            >
+                              Discard
+                            </Button>
+                          </div>
+                        ) : null}
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {colour.finish === "solid" ? (
+                            <Button type="button" size="sm" variant="outline" data-testid={`colour-paint-${id}`} disabled={busy !== ""} onClick={() => void paintOne(scene.panelId, colour)}>
+                              Paint from white master
+                            </Button>
+                          ) : null}
+                          <label className="inline-flex cursor-pointer items-center rounded-md border px-2 py-1">
+                            Upload
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp"
+                              className="sr-only"
+                              data-testid={`colour-upload-${id}`}
+                              onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                event.target.value = "";
+                                if (file) void stageUpload(scene.panelId, colour, file);
+                              }}
+                            />
+                          </label>
+                        </div>
+                        {cell.history.length ? (
+                          <details className="mt-2">
+                            <summary className="cursor-pointer text-muted-foreground">{cell.history.length} older {cell.history.length === 1 ? "copy" : "copies"}</summary>
+                            <ul className="mt-1 space-y-1">
+                              {cell.history.map((row) => (
+                                <li key={row.id}>
+                                  <span>{row.createdAt.slice(0, 16).replace("T", " ")} · {row.kind} · #{row.hex}</span>
+                                  <span className="ml-1">
+                                    <button type="button" className="underline" onClick={() => void showHistory(row.id)}>Show</button>
+                                    {" · "}
+                                    <button type="button" className="underline" data-testid={`colour-rollback-${row.id}`} onClick={() => void rollback(row)}>Roll back</button>
+                                  </span>
+                                  {historyUrl[row.id] ? <img src={historyUrl[row.id]} alt="" className="mt-1 h-20 w-full object-contain bg-white" /> : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : null}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </AdminLayout>
+  );
+}

@@ -23,6 +23,7 @@ import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
 import PlatformShippingPage from "@/pages/platform-shipping";
 import CatalogueStudioPage from "@/pages/admin/catalogue-studio";
+import ColourBlanksPage from "@/pages/admin/colour-blanks";
 import CatalogueBulkImportPage from "@/pages/admin/CatalogueBulkImport";
 import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
 import PlatformApiKeysPage from "@/pages/admin/platform-api-keys";
@@ -103,6 +104,7 @@ function AppRouter() {
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
       <Route path="/admin/platform/shipping" component={PlatformShippingPage} />
+      <Route path="/admin/catalogue-studio/colour-blanks" component={ColourBlanksPage} />
       <Route path="/admin/catalogue-studio" component={CatalogueStudioPage} />
       <Route path="/admin/catalogue-import" component={CatalogueBulkImportPage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />

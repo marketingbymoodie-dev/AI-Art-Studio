@@ -8,7 +8,12 @@
          Monkey-patches window.fetch to inject Authorization: Bearer <session-token>
          on all same-origin requests when running inside Shopify Admin. -->
     <meta name="shopify-api-key" content="6f6c83692d275fd284accad7d5a6fefd" />
-    <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
+    <!-- app-bridge.js loads in every normal session. A local top-level check omits it so App Bridge does not bounce the tab to Shopify Admin. -->
+    <script>
+      if (location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+        document.write('<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></' + 'script>');
+      }
+    </script>
     <!-- Save a reference to the (now-patched) fetch for storefront embed pages
          that may need it when App Bridge's token injection is not applicable. -->
     <script>window.__nativeFetch = window.fetch.bind(window);</script>

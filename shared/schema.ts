@@ -1427,6 +1427,23 @@ export const mockupPanels = pgTable("mockup_panels", {
   index("mockup_panels_type_view_idx").on(table.productTypeId, table.view, table.panelId),
 ]);
 
+/** Operator colour list for the mockup library. Not a Shopify or Printify variant. */
+export const mockupLibraryColours = pgTable("mockup_library_colours", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productTypeId: integer("product_type_id").notNull(),
+  name: text("name").notNull(),
+  printifyOptionId: integer("printify_option_id"),
+  printifyTitle: text("printify_title").notNull(),
+  hex: text("hex").notNull(),
+  finish: text("finish").notNull(),
+  /** Existing blank name to offer as a link. Never applied until the operator clicks. */
+  linkStoredName: text("link_stored_name"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("mockup_library_colours_type_name_uidx").on(table.productTypeId, table.name),
+]);
+
 /** Scene and ticked colours for a candidate, including the studio fixture that is not a design_candidates row yet. */
 export const catalogueCandidateChoices = pgTable("catalogue_candidate_choices", {
   candidateId: text("candidate_id").primaryKey(),
