@@ -82,6 +82,10 @@ export function checkShopifyScopeDrift(
       report.notes.push(`${name}: unreadable (${e?.message || e})`);
       continue;
     }
+    if (/scope-drift:\s*ignore/.test(text.slice(0, 800))) {
+      report.notes.push(`${name}: scope-drift ignore — custom app, not the public OAuth list`);
+      continue;
+    }
     const m = text.match(/^\s*scopes\s*=\s*"([^"]*)"/m);
     if (!m) {
       report.notes.push(`${name}: no scopes = "..." line found`);

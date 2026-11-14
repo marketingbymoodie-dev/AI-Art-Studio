@@ -105,7 +105,9 @@ import {
   ShadowStorefrontNotReadyError,
   assertAjaxVariantVisible,
 } from "./shadow-storefront-visible";
-import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
+import { verifyAppProxySignature } from "./shopify-app-credentials";
+import { acceptShopifyWebhook } from "./shopify-webhook-auth";
+import { flatFulfillmentDecision } from "./flat-fulfillment-gate";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
 import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, designCandidates, creators, creatorCustomizerPages } from "@shared/schema";
@@ -535,17 +537,21 @@ function kickoffFlatCalibration(args: {
  * raw body is captured by the express.json `verify` hook (`server/index.ts`).
  * Returns false when the secret/header is missing or the digest mismatches.
  */
-function verifyShopifyWebhookHmac(req: Request): boolean {
-  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
-  const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
-  if (!hmac) return false;
-  const rawBody = (req as any).rawBody;
-  const buf: Buffer = Buffer.isBuffer(rawBody)
-    ? rawBody
-    : typeof rawBody === "string"
-      ? Buffer.from(rawBody, "utf8")
-      : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-  return hmacBase64MatchesAnySecret(buf, hmac);
+function verifyShopifyWebhookHmac(req: Request): Promise<boolean> {
+  return acceptShopifyWebhook(req).then((matched) => matched != null);
+}
+
+async function shopFlatFulfillmentEnabled(shop: string): Promise<boolean> {
+  if (!shop) return false;
+  const { db } = await import("./db");
+  const { shippingStoreSettings } = await import("@shared/schema");
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db
+    .select({ enabled: shippingStoreSettings.flatOrderFulfillmentEnabled })
+    .from(shippingStoreSettings)
+    .where(eq(shippingStoreSettings.shopDomain, shop))
+    .limit(1);
+  return row?.enabled === true;
 }
 
 function toUint8Array(buf: Buffer) {
@@ -13797,7 +13803,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Orders Paid] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }
@@ -13854,17 +13860,26 @@ ${orientationExtra}
         }
       }
 
-      // ── Flat/mesh on-the-fly Printify fulfillment (DISABLED BY DEFAULT) ──────
-      // Gated behind FLAT_ORDER_FULFILLMENT_ENABLED so it never runs in
-      // production until prerequisites (e.g. Protected Customer Data approval
-      // for shipping address access) are met. Requires a valid webhook HMAC.
-      // Runs async AFTER we return 200 so the webhook stays fast.
-      //
-      // DO NOT set FLAT_ORDER_FULFILLMENT_ENABLED in any environment that runs
-      // a build older than the fulfilment tenant-isolation fix (2026-10-04,
-      // `checkFulfillmentTenancy`). Before it, a line property naming another
-      // shop's real job id printed that shop's artwork. See docs/launch-notes.md.
-      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
+      // Printify submission: FLAT_ORDER_FULFILLMENT_ENABLED is a global kill
+      // switch (off → nothing submits). Each shop also needs
+      // shipping_store_settings.flat_order_fulfillment_enabled, which defaults
+      // off. A blank recipient is still refused inside submitFlatOrderToPrintify,
+      // and Printify 8502 stays awaiting_approval with no retry.
+      const fulfillmentDecision = flatFulfillmentDecision(
+        process.env.FLAT_ORDER_FULFILLMENT_ENABLED,
+        process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true"
+          ? await shopFlatFulfillmentEnabled(shop)
+          : false,
+      );
+      if (fulfillmentDecision !== "submit") {
+        if (Array.isArray(order.line_items)) {
+          console.log("[Shopify Orders Paid] flat fulfillment skipped", {
+            orderId,
+            shop,
+            reason: fulfillmentDecision,
+          });
+        }
+      } else if (Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
         // Shopify redacts name, street, zip and phone until Protected Customer
         // Data is approved. Submit re-reads the order and refuses a blank recipient.
@@ -13984,7 +13999,7 @@ ${orientationExtra}
   app.post("/shopify/webhooks/carts-create", async (req: Request, res: Response) => {
     try {
       const shop = req.headers["x-shopify-shop-domain"] as string;
-      const hmacValid = verifyShopifyWebhookHmac(req);
+      const hmacValid = await verifyShopifyWebhookHmac(req);
       if (shop && hmacValid) {
         void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
           console.warn("[Shopify Carts Create] atc recording failed:", e?.message || e),
@@ -14000,7 +14015,7 @@ ${orientationExtra}
   app.post("/shopify/webhooks/carts-update", async (req: Request, res: Response) => {
     try {
       const shop = req.headers["x-shopify-shop-domain"] as string;
-      const hmacValid = verifyShopifyWebhookHmac(req);
+      const hmacValid = await verifyShopifyWebhookHmac(req);
       if (shop && hmacValid) {
         void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
           console.warn("[Shopify Carts Update] atc recording failed:", e?.message || e),
@@ -14021,7 +14036,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const body = req.body || {};
       const orderId = body.order_id || body.admin_graphql_api_order_id || body.order?.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Refunds Create] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }
@@ -14101,7 +14116,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Orders Cancelled] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }

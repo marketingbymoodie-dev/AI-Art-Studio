@@ -4,7 +4,19 @@
  * garment → add to cart via the same shadow-SKU endpoint every other
  * customizer flow uses. See docs/ (My Pet plan) for the full spec.
  */
-console.log('[My Pet] script build=plus-beside loaded');
+function appaiMyPetDebug() {
+  try {
+    var search = (window.location && window.location.search) || '';
+    if (/(?:^\?|&)appai_debug=1(?:&|$)/.test(search)) return true;
+    if (window.localStorage && window.localStorage.getItem('appai_debug') === '1') return true;
+  } catch (e) {}
+  return false;
+}
+function myPetLog() {
+  if (!appaiMyPetDebug()) return;
+  console.log.apply(console, arguments);
+}
+myPetLog('[My Pet] script build=debug-quiet loaded');
 (function () {
   'use strict';
   var TAG = '[My Pet]';
@@ -127,13 +139,13 @@ console.log('[My Pet] script build=plus-beside loaded');
     } catch (e) {}
     var prev = readStoredRecord(shopifyProductId);
     if (!prev || !prev.renderId) {
-      console.log(TAG, on ? 'revert stored' : 'revert cleared', 'side-key only');
+      myPetLog(TAG, on ? 'revert stored' : 'revert cleared', 'side-key only');
       return;
     }
     if (on) prev.reverted = true;
     else delete prev.reverted;
     writeStoredRecord(shopifyProductId, prev);
-    console.log(TAG, on ? 'revert stored' : 'revert cleared', renderStorageKey(shopifyProductId));
+    myPetLog(TAG, on ? 'revert stored' : 'revert cleared', renderStorageKey(shopifyProductId));
   }
   function writeStoredVariantChoice(shopifyProductId, colorName, sizeName, reason) {
     var prev = readStoredRecord(shopifyProductId);
@@ -147,7 +159,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     if (colour) prev.colorName = colour;
     if (size) prev.sizeName = size;
     writeStoredRecord(shopifyProductId, prev);
-    console.log(TAG, 'design pref write render=' + prev.renderId +
+    myPetLog(TAG, 'design pref write render=' + prev.renderId +
       ' colour=' + colour + ' size=' + size + ' reason=' + (reason || ''));
   }
   // Make renderId active. Use its saved colour and size, or the pair on
@@ -169,7 +181,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     if (sizeName) next.sizeName = sizeName;
     if (revertedFlagOn(shopifyProductId)) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
-    console.log(TAG, 'design pref write render=' + renderId +
+    myPetLog(TAG, 'design pref write render=' + renderId +
       ' colour=' + colorName + ' size=' + sizeName + ' reason=activate');
     return {
       colorName: colorName || fallbackColor || '',
@@ -1002,12 +1014,12 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (cached) {
         var parsed = JSON.parse(cached);
         if (Array.isArray(parsed)) {
-          console.log(TAG, 'cart-sections cache hit:', parsed);
+          myPetLog(TAG, 'cart-sections cache hit:', parsed);
           return Promise.resolve(parsed);
         }
       }
     } catch (_) { /* sessionStorage disabled → re-probe */ }
-    console.log(TAG, 'cart-sections probing');
+    myPetLog(TAG, 'cart-sections probing');
     return Promise.all(CART_SECTIONS_CANDIDATES.map(fetchOneSection))
       .then(function (results) {
         // "Available" = fetched AND returned usable HTML on this discovery
@@ -1015,7 +1027,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         // kept — staging-95 showed Shopify will sometimes 200 a probe but
         // 400 the real content fetch, so we need the content check too.
         var available = results.filter(function (r) { return r.html; }).map(function (r) { return r.name; });
-        console.log(TAG, 'cart-sections available:', available);
+        myPetLog(TAG, 'cart-sections available:', available);
         try { sessionStorage.setItem(CART_SECTIONS_SESSION_KEY, JSON.stringify(available)); } catch (_) {}
         return available;
       });
@@ -1025,7 +1037,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     if (!html) return;
     var target = document.getElementById('shopify-section-' + name);
     if (!target) {
-      console.log(TAG, 'section', name, 'no target wrapper (shopify-section-' + name + ') in DOM');
+      myPetLog(TAG, 'section', name, 'no target wrapper (shopify-section-' + name + ') in DOM');
       return;
     }
     var templ = document.createElement('template');
@@ -1033,21 +1045,21 @@ console.log('[My Pet] script build=plus-beside loaded');
     var newRoot = templ.content.getElementById('shopify-section-' + name);
     if (newRoot) {
       target.replaceWith(newRoot);
-      console.log(TAG, 'section', name, 'replaced via wrapper');
+      myPetLog(TAG, 'section', name, 'replaced via wrapper');
     } else {
       // Some themes return the section body directly, not wrapped.
       target.innerHTML = html;
-      console.log(TAG, 'section', name, 'inner HTML swapped');
+      myPetLog(TAG, 'section', name, 'inner HTML swapped');
     }
   }
 
   function refreshAndOpenCartDrawer() {
-    console.log(TAG, 'refreshAndOpenCartDrawer start');
+    myPetLog(TAG, 'refreshAndOpenCartDrawer start');
     discoverCartSections().then(function (available) {
       if (!available.length) {
         // Theme has none of our known sections — skip per-section fetches
         // and fall straight to event dispatch + cart-toggle click below.
-        console.log(TAG, 'no known cart sections — skipping render fetches');
+        myPetLog(TAG, 'no known cart sections — skipping render fetches');
         return [];
       }
       // One fetch per known-available section, in parallel. Independent
@@ -1059,9 +1071,9 @@ console.log('[My Pet] script build=plus-beside loaded');
         var applied = [];
         results.forEach(function (r) {
           if (r && r.html) { applySection(r.name, r.html); applied.push(r.name); }
-          else if (r) { console.log(TAG, 'section', r.name, 'empty/400 on refresh — skipped'); }
+          else if (r) { myPetLog(TAG, 'section', r.name, 'empty/400 on refresh — skipped'); }
         });
-        console.log(TAG, 'sections applied:', applied);
+        myPetLog(TAG, 'sections applied:', applied);
       })
       .catch(function (err) {
         console.warn(TAG, 'section fetch/apply failed:', err && err.message);
@@ -1090,7 +1102,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         for (var d = 0; d < DRAWER_SELECTORS.length; d++) {
           var nodes;
           try { nodes = document.querySelectorAll(DRAWER_SELECTORS[d]); } catch (e) { continue; }
-          console.log(TAG, 'drawer selector', DRAWER_SELECTORS[d], 'matched', nodes.length, 'node(s)');
+          myPetLog(TAG, 'drawer selector', DRAWER_SELECTORS[d], 'matched', nodes.length, 'node(s)');
           for (var n = 0; n < nodes.length; n++) {
             var el = nodes[n];
             var opened = false;
@@ -1100,7 +1112,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             for (var m = 0; m < METHODS.length; m++) {
               var fn = el[METHODS[m]];
               if (typeof fn === 'function') {
-                try { fn.call(el); opened = true; console.log(TAG, 'drawer opened via', METHODS[m]); break; } catch (e) {}
+                try { fn.call(el); opened = true; myPetLog(TAG, 'drawer opened via', METHODS[m]); break; } catch (e) {}
               }
             }
             if (!opened) {
@@ -1109,7 +1121,7 @@ console.log('[My Pet] script build=plus-beside loaded');
                 el.setAttribute('open', '');
                 el.setAttribute('aria-hidden', 'false');
                 el.removeAttribute('inert');
-                console.log(TAG, 'drawer opened via attribute toggle');
+                myPetLog(TAG, 'drawer opened via attribute toggle');
               } catch (e) {}
             }
             // Also dispatch 'show' / 'open' directly on the element — some
@@ -1133,7 +1145,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           var toggle;
           try { toggle = document.querySelector(TOGGLE_SELECTORS[t]); } catch (e) { continue; }
           if (toggle && typeof toggle.click === 'function') {
-            console.log(TAG, 'clicking cart-toggle:', TOGGLE_SELECTORS[t]);
+            myPetLog(TAG, 'clicking cart-toggle:', TOGGLE_SELECTORS[t]);
             try { toggle.click(); break; } catch (e) {}
           }
         }
@@ -1279,7 +1291,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       state.captionPainted = true;
       paintPlus();
       var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - captionT0);
-      console.log(TAG, 'caption shown ms=' + ms);
+      myPetLog(TAG, 'caption shown ms=' + ms);
       refreshDesignList();
     }
 
@@ -1622,7 +1634,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       }
       if (!blocked) return;
       root.setAttribute('data-variants', JSON.stringify(variants));
-      console.log(TAG, 'unfulfillable variants blocked n=' + blocked);
+      myPetLog(TAG, 'unfulfillable variants blocked n=' + blocked);
       if (typeof state.reapplySwatches === 'function') state.reapplySwatches();
     }
 
@@ -1796,7 +1808,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           }
         }
         var fresh = freshPreviewForPath(res, list, path);
-        console.log(TAG, 'signed url refreshed path=' + path);
+        myPetLog(TAG, 'signed url refreshed path=' + path);
         if (!fresh) return;
         slot.fresh = fresh;
         paintResignedUrl(slot, fresh);
@@ -2096,7 +2108,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
         window.sessionStorage.setItem(key, JSON.stringify({ at: Date.now(), urls: keep }));
       } catch (e) {}
-      console.log(TAG, 'design thumbs preloaded', Object.keys(urls).length);
+      myPetLog(TAG, 'design thumbs preloaded', Object.keys(urls).length);
     }
 
     function preloadDesignHeroes(list) {
@@ -2108,7 +2120,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         n++;
         decodeHeroUrl(url);
       }
-      if (n) console.log(TAG, 'design heroes preloaded', n);
+      if (n) myPetLog(TAG, 'design heroes preloaded', n);
     }
 
     function decodeHeroUrl(url) {
@@ -2376,7 +2388,7 @@ console.log('[My Pet] script build=plus-beside loaded');
 
     function reapplyActiveDesign() {
       if (!state.renderId) return;
-      console.log(TAG, 're-apply');
+      myPetLog(TAG, 're-apply');
       state.reverted = false;
       persistReverted(shopifyProductId, false);
       var gen = bumpRenderGeneration('re-apply');
@@ -2397,16 +2409,16 @@ console.log('[My Pet] script build=plus-beside loaded');
     function selectListedDesign(item, fromTarget) {
       var targetLabel = fromTarget || 'click';
       if (!item || state.restorePending) {
-        console.log(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=pending');
+        myPetLog(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=pending');
         return;
       }
       if (state.designSelectId === item.renderId && Date.now() - (state.designSelectAt || 0) < 500) {
-        console.log(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=duplicate');
+        myPetLog(TAG, 'design click', 'target=' + targetLabel, 'handled=false', 'reason=duplicate');
         return;
       }
       state.designSelectId = item.renderId;
       state.designSelectAt = Date.now();
-      console.log(TAG, 'design click', 'target=' + targetLabel, 'render=' + String(item.renderId).slice(0, 8), 'handled=true');
+      myPetLog(TAG, 'design click', 'target=' + targetLabel, 'render=' + String(item.renderId).slice(0, 8), 'handled=true');
       clearTimeout(state.hoverTimer);
       cancelDesignHover(false);
       if (!isDesignSheet()) closeDesigns();
@@ -2427,7 +2439,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (wasReverted) {
         state.reverted = false;
         persistReverted(shopifyProductId, false);
-        console.log(TAG, 're-apply');
+        myPetLog(TAG, 're-apply');
       }
       var gen = bumpRenderGeneration('select');
       if (!(same && !wasReverted)) state.selectionOnce = gen;
@@ -2445,7 +2457,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
       }
       if (same && !wasReverted) {
-        console.log(TAG, 'design select', item.renderId,
+        myPetLog(TAG, 'design select', item.renderId,
           'stored colour=' + (saved.colorName || '(none)'),
           'stored size=' + (saved.sizeName || '(none)'),
           'selected colour=' + (fallbackColor || '(none)'),
@@ -2491,7 +2503,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
         var selectedColour = currentColourName();
         var selectedSize = currentSizeName();
-        console.log(TAG, 'design select', item.renderId,
+        myPetLog(TAG, 'design select', item.renderId,
           'stored colour=' + (saved.colorName || '(none)'),
           'stored size=' + (saved.sizeName || '(none)'),
           'selected colour=' + (selectedColour || '(none)'),
@@ -2648,7 +2660,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     function logRelatedSwatch(handler, event) {
       var kind = relatedSwatchKind(event);
       if (!kind) return '';
-      console.log(TAG, 'related ' + kind, 'handler=' + handler, 'defaultPrevented=' + !!(event && event.defaultPrevented));
+      myPetLog(TAG, 'related ' + kind, 'handler=' + handler, 'defaultPrevented=' + !!(event && event.defaultPrevented));
       return kind;
     }
 
@@ -2687,7 +2699,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var stored = readStoredRender(shopifyProductId);
       if (!stored || !stored.renderId) return;
       if (stored.reverted || revertedFlagOn(shopifyProductId)) {
-        console.log(TAG, 'restore skipped, reverted');
+        myPetLog(TAG, 'restore skipped, reverted');
         state.reverted = true;
         state.renderId = stored.renderId;
         state.jobId = stored.jobId || null;
@@ -2936,7 +2948,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
         var restoreColor = selectRestoredVariant(stored, res);
         var activationUrl = showResolvedDesign(res, restoreColor);
-        console.log(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
+        myPetLog(TAG, 'restore activate: effectiveColor=' + (restoreColor || '(unknown)') +
           ' fromSession=' + !!fromCache);
         if (previewMode !== 'inline') {
           finishRestore(true);
@@ -2989,7 +3001,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
       } catch (e) {}
       if (!urls.length) return;
-      console.log(TAG, 'design colours preloaded', urls.length);
+      myPetLog(TAG, 'design colours preloaded', urls.length);
       for (var i = 0; i < urls.length; i++) decodeHeroUrl(urls[i]);
     }
 
@@ -3003,7 +3015,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         for (var i = 0; i < keys.length; i++) {
           var name = keys[i];
           var tail = String(urlsByColor[name] || '').split('?')[0].split('/').pop();
-          console.log(TAG, label + ' map:', name, '→', tail);
+          myPetLog(TAG, label + ' map:', name, '→', tail);
         }
       } catch (e) {}
     }
@@ -3023,14 +3035,14 @@ console.log('[My Pet] script build=plus-beside loaded');
         attempts++;
         var ok = activateInlinePreview(url);
         if (ok) {
-          console.log(TAG, 'inline activate: success on attempt', attempts);
+          myPetLog(TAG, 'inline activate: success on attempt', attempts);
           return;
         }
         if (attempts >= MAX) {
           console.warn(TAG, 'inline activate: hero not found after', attempts, 'attempts — giving up');
           return;
         }
-        console.log(TAG, 'inline activate: hero not found, retrying in 500ms (attempt', attempts, 'of', MAX, ')');
+        myPetLog(TAG, 'inline activate: hero not found, retrying in 500ms (attempt', attempts, 'of', MAX, ')');
         setTimeout(tryOnce, 500);
       }
       tryOnce();
@@ -3244,7 +3256,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (!img.__appaiSkipLogged) {
           img.__appaiSkipLogged = true;
           var why = banned ? 'related/cart/quick-add' : (otherSection ? 'other product section' : 'not in main gallery');
-          console.log(TAG, 'skip img outside main gallery', why, String(img.getAttribute('alt') || img.className || '').slice(0, 60));
+          myPetLog(TAG, 'skip img outside main gallery', why, String(img.getAttribute('alt') || img.className || '').slice(0, 60));
         }
         return false;
       }
@@ -3270,7 +3282,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         state.prefetchCtrl = null;
       }
       abortShadowFetches();
-      console.log(TAG, 'render generation', state.renderGeneration, reason || '');
+      myPetLog(TAG, 'render generation', state.renderGeneration, reason || '');
       return state.renderGeneration;
     }
 
@@ -3284,7 +3296,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     function logColourMap(reason) {
       var keys = [];
       try { keys = Object.keys(state.previewUrlByColor || {}); } catch (e) {}
-      console.log(TAG, 'colour map', reason || '', keys.join(', ') || '(empty)');
+      myPetLog(TAG, 'colour map', reason || '', keys.join(', ') || '(empty)');
     }
 
     function findVisibleHeroImg() {
@@ -3698,12 +3710,12 @@ console.log('[My Pet] script build=plus-beside loaded');
       var guard = state.inlineHero;
       var visible = findVisibleHeroImg();
       var active = findActiveSlideImg();
-      console.log(TAG, 'hero-assert', reason,
+      myPetLog(TAG, 'hero-assert', reason,
         'colour=' + (colorName || '?'),
         'expected=' + urlTail(expectedUrl));
-      console.log(TAG, '  guard', describeImg(guard));
-      console.log(TAG, '  visible', describeImg(visible), 'sameAsGuard=' + (visible === guard));
-      console.log(TAG, '  activeSlide', describeImg(active),
+      myPetLog(TAG, '  guard', describeImg(guard));
+      myPetLog(TAG, '  visible', describeImg(visible), 'sameAsGuard=' + (visible === guard));
+      myPetLog(TAG, '  activeSlide', describeImg(active),
         'sameAsGuard=' + (active === guard),
         'sameAsVisible=' + (active === visible));
     }
@@ -3726,7 +3738,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       state.heroAssertHits = kept;
       if (same >= 3) {
         state.heroAssertStop = { id: id, t: now, colour: colour || '' };
-        console.log(TAG, 'hero-assert loop broken colour=' + (colour || ''));
+        myPetLog(TAG, 'hero-assert loop broken colour=' + (colour || ''));
         return true;
       }
       return false;
@@ -4028,7 +4040,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (!state.inlineGalleryObserver) installGalleryGuard();
       installProductMediaObserver();
       installInlineATCIntercept();
-      console.log(TAG, 'design transition start render=' + renderId);
+      myPetLog(TAG, 'design transition start render=' + renderId);
       clearTimeout(state.designTransition.hardTimer);
       state.designTransition.hardTimer = setTimeout(function () {
         var live = state.designTransition;
@@ -4084,7 +4096,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       t.swapped = true;
       clearTimeout(t.fallbackTimer);
       clearTimeout(t.swapTimer);
-      console.log(TAG, 'theme re-render settled');
+      myPetLog(TAG, 'theme re-render settled');
       t.allowSwap = true;
       try { swapVariantSlides(map); }
       finally { t.allowSwap = false; }
@@ -4123,7 +4135,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           live.matchedAt = 0;
           if (!live.holdLogged) {
             live.holdLogged = true;
-            console.log(TAG, 'cover waiting reason=' + coverWaitDetail(live), 'elapsedMs=' + (Date.now() - live.startedAt));
+            myPetLog(TAG, 'cover waiting reason=' + coverWaitDetail(live), 'elapsedMs=' + (Date.now() - live.startedAt));
           }
         }
         setTimeout(tick, 60);
@@ -4152,7 +4164,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (!capped && t.url && !heroReady(heroNow, t.url)) {
         if (!t.holdLogged) {
           t.holdLogged = true;
-          console.log(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
+          myPetLog(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
         }
         t.swapped = false;
         t.fallbackDue = true;
@@ -4160,7 +4172,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         return;
       }
       if (capped && t.url && !heroReady(heroNow, t.url)) {
-        console.log(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
+        myPetLog(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
       }
       if (!t.swapped && state.previewUrlByColor && t.url) {
         t.allowSwap = true;
@@ -4176,7 +4188,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       state.designTransition = null;
       state.designSwitchColour = null;
       state.designSwitchSize = null;
-      console.log(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
+      myPetLog(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
       var hero = resolveActiveHero(switchColour);
       if (hero && state.inlineApplied && state.renderId) {
         state.inlineHero = hero;
@@ -4233,7 +4245,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       }
       var host = mediaHoldContainer(hero);
       if (!url || !host) {
-        console.log(TAG, 'hold on skipped colour=' + (colorName || '?'));
+        myPetLog(TAG, 'hold on skipped colour=' + (colorName || '?'));
         return;
       }
       if (!state.swapMaskStarted) state.swapMaskStarted = Date.now();
@@ -4259,7 +4271,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       host.style.backgroundSize = (fit === 'contain' || fit === 'scale-down') ? 'contain' : (fit === 'fill' ? '100% 100%' : 'cover');
       host.style.backgroundPosition = objectPosition || 'center';
       host.style.backgroundRepeat = 'no-repeat';
-      console.log(TAG, 'hold on colour=' + (colorName || '?'));
+      myPetLog(TAG, 'hold on colour=' + (colorName || '?'));
     }
 
     function clearHoldBackground(why, colorName) {
@@ -4274,7 +4286,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       state.holdBgSaved = null;
       state.holdOldHero = null;
       state.swapMaskStarted = 0;
-      if (why) console.log(TAG, 'hold off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
+      if (why) myPetLog(TAG, 'hold off reason=' + why, 'elapsedMs=' + elapsed, 'colour=' + (colorName || '?'));
     }
 
     function previewUrlForColour(colorName) {
@@ -4427,7 +4439,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (!state.holdStockLogged) {
           state.holdStockLogged = true;
           var elapsed = state.swapMaskStarted ? (Date.now() - state.swapMaskStarted) : 0;
-          console.log(TAG, 'hold holding reason=' + (why || 'stock') + ' hero=stock', 'elapsedMs=' + elapsed, 'colour=' + (colour || ''));
+          myPetLog(TAG, 'hold holding reason=' + (why || 'stock') + ' hero=stock', 'elapsedMs=' + elapsed, 'colour=' + (colour || ''));
         }
         if (state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
           try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
@@ -4474,7 +4486,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (Date.now() - started >= 6000) {
           if (!state.holdStockLogged) {
             state.holdStockLogged = true;
-            console.log(TAG, 'hold holding reason=timeout hero=stock', 'elapsedMs=' + (Date.now() - started), 'colour=' + (colour || ''));
+            myPetLog(TAG, 'hold holding reason=timeout hero=stock', 'elapsedMs=' + (Date.now() - started), 'colour=' + (colour || ''));
           }
           if (state.previewUrlByColor && Object.keys(state.previewUrlByColor).length) {
             try { swapVariantSlides(state.previewUrlByColor); } catch (e) {}
@@ -4574,7 +4586,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         attributeFilter: ['src', 'srcset'],
       });
       state.productMediaObserver = observer;
-      console.log(TAG, 'product-media observer watching',
+      myPetLog(TAG, 'product-media observer watching',
         container.tagName ? String(container.tagName).toLowerCase() : '?');
     }
 
@@ -4669,7 +4681,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var key = String(staleSeq || 0) + '>' + now.seq + ':' + (now.colour || '');
       if (state.colourRaceLogged === key) return;
       state.colourRaceLogged = key;
-      console.log(
+      myPetLog(
         TAG,
         'colour race guard stale=' + (staleSeq || 0) +
         ' current=' + now.seq +
@@ -4684,13 +4696,13 @@ console.log('[My Pet] script build=plus-beside loaded');
       var t = Math.round(now - tl.t0);
       var line = label + (extra ? ' ' + extra : '');
       tl.events.push('+' + t + 'ms ' + line);
-      console.log(TAG, 'colour timeline +' + t + 'ms', line);
+      myPetLog(TAG, 'colour timeline +' + t + 'ms', line);
     }
 
     function logColourTimeline(why) {
       var tl = state.colourTimeline;
       if (!tl) return;
-      console.log(TAG, 'colour timeline summary', why || '', tl.events.join(' | '));
+      myPetLog(TAG, 'colour timeline summary', why || '', tl.events.join(' | '));
     }
 
     function colourFetchInteresting(url) {
@@ -4796,7 +4808,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         var main = null;
         try { main = mainMediaGallery(); } catch (e) {}
         if (customDesignActive() && main && this === main) {
-          console.log(TAG, 'media gallery replacement skipped');
+          myPetLog(TAG, 'media gallery replacement skipped');
           return;
         }
         return orig.apply(this, arguments);
@@ -4883,14 +4895,14 @@ console.log('[My Pet] script build=plus-beside loaded');
           loggedVisible = true;
           var ms = Date.now() - started;
           colourMark('currentSrc stayed', 'node=' + nodeStamp(hero));
-          console.log(TAG, 'colour swap click→visible ms=' + ms, 'colour=' + (colorName || ''), 'node=' + nodeStamp(hero));
+          myPetLog(TAG, 'colour swap click→visible ms=' + ms, 'colour=' + (colorName || ''), 'node=' + nodeStamp(hero));
           logColourTimeline('stayed');
         }
         if (Date.now() - started < 6000) {
           if (window.requestAnimationFrame) requestAnimationFrame(tick);
           else setTimeout(tick, 32);
         } else if (!loggedVisible) {
-          console.log(TAG, 'colour swap click→visible timeout', 'colour=' + (colorName || ''), 'currentSrc=' + urlTail(shown), describeImg(hero));
+          myPetLog(TAG, 'colour swap click→visible timeout', 'colour=' + (colorName || ''), 'currentSrc=' + urlTail(shown), describeImg(hero));
           logColourTimeline('timeout');
         } else {
           logColourTimeline('end');
@@ -5316,7 +5328,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var t = event.target;
       var label = '';
       try { label = (t && t.getAttribute && (t.getAttribute('aria-label') || t.tagName)) || ''; } catch (e) {}
-      console.log(TAG, 'capture', name, 'surface=' + surface, 'target=' + (t && t.tagName), String(label).slice(0, 80));
+      myPetLog(TAG, 'capture', name, 'surface=' + surface, 'target=' + (t && t.tagName), String(label).slice(0, 80));
       return surface;
     }
 
@@ -5343,7 +5355,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (isZoom || zoomOpen) {
           var zoomColour = colourForThumbButton(btn);
           if (!zoomColour) return;
-          console.log(TAG, 'zoom thumb', zoomColour, 'stay in zoom');
+          myPetLog(TAG, 'zoom thumb', zoomColour, 'stay in zoom');
           state.zoomSlideColour = zoomColour;
           var zoom = mainZoomDialog();
           if (zoom) swapZoomDialog(zoom);
@@ -5373,7 +5385,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           try { swatch = readSwatchColor(root) || ''; } catch (e) {}
           var hero = findVisibleHeroImg() || state.inlineHero;
           var heroSrc = hero ? (hero.currentSrc || hero.getAttribute('src') || '') : '';
-          console.log(TAG, 'thumb click',
+          myPetLog(TAG, 'thumb click',
             'media=' + (mediaId || ''),
             'index=' + index,
             'colour=' + (colour || ''),
@@ -5431,7 +5443,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       }
       if (!state.zoomOpenLogged) {
         state.zoomOpenLogged = true;
-        console.log(TAG, 'zoom open', zoomSelector(target), reason || '');
+        myPetLog(TAG, 'zoom open', zoomSelector(target), reason || '');
       }
       swapZoomDialog(target);
     }
@@ -5454,7 +5466,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           state.zoomWasOpen = true;
           state.zoomOpenColour = currentInlineColour();
           state.zoomOpenLogged = true;
-          console.log(TAG, 'zoom open', zoomSelector(live), 'mutation');
+          myPetLog(TAG, 'zoom open', zoomSelector(live), 'mutation');
           if (!state.mediaWriting) swapZoomDialog(live);
           return;
         }
@@ -5651,7 +5663,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             var one = {};
             one[name] = res.previewUrl;
             swapVariantSlides(one);
-            console.log(TAG, 'colour map arrived', name);
+            myPetLog(TAG, 'colour map arrived', name);
           }).catch(function () {});
         })(missing[m]);
       }
@@ -5722,7 +5734,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
         changed += matched;
         if (matched) {
-          console.log(TAG, 'slide swap:', color, '→ media', mediaId,
+          myPetLog(TAG, 'slide swap:', color, '→ media', mediaId,
             '(' + matched + ' nodes swapped, incl. thumbnail)');
         }
       }
@@ -5730,7 +5742,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       changed += swapLooseThumbnails() || 0;
       holdMissingColours();
       if (changed) {
-        console.log(TAG, 'slide swap: total nodes swapped =', changed, 'colours in map =', Object.keys(urlsByColor).length);
+        myPetLog(TAG, 'slide swap: total nodes swapped =', changed, 'colours in map =', Object.keys(urlsByColor).length);
       }
       } finally {
         resumeMediaObservers(state.inlineHero);
@@ -5798,7 +5810,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           : '(no class)';
         var visible = img.offsetParent !== null;
         var setTail = urlTail(url);
-        console.log(TAG, 'slide swap img:', color,
+        myPetLog(TAG, 'slide swap img:', color,
           'media=' + mediaId,
           'container=' + cls,
           'visible=' + visible,
@@ -5875,7 +5887,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         } catch (e) {}
       }
       state.inlineSlideStash = [];
-      console.log(TAG, 'slide revert: restored', restoredImgs, 'img(s) +', restoredSources, 'source(s)');
+      myPetLog(TAG, 'slide revert: restored', restoredImgs, 'img(s) +', restoredSources, 'source(s)');
     }
 
     /**
@@ -5906,7 +5918,7 @@ console.log('[My Pet] script build=plus-beside loaded');
      * next step (upload modal, save modal, or terminal message).
      */
     function tryAnotherPhoto(fromModalBody) {
-      console.log(TAG, 'Try another photo clicked', {
+      myPetLog(TAG, 'Try another photo clicked', {
         inline: state.inlineApplied,
         renderId: state.renderId ? state.renderId.slice(0, 8) : null,
         fromModal: !!fromModalBody,
@@ -5916,25 +5928,25 @@ console.log('[My Pet] script build=plus-beside loaded');
         var limit = (cap && typeof cap.perListingLimit === 'number') ? cap.perListingLimit : Number.POSITIVE_INFINITY;
         var bonusApplied = !!(cap && cap.emailBonusApplied);
         var atCap = !cap || cap.allowed === false || count >= limit;
-        console.log(TAG, 'Try another photo cap decision', {
+        myPetLog(TAG, 'Try another photo cap decision', {
           count: count, limit: limit, bonusApplied: bonusApplied, atCap: atCap,
         });
 
         if (!atCap) {
-          console.log(TAG, 'Try another photo → openUploadStep');
+          myPetLog(TAG, 'Try another photo → openUploadStep');
           closeIfModalBody(fromModalBody);
           openUploadStep();
           return;
         }
 
         if (!bonusApplied) {
-          console.log(TAG, 'Try another photo at cap, no bonus → save modal');
+          myPetLog(TAG, 'Try another photo at cap, no bonus → save modal');
           closeIfModalBody(fromModalBody);
           maybePromptEmailSave({ force: true, trigger: 'try-another-photo' });
           return;
         }
 
-        console.log(TAG, 'Try another photo at cap, bonus already applied → terminal message');
+        myPetLog(TAG, 'Try another photo at cap, bonus already applied → terminal message');
         showCapTerminalMessage(fromModalBody, cap);
       });
     }
@@ -5968,12 +5980,12 @@ console.log('[My Pet] script build=plus-beside loaded');
 
     function activateInlinePreview(previewUrl) {
       if (state.reverted || revertedFlagOn(shopifyProductId)) {
-        console.log(TAG, 'inline activate skipped, reverted');
+        myPetLog(TAG, 'inline activate skipped, reverted');
         return false;
       }
       var hero = findVisibleHeroImg() || findProductHeroImg();
       if (!hero) {
-        console.log(TAG, 'inline activate: no hero found (gallery may not be rendered yet)');
+        myPetLog(TAG, 'inline activate: no hero found (gallery may not be rendered yet)');
         return false;
       }
       state.inlineHero = hero;
@@ -6009,7 +6021,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (state.selectionOnce === (state.renderGeneration || 0)) consumeSelectionSwap(state.previewUrlByColor);
       else swapVariantSlides(state.previewUrlByColor);
       var tail = String(effectiveUrl || '').split('?')[0].split('/').pop();
-      console.log(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
+      myPetLog(TAG, 'inline activate: hero swapped colour=' + (effectiveColor || '(unknown)') +
         ' urlTail=' + tail +
         (effectiveUrl !== previewUrl ? ' (overrode passed url with effective-colour cache)' : ''));
       // MutationObserver install/refresh on EVERY activation — even when
@@ -6041,7 +6053,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       showRevertLink();
       paintPlus();
       if (state.inlineAttached) {
-        console.log(TAG, 'inline activate: observers re-installed (listeners already attached from earlier activation)');
+        myPetLog(TAG, 'inline activate: observers re-installed (listeners already attached from earlier activation)');
         scheduleShadowWarm('activate');
         return true;
       }
@@ -6050,7 +6062,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       installInlineATCIntercept();
       installInlineFormPollFallback();
       installSwatchPreempt();
-      console.log(TAG, 'inline activate: full install complete (hero+gallery observers, variant listeners, ATC intercept, form poll fallback)');
+      myPetLog(TAG, 'inline activate: full install complete (hero+gallery observers, variant listeners, ATC intercept, form poll fallback)');
       scheduleShadowWarm('activate');
       return true;
     }
@@ -6163,8 +6175,8 @@ console.log('[My Pet] script build=plus-beside loaded');
 
     function revertToOriginalDesign() {
       if (state.reverted && !state.inlineApplied) return;
-      console.log(TAG, 'revert');
-      if (state.shadowWarmTimer) console.log(TAG, 'warm debounce', 'reason=revert', 'cancelled=revert');
+      myPetLog(TAG, 'revert');
+      if (state.shadowWarmTimer) myPetLog(TAG, 'warm debounce', 'reason=revert', 'cancelled=revert');
       clearTimeout(state.shadowWarmTimer);
       state.shadowWarmTimer = null;
       restoreStampedForm();
@@ -6236,7 +6248,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (!live || heroStillCustom(live)) {
         console.warn(TAG, 'revert: no live hero or no original-src stash to restore from');
       } else {
-        console.log(TAG, 'revert: hero restored', srcTail(live.currentSrc || live.getAttribute('src') || ''));
+        myPetLog(TAG, 'revert: hero restored', srcTail(live.currentSrc || live.getAttribute('src') || ''));
       }
       // 3. Flip state flags — ATC intercept + variant listeners + observers
       //    all gate on inlineApplied/inlineHero.
@@ -6366,7 +6378,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (expected && srcAlready(hero, expected) && !hero.getAttribute('srcset') && !hero.getAttribute('sizes')) return;
         if (expected) {
           reassertColourPreview('guard', colorName, expected);
-          console.log(TAG, 'inline hero guard re-asserted', colorName);
+          myPetLog(TAG, 'inline hero guard re-asserted', colorName);
         } else if (colorName && state.previewUrl) {
           // Colour not pre-composited — stop the stock flash immediately with
           // last-known preview, then kick off compose in the background.
@@ -6446,7 +6458,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           if (expected) reassertColourPreview('node-replaced', colorName, expected);
           installHeroGuard(fresh);
           if (!(state.colourPaint && state.colourPaint.url)) scheduleGallerySync('node-replaced');
-          console.log(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
+          myPetLog(TAG, 'inline hero node replaced (poll) — re-installed guard, colour=' + (colorName || '(unknown)'));
         }
       }, 1500);
     }
@@ -6512,7 +6524,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         }
       }
       if (!container) {
-        console.log(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
+        myPetLog(TAG, 'gallery guard: no container matched, relying on hero observer + backup poll');
         return;
       }
       var watch = stableGalleryHost() || container;
@@ -6534,7 +6546,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           scheduleGallerySync('section-load');
         });
       }
-      console.log(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
+      myPetLog(TAG, 'gallery guard: watching', watch.tagName.toLowerCase() + (watch.className ? '.' + String(watch.className).split(' ').join('.') : ''));
       var observer = new MutationObserver(function (mutations) {
         if (state.mediaWriting) return;
         if (designTransitionActive()) {
@@ -6649,11 +6661,11 @@ console.log('[My Pet] script build=plus-beside loaded');
         // STAGING-98 — log every entry + every bail reason so silent fails
         // are visible in the console. Noise budget: only fires on variant
         // change events, not every microtask.
-        if (!state.inlineApplied) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineApplied=false'); return; }
-        if (!state.inlineHero) { console.log(TAG, 'inline variant evt:', evtType, '→ bail inlineHero=null'); return; }
-        if (!state.renderId) { console.log(TAG, 'inline variant evt:', evtType, '→ bail renderId=null'); return; }
+        if (!state.inlineApplied) { myPetLog(TAG, 'inline variant evt:', evtType, '→ bail inlineApplied=false'); return; }
+        if (!state.inlineHero) { myPetLog(TAG, 'inline variant evt:', evtType, '→ bail inlineHero=null'); return; }
+        if (!state.renderId) { myPetLog(TAG, 'inline variant evt:', evtType, '→ bail renderId=null'); return; }
         if (designTransitionActive()) {
-          console.log(TAG, 'inline variant evt:', evtType, '→ design transition owns this change');
+          myPetLog(TAG, 'inline variant evt:', evtType, '→ design transition owns this change');
           return;
         }
         var info = currentVariantInfo(root);
@@ -6666,19 +6678,19 @@ console.log('[My Pet] script build=plus-beside loaded');
           console.warn(TAG, 'inline variant evt:', evtType, '→ COLOUR MISMATCH form=' + info.colorName + ' swatch=' + swColor + ' — using swatch');
           info.colorName = swColor;
         } else if (swColor && !info.colorName) {
-          console.log(TAG, 'inline variant evt:', evtType, '→ form had no colorName, using swatch', swColor);
+          myPetLog(TAG, 'inline variant evt:', evtType, '→ form had no colorName, using swatch', swColor);
           info.colorName = swColor;
         }
         var liveEvt = liveColourChoice();
-        if (!info.colorName && !liveEvt.colour) { console.log(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
+        if (!info.colorName && !liveEvt.colour) { myPetLog(TAG, 'inline variant evt:', evtType, '→ bail no colorName on variant or swatch'); return; }
         var chosen = liveEvt.colour || info.colorName;
         var expected = liveEvt.url || state.previewUrlByColor[chosen];
         if (expected) {
-          console.log(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', chosen);
+          myPetLog(TAG, 'inline variant evt:', evtType, '→ CLIENT CACHE HIT', chosen);
           state.previewUrl = expected;
           reassertColourPreview('variant-evt', chosen, expected);
         } else {
-          console.log(TAG, 'inline variant evt:', evtType, '→ no cached URL for', chosen, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
+          myPetLog(TAG, 'inline variant evt:', evtType, '→ no cached URL for', chosen, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(chosen);
         }
         if (!(state.colourPaint && namesMatch(state.colourPaint.colour, chosen))) {
@@ -6718,7 +6730,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           })() +
           ' formCount=' + document.querySelectorAll('form[action*="/cart/add"]').length
         : '(no form found)';
-      console.log(TAG, 'inline form poll install: watching', formDescriptor, 'initialVariantId=' + initialVid,
+      myPetLog(TAG, 'inline form poll install: watching', formDescriptor, 'initialVariantId=' + initialVid,
         'swatchColor=' + (readSwatchColor(root) || '(none)'),
         'variantColor=' + (currentVariantInfo(root).colorName || '(none)'));
       var last = currentVariantInfo(root);
@@ -6769,7 +6781,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (designTransitionActive()) {
           last = now; return;
         }
-        console.log(TAG, 'inline form poll: colour changed', previousColour, '→', effectiveColor,
+        myPetLog(TAG, 'inline form poll: colour changed', previousColour, '→', effectiveColor,
           '(formId=' + now.variantId + ' formColor=' + (now.colorName || '(none)') +
           ' swatch=' + (swColor || '(none)') + ')');
         last = now;
@@ -6777,11 +6789,11 @@ console.log('[My Pet] script build=plus-beside loaded');
         var paintColour = liveForm.colour || effectiveColor;
         var expected = liveForm.url || state.previewUrlByColor[paintColour];
         if (expected) {
-          console.log(TAG, 'inline form poll: CLIENT CACHE HIT', paintColour);
+          myPetLog(TAG, 'inline form poll: CLIENT CACHE HIT', paintColour);
           state.previewUrl = expected;
           reassertColourPreview('form-poll', paintColour, expected);
         } else {
-          console.log(TAG, 'inline form poll: no cached URL for', paintColour, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
+          myPetLog(TAG, 'inline form poll: no cached URL for', paintColour, 'available:', Object.keys(state.previewUrlByColor || {}), '— recomposite');
           swapInlineColor(paintColour);
         }
         if (!(state.colourPaint && namesMatch(state.colourPaint.colour, paintColour))) {
@@ -6803,7 +6815,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (!(state.colourPaint && namesMatch(state.colourPaint.colour, colorName))) {
           scheduleGallerySync('colour');
         }
-        console.log(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
+        myPetLog(TAG, 'inline colour swap CLIENT CACHE HIT', colorName);
         return;
       }
       var composeGen = state.renderGeneration || 0;
@@ -6914,7 +6926,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var destRect = null;
       try { destRect = dest && dest.getBoundingClientRect(); } catch (e2) {}
       if (!hero || !rect || rect.width < 2 || rect.height < 2 || !dest || !destRect || destRect.width < 2) {
-        console.log(TAG, 'fly mark skipped', 'hero=' + !!hero, 'dest=' + !!dest);
+        myPetLog(TAG, 'fly mark skipped', 'hero=' + !!hero, 'dest=' + !!dest);
         return;
       }
       state.flyAt = now;
@@ -6958,7 +6970,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       }
       flyer.addEventListener('transitionend', removeFlyer);
       setTimeout(removeFlyer, 1200);
-      console.log(TAG, 'fly mark', 'fromHero', Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2), 'w=' + Math.round(rect.width));
+      myPetLog(TAG, 'fly mark', 'fromHero', Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2), 'w=' + Math.round(rect.width));
     }
 
     function setFormProperty(form, name, value) {
@@ -7189,7 +7201,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     }
 
     function logShadowCreate(renderId, sel, reused) {
-      console.log(
+      myPetLog(
         TAG,
         'shadow create-on-atc',
         'render=' + renderId,
@@ -7241,7 +7253,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       function logCreate(reused) {
         var ms = Date.now() - started;
         state.lastCreateLog = { ms: ms, reused: !!reused, colour: sel.colour || '', size: sel.sizeName || '' };
-        console.log(
+        myPetLog(
           TAG,
           'create ms=' + ms,
           'reused=' + (reused ? 'true' : 'false'),
@@ -7262,7 +7274,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         state.shadowByKey = state.shadowByKey || {};
         state.shadowByKey[key] = remembered;
         writeShadowStore(sel, remembered);
-        console.log(TAG, 'reuse source=session');
+        myPetLog(TAG, 'reuse source=session');
         logCreate(true);
         return Promise.resolve(remembered);
       }
@@ -7299,8 +7311,8 @@ console.log('[My Pet] script build=plus-beside loaded');
           state.shadowByKey = state.shadowByKey || {};
           state.shadowByKey[key] = entry;
           writeShadowStore(sel, entry);
-          if (entry.reused) console.log(TAG, 'reuse source=server');
-          if (res.steps) console.log(TAG, 'resolve steps', res.steps);
+          if (entry.reused) myPetLog(TAG, 'reuse source=server');
+          if (res.steps) myPetLog(TAG, 'resolve steps', res.steps);
           logCreate(entry.reused);
           return entry;
         });
@@ -7332,7 +7344,7 @@ console.log('[My Pet] script build=plus-beside loaded');
     // One combo only: the colour and size still selected 2s later.
     // Passing through a colour resets the timer and creates nothing.
     function logWarmDebounce(reason, outcome, sel) {
-      console.log(
+      myPetLog(
         TAG,
         'warm debounce',
         'reason=' + (reason || ''),
@@ -7394,7 +7406,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           return;
         }
         var started = Date.now();
-        console.log(TAG, 'warm start', 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reason=' + (reason || ''));
+        myPetLog(TAG, 'warm start', 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reason=' + (reason || ''));
         prepareShadowFor(now, 'warm').then(function (entry) {
           var ms = Date.now() - started;
           state.lastWarmLog = {
@@ -7403,7 +7415,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             size: now.sizeName || '',
             reused: !!(entry && entry.reused),
           };
-          console.log(
+          myPetLog(
             TAG,
             'warm end',
             'ms=' + ms,
@@ -7412,7 +7424,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             'reused=' + (entry && entry.reused ? 'true' : 'false'),
           );
         }).catch(function () {
-          console.log(TAG, 'warm end', 'ms=' + (Date.now() - started), 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reused=false');
+          myPetLog(TAG, 'warm end', 'ms=' + (Date.now() - started), 'colour=' + (now.colour || ''), 'size=' + (now.sizeName || ''), 'reused=false');
         });
       }, 2000);
     }
@@ -7583,12 +7595,12 @@ console.log('[My Pet] script build=plus-beside loaded');
         if (!mock || body == null) return body;
         if (typeof FormData !== 'undefined' && body instanceof FormData) {
           if (!body.get('properties[_mockup_url]')) body.append('properties[_mockup_url]', mock);
-          console.log(TAG, 'atc formdata properties[_mockup_url]=' + (body.get('properties[_mockup_url]') ? 'yes' : 'no'));
+          myPetLog(TAG, 'atc formdata properties[_mockup_url]=' + (body.get('properties[_mockup_url]') ? 'yes' : 'no'));
           return body;
         }
         if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
           if (!body.get('properties[_mockup_url]')) body.append('properties[_mockup_url]', mock);
-          console.log(TAG, 'atc formdata properties[_mockup_url]=yes');
+          myPetLog(TAG, 'atc formdata properties[_mockup_url]=yes');
           return body;
         }
         if (typeof body === 'string') {
@@ -7601,7 +7613,7 @@ console.log('[My Pet] script build=plus-beside loaded');
               rows[i].properties = rows[i].properties || {};
               if (!rows[i].properties._mockup_url) rows[i].properties._mockup_url = mock;
             }
-            console.log(TAG, 'atc formdata properties[_mockup_url]=yes');
+            myPetLog(TAG, 'atc formdata properties[_mockup_url]=yes');
             return JSON.stringify(parsed);
           } catch (e) {}
         }
@@ -7658,7 +7670,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           var nextId = String(entry.shadowId);
           if (nextId === oldId) return null;
           state.shadowRetryVariant = nextId;
-          console.log(TAG, 'reuse stale variant=' + oldId + ' → re-resolved=' + nextId);
+          myPetLog(TAG, 'reuse stale variant=' + oldId + ' → re-resolved=' + nextId);
           rememberSubmittedMockup(nextId, (entry.properties && entry.properties._mockup_url) || entry.mockupUrl || '');
           if (snap.kind === 'json') {
             var body = JSON.parse(JSON.stringify(snap.json));
@@ -7768,7 +7780,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         state.atcClick.warmSize = warm.size;
         state.atcClick.warmReused = warm.reused;
       }
-      console.log(
+      myPetLog(
         TAG,
         'atc once',
         'click=' + state.atcClick.id,
@@ -7789,10 +7801,10 @@ console.log('[My Pet] script build=plus-beside loaded');
       function reprint() {
         if (!click) return;
         // Clear-Site-Data wiped the live lines. This is a reprint, not a second add.
-        console.log(TAG, 'atc path=replay', 'click=' + click.id, 'mockup=' + (click.mockup ? 'yes' : 'no'));
-        console.log(TAG, 'atc _mockup_url=' + (click.mockupUrl || ''));
-        console.log(TAG, 'atc hold', 'catalog=' + click.catalogId, 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
-        console.log(
+        myPetLog(TAG, 'atc path=replay', 'click=' + click.id, 'mockup=' + (click.mockup ? 'yes' : 'no'));
+        myPetLog(TAG, 'atc _mockup_url=' + (click.mockupUrl || ''));
+        myPetLog(TAG, 'atc hold', 'catalog=' + click.catalogId, 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
+        myPetLog(
           TAG,
           'shadow create-on-atc',
           'render=' + (click.renderId || ''),
@@ -7800,15 +7812,15 @@ console.log('[My Pet] script build=plus-beside loaded');
           'size=' + (click.sizeName || ''),
           'reused=' + (click.reused ? 'true' : 'false'),
         );
-        console.log(TAG, 'atc submit', 'shadow=yes', 'count=' + (click.submits || 1));
+        myPetLog(TAG, 'atc submit', 'shadow=yes', 'count=' + (click.submits || 1));
         if (click.warmMs != null) {
-          console.log(TAG, 'warm start', 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''));
-          console.log(TAG, 'warm end', 'ms=' + click.warmMs, 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''), 'reused=' + (click.warmReused ? 'true' : 'false'));
+          myPetLog(TAG, 'warm start', 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''));
+          myPetLog(TAG, 'warm end', 'ms=' + click.warmMs, 'colour=' + (click.warmColour || ''), 'size=' + (click.warmSize || ''), 'reused=' + (click.warmReused ? 'true' : 'false'));
         }
         if (click.createMs != null) {
-          console.log(TAG, 'create ms=' + click.createMs, 'reused=' + (click.createReused ? 'true' : 'false'), 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
+          myPetLog(TAG, 'create ms=' + click.createMs, 'reused=' + (click.createReused ? 'true' : 'false'), 'colour=' + (click.colour || ''), 'size=' + (click.sizeName || ''));
         }
-        if (click.elapsedMs != null) console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
+        if (click.elapsedMs != null) myPetLog(TAG, 'atc click→submit ms=' + click.elapsedMs);
       }
       noteCustomAddReturned();
       setTimeout(reprint, 1500);
@@ -7822,13 +7834,13 @@ console.log('[My Pet] script build=plus-beside loaded');
       stampForm(target, entry);
       var idInput = target.querySelector('input[name="id"], select[name="id"]');
       if (!idInput || String(idInput.value) !== String(entry.shadowId) || String(entry.shadowId) === String(entry.catalogId)) {
-        console.log(TAG, 'atc submit blocked', 'reason=stamp-missed');
+        myPetLog(TAG, 'atc submit blocked', 'reason=stamp-missed');
         throw new Error('Could not add this design to cart.');
       }
       noteAtcClick(entry, sel);
       state.atcRelease = true;
       var mockInput = target.querySelector('input[name="properties[_mockup_url]"]');
-      console.log(
+      myPetLog(
         TAG,
         'atc form properties[_mockup_url]=' + (mockInput && String(mockInput.value || '').indexOf('https://') === 0 ? 'yes' : 'no'),
       );
@@ -7888,7 +7900,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       state.cartAddedNoted = id;
       state.cartAddedNotedAt = Date.now();
       postJson('my-pet/cart-added', { variantId: id }).then(function (res) {
-        if (res && res.ok) console.log(TAG, 'cart-added variant=' + id + ' expiry=7d');
+        if (res && res.ok) myPetLog(TAG, 'cart-added variant=' + id + ' expiry=7d');
         else console.warn(TAG, 'cart-added failed variant=' + id);
       }, function () {
         console.warn(TAG, 'cart-added failed variant=' + id);
@@ -7902,8 +7914,8 @@ console.log('[My Pet] script build=plus-beside loaded');
       var mockup = withMockupProperty(entry, colour, sizeName);
       var sentMockup = (entry.properties && entry.properties._mockup_url) || '';
       rememberSubmittedMockup(entry.shadowId, sentMockup);
-      console.log(TAG, 'atc path=' + path, 'mockup=' + (mockup ? 'yes' : 'no'), 'tail=' + srcTail(mockup));
-      console.log(TAG, 'atc _mockup_url=' + sentMockup);
+      myPetLog(TAG, 'atc path=' + path, 'mockup=' + (mockup ? 'yes' : 'no'), 'tail=' + srcTail(mockup));
+      myPetLog(TAG, 'atc _mockup_url=' + sentMockup);
       if (path === 'fetch') {
         return fallbackCartAdd({ variantId: entry.shadowId }, entry.properties).then(function () {
           noteShadowCartAdded(entry.shadowId);
@@ -8166,7 +8178,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       }
       if (reason === 'size') {
         var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - started);
-        console.log(TAG, 'swatch availability updated size=' + size + ' ms=' + ms);
+        myPetLog(TAG, 'swatch availability updated size=' + size + ' ms=' + ms);
       }
     }
 
@@ -8250,7 +8262,7 @@ console.log('[My Pet] script build=plus-beside loaded');
           e.preventDefault();
           e.stopPropagation();
           try { e.stopImmediatePropagation(); } catch (_) {}
-          console.log(TAG, 'atc blocked unavailable colour=' + (early.colour || '') + ' size=' + (early.sizeName || ''));
+          myPetLog(TAG, 'atc blocked unavailable colour=' + (early.colour || '') + ' size=' + (early.sizeName || ''));
           showComboToast();
           syncColourAvailability();
           return;
@@ -8276,13 +8288,13 @@ console.log('[My Pet] script build=plus-beside loaded');
             e.preventDefault();
             e.stopPropagation();
             try { e.stopImmediatePropagation(); } catch (_) {}
-            console.log(TAG, 'atc submit blocked', 'reason=catalog-variant');
+            myPetLog(TAG, 'atc submit blocked', 'reason=catalog-variant');
             return;
           }
           if (click.mockupUrl) setFormProperty(form, '_mockup_url', click.mockupUrl);
           click.submits += 1;
           click.elapsedMs = state.atcClickAt ? (Date.now() - state.atcClickAt) : 0;
-          console.log(
+          myPetLog(
             TAG,
             'atc submit',
             'click=' + click.id,
@@ -8290,7 +8302,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             'variant=' + submitted,
             'shadow=yes',
           );
-          console.log(TAG, 'atc click→submit ms=' + click.elapsedMs);
+          myPetLog(TAG, 'atc click→submit ms=' + click.elapsedMs);
           if (click.submits === 1) replayAtcLogs(click);
           var catalogId = click.catalogId;
           // Horizon reads the form in its own submit listener. Leave the
@@ -8303,7 +8315,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         e.preventDefault();
         e.stopPropagation();
         try { e.stopImmediatePropagation(); } catch (_) {}
-        console.log(TAG, 'atc submit blocked', 'reason=shadow-not-stamped');
+        myPetLog(TAG, 'atc submit blocked', 'reason=shadow-not-stamped');
         if (!state.atcBusy) holdAndSubmit(form);
       }, true);
     }
@@ -8314,14 +8326,14 @@ console.log('[My Pet] script build=plus-beside loaded');
       if (!sel.catalogId) {
         state.atcBusy = false;
         setPreparing(false);
-        console.log(TAG, 'atc blocked unavailable colour=' + (sel.colour || '') + ' size=' + (sel.sizeName || ''));
+        myPetLog(TAG, 'atc blocked unavailable colour=' + (sel.colour || '') + ' size=' + (sel.sizeName || ''));
         showComboToast();
         syncColourAvailability();
         return;
       }
       state.atcBusy = true;
       setPreparing(true);
-      console.log(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
+      myPetLog(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
       setTimeout(function () {
         prepareShadow('click')
           .then(function (entry) {
@@ -8450,7 +8462,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             state.previewUrlByColor = (genRes.previewUrlsByColor && typeof genRes.previewUrlsByColor === 'object')
               ? Object.assign({}, genRes.previewUrlsByColor)
               : {};
-            console.log(TAG, 'previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            myPetLog(TAG, 'previewUrlByColor populated', Object.keys(state.previewUrlByColor));
             // Queued (post-staging-90) — prime the HTTP cache for every
             // pre-composited colour the moment generate returns. First swatch
             // click per colour then becomes a <img>.src assignment that paints
@@ -8700,7 +8712,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         state.previewUrl = cached;
         clearLoadingState();
         if (status) status.textContent = '';
-        console.log(TAG, 'colour swap CLIENT CACHE HIT', colorName);
+        myPetLog(TAG, 'colour swap CLIENT CACHE HIT', colorName);
         return;
       }
 
@@ -8721,7 +8733,7 @@ console.log('[My Pet] script build=plus-beside loaded');
               assignImgSrc(img, res.previewUrl);
               clearLoadingState();
               if (status) status.textContent = '';
-              console.log(TAG, 'colour swap total', Date.now() - swapStarted, 'ms');
+              myPetLog(TAG, 'colour swap total', Date.now() - swapStarted, 'ms');
             };
             preload.onerror = function () {
               assignImgSrc(img, res.previewUrl);
@@ -8837,7 +8849,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       // isn't available" message if we come back empty.
       var exact = findExactVariant(root, state.swatchColor, state.swatchSize);
       if (!exact) {
-        console.log(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
+        myPetLog(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
         showComboToast();
         checkComboAvailable(body);
         return;
@@ -8850,7 +8862,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var modalSize = state.swatchSize || '';
       mockupForColour(modalColour)
         .then(function (localUrl) {
-          console.log(TAG, 'atc colour=' + modalColour, 'size=' + modalSize, 'mockupTail=' + srcTail(localUrl));
+          myPetLog(TAG, 'atc colour=' + modalColour, 'size=' + modalSize, 'mockupTail=' + srcTail(localUrl));
           return attemptResolveVariant(exactVariantId, 0, {
             colorName: modalColour,
             sizeName: modalSize,
@@ -8859,7 +8871,7 @@ console.log('[My Pet] script build=plus-beside loaded');
         })
         .then(function (res) {
           if (status) status.textContent = 'Adding to cart…';
-          console.log(TAG, 'atc sentTail=' + srcTail(res.previewUrl), 'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl));
+          myPetLog(TAG, 'atc sentTail=' + srcTail(res.previewUrl), 'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl));
           // Issue 10: line-item properties that (a) let appai-cart-images.js
           // recognise this as an AppAI line and swap the thumbnail to the
           // composite mockup, (b) tie the line back to generationJobs for the
@@ -9050,7 +9062,7 @@ console.log('[My Pet] script build=plus-beside loaded');
               if (leaveHref) {
                 writeStoredEmail(email);
                 markDismissed(renderIdAtOpen);
-                console.log(TAG, 'leave-guard saved');
+                myPetLog(TAG, 'leave-guard saved');
                 window.location.assign(leaveHref);
                 return;
               }
@@ -9080,7 +9092,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       var leaveBtn = modal.body.querySelector('[data-action="leave-anyway"]');
       if (leaveBtn && leaveHref) {
         leaveBtn.addEventListener('click', function () {
-          console.log(TAG, 'leave-guard left');
+          myPetLog(TAG, 'leave-guard left');
           state.emailModalOpen = false;
           modal.overlay.remove();
           window.location.assign(leaveHref);
@@ -9112,7 +9124,7 @@ console.log('[My Pet] script build=plus-beside loaded');
       event.preventDefault();
       event.stopPropagation();
       markLeaveGuardShown(renderId);
-      console.log(TAG, 'leave-guard shown');
+      myPetLog(TAG, 'leave-guard shown');
       maybePromptEmailSave({ force: true, trigger: 'leave-guard', leaveHref: href });
     }
     if (window.__appaiMyPetLeaveGuardClick) {
@@ -9138,7 +9150,7 @@ console.log('[My Pet] script build=plus-beside loaded');
             state.previewUrlByColor = (res.previewUrlsByColor && typeof res.previewUrlsByColor === 'object')
               ? Object.assign({}, res.previewUrlsByColor)
               : {};
-            console.log(TAG, 'email-token restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
+            myPetLog(TAG, 'email-token restore previewUrlByColor populated', Object.keys(state.previewUrlByColor));
             logPreviewUrlTails('email-token restore', state.previewUrlByColor);
             preloadPreviewUrls(state.previewUrlByColor);
             // UX 7 — honour inline mode on email-token resume as well.
@@ -9152,7 +9164,7 @@ console.log('[My Pet] script build=plus-beside loaded');
                 : (tokInfo.colorName || tokSw || null);
               var tokColorUrl = tokColor ? state.previewUrlByColor[tokColor] : null;
               var tokUrl = tokColorUrl || res.previewUrl;
-              console.log(TAG, 'email-token restore activate: effectiveColor=' + (tokColor || '(unknown)') +
+              myPetLog(TAG, 'email-token restore activate: effectiveColor=' + (tokColor || '(unknown)') +
                 ' formColor=' + (tokInfo.colorName || '(none)') +
                 ' swatchColor=' + (tokSw || '(none)') +
                 ' usingCached=' + !!tokColorUrl);

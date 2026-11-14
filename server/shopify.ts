@@ -7,13 +7,13 @@ import {
   credentialsForInstallHint,
   getPrimaryShopifyCredentials,
   hasShopifyAppCredentials,
-  hmacBase64MatchesAnySecret,
   listShopifyAppCredentials,
   reinstallKeyForShop,
   verifyOAuthQueryHmac,
   verifyReinstallKey,
 } from "./shopify-app-credentials";
 import { ensureCreatorCheckoutWebhooks } from "./creator-checkout-webhooks";
+import { acceptShopifyWebhook } from "./shopify-webhook-auth";
 import {
   ensureShopifyCarrierService,
   parseCarrierRateRequest,
@@ -110,10 +110,17 @@ export function getAppUrl(): string {
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-/** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce). */
-export function createOAuthState(shop: string, secret = primarySecret()): string {
+/** Scopes the Petposterous custom app requests. Primary and creators keep oauthScopes(). */
+const PETPOSTEROUS_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects";
+
+function oauthScopesFor(label: string): string {
+  return label === "petposterous" ? PETPOSTEROUS_OAUTH_SCOPES : oauthScopes();
+}
+
+/** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce + app). */
+export function createOAuthState(shop: string, secret = primarySecret(), appLabel?: string): string {
   const payload = Buffer.from(
-    JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex") }),
+    JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex"), a: appLabel || undefined }),
   ).toString("base64url");
   const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${sig}`;
@@ -151,6 +158,20 @@ export function verifyOAuthState(
 
 function verifyOAuthStateAny(state: string | undefined, shop: string): boolean {
   return listShopifyAppCredentials().some((c) => verifyOAuthState(state, shop, c.apiSecret));
+}
+
+/** App label stamped into a state this process signed. Absent on older states. */
+export function oauthStateAppLabel(state: string | undefined): string | null {
+  if (!state) return null;
+  const lastDot = state.lastIndexOf(".");
+  if (lastDot <= 0) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(state.slice(0, lastDot), "base64url").toString("utf8")) as { a?: string };
+    const label = String(parsed.a || "").trim();
+    return label || null;
+  } catch {
+    return null;
+  }
 }
 
 function verifyHmac(query: Record<string, any>): boolean {
@@ -245,15 +266,8 @@ export function registerShopifyRoutes(app: Express): void {
   registerShopifyGdprRoutes(app);
 
   app.post("/shopify/carrier-service/rates", async (req: Request, res: Response) => {
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string;
     const shopHeader = req.headers["x-shopify-shop-domain"] as string;
-    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
-    const bodyBuf = Buffer.isBuffer(rawBody)
-      ? rawBody
-      : typeof rawBody === "string"
-        ? Buffer.from(rawBody, "utf8")
-        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
+    if (!(await acceptShopifyWebhook(req))) {
       return res.status(401).send("HMAC verification failed");
     }
     const parsed = parseCarrierRateRequest(req.body);
@@ -303,12 +317,12 @@ export function registerShopifyRoutes(app: Express): void {
     if (!creds) {
       return res.status(503).send("Shopify API credentials are not configured");
     }
-    const state = createOAuthState(shop, creds.apiSecret);
+    const state = createOAuthState(shop, creds.apiSecret, creds.label);
     const redirectUri = `${getAppUrl()}/shopify/callback`;
 
     const authUrl = `https://${shop}/admin/oauth/authorize?` +
       `client_id=${creds.apiKey}&` +
-      `scope=${oauthScopes()}&` +
+      `scope=${oauthScopesFor(creds.label)}&` +
       `redirect_uri=${encodeURIComponent(redirectUri)}&` +
       `state=${state}`;
 
@@ -364,7 +378,8 @@ if (res.locals.shopify?.session?.shop) {
 
     try {
       // Public apps require expiring offline tokens (expiring=1).
-      const tokenResult = await exchangeAuthorizationCode(shop, code);
+      const installedApp = oauthStateAppLabel(state);
+      const tokenResult = await exchangeAuthorizationCode(shop, code, installedApp);
       if (!tokenResult.ok) {
         console.error("Shopify token exchange failed:", tokenResult.status, tokenResult.error);
         return res.status(500).send("Failed to get access token from Shopify");
@@ -376,7 +391,7 @@ if (res.locals.shopify?.session?.shop) {
 
       console.log(`Shopify OAuth completed for ${shop}`);
       console.log(`Scopes granted: ${scope || "NONE"}`);
-      console.log(`Requested scopes were: ${oauthScopes()}`);
+      console.log(`Requested scopes were: ${oauthScopesFor(tokenResult.credentials.label)}`);
       console.log(
         `Token mode: ${fields.refreshToken ? "expiring offline" : "non-expiring offline (unexpected)"}`,
       );
@@ -396,6 +411,7 @@ if (res.locals.shopify?.session?.shop) {
           accessTokenExpiresAt: fields.accessTokenExpiresAt,
           refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
           scope,
+          shopifyApp: tokenResult.credentials.label,
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
@@ -416,6 +432,7 @@ if (res.locals.shopify?.session?.shop) {
           accessTokenExpiresAt: fields.accessTokenExpiresAt,
           refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
           scope,
+          shopifyApp: tokenResult.credentials.label,
           status: "active",
           installedAt: new Date(),
           merchantId: merchantId,
@@ -515,7 +532,6 @@ if (res.locals.shopify?.session?.shop) {
   });
 
   app.post("/shopify/webhooks/uninstall", async (req: Request, res: Response) => {
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string;
     const topic = req.headers["x-shopify-topic"] as string;
     const shop = req.headers["x-shopify-shop-domain"] as string;
 
@@ -523,13 +539,7 @@ if (res.locals.shopify?.session?.shop) {
       return res.status(200).send("OK");
     }
 
-    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
-    const bodyBuf = Buffer.isBuffer(rawBody)
-      ? rawBody
-      : typeof rawBody === "string"
-        ? Buffer.from(rawBody, "utf8")
-        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
+    if (!(await acceptShopifyWebhook(req))) {
       return res.status(401).send("HMAC verification failed");
     }
 

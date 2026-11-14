@@ -197,6 +197,8 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   /** When refreshToken expires (typically ~90 days). */
   refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
   scope: text("scope"),
+  /** Which Shopify app minted this shop's token: primary | creators | petposterous. Null until the first verified install or webhook. */
+  shopifyApp: text("shopify_app"),
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
   uninstalledAt: timestamp("uninstalled_at"),
@@ -2934,6 +2936,8 @@ export const shippingStoreSettings = pgTable(
     /** Shop-currency minor units for the paid flat rate when the offer is on. */
     freeShippingFlatCents: integer("free_shipping_flat_cents").notNull().default(495),
     freeShippingCountries: text("free_shipping_countries").notNull().default("US"),
+    /** orders/paid submits this shop to Printify only when this is true AND FLAT_ORDER_FULFILLMENT_ENABLED=true. */
+    flatOrderFulfillmentEnabled: boolean("flat_order_fulfillment_enabled").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

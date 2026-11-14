@@ -154,6 +154,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "design_products",       column: "default_size_backfilled",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "design_products",       column: "size_order_restored",         type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "shopify_app",                 type: "TEXT" },
+  { table: "shipping_store_settings", column: "flat_order_fulfillment_enabled", type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
   { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
   { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
@@ -3414,6 +3416,26 @@ export async function retireGraphicsTwinStyles(): Promise<{
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
+/**
+ * First boot after the per-shop flag exists: turn Printify submission on for
+ * the staging demo shop only. Later boots leave the row alone, so an operator
+ * can turn it off without the next deploy turning it back on. The shop domain
+ * is absent from every other database, so the update matches nothing there.
+ */
+export async function enableStagingDemoFlatFulfillmentOnce(): Promise<void> {
+  await pool.query(`CREATE TABLE IF NOT EXISTS startup_data_flags (name text PRIMARY KEY)`);
+  const flag = "staging-demo-flat-fulfillment-on";
+  const seen = await pool.query(`SELECT 1 FROM startup_data_flags WHERE name = $1`, [flag]);
+  if ((seen.rowCount ?? 0) > 0) return;
+  const updated = await pool.query(
+    `UPDATE shipping_store_settings
+     SET flat_order_fulfillment_enabled = true, updated_at = NOW()
+     WHERE shop_domain = 'ai-art-studio-staging.myshopify.com'`,
+  );
+  await pool.query(`INSERT INTO startup_data_flags (name) VALUES ($1) ON CONFLICT DO NOTHING`, [flag]);
+  console.log(`[startup-migration] staging demo flat fulfillment enabled rows=${updated.rowCount ?? 0}`);
+}
+
 export async function runStartupMigrations(): Promise<void> {
   const tag = "[startup-migration]";
   console.log(`${tag} Running idempotent schema checks…`);
@@ -3454,6 +3476,14 @@ export async function runStartupMigrations(): Promise<void> {
       errors++;
       console.error(`${tag} FAILED adding column ${m.table}.${m.column}: ${err.message ?? err}`);
     }
+  }
+
+  try {
+    await enableStagingDemoFlatFulfillmentOnce();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED staging demo flat fulfillment flag: ${err.message ?? err}`);
   }
 
   try {
