@@ -4,7 +4,7 @@
  * garment → add to cart via the same shadow-SKU endpoint every other
  * customizer flow uses. See docs/ (My Pet plan) for the full spec.
  */
-console.log('[My Pet] script build=e0efac11 loaded');
+console.log('[My Pet] script build=plus-beside loaded');
 (function () {
   'use strict';
   var TAG = '[My Pet]';
@@ -1277,6 +1277,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
         openBtn.setAttribute('data-appai-my-pet-inline-active', '1');
       }
       state.captionPainted = true;
+      paintPlus();
       var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - captionT0);
       console.log(TAG, 'caption shown ms=' + ms);
       refreshDesignList();
@@ -1532,18 +1533,63 @@ console.log('[My Pet] script build=e0efac11 loaded');
       }
     }
 
+    function surchargeDesignActive() {
+      if (state.reverted) return false;
+      if (state.renderId && state.inlineApplied) return true;
+      return !!(openBtn && openBtn.getAttribute('data-appai-my-pet-inline-active') === '1');
+    }
+
+    function mainProductPrice() {
+      var nodes = document.querySelectorAll('product-price');
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i].closest('sticky-add-to-cart, .sticky-add-to-cart, cart-drawer, .cart-drawer, dialog')) continue;
+        return nodes[i];
+      }
+      return null;
+    }
+
+    function paintPriceNote(amount) {
+      var existing = document.querySelector('[data-appai-my-pet-price-plus]');
+      if (!amount) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+      }
+      var host = mainProductPrice();
+      if (!host || !host.parentNode) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+      }
+      if (!existing) {
+        existing = document.createElement('p');
+        existing.setAttribute('data-appai-my-pet-price-plus', '1');
+        existing.className = 'appai-my-pet-price-plus';
+      }
+      existing.textContent = 'My Pet version ' + amount;
+      if (existing.previousElementSibling !== host) {
+        if (host.nextSibling) host.parentNode.insertBefore(existing, host.nextSibling);
+        else host.parentNode.appendChild(existing);
+      }
+    }
+
     function paintPlus() {
-      var label = plusLabelForRoot(root, state.surchargeCents);
-      var el = root.querySelector('[data-appai-my-pet-plus]');
-      if (el) {
-        el.textContent = label;
-        el.hidden = !label;
+      var amount = plusLabelForRoot(root, state.surchargeCents);
+      var standalone = root.querySelector('[data-appai-my-pet-plus]');
+      if (standalone) {
+        standalone.textContent = '';
+        standalone.hidden = true;
       }
       var preview = document.querySelector('[data-appai-my-pet-plus-preview]');
       if (preview) {
-        preview.textContent = label;
-        preview.hidden = !label;
+        preview.textContent = '';
+        preview.hidden = true;
       }
+      if (surchargeDesignActive()) {
+        paintPriceNote(amount);
+        return;
+      }
+      paintPriceNote('');
+      if (!openBtn) return;
+      openBtn.textContent = amount ? (openBtnOriginalLabel + ' · ' + amount) : openBtnOriginalLabel;
     }
 
     function refreshCapStatus() {
@@ -5993,6 +6039,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
         noteRestoreLockOnOpenBtn();
       }
       showRevertLink();
+      paintPlus();
       if (state.inlineAttached) {
         console.log(TAG, 'inline activate: observers re-installed (listeners already attached from earlier activation)');
         scheduleShadowWarm('activate');
@@ -6200,6 +6247,7 @@ console.log('[My Pet] script build=e0efac11 loaded');
         openBtn.removeAttribute('data-appai-my-pet-inline-active');
       }
       hideRevertLink();
+      paintPlus();
     }
 
     /**
@@ -8520,7 +8568,6 @@ console.log('[My Pet] script build=e0efac11 loaded');
       body.innerHTML =
         '<h3>Your design</h3>' +
         '<img src="' + previewUrl + '" class="appai-preview-img" alt="Your pet on this design (tap to enlarge)" />' +
-        '<p class="appai-my-pet__plus" data-appai-my-pet-plus-preview hidden></p>' +
         colorSwatchesHtml +
         sizeSwatchesHtml +
         '<button type="button" class="appai-primary" data-action="add-to-cart">Add to cart</button>' +

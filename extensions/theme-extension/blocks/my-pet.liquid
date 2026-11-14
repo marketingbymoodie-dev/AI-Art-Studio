@@ -59,8 +59,8 @@
   </div>
   {% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
   {% assign appai_my_pet_js = 'appai-my-pet.js' | asset_url %}
-  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus" defer></script>
-  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus" defer></script>
+  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus-beside" defer></script>
+  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-plus-beside" defer></script>
 {% endif %}
 
 {% schema %}
@@ -173,10 +173,14 @@
     opacity: 1 !important;
   }
   .appai-my-pet__plus {
-    margin: 0.15rem 0 0 !important;
+    display: none !important;
+  }
+  .appai-my-pet-price-plus {
+    margin: 0.15rem 0 0.35rem !important;
     font-size: 0.85em !important;
     font-weight: 600 !important;
-    text-align: center !important;
+    line-height: 1.35 !important;
+    text-align: left !important;
     color: var(--appai-my-pet-caption-fg, #666666) !important;
   }
   .appai-my-pet__caption {
