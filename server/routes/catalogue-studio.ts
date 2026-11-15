@@ -180,6 +180,26 @@ async function studioGarment(raw: unknown): Promise<{ id: number; name: string }
   return softstyleType();
 }
 
+function frameColourList(raw: unknown): Array<{ name: string; hex: string }> {
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw || "[]");
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  const colours: Array<{ name: string; hex: string }> = [];
+  for (const row of list) {
+    const name = String((row as { name?: string })?.name || "").trim();
+    const hex = String((row as { hex?: string })?.hex || "").replace(/^#/, "").trim();
+    if (!name || !hex) continue;
+    colours.push({ name, hex });
+  }
+  return colours;
+}
+
 async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: string; hex: string }>> {
   const { blankLibraryTypeId, ensureColourBlankTable } = await import("../colour-blanks");
   const libraryId = await blankLibraryTypeId(productTypeId);
@@ -259,6 +279,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           sizes: productTypes.sizes,
           selectedSizeIds: productTypes.selectedSizeIds,
           variantMap: productTypes.variantMap,
+          frameColors: productTypes.frameColors,
+          shop: productTypes.shopifyShopDomain,
         })
         .from(productTypes)
         .where(eq(productTypes.id, garment.id))
@@ -280,17 +302,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const studioColours = fixture && garment.id === 54
         ? PENDING_CANDIDATE.colors
         : blankColours.length ? sortCatalogueColours(blankColours) : sceneColours;
+      const colourTickMode = String(typeRow?.shop || "") === "h7epay-gh.myshopify.com" ? "all" : "stored";
+      const frameColours = colourTickMode === "all" ? frameColourList(typeRow?.frameColors) : [];
+      const coloursForStudio = frameColours.length ? frameColours : studioColours;
       const colourSizes: Record<string, string> = {};
       const offeredNames = offered.map((size) => size.name);
-      for (const color of studioColours) {
+      for (const color of coloursForStudio) {
         colourSizes[color.name] = formatSizeRange(offeredNames, printableSizeNames(variantMap, color, offered));
       }
       let eligibility = null;
-      if (choice.artworkPath && studioColours.length) {
+      if (choice.artworkPath && coloursForStudio.length) {
         try {
           const artwork = await readLibraryObject(choice.artworkPath);
           const { measureColourEligibility } = await import("../catalogue-studio-eligibility");
-          eligibility = await measureColourEligibility(artwork, studioColours);
+          eligibility = await measureColourEligibility(artwork, coloursForStudio);
         } catch (err) {
           console.error("[catalogue-studio] eligibility:", (err as Error).message);
         }
@@ -318,8 +343,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         productUrl,
         spendUsd: spend.totalUsd,
         spendLines: spend.lines,
-        colors: studioColours,
-        selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : studioColours[0]?.name || "White",
+        colors: coloursForStudio,
+        colourTickMode,
+        selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : coloursForStudio[0]?.name || "White",
         productTypes: typeList,
         selectedSize: "L",
         ...prices,

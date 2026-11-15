@@ -429,8 +429,16 @@ export async function promoteCatalogueCandidate(args: {
   checkOnly?: boolean;
   /** Print file, listing, and mockups are about to be built by the publish button. */
   deferApprovalArtifacts?: boolean;
+  /** Colours ticked in the dialog. Falls back to the candidate's saved list. */
+  selectedColors?: Array<{ name: string; hex: string }>;
+  panelId?: string;
+  /** Mockups just rendered for this publish. Falls back to the saved choice. */
+  mockupImages?: Array<{ name: string; hex: string; path: string }>;
 }): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
   const choice = await readChoice(args.candidateId);
+  const panelId = String(args.panelId || choice.panelId || "");
+  const selectedColors = args.selectedColors?.length ? args.selectedColors : choice.selectedColors;
+  const mockupImages = args.mockupImages?.length ? args.mockupImages : choice.mockupImages;
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
   const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, args.productTypeId)).limit(1);
   if (!typeRow) throw new PromoteRefusal([`Product type ${args.productTypeId} was not found.`]);
@@ -451,24 +459,24 @@ export async function promoteCatalogueCandidate(args: {
   const offered = selectedIds.length ? sizes.filter((size) => selectedIds.includes(size.id)) : sizes;
   const missingPrices = offered.filter((size) => !args.pricesBySize[size.name]).map((size) => size.name);
 
-  const ticked = choice.selectedColors.map((color) => color.name);
+  const ticked = selectedColors.map((color) => color.name);
   const panelColours: string[] = [];
-  if (choice.panelId) {
+  if (panelId) {
     const { mockupPanels } = await import("@shared/schema");
     const { blankLibraryTypeId } = await import("./colour-blanks");
     const libraryId = await blankLibraryTypeId(args.productTypeId);
     const rows = await db
       .select({ garmentColor: mockupPanels.garmentColor, garmentHex: mockupPanels.garmentHex, kind: mockupPanels.kind })
       .from(mockupPanels)
-      .where(and(eq(mockupPanels.productTypeId, libraryId), eq(mockupPanels.panelId, choice.panelId)));
+      .where(and(eq(mockupPanels.productTypeId, libraryId), eq(mockupPanels.panelId, panelId)));
     const scene: PanelColour[] = rows.map((row) => ({
       name: row.garmentColor,
       hex: row.garmentHex,
       kind: row.kind === "white-master" ? "white-master" : "produced",
     }));
-    for (const color of choice.selectedColors) {
+    for (const color of selectedColors) {
       try {
-        resolvePanelColour(scene, color, typeRow.name, args.productTypeId, choice.panelId);
+        resolvePanelColour(scene, color, typeRow.name, args.productTypeId, panelId);
         panelColours.push(color.name);
       } catch {
         // Named by promoteRefusals when the ticked colour is absent from the scene.
@@ -533,11 +541,11 @@ export async function promoteCatalogueCandidate(args: {
 
   const reasons = promoteRefusals({
     printFilePath: candidate?.printFilePath ?? null,
-    panelId: choice.panelId,
+    panelId: panelId,
     productTypeName: typeRow.name,
     tickedColours: ticked,
     panelColours: [...panelColours],
-    storedMockupColours: choice.mockupImages.map((image) => image.name),
+    storedMockupColours: mockupImages.map((image) => image.name),
     title: candidate?.title ?? null,
     description: candidate?.description ?? null,
     artStyle: candidate?.artStyle ?? null,
@@ -604,7 +612,7 @@ export async function promoteCatalogueCandidate(args: {
   const frameColors = parseFrameColors(typeRow.frameColors);
   const catalogIds = catalogColorIds(variantMap);
   const colorRefusals: string[] = [];
-  for (const color of choice.selectedColors) {
+  for (const color of selectedColors) {
     const resolvedColor = resolvePromotedColorId(color, frameColors, catalogIds);
     if (!resolvedColor?.colorId) {
       const title = resolvedColor?.title || printifyColorIdForMockup(color.hex)?.title;
@@ -657,7 +665,7 @@ export async function promoteCatalogueCandidate(args: {
     }
   }
   if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
-  const orderedColours = sortCatalogueColours(choice.selectedColors).filter((color, index, list) =>
+  const orderedColours = sortCatalogueColours(selectedColors).filter((color, index, list) =>
     list.findIndex((row) => row.name.toLowerCase() === color.name.toLowerCase()) === index,
   );
   const colourOrder = orderedColours.map((color) => color.name);
@@ -742,7 +750,7 @@ export async function promoteCatalogueCandidate(args: {
   const images = [];
   try {
     for (const color of orderedColours) {
-      const stored = choice.mockupImages.find((image) => image.name === color.name);
+      const stored = mockupImages.find((image) => image.name === color.name);
       if (!stored) throw new PromoteRefusal([`No stored mockup for ${color.name}.`]);
       images.push({
         src: await signedLibraryUrl(stored.path),

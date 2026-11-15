@@ -41,6 +41,7 @@ type PendingCandidate = {
   pricesBySize: Record<string, string>;
   compareAtBySize?: Record<string, string>;
   colors: Array<{ name: string; hex: string }>;
+  colourTickMode?: "all" | "stored";
   selectedColor: string;
   selectedSize: string;
   eligibility: ColourReading[] | null;
@@ -66,6 +67,21 @@ type PendingCandidate = {
     filename: string;
   } | null;
 };
+
+function offeredColours(
+  data: { colourTickMode?: string; colors: Array<{ name: string; hex: string }>; productTypeId: number } | undefined,
+  scene: SceneGroup | undefined,
+) {
+  if (!data) return [] as Array<{ name: string; hex: string; path: "produced" | "recolour" }>;
+  if (data.colourTickMode === "all") {
+    return data.colors.map((color) => {
+      const onScene = scene?.colours.find((row) => row.name.toLowerCase() === color.name.toLowerCase());
+      const produced = onScene && onScene.kind !== "white-master";
+      return { name: color.name, hex: color.hex, path: produced ? "produced" as const : "recolour" as const };
+    });
+  }
+  return sceneColours(scene, data.colors, data.productTypeId !== 54);
+}
 
 function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>, fromLibrary = false) {
   if (!scene) return [] as Array<{ name: string; hex: string; path: "produced" | "recolour" }>;
@@ -237,12 +253,15 @@ export default function CatalogueStudioPage() {
       ? stored
       : scenes.find((scene) => scene.isDefault)?.panelId || scenes[0].panelId;
     const scene = scenes.find((row) => row.panelId === next);
-    const available = sceneColours(scene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
+    const available = offeredColours(candidate.data, scene);
     const storedColours = candidate.data?.choice.selectedColors ?? [];
-    const ticks = initialTickedColours(storedColours, available).map(({ name, hex }) => ({ name, hex }));
+    const freshTicks = candidate.data?.colourTickMode === "all";
+    const ticks = freshTicks
+      ? available.map(({ name, hex }) => ({ name, hex }))
+      : initialTickedColours(storedColours, available).map(({ name, hex }) => ({ name, hex }));
     setPanelId(next);
     setTicked(ticks);
-    if (!stored || storedColours.length === 0) {
+    if (!freshTicks && (!stored || storedColours.length === 0)) {
       void fetch("/api/platform/catalogue-studio/choice", {
         method: "POST",
         credentials: "include",
@@ -316,7 +335,7 @@ export default function CatalogueStudioPage() {
   const salePrice = candidate.data?.pricesBySize?.[size] || "";
   const compareAtPrice = candidate.data?.compareAtBySize?.[size] || "";
   const scene = candidate.data?.scenes.find((row) => row.panelId === panelId);
-  const offered = sceneColours(scene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
+  const offered = offeredColours(candidate.data, scene);
   const active = offered.find((c) => c.name === color) ?? candidate.data?.colors.find((c) => c.name === color);
   const readings = candidate.data?.eligibility;
 
@@ -639,11 +658,12 @@ export default function CatalogueStudioPage() {
                 onChange={(e) => {
                   const next = e.target.value;
                   const nextScene = candidate.data?.scenes.find((row) => row.panelId === next);
-                  const available = sceneColours(nextScene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
+                  const available = offeredColours(candidate.data, nextScene);
                   const kept = ticked.filter((tick) => available.some((row) => row.name === tick.name));
                   setPanelId(next);
                   setTicked(kept);
                   setColor((current) => (available.some((row) => row.name === current) ? current : available[0]?.name || current));
+                  if (candidate.data?.colourTickMode === "all") return;
                   void fetch("/api/platform/catalogue-studio/choice", {
                     method: "POST",
                     credentials: "include",
@@ -676,6 +696,7 @@ export default function CatalogueStudioPage() {
                                 ? ticked.filter((tick) => tick.name !== row.name)
                                 : [...ticked, { name: row.name, hex: row.hex }];
                               setTicked(next);
+                              if (candidate.data?.colourTickMode === "all") return;
                               void fetch("/api/platform/catalogue-studio/choice", {
                                 method: "POST",
                                 credentials: "include",

@@ -141,6 +141,8 @@ describe("flywheel promote decisions", () => {
     expect(formatSizeRange(["S", "M", "L", "XL", "2XL", "3XL", "XS"], ["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toBe("XS–3XL");
     expect(printableSizeNames(map, { name: "Pink", hex: "DD74A1" }, offered)).toEqual(["S", "M", "L", "XL", "2XL", "3XL"]);
     expect(printableSizeNames(map, { name: "White", hex: "FFFFFF" }, offered)).toEqual(["XS"]);
+    map["s:sport_grey"] = { printifyVariantId: 3 };
+    expect(printableSizeNames(map, { name: "Sport Grey", hex: "CACACA" }, offered)).toEqual(["S"]);
   });
 
   it("orders colours White, Black, Sage, Dark grey, Red, Light grey, Blue, Pink", () => {

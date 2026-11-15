@@ -791,7 +791,9 @@ async function loadCandidatePanel(args: {
   artworkPath: string | null;
   forceRecolour?: boolean;
 }) {
-  const rows = await sceneRows(args.productTypeId, args.panelId);
+  const { blankLibraryTypeId } = await import("./colour-blanks");
+  const libraryId = await blankLibraryTypeId(args.productTypeId);
+  const rows = await sceneRows(libraryId, args.panelId);
   if (!rows.length) {
     resolvePanelColour([], { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, args.panelId);
   }
@@ -878,9 +880,13 @@ export async function approveCandidateChoice(args: {
   typeName: string;
   panelId: string;
   selectedColors: ChoiceColor[];
-}): Promise<void> {
+  /** Render mockups without replacing the candidate's saved colour list. */
+  preserveStoredColours?: boolean;
+}): Promise<StoredMockupImage[]> {
   if (!args.selectedColors.length) throw new Error("No colours selected");
-  const rows = await sceneRows(args.productTypeId, args.panelId);
+  const { blankLibraryTypeId } = await import("./colour-blanks");
+  const libraryId = await blankLibraryTypeId(args.productTypeId);
+  const rows = await sceneRows(libraryId, args.panelId);
   const label = rows[0]?.label || args.panelId;
   const colours: PanelColour[] = rows.map((row) => ({
     name: row.garmentColor,
@@ -891,7 +897,9 @@ export async function approveCandidateChoice(args: {
     resolvePanelColour(colours, color, args.typeName, args.productTypeId, label);
   }
   const now = new Date();
-  await saveChoice(args.candidateId, args.panelId, args.selectedColors);
+  if (!args.preserveStoredColours) {
+    await saveChoice(args.candidateId, args.panelId, args.selectedColors);
+  }
   const choice = await readChoice(args.candidateId);
   if (!choice.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
   const mockupImages: StoredMockupImage[] = [];
@@ -909,10 +917,13 @@ export async function approveCandidateChoice(args: {
     await putObject(path, jpeg, "image/jpeg");
     mockupImages.push({ name: color.name, hex: color.hex.replace(/^#/, ""), path });
   }
-  await db
-    .update(catalogueCandidateChoices)
-    .set({ approvedAt: now, updatedAt: now, mockupImages })
-    .where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+  if (!args.preserveStoredColours) {
+    await db
+      .update(catalogueCandidateChoices)
+      .set({ approvedAt: now, updatedAt: now, mockupImages })
+      .where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+  }
+  return mockupImages;
 }
 
 export async function panelsForType(productTypeId: number) {

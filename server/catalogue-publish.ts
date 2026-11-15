@@ -155,10 +155,11 @@ export async function publishCatalogueCandidate(args: {
     };
   }
 
+  const crossShop = shop !== String(stored.shopDomain || "");
   let choice = await readChoice(recipe.candidateId);
   const gaps = recipeGaps(recipe, stored.source);
   if (!String(choice.artworkPath || stored.artworkPath || "").trim()) gaps.push("Candidate artwork is not stored.");
-  if (recipe.panelId && recipe.selectedColors.length) {
+  if (recipe.panelId && recipe.selectedColors.length && !crossShop) {
     await saveChoice(recipe.candidateId, recipe.panelId, recipe.selectedColors);
     choice = await readChoice(recipe.candidateId);
   }
@@ -181,6 +182,8 @@ export async function publishCatalogueCandidate(args: {
       compareAtBySize: args.compareAtBySize,
       checkOnly: true,
       deferApprovalArtifacts: !hasPrint || !hasListing || !hasMockups,
+      selectedColors: recipe.selectedColors,
+      panelId: recipe.panelId,
     });
   } catch (err) {
     if (err instanceof PromoteRefusal) blockers = err.reasons;
@@ -273,21 +276,27 @@ export async function publishCatalogueCandidate(args: {
     await emit("listing");
   }
 
+  let renderedMockups: Array<{ name: string; hex: string; path: string }> | undefined;
   if (!hasMockups) {
     await emit("mockups");
-    await approveCandidateChoice({
+    renderedMockups = await approveCandidateChoice({
       candidateId: recipe.candidateId,
       productTypeId: garment.id,
       typeName: typeRow.name,
       panelId: recipe.panelId,
       selectedColors: recipe.selectedColors,
+      preserveStoredColours: crossShop,
     });
     await emit("mockups");
   }
 
   const now = new Date();
   await db.update(designCandidates).set({
-    shopDomain: shop,
+    ...(crossShop ? {} : {
+      shopDomain: shop,
+      panelId: recipe.panelId,
+      selectedColors: recipe.selectedColors,
+    }),
     status: "approved",
     source: stored.source === "generated" ? "generated" : "manual",
     humourOperator: checked.humourOperator,
@@ -302,8 +311,6 @@ export async function publishCatalogueCandidate(args: {
     productFamily: "apparel",
     credentialRef: "replicate:shared",
     printFilePath,
-    panelId: recipe.panelId,
-    selectedColors: recipe.selectedColors,
     title,
     description,
     updatedAt: now,
@@ -317,6 +324,9 @@ export async function publishCatalogueCandidate(args: {
       productTypeId: garment.id,
       pricesBySize: args.pricesBySize,
       compareAtBySize: args.compareAtBySize,
+      selectedColors: recipe.selectedColors,
+      panelId: recipe.panelId,
+      mockupImages: renderedMockups,
     });
     const spend = await snapshot(recipe.candidateId);
     const productUrl = shopifyAdminProductUrl(shop, created.shopifyProductId);

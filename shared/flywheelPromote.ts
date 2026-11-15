@@ -7,6 +7,7 @@
  * visibility of a shadow SKU.
  */
 import { printifyColorIdForMockup } from "./mockupBundle";
+import { slugPrintifyColorId } from "./printifyColorSlug";
 import { resolveVariantFromMap, type VariantMap } from "./variantMapResolve";
 
 export const PRINTIFY_FULL_BLEED = { x: 0.5, y: 0.5, scale: 1 } as const;
@@ -186,7 +187,7 @@ export function printableSizeNames(
   color: { name: string; hex: string },
   offered: Array<{ id: string; name: string }>,
 ): string[] {
-  const colorId = printifyColorIdForMockup(color.hex)?.colorId || "";
+  const colorId = printifyColorIdForMockup(color.hex)?.colorId || slugPrintifyColorId(color.name);
   if (!colorId) return [];
   return offered
     .filter((size) => resolveVariantFromMap(variantMap, size.id, colorId, { allowSizeFallbackForColor: false })?.entry.printifyVariantId)
