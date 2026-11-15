@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
@@ -55,6 +55,7 @@ type Preview = {
   kind: "paint" | "upload";
   raw?: string;
   confirm?: string;
+  error?: string;
   overlay?: string;
   master?: string;
   compare?: "off" | "overlay" | "flicker";
@@ -91,6 +92,41 @@ async function readError(res: Response): Promise<string> {
   }
 }
 
+class CellErrorBoundary extends Component<{ resetKey: string; children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error: error?.message || "This preview failed." };
+  }
+
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
+  }
+
+  render() {
+    if (this.state.error) {
+      return <p className="text-destructive" data-testid="colour-cell-error">{this.state.error}</p>;
+    }
+    return this.props.children;
+  }
+}
+
+function FlickerFrame({ upload, master, testId }: { upload: string; master: string; testId: string }) {
+  const [showMaster, setShowMaster] = useState(false);
+  useEffect(() => {
+    const id = window.setInterval(() => setShowMaster((on) => !on), 450);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <img
+      src={showMaster && master ? master : upload}
+      alt=""
+      data-testid={testId}
+      className="h-28 max-h-28 w-full max-w-full object-contain bg-white"
+    />
+  );
+}
+
 function readFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -105,9 +141,9 @@ export default function ColourBlanksPage() {
   const [drafts, setDrafts] = useState<Record<string, Colour>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});
-  const [flickOn, setFlickOn] = useState(true);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState("");
+  const uploads = useRef(new Set<string>());
 
   const grid = useQuery<Grid>({
     queryKey: ["/api/platform/catalogue-studio/colour-blanks", typeId],
@@ -123,11 +159,6 @@ export default function ColourBlanksPage() {
     for (const colour of grid.data?.colours ?? []) next[colour.id] = colour;
     setDrafts(next);
   }, [grid.data]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setFlickOn((on) => !on), 450);
-    return () => window.clearInterval(id);
-  }, []);
 
   function patchDraft(id: string, patch: Partial<Colour>) {
     setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
@@ -286,10 +317,12 @@ export default function ColourBlanksPage() {
 
   async function stageUpload(panelId: string, colour: Colour, file: File) {
     const key = cellKey(panelId, colour.id);
-    const raw = await readFile(file);
+    if (uploads.current.has(key)) return;
+    uploads.current.add(key);
     setBusy(key);
     setStatus(`Checking ${file.name} against the white master…`);
     try {
+      const raw = await readFile(file);
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload-preview", {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw }),
@@ -326,8 +359,14 @@ export default function ColourBlanksPage() {
       const size = body.resized ? ` Scaled from ${body.fromWidth}×${body.fromHeight} to ${body.width}×${body.height}.` : "";
       setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}.${size} Nothing is saved until you approve it.`);
     } catch (e: any) {
-      setStatus(String(e?.message || e));
+      const message = String(e?.message || e);
+      setPreviews((current) => ({
+        ...current,
+        [key]: { kind: "upload", src: "", error: message },
+      }));
+      setStatus(message);
     } finally {
+      uploads.current.delete(key);
       setBusy("");
     }
   }
@@ -629,14 +668,21 @@ export default function ColourBlanksPage() {
                           <p className="text-muted-foreground">In use · {cell.current.kind} · {cell.current.createdAt.slice(0, 16).replace("T", " ")}</p>
                         ) : null}
                         {preview ? (
+                          <CellErrorBoundary resetKey={`${key}:${preview.src}:${preview.error || ""}`}>
                           <div className="mt-2 space-y-1">
-                            <img
-                              src={preview.compare === "overlay" && preview.overlay ? preview.overlay : preview.compare === "flicker" && flickOn && preview.master ? preview.master : preview.src}
-                              alt=""
-                              className="h-28 w-full object-contain bg-white"
-                              data-testid={`colour-preview-${id}`}
-                            />
-                            <p className="text-muted-foreground">Preview only</p>
+                            {preview.error ? (
+                              <p className="text-destructive" data-testid={`colour-preview-error-${id}`}>{preview.error}</p>
+                            ) : preview.compare === "flicker" && preview.master ? (
+                              <FlickerFrame upload={preview.src} master={preview.master} testId={`colour-preview-${id}`} />
+                            ) : (
+                              <img
+                                src={preview.compare === "overlay" && preview.overlay ? preview.overlay : preview.src}
+                                alt=""
+                                className="h-28 max-h-28 w-full max-w-full object-contain bg-white"
+                                data-testid={`colour-preview-${id}`}
+                              />
+                            )}
+                            {preview.error ? null : <p className="text-muted-foreground">Preview only</p>}
                             {preview.alignment ? (
                               <div data-testid={`colour-align-${id}`}>
                                 <p>
@@ -657,7 +703,7 @@ export default function ColourBlanksPage() {
                               </div>
                             ) : null}
                             {preview.confirm ? <p>{preview.confirm}</p> : null}
-                            {preview.kind === "paint" ? (
+                            {preview.error ? null : preview.kind === "paint" ? (
                               <Button type="button" size="sm" data-testid={`colour-approve-${id}`} disabled={busy !== ""} onClick={() => void approvePaint(scene.panelId, colour)}>
                                 Approve
                               </Button>
@@ -675,6 +721,7 @@ export default function ColourBlanksPage() {
                               Discard
                             </Button>
                           </div>
+                          </CellErrorBoundary>
                         ) : null}
                         <div className="mt-2 flex flex-wrap gap-1">
                           {colour.finish === "solid" ? (
