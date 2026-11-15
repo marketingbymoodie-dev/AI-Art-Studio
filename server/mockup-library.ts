@@ -18,6 +18,76 @@ export const DEFAULT_PRINT_FRACTIONS = {
   rotationDeg: 0,
 } as const;
 
+/** Printify placeholder pixels are 300 DPI. The October drawing used this. */
+export const PRINT_DPI = 300;
+
+/**
+ * Top of the dashed print box on the Gildan technical drawing, in inches
+ * below the garment's topmost point. 0.2074 × the drawing's 29.08 in height.
+ */
+export const MEASURED_PRINT_TOP_IN = 0.2074 * 29.08;
+
+/**
+ * Body length the October probe divided by. 145 is the drawing height that
+ * reproduced the Softstyle fractions. 706 is Comfort Colors 1717 size L,
+ * the first size whose front placeholder is the large 4494×5097 area.
+ */
+const BODY_LENGTH_IN_BY_BLUEPRINT: Record<number, number> = {
+  145: 29.08,
+  706: 29.37,
+};
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+/** Print width, height and top as fractions of garment height H. Rotation stays 0. */
+export function printFractionsForBody(args: {
+  printWidthPx: number;
+  printHeightPx: number;
+  bodyLengthIn: number;
+  printTopIn?: number;
+}): PrintFractions {
+  if (!(args.bodyLengthIn > 0) || !(args.printWidthPx > 0) || !(args.printHeightPx > 0)) {
+    throw new Error("Print area and garment length are required");
+  }
+  const topIn = args.printTopIn ?? MEASURED_PRINT_TOP_IN;
+  return {
+    widthOfH: round4(args.printWidthPx / PRINT_DPI / args.bodyLengthIn),
+    heightOfH: round4(args.printHeightPx / PRINT_DPI / args.bodyLengthIn),
+    topOfH: round4(topIn / args.bodyLengthIn),
+    rotationDeg: 0,
+  };
+}
+
+export function calibratedPrintFractions(args: {
+  blueprintId: number | null;
+  printWidthPx: number;
+  printHeightPx: number;
+}): (PrintFractions & { bodyLengthIn: number }) | null {
+  const bodyLengthIn = args.blueprintId ? BODY_LENGTH_IN_BY_BLUEPRINT[args.blueprintId] : undefined;
+  if (!bodyLengthIn) return null;
+  return { ...printFractionsForBody({ ...args, bodyLengthIn }), bodyLengthIn };
+}
+
+/** Calibrated rect minus the placed rect, in pixels of the mockup. */
+export function printRectOffset(
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  placed: PrintFractions,
+  calibrated: PrintFractions,
+): { left: number; top: number; width: number; height: number } {
+  const from = printRectForMask(mask, w, h, placed);
+  const to = printRectForMask(mask, w, h, calibrated);
+  return {
+    left: to.left - from.left,
+    top: to.top - from.top,
+    width: to.width - from.width,
+    height: to.height - from.height,
+  };
+}
+
 export type PrintFractions = {
   widthOfH: number;
   heightOfH: number;

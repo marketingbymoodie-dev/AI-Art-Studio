@@ -37,7 +37,21 @@ type Cell = {
 
 type Placement = { widthOfH: number; heightOfH: number; topOfH: number };
 
-type Scene = { panelId: string; label: string; isDefault: boolean; placement: Placement | null; cells: Cell[] };
+type Scene = {
+  panelId: string;
+  label: string;
+  isDefault: boolean;
+  placement: Placement | null;
+  placementOffsetPx: { left: number; top: number; width: number; height: number } | null;
+  cells: Cell[];
+};
+
+type Calibration = {
+  placement: Placement;
+  printWidthPx: number;
+  printHeightPx: number;
+  bodyLengthIn: number;
+};
 
 type SceneBounds = { minX: number; minY: number; maxX: number; maxY: number; centre: number; H: number };
 
@@ -60,6 +74,7 @@ function asFinish(value: string): Finish {
 type Grid = {
   productType: { id: number; name: string };
   types: Array<{ id: number; name: string }>;
+  calibration: Calibration | null;
   colours: Colour[];
   scenes: Scene[];
 };
@@ -88,6 +103,11 @@ type Preview = {
   width?: number;
   height?: number;
 };
+
+function px(value: number): string {
+  const n = Math.round(value);
+  return `${n > 0 ? "+" : ""}${n} px`;
+}
 
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "colour";
@@ -172,21 +192,30 @@ function FlickerFrame({ upload, master, testId }: { upload: string; master: stri
   );
 }
 
+function boxPercent(bounds: SceneBounds, width: number, height: number, placement: Placement) {
+  const boxW = placement.widthOfH * bounds.H;
+  const boxH = placement.heightOfH * bounds.H;
+  return {
+    left: ((bounds.centre - boxW / 2) / width) * 100,
+    top: ((bounds.minY + placement.topOfH * bounds.H) / height) * 100,
+    width: (boxW / width) * 100,
+    height: (boxH / height) * 100,
+  };
+}
+
 function PlacementEditor({
   draft,
+  guide,
   onChange,
 }: {
   draft: SceneDraft;
+  guide: Placement | null;
   onChange: (placement: Placement) => void;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const { bounds, width, height, placement } = draft;
-  const boxW = placement.widthOfH * bounds.H;
-  const boxH = placement.heightOfH * bounds.H;
-  const left = ((bounds.centre - boxW / 2) / width) * 100;
-  const top = ((bounds.minY + placement.topOfH * bounds.H) / height) * 100;
-  const boxWidth = (boxW / width) * 100;
-  const boxHeight = (boxH / height) * 100;
+  const box = boxPercent(bounds, width, height, placement);
+  const guideBox = guide ? boxPercent(bounds, width, height, guide) : null;
 
   function drag(mode: "move" | "resize", event: ReactPointerEvent) {
     event.preventDefault();
@@ -222,9 +251,16 @@ function PlacementEditor({
   return (
     <div ref={frame} className="relative mx-auto w-full max-w-[420px]" data-testid="colour-scene-placement">
       <img src={draft.preview} alt="" className="w-full bg-neutral-800" />
+      {guideBox ? (
+        <div
+          className="pointer-events-none absolute border-2 border-dashed border-amber-400"
+          style={{ left: `${guideBox.left}%`, top: `${guideBox.top}%`, width: `${guideBox.width}%`, height: `${guideBox.height}%` }}
+          data-testid="colour-scene-calibrated"
+        />
+      ) : null}
       <div
         className="absolute border-2 border-sky-500 bg-sky-400/20"
-        style={{ left: `${left}%`, top: `${top}%`, width: `${boxWidth}%`, height: `${boxHeight}%` }}
+        style={{ left: `${box.left}%`, top: `${box.top}%`, width: `${box.width}%`, height: `${box.height}%` }}
         onPointerDown={(event) => drag("move", event)}
       >
         <span
@@ -616,7 +652,7 @@ export default function ColourBlanksPage() {
         width: body.width,
         height: body.height,
         bounds: body.bounds,
-        placement: body.placement,
+        placement: grid.data?.calibration?.placement ?? body.placement,
         note: body.touchesEdge ? "The shirt touches the edge of the photo." : "",
       });
       setStatus(`Preview is ${body.width}×${body.height}. Nothing is stored until you approve the scene.`);
@@ -749,8 +785,20 @@ export default function ColourBlanksPage() {
               />
               <PlacementEditor
                 draft={sceneDraft}
+                guide={data?.calibration?.placement ?? null}
                 onChange={(placement) => setSceneDraft({ ...sceneDraft, placement })}
               />
+              {data?.calibration ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  data-testid="colour-scene-autoplace"
+                  onClick={() => setSceneDraft({ ...sceneDraft, placement: data.calibration!.placement })}
+                >
+                  Auto-place from calibration
+                </Button>
+              ) : null}
               <label className="block text-xs">
                 Copy placement{" "}
                 <select
@@ -962,6 +1010,11 @@ export default function ColourBlanksPage() {
                   <th className="sticky left-0 z-10 border-t bg-background p-2 text-left font-medium">
                     {scene.label || scene.panelId}
                     {scene.isDefault ? <span className="mt-1 block font-normal text-muted-foreground">Default</span> : null}
+                    {scene.placementOffsetPx ? (
+                      <span className="mt-1 block max-w-48 font-normal text-muted-foreground" data-testid={`colour-scene-offset-${slug(scene.panelId)}`}>
+                        Calibrated minus this box: left {px(scene.placementOffsetPx.left)}, top {px(scene.placementOffsetPx.top)}, width {px(scene.placementOffsetPx.width)}, height {px(scene.placementOffsetPx.height)}. Not saved.
+                      </span>
+                    ) : null}
                     <Button
                       type="button"
                       size="sm"

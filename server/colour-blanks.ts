@@ -16,12 +16,14 @@ import {
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
+import { calibratedPrintFractions, maskFromPng, printRectOffset } from "./mockup-library";
 import {
   approvePaintedBlank,
   approveUploadedBlank,
   panelsForType,
   previewUploadedBlank,
   previewPaintedBlank,
+  readLibraryObject,
   renameStoredBlankColour,
   restoreBlankRevision,
   signedBlankPhoto,
@@ -148,7 +150,7 @@ async function ensureComfortColorsType(): Promise<void> {
     .from(productTypes)
     .where(eq(productTypes.printifyBlueprintId, COMFORT_BLUEPRINT))
     .limit(1);
-  if (existing) return;
+  if (!existing) {
   const [soft] = await db
     .select({
       merchantId: productTypes.merchantId,
@@ -171,11 +173,61 @@ async function ensureComfortColorsType(): Promise<void> {
     sizeType: soft?.sizeType || "apparel",
     sizes: JSON.stringify(sizes),
     selectedSizeIds: JSON.stringify(sizes.map((size) => size.id)),
-    printAreaWidth: 3703,
-    printAreaHeight: 4200,
-    placeholderPositions: JSON.stringify([{ position: "front", width: 3703, height: 4200 }]),
-    aspectRatio: "1:1",
+    printAreaWidth: COMFORT_FRONT.width,
+    printAreaHeight: COMFORT_FRONT.height,
+    placeholderPositions: comfortPlaceholderPositions(),
+    aspectRatio: "3:4",
   });
+  }
+  await correctComfortPrintArea();
+}
+
+/**
+ * L–4XL front on Printify Choice. Size S is 3703×4200 and size M is 4107×4658.
+ * The first catalog variant is S, which is what the original insert copied.
+ * Import keeps the largest placeholder. This corrects only that stored S size.
+ */
+const COMFORT_FRONT = { width: 4494, height: 5097 };
+
+function comfortPlaceholderPositions(): string {
+  return JSON.stringify([
+    { position: "front", ...COMFORT_FRONT },
+    { position: "back", ...COMFORT_FRONT },
+  ]);
+}
+
+function frontPrintPx(raw: string | null): { width: number; height: number } | null {
+  try {
+    const list = JSON.parse(raw || "[]") as Array<{ position?: string; width?: number; height?: number }>;
+    const front = list.find((row) => String(row?.position || "").toLowerCase() === "front");
+    const width = Math.round(Number(front?.width));
+    const height = Math.round(Number(front?.height));
+    if (width > 0 && height > 0) return { width, height };
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function correctComfortPrintArea(): Promise<void> {
+  const [row] = await db
+    .select({
+      id: productTypes.id,
+      positions: productTypes.placeholderPositions,
+    })
+    .from(productTypes)
+    .where(eq(productTypes.printifyBlueprintId, COMFORT_BLUEPRINT))
+    .limit(1);
+  if (!row) return;
+  const front = frontPrintPx(row.positions);
+  if (front?.width === COMFORT_FRONT.width && front?.height === COMFORT_FRONT.height) return;
+  if (!(front?.width === 3703 && front?.height === 4200)) return;
+  await db.update(productTypes).set({
+    printAreaWidth: COMFORT_FRONT.width,
+    printAreaHeight: COMFORT_FRONT.height,
+    placeholderPositions: comfortPlaceholderPositions(),
+    aspectRatio: "3:4",
+  }).where(eq(productTypes.id, row.id));
 }
 
 async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
@@ -402,10 +454,19 @@ export async function prepareColourBlanks(productTypeId: number): Promise<void> 
 export async function colourBlankGrid(productTypeId: number) {
   await prepareColourBlanks(productTypeId);
   const [typeRow] = await db
-    .select({ id: productTypes.id, name: productTypes.name })
+    .select({
+      id: productTypes.id,
+      name: productTypes.name,
+      blueprint: productTypes.printifyBlueprintId,
+      positions: productTypes.placeholderPositions,
+    })
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
+  const front = frontPrintPx(typeRow?.positions ?? null);
+  const calibrated = front
+    ? calibratedPrintFractions({ blueprintId: typeRow?.blueprint ?? null, printWidthPx: front.width, printHeightPx: front.height })
+    : null;
   const known = await db
     .select({ id: productTypes.id, name: productTypes.name })
     .from(productTypes)
@@ -498,9 +559,36 @@ export async function colourBlankGrid(productTypeId: number) {
           heightOfH: Number(master.printHeightOfH),
           topOfH: Number(master.printTopOfH),
         } : null,
+        maskPath: master?.maskPath ?? null,
+        photoWidth: master?.width ?? null,
+        photoHeight: master?.height ?? null,
         cells,
       };
     });
+
+  const scenesWithOffset = await Promise.all(scenes.map(async (scene) => {
+    let placementOffsetPx: { left: number; top: number; width: number; height: number } | null = null;
+    const moved = calibrated && scene.placement && (
+      scene.placement.widthOfH !== calibrated.widthOfH
+      || scene.placement.heightOfH !== calibrated.heightOfH
+      || scene.placement.topOfH !== calibrated.topOfH
+    );
+    if (moved && scene.maskPath && scene.photoWidth && scene.photoHeight) {
+      try {
+        const mask = await maskFromPng(await readLibraryObject(scene.maskPath), scene.photoWidth, scene.photoHeight);
+        placementOffsetPx = printRectOffset(mask, scene.photoWidth, scene.photoHeight, {
+          widthOfH: scene.placement.widthOfH,
+          heightOfH: scene.placement.heightOfH,
+          topOfH: scene.placement.topOfH,
+          rotationDeg: 0,
+        }, calibrated);
+      } catch {
+        placementOffsetPx = null;
+      }
+    }
+    const { maskPath: _mask, photoWidth: _w, photoHeight: _h, ...rest } = scene;
+    return { ...rest, placementOffsetPx };
+  }));
 
   await Promise.all(scenes.flatMap((scene) => scene.cells.filter((cell) => cell.storagePath).map(async (cell) => {
     try {
@@ -514,8 +602,14 @@ export async function colourBlankGrid(productTypeId: number) {
   return {
     productType: { id: productTypeId, name: typeRow?.name || (productTypeId === 54 ? "Unisex Softstyle T-Shirt" : `Type ${productTypeId}`) },
     types: known.map((row) => ({ id: row.id, name: row.name })),
+    calibration: calibrated && front ? {
+      placement: { widthOfH: calibrated.widthOfH, heightOfH: calibrated.heightOfH, topOfH: calibrated.topOfH },
+      printWidthPx: front.width,
+      printHeightPx: front.height,
+      bodyLengthIn: calibrated.bodyLengthIn,
+    } : null,
     colours,
-    scenes,
+    scenes: scenesWithOffset,
   };
 }
 

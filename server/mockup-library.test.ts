@@ -3,11 +3,14 @@ import {
   MASK_BACKGROUND_MAX_MEAN,
   backgroundAgrees,
   chooseSceneReference,
+  DEFAULT_PRINT_FRACTIONS,
   describeWhiteSegment,
   photoExposedWarmTint,
   printifyPlacementForInk,
   recolorGarment,
+  calibratedPrintFractions,
   missingPanelMessage,
+  printFractionsForBody,
   printRectForMask,
   resolvePanelColour,
   segmentGarmentNearHex,
@@ -54,6 +57,24 @@ describe("mockup library", () => {
     expect(rect.width).toBe(Math.round(0.4415 * 100));
     expect(rect.top).toBe(20 + Math.round(0.2074 * 100));
     expect(Math.abs(rect.left + rect.width / 2 - 49.5)).toBeLessThan(1);
+  });
+
+  it("reproduces the Softstyle fractions from the 3852×4398 print and the 29.08 in drawing", () => {
+    expect(printFractionsForBody({ printWidthPx: 3852, printHeightPx: 4398, bodyLengthIn: 29.08 })).toEqual({
+      widthOfH: DEFAULT_PRINT_FRACTIONS.widthOfH,
+      heightOfH: DEFAULT_PRINT_FRACTIONS.heightOfH,
+      topOfH: DEFAULT_PRINT_FRACTIONS.topOfH,
+      rotationDeg: 0,
+    });
+  });
+
+  it("sizes Comfort Colors from the size L print area and the size L body length", () => {
+    expect(calibratedPrintFractions({ blueprintId: 706, printWidthPx: 4494, printHeightPx: 5097 })).toMatchObject({
+      widthOfH: 0.51,
+      heightOfH: 0.5785,
+      topOfH: 0.2054,
+      bodyLengthIn: 29.37,
+    });
   });
 
   it("segments a coloured garment from its hex and leaves the tan mat out", () => {
