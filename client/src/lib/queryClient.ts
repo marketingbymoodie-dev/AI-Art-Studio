@@ -79,23 +79,76 @@ export function isSessionAuthError(raw: unknown): boolean {
 // apiFetch — attach a fresh App Bridge session token when available.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const SESSION_401_KEY = "appai-admin-session-401";
+
+function sessionExpiredResponse(): Response {
+  return new Response(JSON.stringify({ message: "Unauthorized: missing session token" }), {
+    status: 401,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** A real 401 makes App Bridge reload the iframe, which fires the same request again. */
+function recentNetwork401(): boolean {
+  try {
+    const at = Number(sessionStorage.getItem(SESSION_401_KEY) || 0);
+    return Number.isFinite(at) && Date.now() - at < 20_000;
+  } catch {
+    return false;
+  }
+}
+
+function markNetwork401(): void {
+  try {
+    sessionStorage.setItem(SESSION_401_KEY, String(Date.now()));
+  } catch {
+    /* private mode */
+  }
+}
+
+function clearNetwork401(): void {
+  try {
+    sessionStorage.removeItem(SESSION_401_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {},
   attempts = 2,
 ): Promise<Response> {
   let res!: Response;
+  let previousToken: string | null = null;
+  const adminNeedsToken =
+    typeof window !== "undefined" &&
+    window.location.pathname.startsWith("/admin") &&
+    !openedOutsideShopify() &&
+    shopifyIdToken() != null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt - 1)));
+    const token = await getFreshShopifySessionToken();
+    // A tokenless request 401s, and App Bridge treats that 401 as a reason to
+    // reload the iframe. The reload fires the same request again. Don't send it.
+    if (adminNeedsToken && (!token || recentNetwork401())) return sessionExpiredResponse();
+    if (attempt > 1 && token === previousToken) {
+      if (res?.status === 401) markNetwork401();
+      return res;
+    }
+    previousToken = token;
     const headers = new Headers(init.headers);
     if (init.body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const token = await getFreshShopifySessionToken();
     if (token) headers.set("Authorization", `Bearer ${token}`);
     res = await fetch(input, { ...init, headers, credentials: "include" });
-    if (res.status !== 401) return res;
+    if (res.status !== 401) {
+      clearNetwork401();
+      return res;
+    }
   }
+  if (res.status === 401) markNetwork401();
   return res;
 }
 

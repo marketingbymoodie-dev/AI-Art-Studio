@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { apiFetch } from "@/lib/queryClient";
+import { apiFetch, isSessionAuthError } from "@/lib/queryClient";
 
 type Finish = "solid" | "heather" | "produced";
 
@@ -133,6 +133,29 @@ class CellErrorBoundary extends Component<{ resetKey: string; children: ReactNod
   }
 }
 
+class SectionErrorBoundary extends Component<{ title: string; resetKey: string; children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error: error?.message || "This section failed." };
+  }
+
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <p className="rounded-md border border-destructive/40 p-3 text-sm text-destructive" data-testid="colour-section-error">
+          {this.props.title}: {this.state.error}
+        </p>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function FlickerFrame({ upload, master, testId }: { upload: string; master: string; testId: string }) {
   const [showMaster, setShowMaster] = useState(false);
   useEffect(() => {
@@ -231,13 +254,32 @@ export default function ColourBlanksPage() {
   const [busy, setBusy] = useState("");
   const [sceneDraft, setSceneDraft] = useState<SceneDraft | null>(null);
   const [activeOnly, setActiveOnly] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const uploads = useRef(new Set<string>());
+
+  function noteSession(res: Response, message: string): string {
+    if (res.status === 401 || isSessionAuthError(message)) {
+      setSessionExpired(true);
+      return "session expired, reload";
+    }
+    return message;
+  }
+
+  async function readOk(res: Response): Promise<void> {
+    if (res.ok) return;
+    throw new Error(noteSession(res, await readError(res)));
+  }
 
   const grid = useQuery<Grid>({
     queryKey: ["/api/platform/catalogue-studio/colour-blanks", typeId],
+    enabled: !sessionExpired,
+    retry: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     queryFn: async () => {
       const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks?productTypeId=${typeId}`);
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       return res.json();
     },
   });
@@ -260,7 +302,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ active }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       await grid.refetch();
       setStatus(active ? `${colour.name} is active.` : `${colour.name} is hidden from the grid, Studio, and the storefront.`);
     } catch (e: any) {
@@ -285,7 +327,7 @@ export default function ColourBlanksPage() {
           linkStoredName: colour.linkStoredName,
         }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       await grid.refetch();
       setStatus(`Saved ${colour.name}. Stored blanks were not renamed.`);
     } catch (e: any) {
@@ -312,7 +354,7 @@ export default function ColourBlanksPage() {
           linkStoredName: String(data.get("linkStoredName") || ""),
         }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       form.reset();
       await grid.refetch();
       setStatus("Colour added. No blanks were created.");
@@ -332,7 +374,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id, panelId }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json() as { jpegBase64: string };
       setPreviews((current) => ({
         ...current,
@@ -358,7 +400,7 @@ export default function ColourBlanksPage() {
           method: "POST",
           body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
         });
-        if (!res.ok) throw new Error(await readError(res));
+        await readOk(res);
         const body = await res.json() as { jpegBase64: string };
         next[cellKey(pair.panelId, pair.colour.id)] = { kind: "paint", src: `data:image/jpeg;base64,${body.jpegBase64}` };
         setPreviews({ ...next });
@@ -381,7 +423,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id, panelId }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       setPreviews((current) => {
         const copy = { ...current };
         delete copy[key];
@@ -405,7 +447,7 @@ export default function ColourBlanksPage() {
           method: "POST",
           body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
         });
-        if (!res.ok) throw new Error(await readError(res));
+        await readOk(res);
       }
       setPreviews((current) => {
         const copy = { ...current };
@@ -433,7 +475,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json() as {
         jpegBase64: string;
         overlayJpegBase64: string;
@@ -487,7 +529,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: preview.raw, confirmMask }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json() as { stored?: boolean; needsConfirm?: boolean; message?: string };
       if (body.needsConfirm) {
         setPreviews((current) => ({ ...current, [key]: { ...preview, confirm: body.message } }));
@@ -517,7 +559,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ colourId: colour.id }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json() as { rows: number; scenes: number };
       await grid.refetch();
       setStatus(`Linked ${body.rows} blanks on ${body.scenes} scenes as ${colour.name}.`);
@@ -531,7 +573,7 @@ export default function ColourBlanksPage() {
   async function showHistory(rowId: string) {
     const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/rows/${rowId}`);
     if (!res.ok) {
-      setStatus(await readError(res));
+      setStatus(noteSession(res, await readError(res)));
       return;
     }
     const body = await res.json() as { url: string };
@@ -546,7 +588,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ rowId: row.id }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       await grid.refetch();
       setStatus(`Rolled ${row.name} back. The newer copy is still in history.`);
     } catch (e: any) {
@@ -565,7 +607,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ imageBase64: raw }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json();
       setSceneDraft({
         name: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Scene",
@@ -601,7 +643,7 @@ export default function ColourBlanksPage() {
           topOfH: sceneDraft.placement.topOfH,
         }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       const body = await res.json();
       setSceneDraft(null);
       await grid.refetch();
@@ -621,7 +663,7 @@ export default function ColourBlanksPage() {
         method: "POST",
         body: JSON.stringify({ productTypeId: typeId, panelId: scene.panelId }),
       });
-      if (!res.ok) throw new Error(await readError(res));
+      await readOk(res);
       await grid.refetch();
       setStatus(`Deleted ${scene.label || scene.panelId}.`);
     } catch (e: any) {
@@ -674,9 +716,11 @@ export default function ColourBlanksPage() {
           ) : null}
         </div>
 
-        {status ? <p className="text-sm" data-testid="colour-blanks-status">{status}</p> : null}
-        {grid.error ? <p className="text-sm text-destructive">{String((grid.error as Error).message || grid.error)}</p> : null}
+        {sessionExpired ? <p className="text-sm" data-testid="colour-blanks-session">session expired, reload</p> : null}
+        {status && !sessionExpired ? <p className="text-sm" data-testid="colour-blanks-status">{status}</p> : null}
+        {grid.error && !sessionExpired ? <p className="text-sm text-destructive">{String((grid.error as Error).message || grid.error)}</p> : null}
 
+        <SectionErrorBoundary title="Add scene" resetKey={String(typeId)}>
         <div className="rounded-md border p-3" data-testid="colour-scene-add">
           <p className="text-sm font-medium">Add scene</p>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -731,6 +775,7 @@ export default function ColourBlanksPage() {
             </div>
           ) : null}
         </div>
+        </SectionErrorBoundary>
 
         <details className="rounded-md border p-3" open>
           <summary className="cursor-pointer text-sm font-medium">Colour list</summary>
@@ -857,6 +902,7 @@ export default function ColourBlanksPage() {
           </div>
         ))}
 
+        <SectionErrorBoundary title="Colour grid" resetKey={String(typeId)}>
         <div className="flex flex-wrap gap-2">
           <Button
             type="button"
@@ -1048,6 +1094,7 @@ export default function ColourBlanksPage() {
             </tbody>
           </table>
         </div>
+        </SectionErrorBoundary>
       </div>
     </AdminLayout>
   );

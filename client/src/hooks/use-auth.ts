@@ -9,7 +9,7 @@ async function logout(): Promise<void> {
 export function useAuth() {
   const queryClient = useQueryClient();
 
-  const { data: user, error, status, fetchStatus } = useQuery<User | null>({
+  const { data: user, status } = useQuery<User | null>({
     queryKey: ["/api/auth/user"],
     queryFn: getQueryFn<User | null>({ on401: "returnNull" }),
     retry: false,
@@ -18,9 +18,6 @@ export function useAuth() {
 
   // Pending is not logged-out. A 401 only counts once this request has settled.
   const isLoading = status !== "success" && status !== "error";
-
-  // Debug logging
-  console.log("[useAuth] state:", { user: user ? "exists" : "null", isLoading, status, fetchStatus, error: error?.message });
 
   const logoutMutation = useMutation({
     mutationFn: logout,
