@@ -416,6 +416,7 @@ async function colourUseIndex(productTypeId: number): Promise<Map<string, Colour
 }
 
 export async function inactiveColourKeys(productTypeId: number): Promise<Set<string>> {
+  productTypeId = await blankLibraryTypeId(productTypeId);
   await ensureColourBlankTable();
   const rows = await db
     .select({ name: mockupLibraryColours.name })
@@ -438,6 +439,29 @@ export async function setColourActive(id: string, active: boolean) {
   return { id, active };
 }
 
+/** Photographs and the colour list live on this id. A linked type reads the source and does not own a copy. */
+export async function blankLibraryTypeId(productTypeId: number): Promise<number> {
+  const [row] = await db
+    .select({ source: productTypes.blankSourceProductTypeId })
+    .from(productTypes)
+    .where(eq(productTypes.id, productTypeId))
+    .limit(1);
+  const source = Number(row?.source);
+  if (!Number.isInteger(source) || source <= 0 || source === productTypeId) return productTypeId;
+  const [owner] = await db
+    .select({ id: productTypes.id })
+    .from(productTypes)
+    .where(eq(productTypes.id, source))
+    .limit(1);
+  return owner ? source : productTypeId;
+}
+
+export async function assertBlankLibraryWritable(productTypeId: number): Promise<void> {
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  if (libraryId === productTypeId) return;
+  throw new Error(`These blanks belong to product type ${libraryId}. Paint and approve them there. This page shows that set as soon as it changes.`);
+}
+
 export async function prepareColourBlanks(productTypeId: number): Promise<void> {
   await ensureColourBlankTable();
   await ensureComfortColorsType().catch((err) => {
@@ -452,7 +476,8 @@ export async function prepareColourBlanks(productTypeId: number): Promise<void> 
 }
 
 export async function colourBlankGrid(productTypeId: number) {
-  await prepareColourBlanks(productTypeId);
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  await prepareColourBlanks(libraryId);
   const [typeRow] = await db
     .select({
       id: productTypes.id,
@@ -463,6 +488,13 @@ export async function colourBlankGrid(productTypeId: number) {
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
+  const [libraryRow] = libraryId === productTypeId
+    ? [typeRow]
+    : await db
+      .select({ id: productTypes.id, name: productTypes.name })
+      .from(productTypes)
+      .where(eq(productTypes.id, libraryId))
+      .limit(1);
   const front = frontPrintPx(typeRow?.positions ?? null);
   const calibrated = front
     ? calibratedPrintFractions({ blueprintId: typeRow?.blueprint ?? null, printWidthPx: front.width, printHeightPx: front.height })
@@ -474,10 +506,10 @@ export async function colourBlankGrid(productTypeId: number) {
   const colourRows = await db
     .select()
     .from(mockupLibraryColours)
-    .where(eq(mockupLibraryColours.productTypeId, productTypeId))
+    .where(eq(mockupLibraryColours.productTypeId, libraryId))
     .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
-  const useIndex = await colourUseIndex(productTypeId);
-  const panels = await panelsForType(productTypeId);
+  const useIndex = await colourUseIndex(libraryId);
+  const panels = await panelsForType(libraryId);
   const storedNames = [...new Set(panels.map((row) => row.garmentColor))];
   const colours = colourRows.map((row) => {
     const match = blankNameMatch(row.name, row.linkStoredName, storedNames);
@@ -601,6 +633,7 @@ export async function colourBlankGrid(productTypeId: number) {
 
   return {
     productType: { id: productTypeId, name: typeRow?.name || (productTypeId === 54 ? "Unisex Softstyle T-Shirt" : `Type ${productTypeId}`) },
+    sharedFrom: libraryId === productTypeId ? null : { id: libraryId, name: libraryRow?.name || `Type ${libraryId}` },
     types: known.map((row) => ({ id: row.id, name: row.name })),
     calibration: calibrated && front ? {
       placement: { widthOfH: calibrated.widthOfH, heightOfH: calibrated.heightOfH, topOfH: calibrated.topOfH },

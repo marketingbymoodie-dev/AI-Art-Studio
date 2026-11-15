@@ -455,10 +455,12 @@ export async function promoteCatalogueCandidate(args: {
   const panelColours: string[] = [];
   if (choice.panelId) {
     const { mockupPanels } = await import("@shared/schema");
+    const { blankLibraryTypeId } = await import("./colour-blanks");
+    const libraryId = await blankLibraryTypeId(args.productTypeId);
     const rows = await db
       .select({ garmentColor: mockupPanels.garmentColor, garmentHex: mockupPanels.garmentHex, kind: mockupPanels.kind })
       .from(mockupPanels)
-      .where(and(eq(mockupPanels.productTypeId, args.productTypeId), eq(mockupPanels.panelId, choice.panelId)));
+      .where(and(eq(mockupPanels.productTypeId, libraryId), eq(mockupPanels.panelId, choice.panelId)));
     const scene: PanelColour[] = rows.map((row) => ({
       name: row.garmentColor,
       hex: row.garmentHex,
@@ -907,18 +909,22 @@ export async function promoteCatalogueCandidate(args: {
       await publishCatalogueProductToOnlineStore(shop, installation!.accessToken, shopifyProductId);
     }
     const now = new Date();
-    await db.update(designCandidates).set({
-      status: status === "active" ? "promoted" : "draft",
-      shopifyProductId,
-      printifyProductId,
-      designProductId: designProduct?.id ?? null,
-      updatedAt: now,
-    }).where(eq(designCandidates.id, args.candidateId));
-    await db.update(catalogueCandidateChoices).set({
-      shopifyProductId,
-      printifyProductId,
-      updatedAt: now,
-    }).where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+    const candidateShop = normalizeMyshopifyShopDomain(String(candidate?.shopDomain || ""));
+    const sameShop = !candidateShop || candidateShop === shopDomain;
+    if (sameShop) {
+      await db.update(designCandidates).set({
+        status: status === "active" ? "promoted" : "draft",
+        shopifyProductId,
+        printifyProductId,
+        designProductId: designProduct?.id ?? null,
+        updatedAt: now,
+      }).where(eq(designCandidates.id, args.candidateId));
+      await db.update(catalogueCandidateChoices).set({
+        shopifyProductId,
+        printifyProductId,
+        updatedAt: now,
+      }).where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+    }
   } catch (err) {
     await rollback();
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);

@@ -181,10 +181,12 @@ async function studioGarment(raw: unknown): Promise<{ id: number; name: string }
 }
 
 async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: string; hex: string }>> {
-  if (productTypeId === 54) return [];
+  const { blankLibraryTypeId, ensureColourBlankTable } = await import("../colour-blanks");
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  if (libraryId === 54) return [];
   const { db } = await import("../db");
-  const { ensureColourBlankTable } = await import("../colour-blanks");
   await ensureColourBlankTable();
+  productTypeId = libraryId;
   const rows = await db
     .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
     .from(mockupLibraryColours)
@@ -198,8 +200,9 @@ async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: s
 
 async function studioScenes(productTypeId: number) {
   const { colourMatchKeys } = await import("@shared/colourBlanks");
-  const { inactiveColourKeys } = await import("../colour-blanks");
-  const [scenes, hidden] = await Promise.all([listScenes(productTypeId), inactiveColourKeys(productTypeId)]);
+  const { blankLibraryTypeId, inactiveColourKeys } = await import("../colour-blanks");
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  const [scenes, hidden] = await Promise.all([listScenes(libraryId), inactiveColourKeys(libraryId)]);
   if (!hidden.size) return scenes;
   return scenes.map((scene) => ({
     ...scene,

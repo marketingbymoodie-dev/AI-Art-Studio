@@ -6,6 +6,7 @@ import type { Express, RequestHandler, Response } from "express";
 import { requirePlatformAdmin } from "../platformAdmin";
 import {
   approveColourBlank,
+  assertBlankLibraryWritable,
   colourBlankGrid,
   createColourBlank,
   linkColourBlank,
@@ -29,6 +30,23 @@ function typeId(raw: unknown): number {
   return Number.isInteger(id) && id > 0 ? id : 54;
 }
 
+function explicitTypeId(raw: unknown): number | null {
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+async function linkedWriteBlocked(raw: unknown, res: Response): Promise<boolean> {
+  const id = explicitTypeId(raw);
+  if (!id) return false;
+  try {
+    await assertBlankLibraryWritable(id);
+    return false;
+  } catch (e: any) {
+    res.status(409).json({ error: String(e?.message || e) });
+    return true;
+  }
+}
+
 export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
   const { isAuthenticated } = deps;
 
@@ -44,6 +62,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.patch("/api/platform/catalogue-studio/colour-blanks/colours/:id", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       const option = req.body?.printifyOptionId;
       res.json(await saveColourBlank(String(req.params.id), {
         name: String(req.body?.name || ""),
@@ -61,6 +80,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/colours/:id/active", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await setColourActive(String(req.params.id), req.body?.active === true));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -70,6 +90,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/colours", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       const option = req.body?.printifyOptionId;
       res.json(await createColourBlank(typeId(req.body?.productTypeId), {
         name: String(req.body?.name || ""),
@@ -87,6 +108,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/paint", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await paintColourBlank(String(req.body?.colourId || ""), String(req.body?.panelId || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -96,6 +118,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/approve", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await approveColourBlank(String(req.body?.colourId || ""), String(req.body?.panelId || ""), operatorId(req)));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -105,6 +128,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/upload-preview", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await previewColourUpload(String(req.body?.colourId || ""), String(req.body?.panelId || ""), String(req.body?.imageBase64 || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -114,6 +138,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/upload", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await uploadColourBlank({
         colourId: String(req.body?.colourId || ""),
         panelId: String(req.body?.panelId || ""),
@@ -129,6 +154,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/link", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await linkColourBlank(String(req.body?.colourId || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -138,6 +164,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/rollback", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await restoreBlankRevision(String(req.body?.rowId || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -156,6 +183,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/scene-delete", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await deleteUnusedScene(typeId(req.body?.productTypeId), String(req.body?.panelId || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -165,6 +193,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/platform/catalogue-studio/colour-blanks/scene-approve", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
+      if (await linkedWriteBlocked(req.body?.productTypeId, res)) return;
       res.json(await approveNewScene({
         productTypeId: typeId(req.body?.productTypeId),
         label: String(req.body?.label || ""),

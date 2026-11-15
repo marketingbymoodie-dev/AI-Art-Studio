@@ -915,6 +915,11 @@ export const productTypes = pgTable("product_types", {
    * front+back costs exist); false = off even with back costs.
    */
   printSidesEnabled: boolean("print_sides_enabled"),
+  /**
+   * Colour-blank photographs and the colour list are read from this product
+   * type. Null means this type owns its blanks. Writes stay on the owner.
+   */
+  blankSourceProductTypeId: integer("blank_source_product_type_id"),
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   printifyCosts: text("printify_costs").default("{}"),
   /**

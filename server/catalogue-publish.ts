@@ -21,6 +21,11 @@ import {
 } from "./mockup-library-store";
 
 const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
+const PETPOSTEROUS_SHOP = "h7epay-gh.myshopify.com";
+
+export function cataloguePublishShopAllowed(shop: string): boolean {
+  return shop === STAGING_SHOP || shop === PETPOSTEROUS_SHOP;
+}
 
 export class PublishRefusal extends Error {
   readonly reasons: string[];
@@ -123,17 +128,6 @@ export async function publishCatalogueCandidate(args: {
   const [stored] = await db.select().from(designCandidates).where(eq(designCandidates.id, recipe.candidateId)).limit(1);
   if (!stored || stored.shopDomain !== STAGING_SHOP) throw new PublishRefusal(["That candidate is not stored."]);
   if (stored.status === "dropped") throw new PublishRefusal(["This candidate was dropped."]);
-  if (stored.shopifyProductId) {
-    const spend = await snapshot(recipe.candidateId);
-    return {
-      shopifyProductId: stored.shopifyProductId,
-      productUrl: shopifyAdminProductUrl(stored.shopDomain, stored.shopifyProductId),
-      status: stored.status,
-      spendUsd: spend.totalUsd,
-      lines: spend.lines,
-    };
-  }
-
   const requestedType = Number(recipe.productTypeId);
   const garment = Number.isInteger(requestedType) && requestedType > 0
     ? { id: requestedType, name: "" }
@@ -149,7 +143,17 @@ export async function publishCatalogueCandidate(args: {
     .limit(1);
   if (!typeRow) throw new PublishRefusal(["That product type was not found."]);
   const shop = String(typeRow.shop || "");
-  if (shop !== STAGING_SHOP) throw new PublishRefusal(["Publishing this candidate is staging only."]);
+  if (!cataloguePublishShopAllowed(shop)) throw new PublishRefusal(["Publishing this candidate is staging only."]);
+  if (stored.shopifyProductId && shop === stored.shopDomain) {
+    const spend = await snapshot(recipe.candidateId);
+    return {
+      shopifyProductId: stored.shopifyProductId,
+      productUrl: shopifyAdminProductUrl(stored.shopDomain, stored.shopifyProductId),
+      status: stored.status,
+      spendUsd: spend.totalUsd,
+      lines: spend.lines,
+    };
+  }
 
   let choice = await readChoice(recipe.candidateId);
   const gaps = recipeGaps(recipe, stored.source);

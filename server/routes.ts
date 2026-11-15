@@ -2514,6 +2514,40 @@ export async function registerRoutes(
     }
   });
 
+  function offeredSizeNames(productType: { sizes?: unknown; selectedSizeIds?: unknown }): string[] {
+    let sizes: unknown = productType.sizes;
+    let selected: unknown = productType.selectedSizeIds;
+    try {
+      if (typeof sizes === "string") sizes = JSON.parse(sizes || "[]");
+      if (typeof selected === "string") selected = JSON.parse(selected || "[]");
+    } catch {
+      return [];
+    }
+    const list = Array.isArray(sizes) ? sizes : [];
+    const ids = Array.isArray(selected) ? selected.map(String) : [];
+    const chosen = ids.length
+      ? list.filter((row: any) => ids.includes(String(row?.id)))
+      : list;
+    return chosen.map((row: any) => String(row?.name || "").trim()).filter(Boolean);
+  }
+
+  function sizeChartForOfferedSizes(chart: Record<string, any> | null, names: string[]): Record<string, any> | null {
+    if (!chart || !Array.isArray(chart.sizes) || names.length === 0) return chart;
+    const wanted = new Set(names.map((name) => name.toLowerCase()));
+    const keep = chart.sizes.map((name: unknown, index: number) => index === 0 || wanted.has(String(name || "").trim().toLowerCase()));
+    if (!keep.some((flag: boolean, index: number) => index > 0 && flag)) return chart;
+    return {
+      ...chart,
+      sizes: chart.sizes.filter((_: unknown, index: number) => keep[index]),
+      rows: Array.isArray(chart.rows)
+        ? chart.rows.map((row: { label?: string; values?: unknown[] }) => ({
+            ...row,
+            values: Array.isArray(row.values) ? row.values.filter((_: unknown, index: number) => keep[index + 1]) : [],
+          }))
+        : chart.rows,
+    };
+  }
+
   async function getNormalizedSizeChartByBlueprintId(blueprintId: number): Promise<Record<string, any> | null> {
     if (!Number.isFinite(blueprintId)) return null;
 
@@ -6840,7 +6874,10 @@ ${orientationExtra}
         : productType.variantMap || {};
 
       const sizeChart = productType.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productType.printifyBlueprintId)
+        ? sizeChartForOfferedSizes(
+            await getNormalizedSizeChartWithTimeout(productType.printifyBlueprintId),
+            offeredSizeNames(productType),
+          )
         : null;
 
       console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
@@ -22483,7 +22520,10 @@ ${orientationExtra}
     const cleanTitle = ((titleOverride && titleOverride.trim()) || buildDefaultDesignProductTitle(job.userPrompt, productType.name)).slice(0, 250);
 
     const sizeChart = productType.printifyBlueprintId
-      ? await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId))
+      ? sizeChartForOfferedSizes(
+          await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId)),
+          offeredSizeNames(productType),
+        )
       : null;
     const bodyHtml = buildDesignProductBodyHtml(productType, buildDesignProductSizeChartHtml(sizeChart), job.userPrompt);
 

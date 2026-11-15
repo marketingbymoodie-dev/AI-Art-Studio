@@ -73,6 +73,7 @@ function asFinish(value: string): Finish {
 
 type Grid = {
   productType: { id: number; name: string };
+  sharedFrom: { id: number; name: string } | null;
   types: Array<{ id: number; name: string }>;
   calibration: Calibration | null;
   colours: Colour[];
@@ -336,7 +337,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/colours/${colour.id}/active`, {
         method: "POST",
-        body: JSON.stringify({ active }),
+        body: JSON.stringify({ active, productTypeId: typeId }),
       });
       await readOk(res);
       await grid.refetch();
@@ -355,6 +356,7 @@ export default function ColourBlanksPage() {
       const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/colours/${colour.id}`, {
         method: "PATCH",
         body: JSON.stringify({
+          productTypeId: typeId,
           name: colour.name,
           printifyTitle: colour.printifyTitle,
           printifyOptionId: colour.printifyOptionId,
@@ -408,7 +410,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/paint", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id, panelId }),
+        body: JSON.stringify({ colourId: colour.id, panelId, productTypeId: typeId }),
       });
       await readOk(res);
       const body = await res.json() as { jpegBase64: string };
@@ -434,7 +436,7 @@ export default function ColourBlanksPage() {
         setStatus(`Painting ${done} of ${pairs.length} (${label})…`);
         const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/paint", {
           method: "POST",
-          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
+          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId, productTypeId: typeId }),
         });
         await readOk(res);
         const body = await res.json() as { jpegBase64: string };
@@ -457,7 +459,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/approve", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id, panelId }),
+        body: JSON.stringify({ colourId: colour.id, panelId, productTypeId: typeId }),
       });
       await readOk(res);
       setPreviews((current) => {
@@ -481,7 +483,7 @@ export default function ColourBlanksPage() {
         setStatus(`Saving ${pair.colour.name} on ${pair.panelId}…`);
         const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/approve", {
           method: "POST",
-          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId }),
+          body: JSON.stringify({ colourId: pair.colour.id, panelId: pair.panelId, productTypeId: typeId }),
         });
         await readOk(res);
       }
@@ -509,7 +511,7 @@ export default function ColourBlanksPage() {
       const raw = await readFile(file);
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload-preview", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw }),
+        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw, productTypeId: typeId }),
       });
       await readOk(res);
       const body = await res.json() as {
@@ -566,7 +568,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw, confirmMask }),
+        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw, confirmMask, productTypeId: typeId }),
       });
       await readOk(res);
       const body = await res.json() as { stored?: boolean; needsConfirm?: boolean; message?: string };
@@ -597,7 +599,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/link", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id }),
+        body: JSON.stringify({ colourId: colour.id, productTypeId: typeId }),
       });
       await readOk(res);
       const body = await res.json() as { rows: number; scenes: number };
@@ -626,7 +628,7 @@ export default function ColourBlanksPage() {
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/rollback", {
         method: "POST",
-        body: JSON.stringify({ rowId: row.id }),
+        body: JSON.stringify({ rowId: row.id, productTypeId: typeId }),
       });
       await readOk(res);
       await grid.refetch();
@@ -714,6 +716,7 @@ export default function ColourBlanksPage() {
   }
 
   const data = grid.data;
+  const readOnly = Boolean(data?.sharedFrom);
   const colours = data?.colours ?? [];
   const scenes = data?.scenes ?? [];
   const gridColours = colours.filter((colour) => colour.active);
@@ -732,7 +735,7 @@ export default function ColourBlanksPage() {
             <input
               type="checkbox"
               checked={colour.active}
-              disabled={busy !== "" || Boolean(colour.lockReason)}
+              disabled={readOnly || busy !== "" || Boolean(colour.lockReason)}
               title={colour.lockReason || (colour.active ? "Shown" : "Hidden")}
               data-testid={`colour-active-${slug(colour.name)}`}
               onChange={(event) => void setColourActive(colour, event.target.checked)}
@@ -774,9 +777,11 @@ export default function ColourBlanksPage() {
             />
           </td>
           <td className="p-1">
-            <Button type="button" size="sm" variant="outline" disabled={busy === colour.id} onClick={() => void saveColour(draft)}>
-              Save
-            </Button>
+            {readOnly ? null : (
+              <Button type="button" size="sm" variant="outline" disabled={busy === colour.id} onClick={() => void saveColour(draft)}>
+                Save
+              </Button>
+            )}
           </td>
         </tr>
       );
@@ -816,11 +821,17 @@ export default function ColourBlanksPage() {
           ) : null}
         </div>
 
+        {data?.sharedFrom ? (
+          <p className="rounded-md border bg-muted p-3 text-sm" data-testid="colour-blanks-shared">
+            These blanks are {data.sharedFrom.name} ({data.sharedFrom.id}), shared by reference.
+            A blank painted or approved on that type shows here immediately. Paint and approve on that type.
+          </p>
+        ) : null}
         {sessionExpired ? <p className="text-sm" data-testid="colour-blanks-session">session expired, reload</p> : null}
         {status && !sessionExpired ? <p className="text-sm" data-testid="colour-blanks-status">{status}</p> : null}
         {grid.error && !sessionExpired ? <p className="text-sm text-destructive">{String((grid.error as Error).message || grid.error)}</p> : null}
 
-        <SectionErrorBoundary title="Add scene" resetKey={String(typeId)}>
+        {readOnly ? null : <SectionErrorBoundary title="Add scene" resetKey={String(typeId)}>
         <div className="rounded-md border p-3" data-testid="colour-scene-add">
           <p className="text-sm font-medium">Add scene</p>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -887,9 +898,9 @@ export default function ColourBlanksPage() {
             </div>
           ) : null}
         </div>
-        </SectionErrorBoundary>
+        </SectionErrorBoundary>}
 
-        {colours.filter((colour) => colour.match === "name-mismatch").map((colour) => (
+        {readOnly ? null : colours.filter((colour) => colour.match === "name-mismatch").map((colour) => (
           <div key={colour.id} className="rounded-md border border-amber-500 bg-amber-50 p-3 text-sm text-amber-950" data-testid={`colour-mismatch-${slug(colour.name)}`}>
             <p>
               <strong>{colour.name}</strong> has no blank with that name.
@@ -904,7 +915,7 @@ export default function ColourBlanksPage() {
         ))}
 
         <SectionErrorBoundary title="Colour grid" resetKey={String(typeId)}>
-        <div className="flex flex-wrap gap-2">
+        {readOnly ? null : <div className="flex flex-wrap gap-2">
           <Button
             type="button"
             size="sm"
@@ -924,7 +935,7 @@ export default function ColourBlanksPage() {
           >
             Approve painted previews ({paintedPairs.length})
           </Button>
-        </div>
+        </div>}
 
         <div className="overflow-x-auto rounded-md border">
           <table className="border-collapse text-xs">
@@ -940,7 +951,7 @@ export default function ColourBlanksPage() {
                     <span className="block font-normal text-muted-foreground">
                       {colour.finish === "heather" ? "Heather" : colour.finish === "produced" ? "Produced" : "Solid"} · #{colour.hex}
                     </span>
-                    {colour.finish === "solid" ? (
+                    {readOnly || colour.finish !== "solid" ? null : (
                       <Button
                         type="button"
                         size="sm"
@@ -952,7 +963,7 @@ export default function ColourBlanksPage() {
                       >
                         Paint column
                       </Button>
-                    ) : null}
+                    )}
                   </th>
                 ))}
               </tr>
@@ -968,6 +979,7 @@ export default function ColourBlanksPage() {
                         Calibrated minus this box: left {px(scene.placementOffsetPx.left)}, top {px(scene.placementOffsetPx.top)}, width {px(scene.placementOffsetPx.width)}, height {px(scene.placementOffsetPx.height)}. Not saved.
                       </span>
                     ) : null}
+                    {readOnly ? null : (
                     <Button
                       type="button"
                       size="sm"
@@ -979,6 +991,7 @@ export default function ColourBlanksPage() {
                     >
                       Delete
                     </Button>
+                    )}
                   </th>
                   {scene.cells.filter((cell) => gridColours.some((colour) => colour.id === cell.colourId)).map((cell) => {
                     const colour = colours.find((item) => item.id === cell.colourId);
@@ -1056,7 +1069,7 @@ export default function ColourBlanksPage() {
                           </div>
                           </CellErrorBoundary>
                         ) : null}
-                        <div className="mt-2 flex flex-wrap gap-1">
+                        {readOnly ? null : <div className="mt-2 flex flex-wrap gap-1">
                           {colour.finish === "solid" ? (
                             <Button type="button" size="sm" variant="outline" data-testid={`colour-paint-${id}`} disabled={busy !== ""} onClick={() => void paintOne(scene.panelId, colour)}>
                               Paint from white master
@@ -1076,7 +1089,7 @@ export default function ColourBlanksPage() {
                               }}
                             />
                           </label>
-                        </div>
+                        </div>}
                         {cell.history.length ? (
                           <details className="mt-2">
                             <summary className="cursor-pointer text-muted-foreground">{cell.history.length} older {cell.history.length === 1 ? "copy" : "copies"}</summary>
@@ -1087,7 +1100,7 @@ export default function ColourBlanksPage() {
                                   <span className="ml-1">
                                     <button type="button" className="underline" onClick={() => void showHistory(row.id)}>Show</button>
                                     {" · "}
-                                    <button type="button" className="underline" data-testid={`colour-rollback-${row.id}`} onClick={() => void rollback(row)}>Roll back</button>
+                                    {readOnly ? null : <button type="button" className="underline" data-testid={`colour-rollback-${row.id}`} onClick={() => void rollback(row)}>Roll back</button>}
                                   </span>
                                   {historyUrl[row.id] ? <img src={historyUrl[row.id]} alt="" className="mt-1 h-20 w-full object-contain bg-white" /> : null}
                                 </li>
@@ -1150,7 +1163,7 @@ export default function ColourBlanksPage() {
               </div>
             </details>
           ) : null}
-          <form
+          {readOnly ? null : <form
             className="mt-3 flex flex-wrap items-end gap-2"
             onSubmit={(event) => {
               event.preventDefault();
@@ -1168,7 +1181,7 @@ export default function ColourBlanksPage() {
             </select>
             <Input name="linkStoredName" placeholder="Stored blank name" className="w-40" />
             <Button type="submit" size="sm" variant="outline" disabled={busy === "add"}>Add colour</Button>
-          </form>
+          </form>}
         </details>
       </div>
     </AdminLayout>
