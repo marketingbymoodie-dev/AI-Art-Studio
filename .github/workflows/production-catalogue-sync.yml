@@ -1,0 +1,35 @@
+name: Production catalogue sync
+
+# Prepared copy of the staging daily sync. The schedule stays commented out
+# until it is explicitly enabled, so this workflow does not run on its own.
+# workflow_dispatch is the only live trigger. GitHub secret
+# PROD_OOS_SCAN_SECRET must match OOS_SCAN_SECRET on the production Railway
+# service (the app reads OOS_SCAN_SECRET). Both routes keep their 20-hour
+# guard, so a manual run and the in-process timers do not double-run.
+on:
+  # schedule:
+  #   - cron: "15 13 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRODUCTION_URL: https://appai-pod-production.up.railway.app
+      OOS_SCAN_SECRET: ${{ secrets.PROD_OOS_SCAN_SECRET }}
+    steps:
+      - name: Product intelligence sync
+        run: |
+          if [ -z "$OOS_SCAN_SECRET" ]; then
+            echo "::error::GitHub secret PROD_OOS_SCAN_SECRET is not set"
+            exit 1
+          fi
+          curl -sfS --max-time 300 -X POST "$PRODUCTION_URL/api/internal/product-intelligence-sync" \
+            -H "x-oos-scan-secret: $OOS_SCAN_SECRET" \
+            -H "x-product-sync-secret: $OOS_SCAN_SECRET"
+
+      - name: OOS catalogue scan
+        run: |
+          curl -sfS --max-time 300 -X POST "$PRODUCTION_URL/api/internal/oos-catalogue-scan" \
+            -H "x-oos-scan-secret: $OOS_SCAN_SECRET"
