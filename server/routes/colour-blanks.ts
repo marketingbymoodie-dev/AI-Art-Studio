@@ -10,6 +10,7 @@ import {
   createColourBlank,
   linkColourBlank,
   paintColourBlank,
+  previewColourUpload,
   restoreBlankRevision,
   saveColourBlank,
   signedBlankPhoto,
@@ -85,6 +86,15 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
     if (!requirePlatformAdmin(req, res)) return;
     try {
       res.json(await approveColourBlank(String(req.body?.colourId || ""), String(req.body?.panelId || ""), operatorId(req)));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/colour-blanks/upload-preview", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json(await previewColourUpload(String(req.body?.colourId || ""), String(req.body?.panelId || ""), String(req.body?.imageBase64 || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

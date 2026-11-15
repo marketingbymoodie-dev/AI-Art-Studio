@@ -4,7 +4,9 @@ import {
   backgroundAgrees,
   chooseSceneReference,
   describeWhiteSegment,
+  photoExposedWarmTint,
   printifyPlacementForInk,
+  recolorGarment,
   missingPanelMessage,
   printRectForMask,
   resolvePanelColour,
@@ -150,5 +152,30 @@ describe("mockup library", () => {
     expect(placed.x).toBeCloseTo(0, 5);
     expect(placed.y).toBeCloseTo(0, 5);
     expect(placed.scale).toBeCloseTo(0.9, 5);
+  });
+
+  it("paints white as the white master and lifts only a warm pale swatch", () => {
+    const white = new Uint8Array([232, 230, 228, 255]);
+    const mask = new Uint8Array([1]);
+    const paintedWhite = recolorGarment(white, 1, 1, mask, "FFFFFF", 232);
+    expect(Array.from(paintedWhite)).toEqual(Array.from(white));
+    expect(photoExposedWarmTint(164, 200, 225, 232)).toBeNull();
+    expect(photoExposedWarmTint(94, 116, 97, 232)).toBeNull();
+    expect(photoExposedWarmTint(213, 0, 50, 232)).toBeNull();
+    expect(photoExposedWarmTint(38, 49, 71, 232)).toBeNull();
+    const natural = photoExposedWarmTint(231, 206, 181, 232);
+    expect(natural).not.toBeNull();
+    const [r, g, b] = natural!;
+    const L = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    expect(L).toBeGreaterThan(236);
+    expect(L).toBeLessThan(246);
+    expect(r).toBeGreaterThan(g);
+    expect(g).toBeGreaterThan(b);
+    const body = recolorGarment(new Uint8Array([232, 232, 232, 255]), 1, 1, mask, "E7CEB5", 232);
+    expect(body[0]).toBeGreaterThan(231);
+    const fold = recolorGarment(new Uint8Array([232, 232, 232, 255, 140, 140, 140, 255]), 2, 1, new Uint8Array([1, 1]), "E7CEB5", 232);
+    const bodyL = 0.2126 * fold[0] + 0.7152 * fold[1] + 0.0722 * fold[2];
+    const foldL = 0.2126 * fold[4] + 0.7152 * fold[5] + 0.0722 * fold[6];
+    expect(foldL).toBeLessThan(bodyL - 20);
   });
 });

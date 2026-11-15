@@ -42,7 +42,29 @@ type Grid = {
   scenes: Scene[];
 };
 
-type Preview = { src: string; kind: "paint" | "upload"; raw?: string; confirm?: string };
+type Alignment = {
+  overlap: number;
+  edgeOffsetPx: number;
+  shiftX: number;
+  shiftY: number;
+  warning: string | null;
+};
+
+type Preview = {
+  src: string;
+  kind: "paint" | "upload";
+  raw?: string;
+  confirm?: string;
+  overlay?: string;
+  master?: string;
+  compare?: "off" | "overlay" | "flicker";
+  alignment?: Alignment;
+  resized?: boolean;
+  fromWidth?: number;
+  fromHeight?: number;
+  width?: number;
+  height?: number;
+};
 
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "colour";
@@ -83,6 +105,7 @@ export default function ColourBlanksPage() {
   const [drafts, setDrafts] = useState<Record<string, Colour>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});
+  const [flickOn, setFlickOn] = useState(true);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState("");
 
@@ -100,6 +123,11 @@ export default function ColourBlanksPage() {
     for (const colour of grid.data?.colours ?? []) next[colour.id] = colour;
     setDrafts(next);
   }, [grid.data]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setFlickOn((on) => !on), 450);
+    return () => window.clearInterval(id);
+  }, []);
 
   function patchDraft(id: string, patch: Partial<Colour>) {
     setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
@@ -257,12 +285,51 @@ export default function ColourBlanksPage() {
   }
 
   async function stageUpload(panelId: string, colour: Colour, file: File) {
+    const key = cellKey(panelId, colour.id);
     const raw = await readFile(file);
-    setPreviews((current) => ({
-      ...current,
-      [cellKey(panelId, colour.id)]: { kind: "upload", src: raw, raw },
-    }));
-    setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}. Nothing is saved until you approve it.`);
+    setBusy(key);
+    setStatus(`Checking ${file.name} against the white master…`);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload-preview", {
+        method: "POST",
+        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json() as {
+        jpegBase64: string;
+        overlayJpegBase64: string;
+        masterJpegBase64: string;
+        resized: boolean;
+        fromWidth: number;
+        fromHeight: number;
+        width: number;
+        height: number;
+        alignment: Alignment;
+      };
+      setPreviews((current) => ({
+        ...current,
+        [key]: {
+          kind: "upload",
+          raw,
+          src: `data:image/jpeg;base64,${body.jpegBase64}`,
+          overlay: `data:image/jpeg;base64,${body.overlayJpegBase64}`,
+          master: `data:image/jpeg;base64,${body.masterJpegBase64}`,
+          compare: "overlay",
+          alignment: body.alignment,
+          resized: body.resized,
+          fromWidth: body.fromWidth,
+          fromHeight: body.fromHeight,
+          width: body.width,
+          height: body.height,
+        },
+      }));
+      const size = body.resized ? ` Scaled from ${body.fromWidth}×${body.fromHeight} to ${body.width}×${body.height}.` : "";
+      setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}.${size} Nothing is saved until you approve it.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function approveUpload(panelId: string, colour: Colour, confirmMask = false) {
@@ -563,8 +630,32 @@ export default function ColourBlanksPage() {
                         ) : null}
                         {preview ? (
                           <div className="mt-2 space-y-1">
-                            <img src={preview.src} alt="" className="h-28 w-full object-contain bg-white" data-testid={`colour-preview-${id}`} />
+                            <img
+                              src={preview.compare === "overlay" && preview.overlay ? preview.overlay : preview.compare === "flicker" && flickOn && preview.master ? preview.master : preview.src}
+                              alt=""
+                              className="h-28 w-full object-contain bg-white"
+                              data-testid={`colour-preview-${id}`}
+                            />
                             <p className="text-muted-foreground">Preview only</p>
+                            {preview.alignment ? (
+                              <div data-testid={`colour-align-${id}`}>
+                                <p>
+                                  {preview.resized ? `Scaled ${preview.fromWidth}×${preview.fromHeight} to ${preview.width}×${preview.height}. ` : "Same size as the white master. "}
+                                  Overlap {Math.round(preview.alignment.overlap * 100)}% · edge {preview.alignment.edgeOffsetPx} px
+                                  {preview.alignment.shiftX || preview.alignment.shiftY ? ` · shift ${preview.alignment.shiftX}, ${preview.alignment.shiftY}` : ""}
+                                </p>
+                                {preview.alignment.warning ? (
+                                  <p className="rounded-sm bg-amber-100 p-1 text-amber-950" data-testid={`colour-align-warn-${id}`}>{preview.alignment.warning}</p>
+                                ) : (
+                                  <p className="text-muted-foreground">Shirt lines up with the white master.</p>
+                                )}
+                                <span className="flex gap-1">
+                                  <button type="button" className="underline" onClick={() => setPreviews((current) => ({ ...current, [key]: { ...preview, compare: "overlay" } }))}>50% overlay</button>
+                                  <button type="button" className="underline" onClick={() => setPreviews((current) => ({ ...current, [key]: { ...preview, compare: "flicker" } }))}>Flicker</button>
+                                  <button type="button" className="underline" onClick={() => setPreviews((current) => ({ ...current, [key]: { ...preview, compare: "off" } }))}>Upload only</button>
+                                </span>
+                              </div>
+                            ) : null}
                             {preview.confirm ? <p>{preview.confirm}</p> : null}
                             {preview.kind === "paint" ? (
                               <Button type="button" size="sm" data-testid={`colour-approve-${id}`} disabled={busy !== ""} onClick={() => void approvePaint(scene.panelId, colour)}>

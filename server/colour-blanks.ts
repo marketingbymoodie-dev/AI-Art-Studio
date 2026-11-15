@@ -17,6 +17,7 @@ import {
   approvePaintedBlank,
   approveUploadedBlank,
   panelsForType,
+  previewUploadedBlank,
   previewPaintedBlank,
   renameStoredBlankColour,
   restoreBlankRevision,
@@ -265,6 +266,11 @@ export async function approveColourBlank(colourId: string, panelId: string, uplo
     garmentHex: colour.hex,
     uploadedBy,
   });
+}
+
+export async function previewColourUpload(colourId: string, panelId: string, imageBase64: string) {
+  const colour = await requireColour(colourId);
+  return previewUploadedBlank({ productTypeId: colour.productTypeId, panelId, imageBase64 });
 }
 
 export async function uploadColourBlank(args: {

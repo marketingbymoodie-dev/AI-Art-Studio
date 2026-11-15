@@ -8,6 +8,7 @@ import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { catalogueCandidateChoices, designCandidates, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
+import { measureGarmentAlignment } from "./blank-alignment";
 import { medianShadingLuminance } from "./mockup-compositor";
 import "./load-env";
 import {
@@ -952,6 +953,61 @@ export async function approvePaintedBlank(args: {
   return { id, panelId: args.panelId };
 }
 
+async function resampleToMaster(photo: Buffer, width: number, height: number): Promise<{ buffer: Buffer; resized: boolean; fromWidth: number; fromHeight: number }> {
+  const meta = await sharp(photo).metadata();
+  const fromWidth = meta.width || 0;
+  const fromHeight = meta.height || 0;
+  if (fromWidth === width && fromHeight === height) return { buffer: photo, resized: false, fromWidth, fromHeight };
+  const buffer = await sharp(photo).resize(width, height, { fit: "fill", kernel: sharp.kernel.lanczos3 }).png().toBuffer();
+  return { buffer, resized: true, fromWidth, fromHeight };
+}
+
+async function loadWhiteMasterPhoto(productTypeId: number, panelId: string) {
+  const white = await loadWhiteMaster(productTypeId, panelId);
+  const whitePhoto = await getObject(white.storagePath);
+  const whiteDecoded = await decodeRgba(whitePhoto);
+  const whiteMask = await maskFromPng(await getObject(white.maskPath), whiteDecoded.width, whiteDecoded.height);
+  return { white, whitePhoto, whiteDecoded, whiteMask };
+}
+
+/** Scales to the white master and scores the shirt. Does not store a row. */
+export async function previewUploadedBlank(args: { productTypeId: number; panelId: string; imageBase64: string }) {
+  const loaded = await loadWhiteMasterPhoto(args.productTypeId, args.panelId);
+  const fitted = await resampleToMaster(decodeImage(args.imageBase64), loaded.whiteDecoded.width, loaded.whiteDecoded.height);
+  const decoded = await decodeRgba(fitted.buffer);
+  const alignment = measureGarmentAlignment(
+    loaded.whiteDecoded.rgba,
+    decoded.rgba,
+    loaded.whiteMask,
+    decoded.width,
+    decoded.height,
+  );
+  const mixed = Buffer.alloc(decoded.rgba.length);
+  const base = loaded.whiteDecoded.rgba;
+  for (let i = 0; i < mixed.length; i += 4) {
+    mixed[i] = Math.round(base[i] * 0.5 + decoded.rgba[i] * 0.5);
+    mixed[i + 1] = Math.round(base[i + 1] * 0.5 + decoded.rgba[i + 1] * 0.5);
+    mixed[i + 2] = Math.round(base[i + 2] * 0.5 + decoded.rgba[i + 2] * 0.5);
+    mixed[i + 3] = 255;
+  }
+  const [jpeg, overlay, master] = await Promise.all([
+    sharp(fitted.buffer).jpeg({ quality: 82 }).toBuffer(),
+    sharp(mixed, { raw: { width: decoded.width, height: decoded.height, channels: 4 } }).jpeg({ quality: 80 }).toBuffer(),
+    sharp(loaded.whitePhoto).jpeg({ quality: 75 }).toBuffer(),
+  ]);
+  return {
+    jpegBase64: jpeg.toString("base64"),
+    overlayJpegBase64: overlay.toString("base64"),
+    masterJpegBase64: master.toString("base64"),
+    width: decoded.width,
+    height: decoded.height,
+    resized: fitted.resized,
+    fromWidth: fitted.fromWidth,
+    fromHeight: fitted.fromHeight,
+    alignment,
+  };
+}
+
 export async function approveUploadedBlank(args: {
   productTypeId: number;
   panelId: string;
@@ -964,11 +1020,13 @@ export async function approveUploadedBlank(args: {
   | { stored: true; id: string; maskSource: "copied-from-white" | "operator-confirmed" }
   | { needsConfirm: true; message: string }
 > {
-  const photo = decodeImage(args.imageBase64);
+  const loaded = await loadWhiteMasterPhoto(args.productTypeId, args.panelId);
+  const fitted = await resampleToMaster(decodeImage(args.imageBase64), loaded.whiteDecoded.width, loaded.whiteDecoded.height);
+  const photo = fitted.buffer;
   const decoded = await decodeRgba(photo);
-  const white = await loadWhiteMaster(args.productTypeId, args.panelId);
-  const whiteDecoded = await decodeRgba(await getObject(white.storagePath));
-  const whiteMask = await maskFromPng(await getObject(white.maskPath), whiteDecoded.width, whiteDecoded.height);
+  const white = loaded.white;
+  const whiteDecoded = loaded.whiteDecoded;
+  const whiteMask = loaded.whiteMask;
   const check = backgroundAgrees(
     whiteDecoded.rgba,
     decoded.rgba,

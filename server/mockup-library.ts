@@ -506,6 +506,33 @@ function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float
   return dst;
 }
 
+/**
+ * Natural's chip E7CEB5 is a flat fabric swatch. The paint pins the photo's
+ * median pixel to that swatch, which sits about twenty luminance points under
+ * the white master's exposure, so the cream reads as a darker tan than Gildan's
+ * own product photo. A light warm tint is moved toward white until its
+ * luminance matches that exposure (a little above the white body) before the
+ * same shading curve runs. Cool colours and dark dyes are not moved.
+ */
+export function photoExposedWarmTint(r: number, g: number, b: number, medianL: number): [number, number, number] | null {
+  const [hue, sat, value] = rgbToHsv(r, g, b);
+  const warm = hue <= 0.14 || hue >= 0.92;
+  if (!warm || sat <= 0.05 || sat >= 0.42 || value < 0.78) return null;
+  const targetL = Math.min(248, medianL + 8);
+  const base = lum(r, g, b);
+  if (!(base > 1) || base >= targetL - 0.5) return null;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 16; i++) {
+    const t = (lo + hi) / 2;
+    const L = lum(r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t);
+    if (L < targetL) lo = t;
+    else hi = t;
+  }
+  const t = hi;
+  return [r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t];
+}
+
 export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uint8Array, hex: string, medianL: number): Uint8Array {
   if (hex.toUpperCase() === "FFFFFF") return new Uint8Array(rgba);
   const featherSrc = new Float32Array(w * h);
@@ -513,7 +540,11 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
   for (let i = 0; i < dilated.length; i++) featherSrc[i] = dilated[i];
   const feather = boxBlur(boxBlur(featherSrc, w, h, 2), w, h, 2);
   const n = parseInt(hex, 16);
-  const [th, ts, tv] = rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+  const chipR = (n >> 16) & 255;
+  const chipG = (n >> 8) & 255;
+  const chipB = n & 255;
+  const lifted = photoExposedWarmTint(chipR, chipG, chipB, medianL);
+  const [th, ts, tv] = rgbToHsv(lifted ? lifted[0] : chipR, lifted ? lifted[1] : chipG, lifted ? lifted[2] : chipB);
   const out = new Uint8Array(rgba);
   for (let i = 0; i < w * h; i++) {
     const m = feather[i];
