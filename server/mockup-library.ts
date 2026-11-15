@@ -579,16 +579,21 @@ function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float
 /**
  * Natural's chip E7CEB5 is a flat fabric swatch. The paint pins the photo's
  * median pixel to that swatch, which sits about twenty luminance points under
- * the white master's exposure, so the cream reads as a darker tan than Gildan's
- * own product photo. A light warm tint is moved toward white until its
- * luminance matches that exposure (a little above the white body) before the
- * same shading curve runs. Cool colours and dark dyes are not moved.
+ * a normally exposed white master, so the cream reads as a darker tan.
+ * A light warm tint is moved toward white until it sits a little above that
+ * body. The ceiling is Mockup_01's result (body L 232, tint L 240). Hotter
+ * masters (Mockup_02–10 sit near L 238–241) must not chase their own exposure:
+ * the tint then reaches L 246–248, its saturation falls through the neutral
+ * cutoff, and the shirt paints plain white. Cool colours and dark dyes are
+ * not moved.
  */
+const WARM_PALE_LIFT_CEILING = 240;
+
 export function photoExposedWarmTint(r: number, g: number, b: number, medianL: number): [number, number, number] | null {
   const [hue, sat, value] = rgbToHsv(r, g, b);
   const warm = hue <= 0.14 || hue >= 0.92;
   if (!warm || sat <= 0.05 || sat >= 0.42 || value < 0.78) return null;
-  const targetL = Math.min(248, medianL + 8);
+  const targetL = Math.min(WARM_PALE_LIFT_CEILING, medianL + 8);
   const base = lum(r, g, b);
   if (!(base > 1) || base >= targetL - 0.5) return null;
   let lo = 0;
@@ -624,7 +629,9 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
     const delta = medianL > 1 ? (L - medianL) / medianL : 0;
     const v = Math.min(1, Math.max(0, tv * (1 + 0.85 * delta)));
     const shadow = Math.min(1, Math.max(0, -delta));
-    const s = ts < 0.06 ? 0 : Math.min(1, ts * (1 + 0.18 * shadow));
+    // A lifted warm pale keeps its hue. The neutral cutoff is what turned
+    // Natural white once the tint had been pulled close to the highlights.
+    const s = ts < 0.06 && !lifted ? 0 : Math.min(1, ts * (1 + 0.18 * shadow));
     const [rr, gg, bb] = hsvToRgb(th, s, v);
     out[o] = Math.round(rr * m + rgba[o] * (1 - m));
     out[o + 1] = Math.round(gg * m + rgba[o + 1] * (1 - m));

@@ -198,5 +198,15 @@ describe("mockup library", () => {
     const bodyL = 0.2126 * fold[0] + 0.7152 * fold[1] + 0.0722 * fold[2];
     const foldL = 0.2126 * fold[4] + 0.7152 * fold[5] + 0.0722 * fold[6];
     expect(foldL).toBeLessThan(bodyL - 20);
+    const hot = photoExposedWarmTint(231, 206, 181, 241);
+    expect(hot).not.toBeNull();
+    const hotL = 0.2126 * hot![0] + 0.7152 * hot![1] + 0.0722 * hot![2];
+    expect(hotL).toBeGreaterThan(236);
+    expect(hotL).toBeLessThan(242);
+    expect(hot![0] - hot![2]).toBeGreaterThan(8);
+    const hotBody = recolorGarment(new Uint8Array([241, 241, 241, 255]), 1, 1, mask, "E7CEB5", 241);
+    expect(hotBody[0] - hotBody[2]).toBeGreaterThan(8);
+    expect(hotBody[0]).toBeLessThan(252);
+    expect(photoExposedWarmTint(164, 200, 225, 241)).toBeNull();
   });
 });
