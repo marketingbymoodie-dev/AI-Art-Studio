@@ -111,7 +111,7 @@ export function getAppUrl(): string {
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Scopes the Petposterous custom app requests. Primary and creators keep oauthScopes(). */
-const PETPOSTEROUS_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects";
+const PETPOSTEROUS_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects,write_app_proxy";
 
 function oauthScopesFor(label: string): string {
   return label === "petposterous" ? PETPOSTEROUS_OAUTH_SCOPES : oauthScopes();
@@ -505,17 +505,18 @@ if (res.locals.shopify?.session?.shop) {
       }
     }
 
-    // Check if the stored token is missing any required scopes.
-    // Note: Shopify's OAuth token response only lists write_ scopes; write_X implies read_X.
-    // So we expand the granted set: if write_X is present, treat read_X as also granted.
-    const REQUIRED_SCOPES = SHOPIFY_SCOPES.split(",").map(s => s.trim());
-    const grantedScopes = (installation.scope || "").split(",").map(s => s.trim());
+    // Petposterous declares write_app_proxy because it has an app proxy. The
+    // public and staging apps do not, so their status check stays on SHOPIFY_SCOPES.
+    const requiredCsv = installation.shopifyApp === "petposterous" ? PETPOSTEROUS_OAUTH_SCOPES : SHOPIFY_SCOPES;
+    const REQUIRED_SCOPES = requiredCsv.split(",").map(s => s.trim()).filter(Boolean);
+    const grantedScopes = (installation.scope || "").split(",").map(s => s.trim()).filter(Boolean);
     const expandedGranted = new Set(grantedScopes);
     for (const s of grantedScopes) {
       if (s.startsWith("write_")) expandedGranted.add(s.replace("write_", "read_"));
     }
     const missingScopes = REQUIRED_SCOPES.filter(s => !expandedGranted.has(s));
     const scopesMissing = missingScopes.length > 0;
+    const reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}${installation.shopifyApp === "petposterous" ? "&app=petposterous" : ""}`;
 
     res.json({
       installed: installation.status === "active" && tokenValid,
@@ -527,7 +528,7 @@ if (res.locals.shopify?.session?.shop) {
       installedAt: installation.installedAt,
       missingScopes: scopesMissing ? missingScopes : [],
       needsReinstall: !tokenValid || installation.status === "token_invalid" || scopesMissing,
-      reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`
+      reinstallUrl,
     });
   });
 
