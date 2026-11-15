@@ -20,6 +20,8 @@ type Colour = {
   storedName: string | null;
   storedRows: number;
   storedScenes: number;
+  active: boolean;
+  lockReason: string | null;
 };
 
 type Revision = { id: string; name: string; hex: string; kind: string; createdAt: string };
@@ -228,6 +230,7 @@ export default function ColourBlanksPage() {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState("");
   const [sceneDraft, setSceneDraft] = useState<SceneDraft | null>(null);
+  const [activeOnly, setActiveOnly] = useState(false);
   const uploads = useRef(new Set<string>());
 
   const grid = useQuery<Grid>({
@@ -247,6 +250,24 @@ export default function ColourBlanksPage() {
 
   function patchDraft(id: string, patch: Partial<Colour>) {
     setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  }
+
+  async function setColourActive(colour: Colour, active: boolean) {
+    setBusy(`active-${colour.id}`);
+    setStatus("");
+    try {
+      const res = await apiFetch(`/api/platform/catalogue-studio/colour-blanks/colours/${colour.id}/active`, {
+        method: "POST",
+        body: JSON.stringify({ active }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      await grid.refetch();
+      setStatus(active ? `${colour.name} is active.` : `${colour.name} is hidden from the grid, Studio, and the storefront.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
   }
 
   async function saveColour(colour: Colour) {
@@ -592,10 +613,30 @@ export default function ColourBlanksPage() {
     }
   }
 
+  async function deleteScene(scene: Scene) {
+    setBusy(`scene-${scene.panelId}`);
+    setStatus("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/scene-delete", {
+        method: "POST",
+        body: JSON.stringify({ productTypeId: typeId, panelId: scene.panelId }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      await grid.refetch();
+      setStatus(`Deleted ${scene.label || scene.panelId}.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const data = grid.data;
   const colours = data?.colours ?? [];
   const scenes = data?.scenes ?? [];
-  const solids = colours.filter((colour) => colour.finish === "solid");
+  const gridColours = colours.filter((colour) => colour.active);
+  const listedColours = activeOnly ? gridColours : colours;
+  const solids = gridColours.filter((colour) => colour.finish === "solid");
   const paintedPairs = scenes.flatMap((scene) => solids
     .filter((colour) => previews[cellKey(scene.panelId, colour.id)]?.kind === "paint")
     .map((colour) => ({ panelId: scene.panelId, colour })));
@@ -695,11 +736,22 @@ export default function ColourBlanksPage() {
           <summary className="cursor-pointer text-sm font-medium">Colour list</summary>
           <p className="mt-2 text-xs text-muted-foreground">
             Saving a name here does not rename stored blanks. Heather and produced colours have no paint button until you switch them to solid.
+            Inactive colours stay in this list. They are hidden from the grid, Studio, and the storefront until you turn them back on.
           </p>
+          <label className="mt-2 flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={activeOnly}
+              data-testid="colour-show-active"
+              onChange={(event) => setActiveOnly(event.target.checked)}
+            />
+            Show only active ({gridColours.length})
+          </label>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead>
                 <tr className="text-muted-foreground">
+                  <th className="p-1 font-medium">Active</th>
                   <th className="p-1 font-medium">Name</th>
                   <th className="p-1 font-medium">Printify colour</th>
                   <th className="p-1 font-medium">Option</th>
@@ -710,10 +762,23 @@ export default function ColourBlanksPage() {
                 </tr>
               </thead>
               <tbody>
-                {colours.map((colour) => {
+                {listedColours.map((colour) => {
                   const draft = drafts[colour.id] || colour;
                   return (
                     <tr key={colour.id} data-testid={`colour-row-${slug(colour.name)}`}>
+                      <td className="p-1 align-top">
+                        <input
+                          type="checkbox"
+                          checked={colour.active}
+                          disabled={busy !== "" || Boolean(colour.lockReason)}
+                          title={colour.lockReason || (colour.active ? "Shown" : "Hidden")}
+                          data-testid={`colour-active-${slug(colour.name)}`}
+                          onChange={(event) => void setColourActive(colour, event.target.checked)}
+                        />
+                        {colour.lockReason ? (
+                          <span className="mt-1 block max-w-48 text-muted-foreground" data-testid={`colour-lock-${slug(colour.name)}`}>{colour.lockReason}</span>
+                        ) : null}
+                      </td>
                       <td className="p-1"><Input value={draft.name} onChange={(event) => patchDraft(colour.id, { name: event.target.value })} /></td>
                       <td className="p-1"><Input value={draft.printifyTitle} onChange={(event) => patchDraft(colour.id, { printifyTitle: event.target.value })} /></td>
                       <td className="p-1 w-24">
@@ -819,8 +884,8 @@ export default function ColourBlanksPage() {
             <thead>
               <tr>
                 <th className="sticky left-0 z-10 min-w-36 border-b bg-background p-2 text-left">Scene</th>
-                {colours.map((colour) => (
-                  <th key={colour.id} className="min-w-40 border-b border-l p-2 text-left align-top">
+                {gridColours.map((colour) => (
+                  <th key={colour.id} className="min-w-40 border-b border-l p-2 text-left align-top" data-testid={`colour-column-${slug(colour.name)}`}>
                     <span className="flex items-center gap-1">
                       <span className="inline-block h-3 w-3 rounded-sm border" style={{ background: `#${colour.hex}` }} />
                       {colour.name}
@@ -851,8 +916,19 @@ export default function ColourBlanksPage() {
                   <th className="sticky left-0 z-10 border-t bg-background p-2 text-left font-medium">
                     {scene.label || scene.panelId}
                     {scene.isDefault ? <span className="mt-1 block font-normal text-muted-foreground">Default</span> : null}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="mt-2"
+                      data-testid={`colour-scene-delete-${slug(scene.panelId)}`}
+                      disabled={busy !== ""}
+                      onClick={() => void deleteScene(scene)}
+                    >
+                      Delete
+                    </Button>
                   </th>
-                  {scene.cells.map((cell) => {
+                  {scene.cells.filter((cell) => gridColours.some((colour) => colour.id === cell.colourId)).map((cell) => {
                     const colour = colours.find((item) => item.id === cell.colourId);
                     if (!colour) return null;
                     const key = cellKey(scene.panelId, colour.id);

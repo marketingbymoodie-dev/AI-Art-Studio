@@ -4,9 +4,9 @@
  */
 import { randomUUID } from "crypto";
 import sharp from "sharp";
-import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { catalogueCandidateChoices, designCandidates, mockupPanels, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, designCandidates, designProducts, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
 import { measureGarmentAlignment } from "./blank-alignment";
 import { medianShadingLuminance } from "./mockup-compositor";
@@ -44,6 +44,8 @@ export type SceneGroup = {
   panelId: string;
   label: string;
   isDefault: boolean;
+  /** A white master is stored even when a newer produced row of the same name is the one listed. */
+  hasWhiteMaster: boolean;
   colours: StoredColour[];
 };
 
@@ -116,9 +118,10 @@ export async function listScenes(productTypeId: number): Promise<SceneGroup[]> {
   for (const row of rows) {
     let group = groups.get(row.panelId);
     if (!group) {
-      group = { panelId: row.panelId, label: row.label, isDefault: false, colours: [] };
+      group = { panelId: row.panelId, label: row.label, isDefault: false, hasWhiteMaster: false, colours: [] };
       groups.set(row.panelId, group);
     }
+    if (row.kind === "white-master") group.hasWhiteMaster = true;
     if (row.isDefault) group.isDefault = true;
     if (group.colours.some((colour) => colour.name.toLowerCase() === row.garmentColor.toLowerCase())) continue;
     group.colours.push({
@@ -1223,4 +1226,93 @@ export async function signedBlankPhoto(rowId: string) {
     kind: row.kind,
     panelId: row.panelId,
   };
+}
+
+/** Removes every blank on one scene. Refuses when a published product still uses it. */
+export async function deleteUnusedScene(productTypeId: number, panelId: string): Promise<{ panelId: string; rows: number }> {
+  const id = panelId.trim();
+  if (!id) throw new Error("Name the scene first.");
+  const rows = await db
+    .select({
+      id: mockupPanels.id,
+      storagePath: mockupPanels.storagePath,
+      maskPath: mockupPanels.maskPath,
+      isDefault: mockupPanels.isDefault,
+      label: mockupPanels.label,
+    })
+    .from(mockupPanels)
+    .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.panelId, id)));
+  if (!rows.length) throw new Error("That scene is not on this product type.");
+
+  const used = await db
+    .select({ title: designProducts.title })
+    .from(designCandidates)
+    .innerJoin(designProducts, eq(designProducts.id, designCandidates.designProductId))
+    .where(and(
+      eq(designCandidates.panelId, id),
+      eq(designProducts.productTypeId, productTypeId),
+      eq(designProducts.status, "active"),
+      sql`${designProducts.shopifyProductId} is not null`,
+    ));
+  const usedChoice = await db
+    .select({ title: designProducts.title })
+    .from(catalogueCandidateChoices)
+    .innerJoin(designCandidates, eq(designCandidates.id, catalogueCandidateChoices.candidateId))
+    .innerJoin(designProducts, eq(designProducts.id, designCandidates.designProductId))
+    .where(and(
+      eq(catalogueCandidateChoices.panelId, id),
+      eq(designProducts.productTypeId, productTypeId),
+      eq(designProducts.status, "active"),
+      sql`${designProducts.shopifyProductId} is not null`,
+    ));
+  const titles = [...new Set([...used, ...usedChoice].map((row) => row.title).filter(Boolean))];
+  if (titles.length) {
+    const label = rows[0]?.label || id;
+    const extra = titles.length > 1 ? ` and ${titles.length - 1} more` : "";
+    throw new Error(`${label} is used by the published product "${titles[0]}"${extra}.`);
+  }
+
+  await db.delete(mockupPanels).where(and(
+    eq(mockupPanels.productTypeId, productTypeId),
+    eq(mockupPanels.panelId, id),
+  ));
+
+  const [elsewhere] = await db
+    .select({ id: mockupPanels.id })
+    .from(mockupPanels)
+    .where(and(eq(mockupPanels.panelId, id), ne(mockupPanels.productTypeId, productTypeId)))
+    .limit(1);
+  if (!elsewhere) {
+    await db.execute(sql`UPDATE design_candidates
+      SET panel_id = NULL, updated_at = now()
+      WHERE panel_id = ${id} AND shopify_product_id IS NULL`);
+    await db.execute(sql`UPDATE catalogue_candidate_choices AS choice
+      SET panel_id = NULL
+      WHERE choice.panel_id = ${id}
+        AND NOT EXISTS (
+          SELECT 1 FROM design_candidates AS candidate
+          WHERE candidate.id = choice.candidate_id AND candidate.shopify_product_id IS NOT NULL
+        )`);
+  }
+
+  if (rows.some((row) => row.isDefault)) {
+    const [next] = await db
+      .select({ panelId: mockupPanels.panelId })
+      .from(mockupPanels)
+      .where(eq(mockupPanels.productTypeId, productTypeId))
+      .orderBy(desc(mockupPanels.createdAt))
+      .limit(1);
+    if (next) {
+      await db.update(mockupPanels).set({ isDefault: true }).where(and(
+        eq(mockupPanels.productTypeId, productTypeId),
+        eq(mockupPanels.panelId, next.panelId),
+      ));
+    }
+  }
+
+  for (const row of rows) {
+    await removeLibraryObject(row.storagePath).catch(() => undefined);
+    await removeLibraryObject(row.maskPath).catch(() => undefined);
+  }
+  return { panelId: id, rows: rows.length };
 }

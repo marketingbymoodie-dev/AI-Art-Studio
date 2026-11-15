@@ -1,4 +1,5 @@
 /** Colour list for the mockup-library blank grid. Compose still matches the stored row name. */
+import { normalizePrintifyColorKey, slugPrintifyColorId } from "./printifyColorSlug";
 
 export type BlankFinish = "solid" | "heather" | "produced";
 
@@ -37,6 +38,45 @@ export function normaliseBlankHex(hex: string): string {
 
 export function blankNameKey(name: string): string {
   return name.trim().toLowerCase();
+}
+
+/** Name, slug, and hyphen forms so a stored colour id matches the list name. */
+export function colourMatchKeys(name: string): string[] {
+  const raw = name.trim();
+  if (!raw || raw.toLowerCase() === "default") return [];
+  return [...new Set([
+    blankNameKey(raw),
+    slugPrintifyColorId(raw),
+    normalizePrintifyColorKey(raw),
+  ])];
+}
+
+export function frameColourHidden(name: unknown, id: unknown, hidden: Set<string>): boolean {
+  if (!hidden.size) return false;
+  const values = [name, id].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return values.some((value) => colourMatchKeys(value).some((key) => hidden.has(key)));
+}
+
+export function describeColourUse(
+  name: string,
+  products: string[],
+  orders: Array<{ id: number; status: string }>,
+): string | null {
+  const productTitles = [...new Set(products.map((title) => title.trim()).filter(Boolean))];
+  const openOrders = orders.filter((order) => Number.isInteger(order.id));
+  if (!productTitles.length && !openOrders.length) return null;
+  const parts: string[] = [];
+  if (productTitles.length) {
+    const shown = productTitles.slice(0, 3).map((title) => `"${title}"`).join(", ");
+    const more = productTitles.length > 3 ? ` and ${productTitles.length - 3} more` : "";
+    parts.push(`${productTitles.length === 1 ? "the published product" : "the published products"} ${shown}${more}`);
+  }
+  if (openOrders.length) {
+    const shown = openOrders.slice(0, 3).map((order) => `#${order.id} (${order.status})`).join(", ");
+    const more = openOrders.length > 3 ? ` and ${openOrders.length - 3} more` : "";
+    parts.push(`${openOrders.length === 1 ? "open order" : "open orders"} ${shown}${more}`);
+  }
+  return `${name} is on ${parts.join(" and ")}.`;
 }
 
 export type ComposeBlankRow = {

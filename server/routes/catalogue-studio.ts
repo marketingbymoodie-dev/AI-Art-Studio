@@ -188,9 +188,23 @@ async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: s
   const rows = await db
     .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
     .from(mockupLibraryColours)
-    .where(eq(mockupLibraryColours.productTypeId, productTypeId))
+    .where(and(
+      eq(mockupLibraryColours.productTypeId, productTypeId),
+      eq(mockupLibraryColours.active, true),
+    ))
     .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
   return rows.map((row) => ({ name: row.name, hex: row.hex }));
+}
+
+async function studioScenes(productTypeId: number) {
+  const { colourMatchKeys } = await import("@shared/colourBlanks");
+  const { inactiveColourKeys } = await import("../colour-blanks");
+  const [scenes, hidden] = await Promise.all([listScenes(productTypeId), inactiveColourKeys(productTypeId)]);
+  if (!hidden.size) return scenes;
+  return scenes.map((scene) => ({
+    ...scene,
+    colours: scene.colours.filter((colour) => !colourMatchKeys(colour.name).some((key) => hidden.has(key))),
+  }));
 }
 
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
@@ -201,7 +215,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const garment = await studioGarment(req.query.productTypeId);
-      res.json({ scenes: await listScenes(garment.id), productTypeId: garment.id, productTypeName: garment.name });
+      res.json({ scenes: await studioScenes(garment.id), productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
     }
@@ -223,7 +237,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const garment = await studioGarment(req.query.productTypeId);
       const [prices, scenes, choice, recentScenes, stored, queue, blankColours, typeList] = await Promise.all([
         shippingPricesBySize(),
-        listScenes(garment.id),
+        studioScenes(garment.id),
         readChoice(id),
         recentSceneLabels(),
         readCandidateRow(id),

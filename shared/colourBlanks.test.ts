@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SOFTSTYLE_COLOUR_SEED, blankNameMatch, composeBlankChoice, normaliseBlankHex } from "./colourBlanks";
+import {
+  SOFTSTYLE_COLOUR_SEED,
+  blankNameMatch,
+  colourMatchKeys,
+  composeBlankChoice,
+  describeColourUse,
+  frameColourHidden,
+  normaliseBlankHex,
+} from "./colourBlanks";
 
 describe("softstyle colour seed", () => {
   it("seeds the ten Choice colours and keeps heather off the paint path", () => {
@@ -34,5 +42,16 @@ describe("softstyle colour seed", () => {
     expect(composeBlankChoice(rows, "White").mode).toBe("produced");
     expect(composeBlankChoice(rows, "Navy")).toEqual({ mode: "recolour", sourceName: "White", rowId: "white" });
     expect(composeBlankChoice([], "Navy").mode).toBe("unavailable");
+  });
+
+  it("matches a colour name to its slug and says why it cannot be turned off", () => {
+    expect(colourMatchKeys("Light Blue")).toEqual(["light blue", "light_blue", "light-blue"]);
+    const hidden = new Set(colourMatchKeys("Pepper"));
+    expect(frameColourHidden("Pepper", "pepper", hidden)).toBe(true);
+    expect(frameColourHidden("White", "white", hidden)).toBe(false);
+    expect(describeColourUse("Navy", ["Bed Etiquette"], [{ id: 1042, status: "pending" }])).toBe(
+      'Navy is on the published product "Bed Etiquette" and open order #1042 (pending).',
+    );
+    expect(describeColourUse("White", [], [])).toBeNull();
   });
 });

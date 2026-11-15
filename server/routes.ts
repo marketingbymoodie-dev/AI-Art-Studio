@@ -1,3 +1,4 @@
+import { frameColourHidden } from "@shared/colourBlanks";
 import { shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueVariantGate } from "./catalogue-variant-fulfillment";
 import { generateImageBase64 } from "./replit_integrations/image/client";
@@ -824,6 +825,12 @@ function resolveGenerationAspectRatio(
     if (fromFlat) return fromFlat;
   }
   return aspectRatioStr;
+}
+
+async function designerHiddenColours(productTypeId: number): Promise<Set<string>> {
+  if (!Number.isInteger(productTypeId) || productTypeId <= 0) return new Set();
+  const { inactiveColourKeys } = await import("./colour-blanks");
+  return inactiveColourKeys(productTypeId);
 }
 
 function designerDisplayAspectRatio(productType: {
@@ -6713,9 +6720,13 @@ ${orientationExtra}
       const sizes = typeof productType.sizes === 'string' 
         ? JSON.parse(productType.sizes) 
         : productType.sizes || [];
-      const frameColors = typeof productType.frameColors === 'string' 
+      const parsedFrameColors = typeof productType.frameColors === 'string' 
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
+      const hiddenDesignerColours = await designerHiddenColours(productType.id);
+      const frameColors = hiddenDesignerColours.size
+        ? parsedFrameColors.filter((colour: { name?: string; id?: string }) => !frameColourHidden(colour?.name, colour?.id, hiddenDesignerColours))
+        : parsedFrameColors;
 
       const [aspectW, aspectH] = designerDisplayAspectRatio(productType).split(":").map(Number);
       const aspectRatio = aspectW / aspectH;
@@ -7334,13 +7345,21 @@ ${orientationExtra}
       option1?: string | null;
       option2?: string | null;
     }> | null,
+    hiddenColourKeys?: Set<string>,
   ): Record<string, any> {
     const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
       : productTypeToUse.sizes || [];
-    const allFrameColors = typeof productTypeToUse.frameColors === "string"
+    const parsedFrameColors = typeof productTypeToUse.frameColors === "string"
       ? JSON.parse(productTypeToUse.frameColors)
       : productTypeToUse.frameColors || [];
+    const hidden = hiddenColourKeys ?? new Set<string>();
+    const allFrameColors = hidden.size
+      ? parsedFrameColors.filter((colour: { name?: string; id?: string }) => !frameColourHidden(colour?.name, colour?.id, hidden))
+      : parsedFrameColors;
+    const catalogForColours = hidden.size && mintedCatalog
+      ? mintedCatalog.filter((row) => !frameColourHidden(row.option2, row.option2, hidden))
+      : mintedCatalog;
 
     // Sizes: merchant selectedSizeIds (null = never configured → all; [] = none).
     // Colours: minted Shopify only — never selectedColorIds (can exceed the 100-variant cap).
@@ -7360,7 +7379,7 @@ ${orientationExtra}
     // Customer colours = minted Shopify only. selectedColorIds is merchant intent
     // and can exceed the 100-variant cap (WP-55: 14 selected, ~11 minted).
     const frameColors = filterFrameColorsToMintedShopify(allFrameColors, {
-      catalog: mintedCatalog,
+      catalog: catalogForColours,
       shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
     });
 
@@ -7770,7 +7789,14 @@ ${orientationExtra}
               : null,
             atcModeForShop(shop),
           ]);
-          const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
+          const fastConfig = buildDesignerConfig(
+            productTypeForConfig!,
+            id,
+            undefined,
+            sizeChart,
+            undefined,
+            await designerHiddenColours(productTypeForConfig!.id),
+          );
           (fastConfig as any).atcMode = fastAtcMode;
           const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
           (fastConfig as any).styleConfig = fastStyles.styleConfig;
@@ -7929,7 +7955,14 @@ ${orientationExtra}
           : null,
         atcModeForShop(shop),
       ]);
-      const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
+      const designerConfig = buildDesignerConfig(
+        productTypeForConfig,
+        id,
+        resolvedFrom,
+        sizeChart,
+        undefined,
+        await designerHiddenColours(Number(productTypeForConfig?.id) || id),
+      );
       (designerConfig as any).atcMode = sfAtcMode;
       const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
       (designerConfig as any).styleConfig = sfStyles.styleConfig;
@@ -8587,6 +8620,7 @@ ${orientationExtra}
           undefined,
           null,
           liveCatalog,
+          await designerHiddenColours(page.productTypeId),
         );
       } catch (e) {
         console.warn(
@@ -25445,6 +25479,7 @@ ${orientationExtra}
           undefined,
           null,
           liveCatalog,
+          await designerHiddenColours(page.productTypeId),
         );
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);

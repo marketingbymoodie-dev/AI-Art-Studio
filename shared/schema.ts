@@ -1439,6 +1439,8 @@ export const mockupLibraryColours = pgTable("mockup_library_colours", {
   /** Existing blank name to offer as a link. Never applied until the operator clicks. */
   linkStoredName: text("link_stored_name"),
   sortOrder: integer("sort_order").notNull().default(0),
+  /** Off the grid, Studio, and the storefront until turned back on. The row stays. */
+  active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   uniqueIndex("mockup_library_colours_type_name_uidx").on(table.productTypeId, table.name),

@@ -564,6 +564,13 @@ export async function promoteCatalogueCandidate(args: {
       reasons.push(/metaobject|Access denied/i.test(message) ? METAOBJECT_SCOPE_REFUSAL : message);
     }
   }
+  const { inactiveColourKeys } = await import("./colour-blanks");
+  const { colourMatchKeys } = await import("@shared/colourBlanks");
+  const hiddenColours = await inactiveColourKeys(args.productTypeId);
+  const inactiveTicked = ticked.filter((name) => colourMatchKeys(name).some((key) => hiddenColours.has(key)));
+  if (inactiveTicked.length) {
+    reasons.push(`${inactiveTicked.join(", ")} ${inactiveTicked.length === 1 ? "is not an active colour" : "are not active colours"} for ${typeRow.name}.`);
+  }
   if (reasons.length) throw new PromoteRefusal(reasons);
 
   const variantMap: VariantMap = JSON.parse(typeRow.variantMap || "{}");

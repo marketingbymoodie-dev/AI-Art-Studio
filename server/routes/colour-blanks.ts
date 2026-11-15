@@ -13,10 +13,11 @@ import {
   previewColourUpload,
   restoreBlankRevision,
   saveColourBlank,
+  setColourActive,
   signedBlankPhoto,
   uploadColourBlank,
 } from "../colour-blanks";
-import { approveNewScene, previewNewScene } from "../mockup-library-store";
+import { approveNewScene, deleteUnusedScene, previewNewScene } from "../mockup-library-store";
 
 function operatorId(req: any): string | null {
   const id = req.user?.claims?.sub || req.user?.id;
@@ -52,6 +53,15 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
         finish: String(req.body?.finish || ""),
         linkStoredName: req.body?.linkStoredName ? String(req.body.linkStoredName) : null,
       }));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/colour-blanks/colours/:id/active", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json(await setColourActive(String(req.params.id), req.body?.active === true));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
@@ -138,6 +148,15 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
     if (!requirePlatformAdmin(req, res)) return;
     try {
       res.json(await previewNewScene(String(req.body?.imageBase64 || "")));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/colour-blanks/scene-delete", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json(await deleteUnusedScene(typeId(req.body?.productTypeId), String(req.body?.panelId || "")));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

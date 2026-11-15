@@ -6,13 +6,15 @@ import { and, asc, eq, ne, sql } from "drizzle-orm";
 import {
   blankNameKey,
   blankNameMatch,
+  colourMatchKeys,
   composeBlankChoice,
+  describeColourUse,
   normaliseBlankHex,
   SOFTSTYLE_COLOUR_SEED,
   type BlankFinish,
 } from "@shared/colourBlanks";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
-import { mockupLibraryColours, productTypes } from "@shared/schema";
+import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
 import {
   approvePaintedBlank,
@@ -41,10 +43,24 @@ export function ensureColourBlankTable(): Promise<void> {
         finish text NOT NULL,
         link_stored_name text,
         sort_order integer NOT NULL DEFAULT 0,
+        active boolean NOT NULL DEFAULT true,
         created_at timestamp NOT NULL DEFAULT now()
       )`);
       await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS mockup_library_colours_type_name_uidx
         ON mockup_library_colours (product_type_id, name)`);
+      const column = await pool.query(`SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'mockup_library_colours' AND column_name = 'active'`);
+      if (!column.rows.length) {
+        await pool.query(`ALTER TABLE mockup_library_colours ADD COLUMN active boolean NOT NULL DEFAULT true`);
+        // Existing rows become active. Comfort Colors (blueprint 706) starts with only White on.
+        // This runs once, when the column is added, so later ticks are kept.
+        await pool.query(`UPDATE mockup_library_colours AS c
+          SET active = false
+          FROM product_types AS p
+          WHERE c.product_type_id = p.id
+            AND p.printify_blueprint_id = 706
+            AND lower(trim(c.name)) <> 'white'`);
+      }
     })().catch((err) => {
       tableReady = null;
       throw err;
@@ -199,6 +215,7 @@ async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
       finish: "produced" as const,
       linkStoredName: null,
       sortOrder: index,
+      active: blankNameKey(colour.name) === "white",
     };
   })).onConflictDoNothing();
 }
@@ -206,6 +223,167 @@ async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
 function asFinish(value: string): BlankFinish {
   if (value === "heather" || value === "produced") return value;
   return "solid";
+}
+
+type ColourUse = { products: string[]; orders: Array<{ id: number; status: string }> };
+
+function orderIsOpen(status: string): boolean {
+  const value = status.trim().toLowerCase();
+  if (!value) return true;
+  if (value.includes("cancel")) return false;
+  return !["fulfilled", "shipped", "delivered", "refunded", "completed", "complete", "refund"].includes(value);
+}
+
+function collectColourTokens(value: unknown, into: Set<string>, keyName = ""): void {
+  if (value == null) return;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || text.toLowerCase() === "default") return;
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try { collectColourTokens(JSON.parse(text), into, keyName); } catch { /* not json */ }
+      return;
+    }
+    if (text.includes(":")) {
+      const colour = text.slice(text.lastIndexOf(":") + 1).trim();
+      if (colour && colour.toLowerCase() !== "default") into.add(colour);
+      return;
+    }
+    if (/^(name|id|colorid|framecolor)$/i.test(keyName)) into.add(text);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectColourTokens(item, into, keyName);
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key.includes(":")) {
+        const colour = key.slice(key.lastIndexOf(":") + 1).trim();
+        if (colour && colour.toLowerCase() !== "default") into.add(colour);
+      }
+      collectColourTokens(child, into, key);
+    }
+  }
+}
+
+function noteColourUse(index: Map<string, ColourUse>, token: string, hit: { product?: string; order?: { id: number; status: string } }) {
+  for (const key of colourMatchKeys(token)) {
+    let bucket = index.get(key);
+    if (!bucket) {
+      bucket = { products: [], orders: [] };
+      index.set(key, bucket);
+    }
+    if (hit.product && !bucket.products.includes(hit.product)) bucket.products.push(hit.product);
+    if (hit.order && !bucket.orders.some((order) => order.id === hit.order!.id)) bucket.orders.push(hit.order);
+  }
+}
+
+function mergedColourUse(index: Map<string, ColourUse>, name: string): ColourUse {
+  const products: string[] = [];
+  const orders: ColourUse["orders"] = [];
+  for (const key of colourMatchKeys(name)) {
+    const bucket = index.get(key);
+    if (!bucket) continue;
+    for (const title of bucket.products) if (!products.includes(title)) products.push(title);
+    for (const order of bucket.orders) if (!orders.some((row) => row.id === order.id)) orders.push(order);
+  }
+  return { products, orders };
+}
+
+async function colourUseIndex(productTypeId: number): Promise<Map<string, ColourUse>> {
+  const index = new Map<string, ColourUse>();
+  const [typeRow] = await db
+    .select({
+      name: productTypes.name,
+      shopifyProductId: productTypes.shopifyProductId,
+      frameColors: productTypes.frameColors,
+      selectedColorIds: productTypes.selectedColorIds,
+      variantMap: productTypes.variantMap,
+      shopifyVariantIds: productTypes.shopifyVariantIds,
+    })
+    .from(productTypes)
+    .where(eq(productTypes.id, productTypeId))
+    .limit(1);
+  if (typeRow?.shopifyProductId) {
+    const tokens = new Set<string>();
+    collectColourTokens(typeRow.frameColors, tokens);
+    collectColourTokens(typeRow.selectedColorIds, tokens);
+    collectColourTokens(typeRow.variantMap, tokens);
+    collectColourTokens(typeRow.shopifyVariantIds, tokens);
+    for (const token of tokens) noteColourUse(index, token, { product: typeRow.name });
+  }
+
+  const published = await db
+    .select({ title: designProducts.title, variantMap: designProducts.variantMap })
+    .from(designProducts)
+    .where(and(
+      eq(designProducts.productTypeId, productTypeId),
+      eq(designProducts.status, "active"),
+      sql`${designProducts.shopifyProductId} is not null`,
+    ));
+  for (const row of published) {
+    const tokens = new Set<string>();
+    collectColourTokens(row.variantMap, tokens);
+    for (const token of tokens) noteColourUse(index, token, { product: row.title });
+  }
+
+  const candidates = await db
+    .select({ title: designProducts.title, colors: designCandidates.selectedColors })
+    .from(designCandidates)
+    .innerJoin(designProducts, eq(designProducts.id, designCandidates.designProductId))
+    .where(and(
+      eq(designProducts.productTypeId, productTypeId),
+      eq(designProducts.status, "active"),
+      sql`${designCandidates.shopifyProductId} is not null`,
+    ));
+  for (const row of candidates) {
+    const tokens = new Set<string>();
+    collectColourTokens(row.colors, tokens);
+    for (const token of tokens) noteColourUse(index, token, { product: row.title });
+  }
+
+  const orderRows = await db
+    .select({
+      id: orders.id,
+      status: orders.status,
+      frameColor: orders.frameColor,
+      designColor: designs.frameColor,
+    })
+    .from(orders)
+    .innerJoin(designs, eq(designs.id, orders.designId))
+    .where(eq(designs.productTypeId, productTypeId));
+  for (const row of orderRows) {
+    if (!orderIsOpen(row.status)) continue;
+    const hit = { order: { id: row.id, status: row.status } };
+    if (row.frameColor) noteColourUse(index, row.frameColor, hit);
+    if (row.designColor && blankNameKey(row.designColor) !== blankNameKey(row.frameColor || "")) {
+      noteColourUse(index, row.designColor, hit);
+    }
+  }
+  return index;
+}
+
+export async function inactiveColourKeys(productTypeId: number): Promise<Set<string>> {
+  await ensureColourBlankTable();
+  const rows = await db
+    .select({ name: mockupLibraryColours.name })
+    .from(mockupLibraryColours)
+    .where(and(eq(mockupLibraryColours.productTypeId, productTypeId), eq(mockupLibraryColours.active, false)));
+  const hidden = new Set<string>();
+  for (const row of rows) for (const key of colourMatchKeys(row.name)) hidden.add(key);
+  return hidden;
+}
+
+export async function setColourActive(id: string, active: boolean) {
+  const row = await requireColour(id);
+  if (Boolean(row.active) === active) return { id, active };
+  if (!active) {
+    const use = mergedColourUse(await colourUseIndex(row.productTypeId), row.name);
+    const reason = describeColourUse(row.name, use.products, use.orders);
+    if (reason) throw new Error(reason);
+  }
+  await db.update(mockupLibraryColours).set({ active }).where(eq(mockupLibraryColours.id, id));
+  return { id, active };
 }
 
 export async function prepareColourBlanks(productTypeId: number): Promise<void> {
@@ -237,6 +415,7 @@ export async function colourBlankGrid(productTypeId: number) {
     .from(mockupLibraryColours)
     .where(eq(mockupLibraryColours.productTypeId, productTypeId))
     .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
+  const useIndex = await colourUseIndex(productTypeId);
   const panels = await panelsForType(productTypeId);
   const storedNames = [...new Set(panels.map((row) => row.garmentColor))];
   const colours = colourRows.map((row) => {
@@ -244,6 +423,8 @@ export async function colourBlankGrid(productTypeId: number) {
     const linked = match.state === "name-mismatch"
       ? panels.filter((panel) => blankNameKey(panel.garmentColor) === blankNameKey(match.storedName))
       : [];
+    const active = row.active !== false;
+    const use = active ? mergedColourUse(useIndex, row.name) : { products: [], orders: [] };
     return {
       id: row.id,
       name: row.name,
@@ -253,6 +434,8 @@ export async function colourBlankGrid(productTypeId: number) {
       finish: asFinish(row.finish),
       linkStoredName: row.linkStoredName,
       sortOrder: row.sortOrder,
+      active,
+      lockReason: active ? describeColourUse(row.name, use.products, use.orders) : null,
       match: match.state,
       storedName: match.state === "name-mismatch" ? match.storedName : null,
       storedRows: linked.length,
@@ -280,7 +463,7 @@ export async function colourBlankGrid(productTypeId: number) {
         hex: row.garmentHex,
         kind: row.kind === "white-master" ? "white-master" as const : "produced" as const,
       }));
-      const cells = colourRows.map((colour) => {
+      const cells = colourRows.filter((colour) => colour.active !== false).map((colour) => {
         const exact = group.rows.filter((row) => blankNameKey(row.garmentColor) === blankNameKey(colour.name));
         const current = exact[0] ?? null;
         const choice = composeBlankChoice(composeRows, colour.name);

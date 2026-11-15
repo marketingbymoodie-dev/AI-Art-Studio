@@ -23,7 +23,7 @@ type ColourReading = {
 };
 
 type SceneColour = { id: string; name: string; hex: string; kind: "produced" | "white-master" };
-type SceneGroup = { panelId: string; label: string; isDefault: boolean; colours: SceneColour[] };
+type SceneGroup = { panelId: string; label: string; isDefault: boolean; hasWhiteMaster?: boolean; colours: SceneColour[] };
 type TickedColour = { name: string; hex: string };
 
 type PendingCandidate = {
@@ -67,10 +67,11 @@ type PendingCandidate = {
   } | null;
 };
 
-function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>) {
+function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>, fromLibrary = false) {
   if (!scene) return [] as Array<{ name: string; hex: string; path: "produced" | "recolour" }>;
   const rows = scene.colours.map((c) => ({ name: c.name, hex: c.hex, path: "produced" as const }));
-  if (scene.colours.some((c) => c.kind === "white-master")) {
+  const canRecolour = fromLibrary ? Boolean(scene.hasWhiteMaster) : scene.colours.some((c) => c.kind === "white-master");
+  if (canRecolour) {
     for (const color of fallback) {
       if (!rows.some((row) => row.name.toLowerCase() === color.name.toLowerCase())) {
         rows.push({ name: color.name, hex: color.hex, path: "recolour" });
@@ -236,7 +237,7 @@ export default function CatalogueStudioPage() {
       ? stored
       : scenes.find((scene) => scene.isDefault)?.panelId || scenes[0].panelId;
     const scene = scenes.find((row) => row.panelId === next);
-    const available = sceneColours(scene, candidate.data?.colors ?? []);
+    const available = sceneColours(scene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
     const storedColours = candidate.data?.choice.selectedColors ?? [];
     const ticks = initialTickedColours(storedColours, available).map(({ name, hex }) => ({ name, hex }));
     setPanelId(next);
@@ -315,7 +316,7 @@ export default function CatalogueStudioPage() {
   const salePrice = candidate.data?.pricesBySize?.[size] || "";
   const compareAtPrice = candidate.data?.compareAtBySize?.[size] || "";
   const scene = candidate.data?.scenes.find((row) => row.panelId === panelId);
-  const offered = sceneColours(scene, candidate.data?.colors ?? []);
+  const offered = sceneColours(scene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
   const active = offered.find((c) => c.name === color) ?? candidate.data?.colors.find((c) => c.name === color);
   const readings = candidate.data?.eligibility;
 
@@ -638,7 +639,7 @@ export default function CatalogueStudioPage() {
                 onChange={(e) => {
                   const next = e.target.value;
                   const nextScene = candidate.data?.scenes.find((row) => row.panelId === next);
-                  const available = sceneColours(nextScene, candidate.data?.colors ?? []);
+                  const available = sceneColours(nextScene, candidate.data?.colors ?? [], candidate.data?.productTypeId !== 54);
                   const kept = ticked.filter((tick) => available.some((row) => row.name === tick.name));
                   setPanelId(next);
                   setTicked(kept);
@@ -668,6 +669,7 @@ export default function CatalogueStudioPage() {
                           <input
                             type="checkbox"
                             className="mr-2"
+                            data-testid={`catalogue-studio-colour-${row.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
                             checked={on}
                             onChange={() => {
                               const next = on
