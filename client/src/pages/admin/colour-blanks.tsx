@@ -90,7 +90,6 @@ type Alignment = {
 type Preview = {
   src: string;
   kind: "paint" | "upload";
-  raw?: string;
   confirm?: string;
   error?: string;
   overlay?: string;
@@ -289,9 +288,10 @@ export default function ColourBlanksPage() {
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState("");
   const [sceneDraft, setSceneDraft] = useState<SceneDraft | null>(null);
-  const [activeOnly, setActiveOnly] = useState(false);
   const [sessionExpired, setSessionExpired] = useState(false);
   const uploads = useRef(new Set<string>());
+  // File bytes stay here until Approve. A tab crash is not a React error, so they must not live in state or in an error-boundary key.
+  const uploadFiles = useRef(new Map<string, string>());
 
   function noteSession(res: Response, message: string): string {
     if (res.status === 401 || isSessionAuthError(message)) {
@@ -513,24 +513,26 @@ export default function ColourBlanksPage() {
       });
       await readOk(res);
       const body = await res.json() as {
-        jpegBase64: string;
-        overlayJpegBase64: string;
-        masterJpegBase64: string;
+        jpegUrl: string;
+        overlayUrl: string;
+        masterUrl: string;
         resized: boolean;
         fromWidth: number;
         fromHeight: number;
         width: number;
         height: number;
+        displayWidth: number;
+        displayHeight: number;
         alignment: Alignment;
       };
+      uploadFiles.current.set(key, raw);
       setPreviews((current) => ({
         ...current,
         [key]: {
           kind: "upload",
-          raw,
-          src: `data:image/jpeg;base64,${body.jpegBase64}`,
-          overlay: `data:image/jpeg;base64,${body.overlayJpegBase64}`,
-          master: `data:image/jpeg;base64,${body.masterJpegBase64}`,
+          src: body.jpegUrl,
+          overlay: body.overlayUrl,
+          master: body.masterUrl,
           compare: "overlay",
           alignment: body.alignment,
           resized: body.resized,
@@ -541,7 +543,7 @@ export default function ColourBlanksPage() {
         },
       }));
       const size = body.resized ? ` Scaled from ${body.fromWidth}×${body.fromHeight} to ${body.width}×${body.height}.` : "";
-      setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}.${size} Nothing is saved until you approve it.`);
+      setStatus(`${file.name} is a preview for ${colour.name} on ${panelId}.${size} Shown at ${body.displayWidth}×${body.displayHeight}. Nothing is saved until you approve it.`);
     } catch (e: any) {
       const message = String(e?.message || e);
       setPreviews((current) => ({
@@ -558,12 +560,13 @@ export default function ColourBlanksPage() {
   async function approveUpload(panelId: string, colour: Colour, confirmMask = false) {
     const key = cellKey(panelId, colour.id);
     const preview = previews[key];
-    if (!preview?.raw) return;
+    const raw = uploadFiles.current.get(key);
+    if (!preview || !raw) return;
     setBusy(key);
     try {
       const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/upload", {
         method: "POST",
-        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: preview.raw, confirmMask }),
+        body: JSON.stringify({ colourId: colour.id, panelId, imageBase64: raw, confirmMask }),
       });
       await readOk(res);
       const body = await res.json() as { stored?: boolean; needsConfirm?: boolean; message?: string };
@@ -572,6 +575,7 @@ export default function ColourBlanksPage() {
         setStatus(body.message || "Confirm the mask before saving.");
         return;
       }
+      uploadFiles.current.delete(key);
       setPreviews((current) => {
         const copy = { ...current };
         delete copy[key];
@@ -713,11 +717,71 @@ export default function ColourBlanksPage() {
   const colours = data?.colours ?? [];
   const scenes = data?.scenes ?? [];
   const gridColours = colours.filter((colour) => colour.active);
-  const listedColours = activeOnly ? gridColours : colours;
+  const inactiveColours = colours.filter((colour) => !colour.active);
   const solids = gridColours.filter((colour) => colour.finish === "solid");
   const paintedPairs = scenes.flatMap((scene) => solids
     .filter((colour) => previews[cellKey(scene.panelId, colour.id)]?.kind === "paint")
     .map((colour) => ({ panelId: scene.panelId, colour })));
+
+  function colourRows(rows: Colour[]) {
+    return rows.map((colour) => {
+      const draft = drafts[colour.id] || colour;
+      return (
+        <tr key={colour.id} data-testid={`colour-row-${slug(colour.name)}`}>
+          <td className="p-1 align-top">
+            <input
+              type="checkbox"
+              checked={colour.active}
+              disabled={busy !== "" || Boolean(colour.lockReason)}
+              title={colour.lockReason || (colour.active ? "Shown" : "Hidden")}
+              data-testid={`colour-active-${slug(colour.name)}`}
+              onChange={(event) => void setColourActive(colour, event.target.checked)}
+            />
+            {colour.lockReason ? (
+              <span className="mt-1 block max-w-48 text-muted-foreground" data-testid={`colour-lock-${slug(colour.name)}`}>{colour.lockReason}</span>
+            ) : null}
+          </td>
+          <td className="p-1"><Input value={draft.name} onChange={(event) => patchDraft(colour.id, { name: event.target.value })} /></td>
+          <td className="p-1"><Input value={draft.printifyTitle} onChange={(event) => patchDraft(colour.id, { printifyTitle: event.target.value })} /></td>
+          <td className="p-1 w-24">
+            <Input
+              value={draft.printifyOptionId ?? ""}
+              onChange={(event) => patchDraft(colour.id, { printifyOptionId: event.target.value === "" ? null : Number(event.target.value) })}
+            />
+          </td>
+          <td className="p-1 w-32">
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-4 w-4 rounded-sm border" style={{ background: `#${draft.hex}` }} />
+              <Input value={draft.hex} onChange={(event) => patchDraft(colour.id, { hex: event.target.value.replace(/^#/, "") })} />
+            </span>
+          </td>
+          <td className="p-1">
+            <select
+              className="rounded-md border bg-background px-2 py-1"
+              value={draft.finish}
+              onChange={(event) => patchDraft(colour.id, { finish: asFinish(event.target.value) })}
+            >
+              <option value="solid">Solid</option>
+              <option value="heather">Heather</option>
+              <option value="produced">Produced</option>
+            </select>
+          </td>
+          <td className="p-1">
+            <Input
+              value={draft.linkStoredName || ""}
+              placeholder="exact blank name"
+              onChange={(event) => patchDraft(colour.id, { linkStoredName: event.target.value })}
+            />
+          </td>
+          <td className="p-1">
+            <Button type="button" size="sm" variant="outline" disabled={busy === colour.id} onClick={() => void saveColour(draft)}>
+              Save
+            </Button>
+          </td>
+        </tr>
+      );
+    });
+  }
 
   return (
     <AdminLayout>
@@ -824,117 +888,6 @@ export default function ColourBlanksPage() {
           ) : null}
         </div>
         </SectionErrorBoundary>
-
-        <details className="rounded-md border p-3" open>
-          <summary className="cursor-pointer text-sm font-medium">Colour list</summary>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Saving a name here does not rename stored blanks. Heather and produced colours have no paint button until you switch them to solid.
-            Inactive colours stay in this list. They are hidden from the grid, Studio, and the storefront until you turn them back on.
-          </p>
-          <label className="mt-2 flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={activeOnly}
-              data-testid="colour-show-active"
-              onChange={(event) => setActiveOnly(event.target.checked)}
-            />
-            Show only active ({gridColours.length})
-          </label>
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-xs">
-              <thead>
-                <tr className="text-muted-foreground">
-                  <th className="p-1 font-medium">Active</th>
-                  <th className="p-1 font-medium">Name</th>
-                  <th className="p-1 font-medium">Printify colour</th>
-                  <th className="p-1 font-medium">Option</th>
-                  <th className="p-1 font-medium">Hex</th>
-                  <th className="p-1 font-medium">Finish</th>
-                  <th className="p-1 font-medium">Stored as</th>
-                  <th className="p-1" />
-                </tr>
-              </thead>
-              <tbody>
-                {listedColours.map((colour) => {
-                  const draft = drafts[colour.id] || colour;
-                  return (
-                    <tr key={colour.id} data-testid={`colour-row-${slug(colour.name)}`}>
-                      <td className="p-1 align-top">
-                        <input
-                          type="checkbox"
-                          checked={colour.active}
-                          disabled={busy !== "" || Boolean(colour.lockReason)}
-                          title={colour.lockReason || (colour.active ? "Shown" : "Hidden")}
-                          data-testid={`colour-active-${slug(colour.name)}`}
-                          onChange={(event) => void setColourActive(colour, event.target.checked)}
-                        />
-                        {colour.lockReason ? (
-                          <span className="mt-1 block max-w-48 text-muted-foreground" data-testid={`colour-lock-${slug(colour.name)}`}>{colour.lockReason}</span>
-                        ) : null}
-                      </td>
-                      <td className="p-1"><Input value={draft.name} onChange={(event) => patchDraft(colour.id, { name: event.target.value })} /></td>
-                      <td className="p-1"><Input value={draft.printifyTitle} onChange={(event) => patchDraft(colour.id, { printifyTitle: event.target.value })} /></td>
-                      <td className="p-1 w-24">
-                        <Input
-                          value={draft.printifyOptionId ?? ""}
-                          onChange={(event) => patchDraft(colour.id, { printifyOptionId: event.target.value === "" ? null : Number(event.target.value) })}
-                        />
-                      </td>
-                      <td className="p-1 w-32">
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block h-4 w-4 rounded-sm border" style={{ background: `#${draft.hex}` }} />
-                          <Input value={draft.hex} onChange={(event) => patchDraft(colour.id, { hex: event.target.value.replace(/^#/, "") })} />
-                        </span>
-                      </td>
-                      <td className="p-1">
-                        <select
-                          className="rounded-md border bg-background px-2 py-1"
-                          value={draft.finish}
-                          onChange={(event) => patchDraft(colour.id, { finish: asFinish(event.target.value) })}
-                        >
-                          <option value="solid">Solid</option>
-                          <option value="heather">Heather</option>
-                          <option value="produced">Produced</option>
-                        </select>
-                      </td>
-                      <td className="p-1">
-                        <Input
-                          value={draft.linkStoredName || ""}
-                          placeholder="exact blank name"
-                          onChange={(event) => patchDraft(colour.id, { linkStoredName: event.target.value })}
-                        />
-                      </td>
-                      <td className="p-1">
-                        <Button type="button" size="sm" variant="outline" disabled={busy === colour.id} onClick={() => void saveColour(draft)}>
-                          Save
-                        </Button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <form
-            className="mt-3 flex flex-wrap items-end gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void addColour(event.currentTarget);
-            }}
-          >
-            <Input name="name" placeholder="Name" className="w-36" required />
-            <Input name="printifyTitle" placeholder="Printify colour" className="w-36" />
-            <Input name="printifyOptionId" placeholder="Option id" className="w-24" />
-            <Input name="hex" placeholder="Hex" className="w-24" required />
-            <select name="finish" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="solid">
-              <option value="solid">Solid</option>
-              <option value="heather">Heather</option>
-              <option value="produced">Produced</option>
-            </select>
-            <Input name="linkStoredName" placeholder="Stored blank name" className="w-40" />
-            <Button type="submit" size="sm" variant="outline" disabled={busy === "add"}>Add colour</Button>
-          </form>
-        </details>
 
         {colours.filter((colour) => colour.match === "name-mismatch").map((colour) => (
           <div key={colour.id} className="rounded-md border border-amber-500 bg-amber-50 p-3 text-sm text-amber-950" data-testid={`colour-mismatch-${slug(colour.name)}`}>
@@ -1045,7 +998,7 @@ export default function ColourBlanksPage() {
                           <p className="text-muted-foreground">In use · {cell.current.kind} · {cell.current.createdAt.slice(0, 16).replace("T", " ")}</p>
                         ) : null}
                         {preview ? (
-                          <CellErrorBoundary resetKey={`${key}:${preview.src}:${preview.error || ""}`}>
+                          <CellErrorBoundary resetKey={`${key}:${preview.width ?? ""}:${preview.height ?? ""}:${preview.error || ""}`}>
                           <div className="mt-2 space-y-1">
                             {preview.error ? (
                               <p className="text-destructive" data-testid={`colour-preview-error-${id}`}>{preview.error}</p>
@@ -1089,11 +1042,14 @@ export default function ColourBlanksPage() {
                                 {preview.confirm ? "Save with the white mask" : "Approve upload"}
                               </Button>
                             )}
-                            <Button type="button" size="sm" variant="ghost" onClick={() => setPreviews((current) => {
-                              const copy = { ...current };
-                              delete copy[key];
-                              return copy;
-                            })}
+                            <Button type="button" size="sm" variant="ghost" onClick={() => {
+                              uploadFiles.current.delete(key);
+                              setPreviews((current) => {
+                                const copy = { ...current };
+                                delete copy[key];
+                                return copy;
+                              });
+                            }}
                             >
                               Discard
                             </Button>
@@ -1148,6 +1104,72 @@ export default function ColourBlanksPage() {
           </table>
         </div>
         </SectionErrorBoundary>
+
+        <details className="rounded-md border p-3" open>
+          <summary className="cursor-pointer text-sm font-medium" data-testid="colour-list-toggle">Colour list ({gridColours.length} active)</summary>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Saving a name here does not rename stored blanks. Heather and produced colours have no paint button until you switch them to solid.
+            Inactive colours are hidden from the grid, Studio, and the storefront until you turn them back on.
+          </p>
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="p-1 font-medium">Active</th>
+                  <th className="p-1 font-medium">Name</th>
+                  <th className="p-1 font-medium">Printify colour</th>
+                  <th className="p-1 font-medium">Option</th>
+                  <th className="p-1 font-medium">Hex</th>
+                  <th className="p-1 font-medium">Finish</th>
+                  <th className="p-1 font-medium">Stored as</th>
+                  <th className="p-1" />
+                </tr>
+              </thead>
+              <tbody>{colourRows(gridColours)}</tbody>
+            </table>
+          </div>
+          {inactiveColours.length > 0 ? (
+            <details className="mt-3" data-testid="colour-inactive">
+              <summary className="cursor-pointer text-xs font-medium">Inactive colours ({inactiveColours.length})</summary>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left text-xs">
+                  <thead>
+                    <tr className="text-muted-foreground">
+                      <th className="p-1 font-medium">Active</th>
+                      <th className="p-1 font-medium">Name</th>
+                      <th className="p-1 font-medium">Printify colour</th>
+                      <th className="p-1 font-medium">Option</th>
+                      <th className="p-1 font-medium">Hex</th>
+                      <th className="p-1 font-medium">Finish</th>
+                      <th className="p-1 font-medium">Stored as</th>
+                      <th className="p-1" />
+                    </tr>
+                  </thead>
+                  <tbody>{colourRows(inactiveColours)}</tbody>
+                </table>
+              </div>
+            </details>
+          ) : null}
+          <form
+            className="mt-3 flex flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addColour(event.currentTarget);
+            }}
+          >
+            <Input name="name" placeholder="Name" className="w-36" required />
+            <Input name="printifyTitle" placeholder="Printify colour" className="w-36" />
+            <Input name="printifyOptionId" placeholder="Option id" className="w-24" />
+            <Input name="hex" placeholder="Hex" className="w-24" required />
+            <select name="finish" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="solid">
+              <option value="solid">Solid</option>
+              <option value="heather">Heather</option>
+              <option value="produced">Produced</option>
+            </select>
+            <Input name="linkStoredName" placeholder="Stored blank name" className="w-40" />
+            <Button type="submit" size="sm" variant="outline" disabled={busy === "add"}>Add colour</Button>
+          </form>
+        </details>
       </div>
     </AdminLayout>
   );

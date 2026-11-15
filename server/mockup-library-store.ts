@@ -990,7 +990,29 @@ async function loadWhiteMasterPhoto(productTypeId: number, panelId: string) {
   return { white, whitePhoto, whiteDecoded, whiteMask };
 }
 
-/** Scales to the white master and scores the shirt. Does not store a row. */
+/** Long edge of the images the colour-blanks cell actually shows (the cell is 112px CSS). */
+const PREVIEW_DISPLAY_EDGE = 480;
+
+async function displayJpeg(source: Buffer | { data: Buffer; width: number; height: number }): Promise<{ jpeg: Buffer; width: number; height: number }> {
+  const image = Buffer.isBuffer(source)
+    ? sharp(source)
+    : sharp(source.data, { raw: { width: source.width, height: source.height, channels: 4 } });
+  const rendered = await image.resize({
+    width: PREVIEW_DISPLAY_EDGE,
+    height: PREVIEW_DISPLAY_EDGE,
+    fit: "inside",
+    withoutEnlargement: true,
+  }).jpeg({ quality: 80 }).toBuffer({ resolveWithObject: true });
+  return { jpeg: rendered.data, width: rendered.info.width, height: rendered.info.height };
+}
+
+async function signedPreviewJpeg(productTypeId: number, jpeg: Buffer): Promise<string> {
+  const path = `product-types/${productTypeId}/upload-previews/${randomUUID()}.jpg`;
+  await putObject(path, jpeg, "image/jpeg");
+  return signedLibraryUrl(path, 60 * 30);
+}
+
+/** Scales to the white master and scores the shirt. Does not store a blank row. */
 export async function previewUploadedBlank(args: { productTypeId: number; panelId: string; imageBase64: string }) {
   const loaded = await loadWhiteMasterPhoto(args.productTypeId, args.panelId);
   const fitted = await resampleToMaster(decodeImage(args.imageBase64), loaded.whiteDecoded.width, loaded.whiteDecoded.height);
@@ -1011,16 +1033,23 @@ export async function previewUploadedBlank(args: { productTypeId: number; panelI
     mixed[i + 3] = 255;
   }
   const [jpeg, overlay, master] = await Promise.all([
-    sharp(fitted.buffer).jpeg({ quality: 82 }).toBuffer(),
-    sharp(mixed, { raw: { width: decoded.width, height: decoded.height, channels: 4 } }).jpeg({ quality: 80 }).toBuffer(),
-    sharp(loaded.whitePhoto).jpeg({ quality: 75 }).toBuffer(),
+    displayJpeg(fitted.buffer),
+    displayJpeg({ data: mixed, width: decoded.width, height: decoded.height }),
+    displayJpeg(loaded.whitePhoto),
+  ]);
+  const [jpegUrl, overlayUrl, masterUrl] = await Promise.all([
+    signedPreviewJpeg(args.productTypeId, jpeg.jpeg),
+    signedPreviewJpeg(args.productTypeId, overlay.jpeg),
+    signedPreviewJpeg(args.productTypeId, master.jpeg),
   ]);
   return {
-    jpegBase64: jpeg.toString("base64"),
-    overlayJpegBase64: overlay.toString("base64"),
-    masterJpegBase64: master.toString("base64"),
+    jpegUrl,
+    overlayUrl,
+    masterUrl,
     width: decoded.width,
     height: decoded.height,
+    displayWidth: overlay.width,
+    displayHeight: overlay.height,
     resized: fitted.resized,
     fromWidth: fitted.fromWidth,
     fromHeight: fitted.fromHeight,
