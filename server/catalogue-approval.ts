@@ -23,6 +23,8 @@ export type ApprovalRecipe = {
   darknessLevel: number;
   /** Name already on the design. The listing writer keeps it. */
   title: string;
+  /** Colour-blanks product type. Omitted stays on Unisex Softstyle. */
+  productTypeId?: number;
 };
 
 function clip(value: string, max: number): string {

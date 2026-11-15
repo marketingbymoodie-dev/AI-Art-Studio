@@ -134,7 +134,10 @@ export async function publishCatalogueCandidate(args: {
     };
   }
 
-  const garment = await softstyleType();
+  const requestedType = Number(recipe.productTypeId);
+  const garment = Number.isInteger(requestedType) && requestedType > 0
+    ? { id: requestedType, name: "" }
+    : await softstyleType();
   const [typeRow] = await db
     .select({
       name: productTypes.name,
@@ -144,7 +147,7 @@ export async function publishCatalogueCandidate(args: {
     .from(productTypes)
     .where(eq(productTypes.id, garment.id))
     .limit(1);
-  if (!typeRow) throw new PublishRefusal(["Unisex Softstyle T-Shirt was not found."]);
+  if (!typeRow) throw new PublishRefusal(["That product type was not found."]);
   const shop = String(typeRow.shop || "");
   if (shop !== STAGING_SHOP) throw new PublishRefusal(["Publishing this candidate is staging only."]);
 

@@ -1,6 +1,6 @@
 /** Colour list for the mockup-library blank grid. Compose still matches the stored row name. */
 
-export type BlankFinish = "solid" | "heather";
+export type BlankFinish = "solid" | "heather" | "produced";
 
 export type ColourBlankSeed = {
   name: string;

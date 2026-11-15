@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import AdminLayout from "@/components/admin-layout";
@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/queryClient";
 
-type Finish = "solid" | "heather";
+type Finish = "solid" | "heather" | "produced";
 
 type Colour = {
   id: string;
@@ -33,7 +33,27 @@ type Cell = {
   history: Revision[];
 };
 
-type Scene = { panelId: string; label: string; isDefault: boolean; cells: Cell[] };
+type Placement = { widthOfH: number; heightOfH: number; topOfH: number };
+
+type Scene = { panelId: string; label: string; isDefault: boolean; placement: Placement | null; cells: Cell[] };
+
+type SceneBounds = { minX: number; minY: number; maxX: number; maxY: number; centre: number; H: number };
+
+type SceneDraft = {
+  name: string;
+  raw: string;
+  preview: string;
+  width: number;
+  height: number;
+  bounds: SceneBounds;
+  placement: Placement;
+  note: string;
+};
+
+function asFinish(value: string): Finish {
+  if (value === "heather" || value === "produced") return value;
+  return "solid";
+}
 
 type Grid = {
   productType: { id: number; name: string };
@@ -127,6 +147,70 @@ function FlickerFrame({ upload, master, testId }: { upload: string; master: stri
   );
 }
 
+function PlacementEditor({
+  draft,
+  onChange,
+}: {
+  draft: SceneDraft;
+  onChange: (placement: Placement) => void;
+}) {
+  const frame = useRef<HTMLDivElement>(null);
+  const { bounds, width, height, placement } = draft;
+  const boxW = placement.widthOfH * bounds.H;
+  const boxH = placement.heightOfH * bounds.H;
+  const left = ((bounds.centre - boxW / 2) / width) * 100;
+  const top = ((bounds.minY + placement.topOfH * bounds.H) / height) * 100;
+  const boxWidth = (boxW / width) * 100;
+  const boxHeight = (boxH / height) * 100;
+
+  function drag(mode: "move" | "resize", event: ReactPointerEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const frameRect = frame.current?.getBoundingClientRect();
+    if (!frameRect) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = placement;
+    const scaleX = width / frameRect.width;
+    const scaleY = height / frameRect.height;
+    function move(ev: PointerEvent) {
+      const dx = (ev.clientX - startX) * scaleX;
+      const dy = (ev.clientY - startY) * scaleY;
+      if (mode === "move") {
+        onChange({ ...start, topOfH: (bounds.minY + start.topOfH * bounds.H + dy - bounds.minY) / bounds.H });
+        return;
+      }
+      onChange({
+        ...start,
+        widthOfH: (start.widthOfH * bounds.H + dx) / bounds.H,
+        heightOfH: (start.heightOfH * bounds.H + dy) / bounds.H,
+      });
+    }
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  }
+
+  return (
+    <div ref={frame} className="relative mx-auto w-full max-w-[420px]" data-testid="colour-scene-placement">
+      <img src={draft.preview} alt="" className="w-full bg-neutral-800" />
+      <div
+        className="absolute border-2 border-sky-500 bg-sky-400/20"
+        style={{ left: `${left}%`, top: `${top}%`, width: `${boxWidth}%`, height: `${boxHeight}%` }}
+        onPointerDown={(event) => drag("move", event)}
+      >
+        <span
+          className="absolute bottom-0 right-0 h-3 w-3 cursor-nwse-resize bg-sky-500"
+          onPointerDown={(event) => drag("resize", event)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function readFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -143,6 +227,7 @@ export default function ColourBlanksPage() {
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState("");
+  const [sceneDraft, setSceneDraft] = useState<SceneDraft | null>(null);
   const uploads = useRef(new Set<string>());
 
   const grid = useQuery<Grid>({
@@ -450,6 +535,63 @@ export default function ColourBlanksPage() {
     }
   }
 
+  async function previewScene(file: File) {
+    setBusy("scene");
+    setStatus("");
+    try {
+      const raw = await readFile(file);
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/scene-preview", {
+        method: "POST",
+        body: JSON.stringify({ imageBase64: raw }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json();
+      setSceneDraft({
+        name: file.name.replace(/\.[^.]+$/, "").slice(0, 80) || "Scene",
+        raw,
+        preview: `data:image/jpeg;base64,${body.previewJpegBase64}`,
+        width: body.width,
+        height: body.height,
+        bounds: body.bounds,
+        placement: body.placement,
+        note: body.touchesEdge ? "The shirt touches the edge of the photo." : "",
+      });
+      setStatus(`Preview is ${body.width}×${body.height}. Nothing is stored until you approve the scene.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function approveScene() {
+    if (!sceneDraft) return;
+    setBusy("scene");
+    setStatus("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/colour-blanks/scene-approve", {
+        method: "POST",
+        body: JSON.stringify({
+          productTypeId: typeId,
+          label: sceneDraft.name,
+          imageBase64: sceneDraft.raw,
+          widthOfH: sceneDraft.placement.widthOfH,
+          heightOfH: sceneDraft.placement.heightOfH,
+          topOfH: sceneDraft.placement.topOfH,
+        }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const body = await res.json();
+      setSceneDraft(null);
+      await grid.refetch();
+      setStatus(`Stored scene ${body.panelId}. Compose can use it now.`);
+    } catch (e: any) {
+      setStatus(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const data = grid.data;
   const colours = data?.colours ?? [];
   const scenes = data?.scenes ?? [];
@@ -471,13 +613,16 @@ export default function ColourBlanksPage() {
               . A painted preview is not stored until you approve it.
             </p>
           </div>
-          {data && data.types.length > 1 ? (
+          {data ? (
             <label className="text-sm">
               Product type{" "}
               <select
                 className="ml-1 rounded-md border bg-background px-2 py-1"
                 value={typeId}
-                onChange={(event) => setTypeId(Number(event.target.value))}
+                onChange={(event) => {
+                  setTypeId(Number(event.target.value));
+                  setSceneDraft(null);
+                }}
                 data-testid="colour-blanks-type"
               >
                 {data.types.map((type) => (
@@ -491,10 +636,65 @@ export default function ColourBlanksPage() {
         {status ? <p className="text-sm" data-testid="colour-blanks-status">{status}</p> : null}
         {grid.error ? <p className="text-sm text-destructive">{String((grid.error as Error).message || grid.error)}</p> : null}
 
+        <div className="rounded-md border p-3" data-testid="colour-scene-add">
+          <p className="text-sm font-medium">Add scene</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The white master is scaled to 1254×1254. Drag the box to place the print area, or copy another scene. Compose does not use it until you approve.
+          </p>
+          <label className="mt-2 inline-flex cursor-pointer items-center rounded-md border px-2 py-1 text-sm">
+            Choose white master
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="sr-only"
+              data-testid="colour-scene-file"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) void previewScene(file);
+              }}
+            />
+          </label>
+          {sceneDraft ? (
+            <div className="mt-3 space-y-2">
+              <Input
+                value={sceneDraft.name}
+                onChange={(event) => setSceneDraft({ ...sceneDraft, name: event.target.value })}
+                data-testid="colour-scene-name"
+              />
+              <PlacementEditor
+                draft={sceneDraft}
+                onChange={(placement) => setSceneDraft({ ...sceneDraft, placement })}
+              />
+              <label className="block text-xs">
+                Copy placement{" "}
+                <select
+                  className="ml-1 rounded-md border bg-background px-2 py-1"
+                  data-testid="colour-scene-copy"
+                  defaultValue=""
+                  onChange={(event) => {
+                    const scene = scenes.find((item) => item.panelId === event.target.value);
+                    if (scene?.placement) setSceneDraft({ ...sceneDraft, placement: scene.placement });
+                  }}
+                >
+                  <option value="">This scene</option>
+                  {scenes.filter((scene) => scene.placement).map((scene) => (
+                    <option key={scene.panelId} value={scene.panelId}>{scene.label || scene.panelId}</option>
+                  ))}
+                </select>
+              </label>
+              {sceneDraft.note ? <p className="text-xs text-amber-800">{sceneDraft.note}</p> : null}
+              <Button type="button" size="sm" data-testid="colour-scene-approve" disabled={busy !== ""} onClick={() => void approveScene()}>
+                Approve scene
+              </Button>
+            </div>
+          ) : null}
+        </div>
+
         <details className="rounded-md border p-3" open>
           <summary className="cursor-pointer text-sm font-medium">Colour list</summary>
           <p className="mt-2 text-xs text-muted-foreground">
-            Saving a name here does not rename stored blanks. Heather colours have no paint button.
+            Saving a name here does not rename stored blanks. Heather and produced colours have no paint button until you switch them to solid.
           </p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-xs">
@@ -532,10 +732,11 @@ export default function ColourBlanksPage() {
                         <select
                           className="rounded-md border bg-background px-2 py-1"
                           value={draft.finish}
-                          onChange={(event) => patchDraft(colour.id, { finish: event.target.value === "heather" ? "heather" : "solid" })}
+                          onChange={(event) => patchDraft(colour.id, { finish: asFinish(event.target.value) })}
                         >
                           <option value="solid">Solid</option>
                           <option value="heather">Heather</option>
+                          <option value="produced">Produced</option>
                         </select>
                       </td>
                       <td className="p-1">
@@ -570,6 +771,7 @@ export default function ColourBlanksPage() {
             <select name="finish" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="solid">
               <option value="solid">Solid</option>
               <option value="heather">Heather</option>
+              <option value="produced">Produced</option>
             </select>
             <Input name="linkStoredName" placeholder="Stored blank name" className="w-40" />
             <Button type="submit" size="sm" variant="outline" disabled={busy === "add"}>Add colour</Button>
@@ -624,7 +826,7 @@ export default function ColourBlanksPage() {
                       {colour.name}
                     </span>
                     <span className="block font-normal text-muted-foreground">
-                      {colour.finish === "heather" ? "Heather" : "Solid"} · #{colour.hex}
+                      {colour.finish === "heather" ? "Heather" : colour.finish === "produced" ? "Produced" : "Solid"} · #{colour.hex}
                     </span>
                     {colour.finish === "solid" ? (
                       <Button

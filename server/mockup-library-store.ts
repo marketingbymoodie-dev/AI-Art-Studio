@@ -16,7 +16,9 @@ import {
   chooseSceneReference,
   decodeRgba,
   DEFAULT_PRINT_FRACTIONS,
+  bodyCentreline,
   describeWhiteSegment,
+  maskBounds,
   artworkForPrintifyPreview,
   garmentOutlineJpeg,
   maskFromPng,
@@ -267,6 +269,9 @@ async function insertPanel(args: {
   maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-reference";
   isDefault: boolean;
   uploadedBy: string | null;
+  printWidthOfH?: number;
+  printHeightOfH?: number;
+  printTopOfH?: number;
 }): Promise<string> {
   const colorSlug = slug(args.garmentColor);
   const stamp = Date.now();
@@ -301,9 +306,9 @@ async function insertPanel(args: {
     maskSource: args.maskSource,
     width: args.width,
     height: args.height,
-    printWidthOfH: String(DEFAULT_PRINT_FRACTIONS.widthOfH),
-    printHeightOfH: String(DEFAULT_PRINT_FRACTIONS.heightOfH),
-    printTopOfH: String(DEFAULT_PRINT_FRACTIONS.topOfH),
+    printWidthOfH: String(args.printWidthOfH ?? DEFAULT_PRINT_FRACTIONS.widthOfH),
+    printHeightOfH: String(args.printHeightOfH ?? DEFAULT_PRINT_FRACTIONS.heightOfH),
+    printTopOfH: String(args.printTopOfH ?? DEFAULT_PRINT_FRACTIONS.topOfH),
     printRotationDeg: String(DEFAULT_PRINT_FRACTIONS.rotationDeg),
     isDefault: makeDefault,
     uploadedBy: args.uploadedBy,
@@ -328,6 +333,9 @@ export async function storeSegmentedPanel(args: {
   isDefault: boolean;
   imageBase64: string;
   uploadedBy: string | null;
+  printWidthOfH?: number;
+  printHeightOfH?: number;
+  printTopOfH?: number;
 }): Promise<{
   stored: true;
   panelId: string;
@@ -345,8 +353,14 @@ export async function storeSegmentedPanel(args: {
     ? describeWhiteSegment(decoded.rgba, decoded.width, decoded.height)
     : segmentGarmentNearHex(decoded.rgba, decoded.width, decoded.height, hex);
   const outline = await garmentOutlineJpeg(decoded.rgba, decoded.width, decoded.height, segment.mask);
+  const fractions = {
+    widthOfH: args.printWidthOfH ?? DEFAULT_PRINT_FRACTIONS.widthOfH,
+    heightOfH: args.printHeightOfH ?? DEFAULT_PRINT_FRACTIONS.heightOfH,
+    topOfH: args.printTopOfH ?? DEFAULT_PRINT_FRACTIONS.topOfH,
+    rotationDeg: 0,
+  };
   try {
-    printRectForMask(segment.mask, decoded.width, decoded.height);
+    printRectForMask(segment.mask, decoded.width, decoded.height, fractions);
   } catch (e: any) {
     throw Object.assign(new Error(String(e?.message || e)), {
       areaFraction: segment.areaFraction,
@@ -369,6 +383,9 @@ export async function storeSegmentedPanel(args: {
     maskSource: white ? "white-rule" : "hex-segment",
     isDefault: args.isDefault,
     uploadedBy: args.uploadedBy,
+    printWidthOfH: fractions.widthOfH,
+    printHeightOfH: fractions.heightOfH,
+    printTopOfH: fractions.topOfH,
   });
   return {
     stored: true,
@@ -1122,6 +1139,77 @@ export async function restoreBlankRevision(rowId: string) {
   }).returning({ id: mockupPanels.id });
   if (!inserted) throw new Error("The older blank was not restored");
   return { id: inserted.id, panelId: row.panelId, garmentColor: row.garmentColor };
+}
+
+const SCENE_MASTER_PX = 1254;
+
+function sceneFraction(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(0.95, Math.max(0.02, value));
+}
+
+/** Scale a white master and locate the garment. Nothing is stored. */
+export async function previewNewScene(imageBase64: string): Promise<{
+  width: number;
+  height: number;
+  areaFraction: number;
+  touchesEdge: boolean;
+  disconnected: boolean;
+  previewJpegBase64: string;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number; centre: number; H: number };
+  placement: { widthOfH: number; heightOfH: number; topOfH: number };
+}> {
+  const photo = decodeImage(imageBase64);
+  const scaled = await sharp(photo).resize(SCENE_MASTER_PX, SCENE_MASTER_PX, { fit: "fill", kernel: "lanczos3" }).png().toBuffer();
+  const decoded = await decodeRgba(scaled);
+  const segment = describeWhiteSegment(decoded.rgba, decoded.width, decoded.height);
+  const bounds = maskBounds(segment.mask, decoded.width, decoded.height);
+  const centre = bodyCentreline(segment.mask, decoded.width, bounds);
+  const preview = await sharp(scaled).jpeg({ quality: 72 }).toBuffer();
+  return {
+    width: decoded.width,
+    height: decoded.height,
+    areaFraction: segment.areaFraction,
+    touchesEdge: segment.touchesEdge,
+    disconnected: segment.disconnected,
+    previewJpegBase64: preview.toString("base64"),
+    bounds: { minX: bounds.minX, minY: bounds.minY, maxX: bounds.maxX, maxY: bounds.maxY, centre, H: bounds.H },
+    placement: {
+      widthOfH: DEFAULT_PRINT_FRACTIONS.widthOfH,
+      heightOfH: DEFAULT_PRINT_FRACTIONS.heightOfH,
+      topOfH: DEFAULT_PRINT_FRACTIONS.topOfH,
+    },
+  };
+}
+
+/** Store the white master only after the operator approves the print box. */
+export async function approveNewScene(args: {
+  productTypeId: number;
+  label: string;
+  imageBase64: string;
+  widthOfH: number;
+  heightOfH: number;
+  topOfH: number;
+  uploadedBy: string | null;
+}): Promise<{ panelId: string; areaFraction: number }> {
+  const label = args.label.trim().slice(0, 80);
+  if (!label) throw new Error("Name the scene first.");
+  const photo = decodeImage(args.imageBase64);
+  const scaled = await sharp(photo).resize(SCENE_MASTER_PX, SCENE_MASTER_PX, { fit: "fill", kernel: "lanczos3" }).png().toBuffer();
+  const stored = await storeSegmentedPanel({
+    productTypeId: args.productTypeId,
+    label,
+    garmentColor: "White",
+    garmentHex: "FFFFFF",
+    kind: "white-master",
+    isDefault: false,
+    imageBase64: scaled.toString("base64"),
+    uploadedBy: args.uploadedBy,
+    printWidthOfH: sceneFraction(args.widthOfH, DEFAULT_PRINT_FRACTIONS.widthOfH),
+    printHeightOfH: sceneFraction(args.heightOfH, DEFAULT_PRINT_FRACTIONS.heightOfH),
+    printTopOfH: sceneFraction(args.topOfH, DEFAULT_PRINT_FRACTIONS.topOfH),
+  });
+  return { panelId: stored.panelId, areaFraction: stored.areaFraction };
 }
 
 export async function signedBlankPhoto(rowId: string) {

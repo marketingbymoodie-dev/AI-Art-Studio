@@ -50,6 +50,7 @@ type PendingCandidate = {
   recentScenes: string[];
   productTypeId: number;
   productTypeName: string;
+  productTypes?: Array<{ id: number; name: string }>;
   pendingCount?: number;
   nextCandidateId?: string;
   recipe?: {
@@ -121,14 +122,20 @@ export default function CatalogueStudioPage() {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const requested = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get("candidate") || "";
+  const [studioTypeId, setStudioTypeId] = useState(54);
   const pendingKey = requested
-    ? `/api/platform/catalogue-studio/pending?candidate=${encodeURIComponent(requested)}`
-    : "/api/platform/catalogue-studio/pending";
+    ? `/api/platform/catalogue-studio/pending?candidate=${encodeURIComponent(requested)}&productTypeId=${studioTypeId}`
+    : `/api/platform/catalogue-studio/pending?productTypeId=${studioTypeId}`;
   const candidate = useQuery<PendingCandidate>({
     queryKey: [pendingKey],
   });
   const panels = useQuery<{ scenes: SceneGroup[] }>({
-    queryKey: ["/api/platform/catalogue-studio/panels"],
+    queryKey: ["/api/platform/catalogue-studio/panels", studioTypeId],
+    queryFn: async () => {
+      const res = await fetch(`/api/platform/catalogue-studio/panels?productTypeId=${studioTypeId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Could not load scenes");
+      return res.json();
+    },
   });
   const jobs = useQuery<{ queue: QueueRow[] }>({
     queryKey: ["/api/platform/catalogue-studio/jobs"],
@@ -217,6 +224,11 @@ export default function CatalogueStudioPage() {
   }, [candidate.data?.id, candidate.data?.productUrl, candidate.data?.spendUsd, candidate.data?.spendLines]);
 
   useEffect(() => {
+    setPanelId("");
+    setTicked([]);
+  }, [studioTypeId]);
+
+  useEffect(() => {
     const scenes = candidate.data?.scenes;
     if (!scenes?.length || panelId) return;
     const stored = candidate.data?.choice.panelId;
@@ -246,7 +258,7 @@ export default function CatalogueStudioPage() {
     (async () => {
       const idQuery = candidate.data?.id ? `&candidate=${encodeURIComponent(candidate.data.id)}` : "";
       const res = await fetch(
-        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}${idQuery}`,
+        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}`,
         { credentials: "include" },
       );
       if (res.status === 204) {
@@ -278,7 +290,7 @@ export default function CatalogueStudioPage() {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [color, panelId, previewNonce, candidate.data?.id]);
+  }, [color, panelId, previewNonce, candidate.data?.id, studioTypeId]);
 
   useEffect(() => {
     if (!showAdmin) return;
@@ -350,6 +362,7 @@ export default function CatalogueStudioPage() {
           deviceText: device,
           deviceStructure,
           darknessLevel: Number(darkness),
+          productTypeId: studioTypeId,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -377,6 +390,19 @@ export default function CatalogueStudioPage() {
         </Button>
       </div>
       <div className="mb-6 rounded-md border p-4" data-testid="catalogue-studio-panels">
+        <label className="mb-3 block text-sm">
+          Product type{" "}
+          <select
+            className="ml-1 rounded-md border bg-background px-2 py-1"
+            value={studioTypeId}
+            data-testid="catalogue-studio-type"
+            onChange={(event) => setStudioTypeId(Number(event.target.value))}
+          >
+            {(candidate.data?.productTypes?.length ? candidate.data.productTypes : [{ id: studioTypeId, name: candidate.data?.productTypeName || "Unisex Softstyle T-Shirt" }]).map((type) => (
+              <option key={type.id} value={type.id}>{type.name} ({type.id})</option>
+            ))}
+          </select>
+        </label>
         <MockupBulkImport
           productType={candidate.data ? { id: candidate.data.productTypeId, name: candidate.data.productTypeName } : null}
           storedScenes={(panels.data?.scenes ?? []).map((scene) => scene.panelId)}
@@ -418,7 +444,7 @@ export default function CatalogueStudioPage() {
                     setPrintifyError("");
                     void apiFetch("/api/platform/catalogue-studio/printify-preview", {
                       method: "POST",
-                      body: JSON.stringify({ candidateId: candidate.data?.id, panelId, color, size }),
+                      body: JSON.stringify({ candidateId: candidate.data?.id, panelId, color, size, productTypeId: studioTypeId }),
                     }).then(async (res) => {
                       const body = await res.json().catch(() => ({}));
                       if (!res.ok) throw new Error(body.error || "Printify did not return a mockup.");

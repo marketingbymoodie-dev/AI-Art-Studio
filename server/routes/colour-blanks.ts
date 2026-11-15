@@ -16,6 +16,7 @@ import {
   signedBlankPhoto,
   uploadColourBlank,
 } from "../colour-blanks";
+import { approveNewScene, previewNewScene } from "../mockup-library-store";
 
 function operatorId(req: any): string | null {
   const id = req.user?.claims?.sub || req.user?.id;
@@ -128,6 +129,32 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
     if (!requirePlatformAdmin(req, res)) return;
     try {
       res.json(await restoreBlankRevision(String(req.body?.rowId || "")));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/colour-blanks/scene-preview", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json(await previewNewScene(String(req.body?.imageBase64 || "")));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/colour-blanks/scene-approve", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      res.json(await approveNewScene({
+        productTypeId: typeId(req.body?.productTypeId),
+        label: String(req.body?.label || ""),
+        imageBase64: String(req.body?.imageBase64 || ""),
+        widthOfH: Number(req.body?.widthOfH),
+        heightOfH: Number(req.body?.heightOfH),
+        topOfH: Number(req.body?.topOfH),
+        uploadedBy: operatorId(req),
+      }));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

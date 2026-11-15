@@ -3,11 +3,11 @@
  * Preview is free. Publish is the button that builds the print file and lists the product.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, merchants, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, merchants, mockupLibraryColours, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
 import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
@@ -165,6 +165,34 @@ async function candidateIdFor(res: Response, value: unknown): Promise<string | n
   return resolved.id;
 }
 
+/** Softstyle unless the operator picked another product type. */
+async function studioGarment(raw: unknown): Promise<{ id: number; name: string }> {
+  const id = Number(raw);
+  if (Number.isInteger(id) && id > 0) {
+    const { db } = await import("../db");
+    const [row] = await db
+      .select({ id: productTypes.id, name: productTypes.name })
+      .from(productTypes)
+      .where(eq(productTypes.id, id))
+      .limit(1);
+    if (row) return row;
+  }
+  return softstyleType();
+}
+
+async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: string; hex: string }>> {
+  if (productTypeId === 54) return [];
+  const { db } = await import("../db");
+  const { ensureColourBlankTable } = await import("../colour-blanks");
+  await ensureColourBlankTable();
+  const rows = await db
+    .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
+    .from(mockupLibraryColours)
+    .where(eq(mockupLibraryColours.productTypeId, productTypeId))
+    .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
+  return rows.map((row) => ({ name: row.name, hex: row.hex }));
+}
+
 export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthenticated: RequestHandler }) {
   const { isAuthenticated } = deps;
   registerColourBlankRoutes(app, deps);
@@ -172,8 +200,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/panels", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const garment = await softstyleType();
-      res.json({ scenes: await listScenes(garment.id) });
+      const garment = await studioGarment(req.query.productTypeId);
+      res.json({ scenes: await listScenes(garment.id), productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
     }
@@ -188,14 +216,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const id = resolved.id;
-      const [prices, garment, scenes, choice, recentScenes, stored, queue] = await Promise.all([
+      const { db } = await import("../db");
+      const { prepareColourBlanks } = await import("../colour-blanks");
+      const requestedType = Number(req.query.productTypeId) || 54;
+      await prepareColourBlanks(requestedType);
+      const garment = await studioGarment(req.query.productTypeId);
+      const [prices, scenes, choice, recentScenes, stored, queue, blankColours, typeList] = await Promise.all([
         shippingPricesBySize(),
-        softstyleType(),
-        softstyleType().then((type) => listScenes(type.id)),
+        listScenes(garment.id),
         readChoice(id),
         recentSceneLabels(),
         readCandidateRow(id),
         operatorQueue(),
+        libraryColoursFor(garment.id),
+        db.select({ id: productTypes.id, name: productTypes.name }).from(productTypes).orderBy(asc(productTypes.id)),
       ]);
       if (id !== PENDING_CANDIDATE.id && !stored) {
         res.status(404).json({ error: "That candidate is not stored." });
@@ -203,7 +237,6 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       }
       const nextCandidateId = nextQueueId(queue.map((row) => row.id), id);
       const fixture = id === PENDING_CANDIDATE.id;
-      const { db } = await import("../db");
       const [typeRow] = await db
         .select({
           sizes: productTypes.sizes,
@@ -226,18 +259,21 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       for (const scene of scenes) {
         for (const color of scene.colours) colourByName.set(color.name, { name: color.name, hex: color.hex });
       }
-      const colours = sortCatalogueColours([...colourByName.values()]);
+      const sceneColours = sortCatalogueColours([...colourByName.values()]);
+      const studioColours = fixture && garment.id === 54
+        ? PENDING_CANDIDATE.colors
+        : blankColours.length ? sortCatalogueColours(blankColours) : sceneColours;
       const colourSizes: Record<string, string> = {};
       const offeredNames = offered.map((size) => size.name);
-      for (const color of colours) {
+      for (const color of studioColours) {
         colourSizes[color.name] = formatSizeRange(offeredNames, printableSizeNames(variantMap, color, offered));
       }
       let eligibility = null;
-      if (choice.artworkPath && colours.length) {
+      if (choice.artworkPath && studioColours.length) {
         try {
           const artwork = await readLibraryObject(choice.artworkPath);
           const { measureColourEligibility } = await import("../catalogue-studio-eligibility");
-          eligibility = await measureColourEligibility(artwork, colours);
+          eligibility = await measureColourEligibility(artwork, studioColours);
         } catch (err) {
           console.error("[catalogue-studio] eligibility:", (err as Error).message);
         }
@@ -265,8 +301,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         productUrl,
         spendUsd: spend.totalUsd,
         spendLines: spend.lines,
-        colors: fixture ? PENDING_CANDIDATE.colors : colours,
-        selectedColor: fixture ? PENDING_CANDIDATE.selectedColor : colours[0]?.name || "White",
+        colors: studioColours,
+        selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : studioColours[0]?.name || "White",
+        productTypes: typeList,
         selectedSize: "L",
         ...prices,
         eligibility,
@@ -307,8 +344,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       }
       const id = await candidateIdFor(res, req.query.candidate);
       if (!id) return;
-      const known = PENDING_CANDIDATE.colors.find((c) => c.name === requested) ?? { name: requested, hex: "FFFFFF" };
-      const [garment, choice] = await Promise.all([softstyleType(), readChoice(id)]);
+      const garment = await studioGarment(req.query.productTypeId);
+      const library = await libraryColoursFor(garment.id);
+      const known = library.find((c) => c.name.toLowerCase() === requested.toLowerCase())
+        ?? PENDING_CANDIDATE.colors.find((c) => c.name === requested)
+        ?? { name: requested, hex: "FFFFFF" };
+      const choice = await readChoice(id);
       if (!String(choice.artworkPath || "").trim()) {
         res.status(204).end();
         return;
@@ -346,7 +387,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const { db } = await import("../db");
-      const garment = await softstyleType();
+      const garment = await studioGarment(req.body?.productTypeId);
       const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, garment.id)).limit(1);
       if (!typeRow?.printifyBlueprintId || !typeRow.printifyProviderId || !typeRow.merchantId) {
         res.status(400).json({ error: "This product type has no Printify blueprint." });
@@ -359,7 +400,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       }
       const id = await candidateIdFor(res, req.body?.candidateId);
       if (!id) return;
-      const known = PENDING_CANDIDATE.colors.find((c) => c.name === colorName) ?? { name: colorName, hex: "FFFFFF" };
+      const library = await libraryColoursFor(garment.id);
+      const known = library.find((c) => c.name.toLowerCase() === colorName.toLowerCase())
+        ?? PENDING_CANDIDATE.colors.find((c) => c.name === colorName)
+        ?? { name: colorName, hex: "FFFFFF" };
       const choice = await readChoice(id);
       const artwork = await candidatePrintifyArtwork({
         productTypeId: garment.id,
@@ -415,11 +459,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const panelId = typeof req.query.panelId === "string" ? req.query.panelId : "";
-      if (!/^Mockup_\d+$/i.test(panelId)) {
+      if (!panelId.trim()) {
         res.status(400).json({ error: "Name the scene." });
         return;
       }
-      const garment = await softstyleType();
+      const garment = await studioGarment(req.query.productTypeId);
       const cells = await reviewStoredScene(garment.id, panelId);
       res.json({ productTypeId: garment.id, productTypeName: garment.name, panelId, cells });
     } catch (e: any) {
@@ -430,7 +474,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/panels/import/plan", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((path: unknown) => String(path)) : [];
-    const garment = await softstyleType();
+    const garment = await studioGarment(req.body?.productTypeId);
     res.json({ ...parseMockupImport(paths), productTypeId: garment.id, productTypeName: garment.name });
   });
 
@@ -438,12 +482,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const body = req.body ?? {};
-      const garment = await softstyleType();
-      const requested = Number(body.productTypeId);
-      if (Number.isFinite(requested) && requested > 0 && requested !== garment.id) {
-        res.status(400).json({ error: `This page stores panels on ${garment.name} (${garment.id}).` });
-        return;
-      }
+      const garment = await studioGarment(body.productTypeId);
       const result = await stageImportFile({
         label: String(body.label || ""),
         panelId: body.panelId ? String(body.panelId) : null,
@@ -471,7 +510,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/panels/import/commit", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const garment = await softstyleType();
+      const garment = await studioGarment(req.body?.productTypeId);
       const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => String(id)) : [];
       const result = await commitStagedImport(garment.id, stageIds, req.user?.id ? String(req.user.id) : null);
       res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
@@ -486,7 +525,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const body = req.body ?? {};
-      const garment = await softstyleType();
+      const garment = await studioGarment(body.productTypeId);
       const result = await preparePanelUpload({
         productTypeId: garment.id,
         label: String(body.label || ""),
@@ -757,6 +796,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         deviceStructure: String(req.body?.deviceStructure || ""),
         darknessLevel: Number(req.body?.darknessLevel),
         title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
+        productTypeId: Number(req.body?.productTypeId) || undefined,
       });
       res.json(job);
     } catch (e: any) {
@@ -787,7 +827,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { promoteCatalogueCandidate } = await import("../flywheel-promote");
-      const garment = await softstyleType();
+      const garment = await studioGarment(req.body?.productTypeId);
       const prices = await shippingPricesBySize();
       const id = await candidateIdFor(res, req.body?.candidateId);
       if (!id) return;

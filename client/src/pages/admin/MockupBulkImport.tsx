@@ -121,7 +121,8 @@ export function MockupBulkImport({
       for (let i = 0; i < ids.length; i++) {
         if (cancel) return;
         setReviewBusy(`Reading stored outlines ${i + 1} of ${ids.length}`);
-        const res = await apiFetch(`/api/platform/catalogue-studio/panels/review?panelId=${encodeURIComponent(ids[i])}`);
+        const typeQuery = productType ? `&productTypeId=${productType.id}` : "";
+        const res = await apiFetch(`/api/platform/catalogue-studio/panels/review?panelId=${encodeURIComponent(ids[i])}${typeQuery}`);
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Stored outlines failed");
         if (body.productTypeId) setDestination({ id: body.productTypeId, name: body.productTypeName });
@@ -146,14 +147,14 @@ export function MockupBulkImport({
     return () => {
       cancel = true;
     };
-  }, [sceneKey]);
+  }, [sceneKey, productType?.id]);
 
   async function loadEntries(entries: Array<{ path: string; file: File }>) {
     setError("");
     setSheet([]);
     const planRes = await apiFetch("/api/platform/catalogue-studio/panels/import/plan", {
       method: "POST",
-      body: JSON.stringify({ paths: entries.map((entry) => entry.path) }),
+      body: JSON.stringify({ paths: entries.map((entry) => entry.path), productTypeId: productType?.id }),
     });
     const plan = await planRes.json();
     if (!planRes.ok) throw new Error(plan.error || "The folder could not be read.");
@@ -241,7 +242,7 @@ export function MockupBulkImport({
       setRetried(retriedNames);
       if (stageIds.length) {
         setBusy("Segmenting one reference colour per scene");
-        const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/commit", { stageIds });
+        const { res, tries } = await postJson("/api/platform/catalogue-studio/panels/import/commit", { stageIds, productTypeId: (destination ?? productType)?.id });
         if (tries > 1) retriedNames.push("scene clip");
         setRetried([...retriedNames]);
         const body = await res.json();
