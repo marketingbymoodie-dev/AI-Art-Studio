@@ -39,6 +39,7 @@ import {
   type FlatCalibratorGeometry,
   type ViewName,
 } from "../flat-calibration";
+import { operatorCatalogueForShop, SHARED_COLOUR_BLANK_TYPE_ID } from "@shared/operatorCatalogue";
 import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
   parseFlatCalibrationManifest,
@@ -967,7 +968,19 @@ export function registerPlatformCalibrationRoutes(
   const { storage, isAuthenticated } = deps;
 
   app.get("/api/platform/admin/status", isAuthenticated, (req: any, res: Response) => {
-    res.json({ isPlatformAdmin: isPlatformAdminRequest(req) });
+    const isPlatformAdmin = isPlatformAdminRequest(req);
+    if (!isPlatformAdmin) {
+      res.json({ isPlatformAdmin: false });
+      return;
+    }
+    const profile = operatorCatalogueForShop(req.shopDomain);
+    res.json({
+      isPlatformAdmin: true,
+      catalogueShop: profile.shop,
+      defaultProductTypeId: profile.defaultProductTypeId,
+      sharedBlankTypeId: SHARED_COLOUR_BLANK_TYPE_ID,
+      printifyShopId: profile.printifyShopId,
+    });
   });
 
   app.get("/api/platform/generation-health", isAuthenticated, async (req: any, res: Response) => {

@@ -178,7 +178,7 @@ async function runJob(row: JobRow): Promise<void> {
   const recipe = row.recipe;
   try {
     const { shippingPricesBySize } = await import("./routes/catalogue-studio");
-    const prices = await shippingPricesBySize();
+    const prices = await shippingPricesBySize(recipe.productTypeId);
     await publishCatalogueCandidate({
       recipe,
       pricesBySize: prices.pricesBySize,

@@ -6,11 +6,10 @@
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { catalogueShopDomain, operatorCatalogueForShop } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, designCandidates, productTypes } from "@shared/schema";
 import { db } from "./db";
 import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
-
-const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
 
 export type CatalogueImportResult = {
   created: number;
@@ -40,16 +39,18 @@ export function decodeCataloguePng(filename: string, imageBase64: string): Buffe
   return buf;
 }
 
-async function assertStagingCatalogue(): Promise<void> {
+async function assertCatalogueImportShop(shop: string | null | undefined): Promise<string> {
   if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
     throw new Error("Catalogue import is staging only.");
   }
+  const profile = operatorCatalogueForShop(shop);
   const [row] = await db
     .select({ shop: productTypes.shopifyShopDomain })
     .from(productTypes)
-    .where(eq(productTypes.id, 54))
+    .where(eq(productTypes.id, profile.defaultProductTypeId))
     .limit(1);
-  if (String(row?.shop || "") !== STAGING_SHOP) throw new Error("Catalogue import is staging only.");
+  if (catalogueShopDomain(row?.shop) !== profile.shop) throw new Error("Catalogue import is not available for this store.");
+  return profile.shop;
 }
 
 async function removeStaged(batchId: string, filenames: string[]): Promise<void> {
@@ -64,8 +65,8 @@ async function removeStaged(batchId: string, filenames: string[]): Promise<void>
   }
 }
 
-export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string): Promise<void> {
-  await assertStagingCatalogue();
+export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string, shop?: string | null): Promise<void> {
+  await assertCatalogueImportShop(shop);
   const buf = decodeCataloguePng(filename, imageBase64);
   const path = catalogueImportStagePath(batchId, filename);
   await removeLibraryObject(path).catch(() => undefined);
@@ -80,8 +81,9 @@ export async function commitCatalogueImport(args: {
   batchId: string;
   filenames: string[];
   rows: CatalogueImportRow[];
+  shop?: string | null;
 }): Promise<CatalogueImportResult> {
-  await assertStagingCatalogue();
+  const shop = await assertCatalogueImportShop(args.shop);
   const empty = { created: 0, firstId: "", studioPath: "", failures: [] as string[] };
   if (!batchIdOk(args.batchId)) {
     return { ...empty, failures: ["That upload is not a catalogue batch."] };
@@ -123,7 +125,7 @@ export async function commitCatalogueImport(args: {
         ids.push(id);
         await tx.insert(designCandidates).values({
           id,
-          shopDomain: STAGING_SHOP,
+          shopDomain: shop,
           status: "pending",
           source: "manual",
           humourOperator: item.row.humourOperator,

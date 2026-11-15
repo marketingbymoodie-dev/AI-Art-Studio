@@ -4,9 +4,12 @@ import { normalizeMyshopifyShopDomain } from "./shopDomain";
 /**
  * Extra owner/demo shops that always get operator UI (in addition to env).
  * AI Art Studio (`aiartstudio-gizsmzs2`) is the current demo store.
+ * Petposterous (`h7epay-gh`) is an owner shop for its own app slot.
+ * Any other merchant stays off this list.
  */
 const BUILTIN_OWNER_SHOP_DOMAINS = [
   "aiartstudio-gizsmzs2.myshopify.com",
+  "h7epay-gh.myshopify.com",
 ] as const;
 
 function addShopDomains(into: Set<string>, raw?: string | null) {

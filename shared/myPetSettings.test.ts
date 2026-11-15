@@ -143,8 +143,10 @@ describe("isMyPetSettingsShop", () => {
     expect(isMyPetSettingsShop("ai-art-studio-staging.myshopify.com")).toBe(true);
   });
 
-  it("is off for any other shop by default", () => {
+  it("is on for the Petposterous shop and off for any other merchant", () => {
+    expect(isMyPetSettingsShop("h7epay-gh.myshopify.com")).toBe(true);
     expect(isMyPetSettingsShop("some-other-merchant.myshopify.com")).toBe(false);
+    expect(isMyPetSettingsShop("petposterous.myshopify.com")).toBe(false);
     expect(isMyPetSettingsShop(null)).toBe(false);
   });
 

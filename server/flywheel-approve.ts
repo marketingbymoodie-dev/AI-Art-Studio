@@ -5,6 +5,7 @@
 import { eq } from "drizzle-orm";
 import { requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 export type { ApprovalRecipe };
+import { catalogueShopAllowed } from "@shared/operatorCatalogue";
 import { designCandidates, productTypes } from "@shared/schema";
 import { catalogueListingIsFresh, catalogueTruthIsSentence, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { db } from "./db";
@@ -16,8 +17,6 @@ import {
   softstyleType,
   writeLibraryObject,
 } from "./mockup-library-store";
-
-const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
 
 function clip(value: string, max: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
@@ -44,9 +43,13 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
 }> {
   const [stored] = await db.select().from(designCandidates).where(eq(designCandidates.id, recipe.candidateId)).limit(1);
   const checked = requireRecipe(recipe, stored?.source);
-  const garment = await softstyleType();
+  const requestedType = Number(recipe.productTypeId);
+  const garment = Number.isInteger(requestedType) && requestedType > 0
+    ? { id: requestedType }
+    : await softstyleType();
   const [typeRow] = await db
     .select({
+      id: productTypes.id,
       name: productTypes.name,
       shop: productTypes.shopifyShopDomain,
       placeholderPositions: productTypes.placeholderPositions,
@@ -54,9 +57,9 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     .from(productTypes)
     .where(eq(productTypes.id, garment.id))
     .limit(1);
-  if (!typeRow) throw new Error("Unisex Softstyle T-Shirt was not found.");
+  if (!typeRow) throw new Error("That product type was not found.");
   const shop = String(typeRow.shop || "");
-  if (shop !== STAGING_SHOP) throw new Error("Approval of this candidate is staging only.");
+  if (!catalogueShopAllowed(shop)) throw new Error("Approval of this candidate is staging only.");
 
   let choice = await readChoice(recipe.candidateId);
   const covered = recipe.selectedColors.every((color) =>
@@ -65,7 +68,7 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   if (!covered) {
     await approveCandidateChoice({
       candidateId: recipe.candidateId,
-      productTypeId: garment.id,
+      productTypeId: typeRow.id,
       typeName: typeRow.name,
       panelId: recipe.panelId,
       selectedColors: recipe.selectedColors,

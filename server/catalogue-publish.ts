@@ -11,6 +11,7 @@ import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-appr
 import { db } from "./db";
 import { buildFlywheelPrintFile, lastPrintFileBilling, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { promoteCatalogueCandidate, PromoteRefusal } from "./flywheel-promote";
+import { catalogueShopAllowed } from "@shared/operatorCatalogue";
 import {
   approveCandidateChoice,
   readChoice,
@@ -20,11 +21,8 @@ import {
   writeLibraryObject,
 } from "./mockup-library-store";
 
-const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
-const PETPOSTEROUS_SHOP = "h7epay-gh.myshopify.com";
-
 export function cataloguePublishShopAllowed(shop: string): boolean {
-  return shop === STAGING_SHOP || shop === PETPOSTEROUS_SHOP;
+  return catalogueShopAllowed(shop);
 }
 
 export class PublishRefusal extends Error {
@@ -126,7 +124,7 @@ export async function publishCatalogueCandidate(args: {
   }
   const recipe = args.recipe;
   const [stored] = await db.select().from(designCandidates).where(eq(designCandidates.id, recipe.candidateId)).limit(1);
-  if (!stored || stored.shopDomain !== STAGING_SHOP) throw new PublishRefusal(["That candidate is not stored."]);
+  if (!stored || !cataloguePublishShopAllowed(String(stored.shopDomain || ""))) throw new PublishRefusal(["That candidate is not stored."]);
   if (stored.status === "dropped") throw new PublishRefusal(["This candidate was dropped."]);
   const requestedType = Number(recipe.productTypeId);
   const garment = Number.isInteger(requestedType) && requestedType > 0

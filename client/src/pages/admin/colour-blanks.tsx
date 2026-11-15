@@ -282,7 +282,11 @@ function readFile(file: File): Promise<string> {
 }
 
 export default function ColourBlanksPage() {
-  const [typeId, setTypeId] = useState(54);
+  const platform = useQuery<{ defaultProductTypeId?: number }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
+  const [pickedType, setPickedType] = useState<number | null>(null);
+  const typeId = pickedType ?? platform.data?.defaultProductTypeId ?? (platform.isFetched ? 54 : 0);
   const [drafts, setDrafts] = useState<Record<string, Colour>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});
@@ -309,7 +313,7 @@ export default function ColourBlanksPage() {
 
   const grid = useQuery<Grid>({
     queryKey: ["/api/platform/catalogue-studio/colour-blanks", typeId],
-    enabled: !sessionExpired,
+    enabled: !sessionExpired && typeId > 0,
     retry: false,
     refetchOnMount: false,
     refetchOnWindowFocus: false,
@@ -808,7 +812,7 @@ export default function ColourBlanksPage() {
                 className="ml-1 rounded-md border bg-background px-2 py-1"
                 value={typeId}
                 onChange={(event) => {
-                  setTypeId(Number(event.target.value));
+                  setPickedType(Number(event.target.value));
                   setSceneDraft(null);
                 }}
                 data-testid="colour-blanks-type"

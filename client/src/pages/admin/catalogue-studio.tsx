@@ -36,6 +36,8 @@ type PendingCandidate = {
   description?: string;
   shopifyProductId: string | null;
   productUrl?: string | null;
+  catalogueShop?: string;
+  printifyShopId?: string | null;
   spendUsd?: number;
   spendLines?: Array<{ label: string; usd: number; estimated: boolean }>;
   sizes: string[];
@@ -140,7 +142,16 @@ export default function CatalogueStudioPage() {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const requested = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search).get("candidate") || "";
+  const platform = useQuery<{ defaultProductTypeId?: number }>({
+    queryKey: ["/api/platform/admin/status"],
+  });
   const [studioTypeId, setStudioTypeId] = useState(54);
+  const [typePinned, setTypePinned] = useState(false);
+  useEffect(() => {
+    if (typePinned) return;
+    const next = platform.data?.defaultProductTypeId;
+    if (next && next !== studioTypeId) setStudioTypeId(next);
+  }, [platform.data?.defaultProductTypeId, studioTypeId, typePinned]);
   const pendingKey = requested
     ? `/api/platform/catalogue-studio/pending?candidate=${encodeURIComponent(requested)}&productTypeId=${studioTypeId}`
     : `/api/platform/catalogue-studio/pending?productTypeId=${studioTypeId}`;
@@ -155,11 +166,12 @@ export default function CatalogueStudioPage() {
       return res.json();
     },
   });
+  const openCandidateId = requested || (candidate.data?.id && candidate.data.id !== "pending-bed-etiquette" ? candidate.data.id : "");
   const published = useQuery<{ designProductId: string | null }>({
-    queryKey: ["/api/platform/catalogue-studio/design-colours", requested, studioTypeId],
-    enabled: Boolean(requested),
+    queryKey: ["/api/platform/catalogue-studio/design-colours", openCandidateId, studioTypeId],
+    enabled: Boolean(openCandidateId),
     queryFn: async () => {
-      const params = new URLSearchParams({ candidateId: requested, productTypeId: String(studioTypeId) });
+      const params = new URLSearchParams({ candidateId: openCandidateId, productTypeId: String(studioTypeId) });
       const res = await fetch(`/api/platform/catalogue-studio/design-colours?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error("Could not load the published design");
       return res.json();
@@ -413,6 +425,9 @@ export default function CatalogueStudioPage() {
     <AdminLayout>
       <div className="mb-4 flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
+          {candidate.data?.catalogueShop ? `${candidate.data.catalogueShop}` : ""}
+          {candidate.data?.printifyShopId ? ` · Printify ${candidate.data.printifyShopId}` : ""}
+          {candidate.data?.catalogueShop ? " · " : ""}
           {candidate.data?.recipe?.filename || (candidate.data?.status === "approved" ? "Approved candidate" : "Pending candidate")}. No Shopify product.
           {candidate.data?.pendingCount ? ` ${candidate.data.pendingCount} in the queue.` : ""}
         </p>
@@ -427,7 +442,10 @@ export default function CatalogueStudioPage() {
             className="ml-1 rounded-md border bg-background px-2 py-1"
             value={studioTypeId}
             data-testid="catalogue-studio-type"
-            onChange={(event) => setStudioTypeId(Number(event.target.value))}
+            onChange={(event) => {
+              setTypePinned(true);
+              setStudioTypeId(Number(event.target.value));
+            }}
           >
             {(candidate.data?.productTypes?.length ? candidate.data.productTypes : [{ id: studioTypeId, name: candidate.data?.productTypeName || "Unisex Softstyle T-Shirt" }]).map((type) => (
               <option key={type.id} value={type.id}>{type.name} ({type.id})</option>

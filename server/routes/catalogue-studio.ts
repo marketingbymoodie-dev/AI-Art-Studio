@@ -3,16 +3,24 @@
  * Preview is free. Publish is the button that builds the print file and lists the product.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { and, asc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, merchants, mockupLibraryColours, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, mockupLibraryColours, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
 import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames, sortCatalogueColours } from "@shared/flywheelPromote";
+import {
+  candidateVisibleToShop,
+  catalogueShopDomain,
+  operatorCatalogueForShop,
+  PETPOSTEROUS_CATALOGUE_SHOP,
+  PETPOSTEROUS_PRODUCT_TYPE_ID,
+  STAGING_CATALOGUE_SHOP,
+} from "@shared/operatorCatalogue";
 import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
@@ -58,12 +66,15 @@ function parseIdList(raw: string | null | undefined): string[] {
   }
 }
 
-export async function shippingPricesBySize(): Promise<{
+export async function shippingPricesBySize(productTypeId?: number): Promise<{
   sizes: string[];
   pricesBySize: Record<string, string>;
   compareAtBySize: Record<string, string>;
 }> {
   const empty = { sizes: [], pricesBySize: {}, compareAtBySize: {} };
+  if (Number(productTypeId) === PETPOSTEROUS_PRODUCT_TYPE_ID) {
+    return shopCataloguePrices(PETPOSTEROUS_CATALOGUE_SHOP, PETPOSTEROUS_PRODUCT_TYPE_ID);
+  }
   const { db } = await import("../db");
   const [row] = await db
     .select({
@@ -105,7 +116,58 @@ export async function shippingPricesBySize(): Promise<{
   return { sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize };
 }
 
-const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
+/** Prices already on this shop's studio product. The Softstyle table is not applied. */
+async function shopCataloguePrices(shop: string, productTypeId: number): Promise<{
+  sizes: string[];
+  pricesBySize: Record<string, string>;
+  compareAtBySize: Record<string, string>;
+}> {
+  const empty = { sizes: [], pricesBySize: {}, compareAtBySize: {} };
+  const { db } = await import("../db");
+  const [row] = await db
+    .select({
+      sizes: productTypes.sizes,
+      shop: customizerPages.shop,
+      baseProductId: customizerPages.baseProductId,
+    })
+    .from(customizerPages)
+    .innerJoin(productTypes, eq(customizerPages.productTypeId, productTypes.id))
+    .where(and(
+      eq(customizerPages.shop, shop),
+      eq(customizerPages.productTypeId, productTypeId),
+      eq(customizerPages.status, "active"),
+    ))
+    .limit(1);
+  if (!row?.shop || !row.baseProductId) return empty;
+  const installation = await storage.getShopifyInstallationByShop(row.shop);
+  if (!installation?.accessToken) return empty;
+  let parsed: Array<{ name?: string }> = [];
+  try {
+    const raw = JSON.parse(row.sizes || "[]");
+    parsed = Array.isArray(raw) ? raw : [];
+  } catch {
+    parsed = [];
+  }
+  const prodRes = await getProductRestCompat(row.shop, installation.accessToken, row.baseProductId);
+  const variants = filterCatalogByPrintSides(prodRes.data?.product?.variants || [], "front");
+  const pricesBySize: Record<string, string> = {};
+  const sizes: string[] = [];
+  for (const size of parsed) {
+    const name = String(size?.name || "").trim();
+    if (!name || pricesBySize[name]) continue;
+    const prices = [...new Set(
+      variants
+        .filter((v) => v.option1 === name && v.price)
+        .map((v) => Number(v.price).toFixed(2)),
+    )];
+    if (prices.length !== 1) continue;
+    pricesBySize[name] = prices[0];
+    sizes.push(name);
+  }
+  return { sizes, pricesBySize, compareAtBySize: {} };
+}
+
+const STAGING_SHOP = STAGING_CATALOGUE_SHOP;
 
 function parseCandidateId(value: unknown): { id: string } | { error: string } {
   const id = typeof value === "string" ? value.trim() : "";
@@ -121,8 +183,39 @@ async function readCandidateRow(id: string) {
   return row ?? null;
 }
 
-async function operatorQueue(): Promise<Array<{ id: string; title: string }>> {
+async function listedCandidateIds(shop: string): Promise<string[]> {
   const { db } = await import("../db");
+  const rows = await db
+    .select({ jobId: designProducts.jobId })
+    .from(designProducts)
+    .where(and(eq(designProducts.shop, shop), isNotNull(designProducts.jobId)));
+  return rows.map((row) => String(row.jobId || "")).filter(Boolean);
+}
+
+/** Petposterous can open a design that was published onto its shop. */
+async function candidateOwnedOrListed(
+  requestShop: string | null | undefined,
+  row: { id: string; shopDomain: string | null },
+): Promise<boolean> {
+  if (candidateVisibleToShop(requestShop, row.shopDomain)) return true;
+  const profile = operatorCatalogueForShop(requestShop);
+  if (profile.shop !== PETPOSTEROUS_CATALOGUE_SHOP) return false;
+  return (await listedCandidateIds(profile.shop)).includes(row.id);
+}
+
+async function operatorQueue(requestShop: string | null | undefined): Promise<Array<{ id: string; title: string }>> {
+  const profile = operatorCatalogueForShop(requestShop);
+  const { db } = await import("../db");
+  const listed = profile.shop === PETPOSTEROUS_CATALOGUE_SHOP ? await listedCandidateIds(profile.shop) : [];
+  const ownWork = and(
+    eq(designCandidates.shopDomain, profile.shop),
+    isNotNull(designCandidates.artworkPath),
+    ne(designCandidates.artworkPath, ""),
+    or(
+      eq(designCandidates.status, "pending"),
+      and(eq(designCandidates.status, "approved"), isNull(designCandidates.shopifyProductId)),
+    ),
+  );
   const rows = await db
     .select({
       id: designCandidates.id,
@@ -132,52 +225,58 @@ async function operatorQueue(): Promise<Array<{ id: string; title: string }>> {
       punchline: designCandidates.punchline,
     })
     .from(designCandidates)
-    .where(and(
-      eq(designCandidates.shopDomain, STAGING_SHOP),
-      isNotNull(designCandidates.artworkPath),
-      ne(designCandidates.artworkPath, ""),
-      or(
-        eq(designCandidates.status, "pending"),
-        and(eq(designCandidates.status, "approved"), isNull(designCandidates.shopifyProductId)),
-      ),
-    ));
+    .where(listed.length ? or(ownWork, inArray(designCandidates.id, listed)) : ownWork);
   return sortOperatorQueue(rows).map((row) => ({
     id: row.id,
     title: String(row.title || row.punchline || "").trim(),
   }));
 }
 
-async function resolveStudioCandidateId(value: unknown): Promise<{ id: string } | { error: string }> {
+async function resolveStudioCandidateId(value: unknown, requestShop: string | null | undefined): Promise<{ id: string } | { error: string }> {
   const parsed = parseCandidateId(value);
   if ("error" in parsed || parsed.id) return parsed;
-  const queue = await operatorQueue();
+  const queue = await operatorQueue(requestShop);
   return { id: queue[0]?.id || PENDING_CANDIDATE.id };
 }
 
-async function candidateIdFor(res: Response, value: unknown): Promise<string | null> {
-  const resolved = await resolveStudioCandidateId(value);
+async function candidateIdFor(res: Response, value: unknown, requestShop: string | null | undefined): Promise<string | null> {
+  const resolved = await resolveStudioCandidateId(value, requestShop);
   if ("error" in resolved) {
     res.status(400).json({ error: resolved.error });
     return null;
   }
-  if (resolved.id !== PENDING_CANDIDATE.id && !(await readCandidateRow(resolved.id))) {
-    res.status(404).json({ error: "That candidate is not stored." });
-    return null;
+  if (resolved.id !== PENDING_CANDIDATE.id) {
+    const row = await readCandidateRow(resolved.id);
+    if (!row || !(await candidateOwnedOrListed(requestShop, row))) {
+      res.status(404).json({ error: "That candidate is not stored." });
+      return null;
+    }
   }
   return resolved.id;
 }
 
-/** Softstyle unless the operator picked another product type. */
-async function studioGarment(raw: unknown): Promise<{ id: number; name: string }> {
+/** Softstyle unless the operator picked another product type. Petposterous stays on its own types. */
+async function studioGarment(raw: unknown, requestShop: string | null | undefined): Promise<{ id: number; name: string }> {
+  const profile = operatorCatalogueForShop(requestShop);
   const id = Number(raw);
+  const { db } = await import("../db");
   if (Number.isInteger(id) && id > 0) {
-    const { db } = await import("../db");
     const [row] = await db
-      .select({ id: productTypes.id, name: productTypes.name })
+      .select({ id: productTypes.id, name: productTypes.name, shop: productTypes.shopifyShopDomain })
       .from(productTypes)
       .where(eq(productTypes.id, id))
       .limit(1);
-    if (row) return row;
+    if (row && (profile.shop !== PETPOSTEROUS_CATALOGUE_SHOP || catalogueShopDomain(row.shop) === profile.shop)) {
+      return { id: row.id, name: row.name };
+    }
+  }
+  if (profile.shop === PETPOSTEROUS_CATALOGUE_SHOP) {
+    const [row] = await db
+      .select({ id: productTypes.id, name: productTypes.name })
+      .from(productTypes)
+      .where(eq(productTypes.id, profile.defaultProductTypeId))
+      .limit(1);
+    return { id: row?.id ?? profile.defaultProductTypeId, name: row?.name || "Softstyle" };
   }
   return softstyleType();
 }
@@ -239,7 +338,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/panels", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const garment = await studioGarment(req.query.productTypeId);
+      const garment = await studioGarment(req.query.productTypeId, req.shopDomain);
       res.json({ scenes: await studioScenes(garment.id), productTypeId: garment.id, productTypeName: garment.name });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -249,7 +348,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.get("/api/platform/catalogue-studio/pending", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const resolved = await resolveStudioCandidateId(req.query.candidate);
+      const resolved = await resolveStudioCandidateId(req.query.candidate, req.shopDomain);
       if ("error" in resolved) {
         res.status(400).json({ error: resolved.error });
         return;
@@ -257,23 +356,26 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const id = resolved.id;
       const { db } = await import("../db");
       const { prepareColourBlanks } = await import("../colour-blanks");
-      const requestedType = Number(req.query.productTypeId) || 54;
-      await prepareColourBlanks(requestedType);
-      const garment = await studioGarment(req.query.productTypeId);
+      const profile = operatorCatalogueForShop(req.shopDomain);
+      const garment = await studioGarment(req.query.productTypeId, req.shopDomain);
+      await prepareColourBlanks(garment.id);
       const [prices, scenes, choice, recentScenes, stored, queue, blankColours, typeList] = await Promise.all([
-        shippingPricesBySize(),
+        shippingPricesBySize(garment.id),
         studioScenes(garment.id),
         readChoice(id),
         recentSceneLabels(),
         readCandidateRow(id),
-        operatorQueue(),
+        operatorQueue(req.shopDomain),
         libraryColoursFor(garment.id),
-        db.select({ id: productTypes.id, name: productTypes.name }).from(productTypes).orderBy(asc(productTypes.id)),
+        db.select({ id: productTypes.id, name: productTypes.name, shop: productTypes.shopifyShopDomain }).from(productTypes).orderBy(asc(productTypes.id)),
       ]);
-      if (id !== PENDING_CANDIDATE.id && !stored) {
+      if (id !== PENDING_CANDIDATE.id && (!stored || !(await candidateOwnedOrListed(req.shopDomain, stored)))) {
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
+      const visibleTypes = profile.shop === PETPOSTEROUS_CATALOGUE_SHOP
+        ? typeList.filter((row) => catalogueShopDomain(row.shop) === profile.shop)
+        : typeList;
       const nextCandidateId = nextQueueId(queue.map((row) => row.id), id);
       const fixture = id === PENDING_CANDIDATE.id;
       const [typeRow] = await db
@@ -283,6 +385,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           variantMap: productTypes.variantMap,
           frameColors: productTypes.frameColors,
           shop: productTypes.shopifyShopDomain,
+          merchantId: productTypes.merchantId,
         })
         .from(productTypes)
         .where(eq(productTypes.id, garment.id))
@@ -304,7 +407,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const studioColours = fixture && garment.id === 54
         ? PENDING_CANDIDATE.colors
         : blankColours.length ? sortCatalogueColours(blankColours) : sceneColours;
-      const colourTickMode = String(typeRow?.shop || "") === "h7epay-gh.myshopify.com" ? "all" : "stored";
+      const colourTickMode = String(typeRow?.shop || "") === PETPOSTEROUS_CATALOGUE_SHOP ? "all" : "stored";
       const frameColours = colourTickMode === "all" ? frameColourList(typeRow?.frameColors) : [];
       const coloursForStudio = frameColours.length ? frameColours : studioColours;
       const colourSizes: Record<string, string> = {};
@@ -323,6 +426,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         }
       }
       const filename = (stored?.artworkPath || choice.artworkPath || "").split("/").pop() || "";
+      const { cataloguePrintifyMerchant } = await import("../operatorCatalogue");
+      const printifyMerchant = await cataloguePrintifyMerchant(typeRow?.merchantId, typeRow?.shop || profile.shop);
       const spend = await catalogueSpend(id);
       const productUrl = stored?.shopifyProductId
         ? shopifyAdminProductUrl(stored.shopDomain || STAGING_SHOP, stored.shopifyProductId)
@@ -348,7 +453,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         colors: coloursForStudio,
         colourTickMode,
         selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : coloursForStudio[0]?.name || "White",
-        productTypes: typeList,
+        productTypes: visibleTypes.map((row) => ({ id: row.id, name: row.name })),
+        catalogueShop: profile.shop,
+        printifyShopId: printifyMerchant?.printifyShopId || null,
         selectedSize: "L",
         ...prices,
         eligibility,
@@ -387,9 +494,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Choose a scene." });
         return;
       }
-      const id = await candidateIdFor(res, req.query.candidate);
+      const id = await candidateIdFor(res, req.query.candidate, req.shopDomain);
       if (!id) return;
-      const garment = await studioGarment(req.query.productTypeId);
+      const garment = await studioGarment(req.query.productTypeId, req.shopDomain);
       const library = await libraryColoursFor(garment.id);
       const known = library.find((c) => c.name.toLowerCase() === requested.toLowerCase())
         ?? PENDING_CANDIDATE.colors.find((c) => c.name === requested)
@@ -432,18 +539,25 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const { db } = await import("../db");
-      const garment = await studioGarment(req.body?.productTypeId);
+      const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
       const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, garment.id)).limit(1);
       if (!typeRow?.printifyBlueprintId || !typeRow.printifyProviderId || !typeRow.merchantId) {
         res.status(400).json({ error: "This product type has no Printify blueprint." });
         return;
       }
-      const [merchant] = await db.select().from(merchants).where(eq(merchants.id, typeRow.merchantId)).limit(1);
+      const { cataloguePrintifyMerchant } = await import("../operatorCatalogue");
+      const { operatorCatalogueForShop: printifyProfileFor } = await import("@shared/operatorCatalogue");
+      const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, typeRow.shopifyShopDomain);
+      const expectedPrintifyShop = printifyProfileFor(typeRow.shopifyShopDomain).printifyShopId;
       if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
         res.status(400).json({ error: "Printify is not connected on this product type." });
         return;
       }
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      if (expectedPrintifyShop && String(merchant.printifyShopId) !== expectedPrintifyShop) {
+        res.status(400).json({ error: `Printify shop ${expectedPrintifyShop} is not connected for this store.` });
+        return;
+      }
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       const library = await libraryColoursFor(garment.id);
       const known = library.find((c) => c.name.toLowerCase() === colorName.toLowerCase())
@@ -508,7 +622,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Name the scene." });
         return;
       }
-      const garment = await studioGarment(req.query.productTypeId);
+      const garment = await studioGarment(req.query.productTypeId, req.shopDomain);
       const cells = await reviewStoredScene(garment.id, panelId);
       res.json({ productTypeId: garment.id, productTypeName: garment.name, panelId, cells });
     } catch (e: any) {
@@ -519,7 +633,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/panels/import/plan", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((path: unknown) => String(path)) : [];
-    const garment = await studioGarment(req.body?.productTypeId);
+    const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
     res.json({ ...parseMockupImport(paths), productTypeId: garment.id, productTypeName: garment.name });
   });
 
@@ -527,7 +641,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const body = req.body ?? {};
-      const garment = await studioGarment(body.productTypeId);
+      const garment = await studioGarment(body.productTypeId, req.shopDomain);
       const result = await stageImportFile({
         label: String(body.label || ""),
         panelId: body.panelId ? String(body.panelId) : null,
@@ -555,7 +669,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/panels/import/commit", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const garment = await studioGarment(req.body?.productTypeId);
+      const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
       const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.map((id: unknown) => String(id)) : [];
       const result = await commitStagedImport(garment.id, stageIds, req.user?.id ? String(req.user.id) : null);
       res.json({ ...result, productTypeId: garment.id, productTypeName: garment.name });
@@ -570,7 +684,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const body = req.body ?? {};
-      const garment = await studioGarment(body.productTypeId);
+      const garment = await studioGarment(body.productTypeId, req.shopDomain);
       const result = await preparePanelUpload({
         productTypeId: garment.id,
         label: String(body.label || ""),
@@ -602,7 +716,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/choice", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       await saveChoice(
@@ -619,7 +733,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/artwork", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       await saveArtwork(id, String(req.body?.imageBase64 || ""));
       res.json({ ok: true });
@@ -640,10 +754,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Write a reason." });
         return;
       }
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       const row = await readCandidateRow(id);
-      if (!row || row.shopDomain !== STAGING_SHOP) {
+      const profile = operatorCatalogueForShop(req.shopDomain);
+      if (!row || catalogueShopDomain(row.shopDomain) !== profile.shop) {
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
@@ -651,14 +766,14 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Only a pending candidate can be dropped." });
         return;
       }
-      const queue = await operatorQueue();
+      const queue = await operatorQueue(req.shopDomain);
       const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
       if (row.status !== "dropped") {
         const { db } = await import("../db");
         await db
           .update(designCandidates)
           .set({ status: "dropped", dropReason: reason, updatedAt: new Date() })
-          .where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, STAGING_SHOP)));
+          .where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, profile.shop)));
       }
       res.json({ ok: true, status: "dropped", nextCandidateId });
     } catch (e: any) {
@@ -673,14 +788,15 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       return;
     }
     try {
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       if (id === PENDING_CANDIDATE.id) {
         res.status(400).json({ error: "This candidate is not deleted from the studio." });
         return;
       }
       const [row, choice] = await Promise.all([readCandidateRow(id), readChoice(id)]);
-      if (!row || row.shopDomain !== STAGING_SHOP) {
+      const profile = operatorCatalogueForShop(req.shopDomain);
+      if (!row || catalogueShopDomain(row.shopDomain) !== profile.shop) {
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
@@ -695,12 +811,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(400).json({ error: "Only a pending candidate with no artwork can be deleted." });
         return;
       }
-      const queue = await operatorQueue();
+      const queue = await operatorQueue(req.shopDomain);
       const nextCandidateId = nextQueueId(queue.map((item) => item.id), id);
       const { db } = await import("../db");
       await db.transaction(async (tx) => {
         await tx.delete(catalogueCandidateChoices).where(eq(catalogueCandidateChoices.candidateId, id));
-        await tx.delete(designCandidates).where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, STAGING_SHOP)));
+        await tx.delete(designCandidates).where(and(eq(designCandidates.id, id), eq(designCandidates.shopDomain, profile.shop)));
       });
       res.json({ ok: true, nextCandidateId });
     } catch (e: any) {
@@ -712,7 +828,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { approveCatalogueCandidate } = await import("../flywheel-approve");
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       const result = await approveCatalogueCandidate({
@@ -729,6 +845,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         deviceStructure: String(req.body?.deviceStructure || ""),
         darknessLevel: Number(req.body?.darknessLevel),
         title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
+        productTypeId: Number(req.body?.productTypeId) || undefined,
       });
       res.json({ ok: true, ...result });
     } catch (e: any) {
@@ -749,7 +866,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           myPetEnabled: designProducts.myPetEnabled,
         })
         .from(designProducts)
-        .where(eq(designProducts.shop, STAGING_SHOP))
+        .where(eq(designProducts.shop, operatorCatalogueForShop(req.shopDomain).shop))
         .orderBy(asc(designProducts.title));
       res.json({ products: rows });
     } catch (e: any) {
@@ -771,22 +888,23 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
     try {
       const { db } = await import("../db");
+      const shop = operatorCatalogueForShop(req.shopDomain).shop;
       const [row] = await db
         .select()
         .from(designProducts)
-        .where(and(eq(designProducts.id, designProductId), eq(designProducts.shop, STAGING_SHOP)))
+        .where(and(eq(designProducts.id, designProductId), eq(designProducts.shop, shop)))
         .limit(1);
       if (!row?.shopifyProductId) {
         res.status(404).json({ error: "That catalogue product is not listed." });
         return;
       }
-      const installation = await storage.getShopifyInstallationByShop(STAGING_SHOP);
+      const installation = await storage.getShopifyInstallationByShop(shop);
       if (!installation?.accessToken) {
-        res.status(409).json({ error: "Staging Shopify token is not stored." });
+        res.status(409).json({ error: "Shopify token is not stored for this store." });
         return;
       }
       const { setProductMyPetEnabled } = await import("../my-pet-metafields");
-      await setProductMyPetEnabled(STAGING_SHOP, installation.accessToken, row.shopifyProductId, enabled);
+      await setProductMyPetEnabled(shop, installation.accessToken, row.shopifyProductId, enabled);
       await db.update(designProducts).set({
         myPetEnabled: enabled,
         updatedAt: new Date(),
@@ -801,7 +919,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { listCatalogueJobQueue } = await import("../catalogue-publish-jobs");
-      const queue = await listCatalogueJobQueue(await operatorQueue());
+      const queue = await listCatalogueJobQueue(await operatorQueue(req.shopDomain));
       res.json({ queue });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -814,7 +932,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.status(400).json({ error: "Catalogue publish is staging only.", reasons: ["Catalogue publish is staging only."] });
       return;
     }
-    const id = await candidateIdFor(res, req.body?.candidateId);
+    const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
     if (!id) return;
     try {
       const stored = await readCandidateRow(id);
@@ -860,6 +978,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       return;
     }
     try {
+      if (operatorCatalogueForShop(req.shopDomain).shop !== STAGING_SHOP) {
+        res.status(400).json({ error: "Colour reorder stays on the staging catalogue." });
+        return;
+      }
       const { reorderStagingCatalogueColours } = await import("../catalogue-colour-order");
       const products = await reorderStagingCatalogueColours();
       res.json({ products });
@@ -872,9 +994,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { promoteCatalogueCandidate } = await import("../flywheel-promote");
-      const garment = await studioGarment(req.body?.productTypeId);
-      const prices = await shippingPricesBySize();
-      const id = await candidateIdFor(res, req.body?.candidateId);
+      const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
+      const prices = await shippingPricesBySize(garment.id);
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
       const result = await promoteCatalogueCandidate({
         candidateId: id,
@@ -925,7 +1047,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   app.post("/api/platform/catalogue-studio/candidates/import/file", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""));
+      await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""), req.shopDomain);
       res.json({ ok: true });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -954,6 +1076,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         batchId: String(req.body?.batchId || ""),
         filenames,
         rows,
+        shop: req.shopDomain,
       });
       if (result.failures.length) {
         res.status(400).json(result);
@@ -990,6 +1113,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   mountDesignColourRoutes(app, "/api/platform/catalogue-studio/design-products", async (req, res) => {
     if (!requirePlatformAdmin(req, res)) return null;
-    return undefined;
+    const profile = operatorCatalogueForShop(req.shopDomain);
+    return profile.shop === PETPOSTEROUS_CATALOGUE_SHOP ? profile.shop : undefined;
   }, [isAuthenticated]);
 }
