@@ -926,6 +926,30 @@ export async function approveCandidateChoice(args: {
   return mockupImages;
 }
 
+/** One colour mockup for an existing design. Does not change the saved colour list. */
+export async function storeCandidateColourMockup(args: {
+  candidateId: string;
+  productTypeId: number;
+  typeName: string;
+  panelId: string;
+  colorName: string;
+  colorHex: string;
+  artworkPath: string;
+}): Promise<StoredMockupImage> {
+  const rendered = await renderCandidateOnPanel({
+    productTypeId: args.productTypeId,
+    typeName: args.typeName,
+    panelId: args.panelId,
+    colorName: args.colorName,
+    colorHex: args.colorHex,
+    artworkPath: args.artworkPath,
+  });
+  const jpeg = await sharp(rendered.png).jpeg({ quality: 90 }).toBuffer();
+  const path = `candidates/${slug(args.candidateId)}/${Date.now()}-${slug(args.colorName)}-front.jpg`;
+  await putObject(path, jpeg, "image/jpeg");
+  return { name: args.colorName, hex: args.colorHex.replace(/^#/, ""), path };
+}
+
 export async function panelsForType(productTypeId: number) {
   return db
     .select()

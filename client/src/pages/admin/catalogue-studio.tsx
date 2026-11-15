@@ -14,6 +14,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/queryClient";
 import { MockupBulkImport } from "@/pages/admin/MockupBulkImport";
+import { EditColours } from "@/components/admin/EditColours";
 
 type ColourReading = {
   name: string;
@@ -151,6 +152,16 @@ export default function CatalogueStudioPage() {
     queryFn: async () => {
       const res = await fetch(`/api/platform/catalogue-studio/panels?productTypeId=${studioTypeId}`, { credentials: "include" });
       if (!res.ok) throw new Error("Could not load scenes");
+      return res.json();
+    },
+  });
+  const published = useQuery<{ designProductId: string | null }>({
+    queryKey: ["/api/platform/catalogue-studio/design-colours", requested, studioTypeId],
+    enabled: Boolean(requested),
+    queryFn: async () => {
+      const params = new URLSearchParams({ candidateId: requested, productTypeId: String(studioTypeId) });
+      const res = await fetch(`/api/platform/catalogue-studio/design-colours?${params}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Could not load the published design");
       return res.json();
     },
   });
@@ -974,6 +985,12 @@ export default function CatalogueStudioPage() {
               )}
               {publishError || job?.phase === "failed" ? (
                 <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError || job?.label}</p>
+              ) : null}
+              {published.data?.designProductId ? (
+                <div className="space-y-2 border-t pt-3">
+                  <h2 className="font-medium">Edit colours</h2>
+                  <EditColours apiBase={`/api/platform/catalogue-studio/design-products/${published.data.designProductId}`} />
+                </div>
               ) : null}
             </section>
 

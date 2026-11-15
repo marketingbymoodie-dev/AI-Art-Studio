@@ -250,6 +250,12 @@ async function colorMetaobjectId(
   return String(created.metaobjectCreate.metaobject.id);
 }
 
+/** Shopify colour-pattern entry for a swatch. Reused when a colour is added to a linked option. */
+export async function colourPatternMetaobjectId(shop: string, token: string, name: string, hex: string): Promise<string> {
+  const taxonomy = await loadSwatchTaxonomy(shop, token);
+  return colorMetaobjectId(shop, token, name, hex, taxonomy);
+}
+
 async function linkColourSwatches(
   shop: string,
   token: string,

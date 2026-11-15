@@ -13,6 +13,7 @@ import {
   ExternalLink, Camera, Power, PowerOff, X, FlaskConical,
 } from "lucide-react";
 import { normalizePreviewUrl } from "@shared/previewUrl";
+import { EditColours } from "@/components/admin/EditColours";
 
 interface CustomizerPageSummary {
   id: string;
@@ -49,6 +50,7 @@ interface DesignProduct {
   id: string;
   jobId: string;
   shopifyProductId: string | null;
+  printifyProductId?: string | null;
   handle: string | null;
   title: string;
   status: "active" | "inactive";
@@ -458,6 +460,9 @@ export default function DesignsPage() {
                               {product.status === "active" ? "Deactivate" : "Activate"}
                             </Button>
                           </div>
+                          {product.shopifyProductId && product.printifyProductId ? (
+                            <EditColours apiBase={`/api/appai/design-products/${product.id}`} />
+                          ) : null}
                           <div className="flex gap-2">
                             <Button
                               variant="outline"

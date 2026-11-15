@@ -22980,6 +22980,16 @@ ${orientationExtra}
     res.json({ success: true, designProduct: updated, addedCount: result.mockupUrls.length });
   }));
 
+  const { mountDesignColourRoutes } = await import("./routes/design-colours");
+  mountDesignColourRoutes(app, "/api/appai/design-products", async (req, res) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ error: resolved.error });
+      return null;
+    }
+    return resolved.installation.shopDomain;
+  }, [isAuthenticated]);
+
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);

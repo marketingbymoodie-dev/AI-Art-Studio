@@ -445,6 +445,9 @@ app.use((req, res, next) => {
   await import("./catalogue-publish-jobs")
     .then(({ startCataloguePublishJobs }) => startCataloguePublishJobs())
     .catch((e: any) => console.warn("[catalogue-publish-jobs] startup failed:", e?.message || e));
+  await import("./design-colour-jobs")
+    .then(({ startDesignColourJobs }) => startDesignColourJobs())
+    .catch((e: any) => console.warn("[design-colour-jobs] startup failed:", e?.message || e));
   httpServer.listen(PORT, () => {
     log(`serving on port ${PORT}`);
     void import("./creator-checkout-webhooks")

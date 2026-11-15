@@ -19,6 +19,8 @@ import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
 import { PENDING_CANDIDATE } from "../catalogue-studio-preview";
 import { registerColourBlankRoutes } from "./colour-blanks";
+import { mountDesignColourRoutes } from "./design-colours";
+import { findPublishedDesign } from "../design-colour-edit";
 import { getProductRestCompat } from "../shopify-product-graphql";
 import { storage } from "../storage";
 import {
@@ -969,4 +971,25 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     await abortCatalogueImport(String(req.body?.batchId || ""), filenames);
     res.json({ ok: true });
   });
+
+  app.get("/api/platform/catalogue-studio/design-colours", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const candidateId = String(req.query.candidateId || "");
+      const productTypeId = Number(req.query.productTypeId);
+      if (!candidateId || !Number.isInteger(productTypeId)) {
+        res.status(400).json({ error: "candidateId and productTypeId are required." });
+        return;
+      }
+      const designProductId = await findPublishedDesign(candidateId, productTypeId);
+      res.json({ designProductId });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  mountDesignColourRoutes(app, "/api/platform/catalogue-studio/design-products", async (req, res) => {
+    if (!requirePlatformAdmin(req, res)) return null;
+    return undefined;
+  }, [isAuthenticated]);
 }

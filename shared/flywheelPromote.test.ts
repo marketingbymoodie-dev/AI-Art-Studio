@@ -240,6 +240,8 @@ describe("flywheel promote decisions", () => {
     expect(swatchBaseColorName("Dark grey")).toBe("Gray");
     expect(swatchBaseColorName("Pink")).toBe("Pink");
     expect(swatchBaseColorName("Maroon")).toBeNull();
+    expect(swatchBaseColorName("Light Blue")).toBe("Blue");
+    expect(swatchBaseColorName("Dark Heather")).toBe("Gray");
     expect(colorPatternMetaobjectFields({
       label: "Pink",
       hex: "DD74A1",
