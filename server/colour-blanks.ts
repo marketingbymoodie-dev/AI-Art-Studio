@@ -13,12 +13,7 @@ import {
   SOFTSTYLE_COLOUR_SEED,
   type BlankFinish,
 } from "@shared/colourBlanks";
-import {
-  catalogueShopDomain,
-  operatorCatalogueForShop,
-  PETPOSTEROUS_CATALOGUE_SHOP,
-  SHARED_COLOUR_BLANK_TYPE_ID,
-} from "@shared/operatorCatalogue";
+import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
@@ -149,59 +144,6 @@ function coloursFromCatalog(blueprint: any, variantsPayload: any): CatalogColour
   return [...seen.values()];
 }
 
-/** Comfort Colors 1717 was not in product_types. Add the Printify Choice row so the picker can open it. */
-async function ensureComfortColorsType(): Promise<void> {
-  const [existing] = await db
-    .select({ id: productTypes.id })
-    .from(productTypes)
-    .where(eq(productTypes.printifyBlueprintId, COMFORT_BLUEPRINT))
-    .limit(1);
-  if (!existing) {
-  const [soft] = await db
-    .select({
-      merchantId: productTypes.merchantId,
-      shop: productTypes.shopifyShopDomain,
-      designerType: productTypes.designerType,
-      sizeType: productTypes.sizeType,
-    })
-    .from(productTypes)
-    .where(eq(productTypes.id, 54))
-    .limit(1);
-  const sizes = ["S", "M", "L", "XL", "2XL", "3XL", "4XL"].map((name) => ({ id: name.toLowerCase(), name }));
-  await db.insert(productTypes).values({
-    name: "Comfort Colors 1717",
-    description: "Unisex Garment-Dyed T-shirt",
-    printifyBlueprintId: COMFORT_BLUEPRINT,
-    printifyProviderId: COMFORT_PROVIDER,
-    merchantId: soft?.merchantId ?? null,
-    shopifyShopDomain: soft?.shop || "ai-art-studio-staging.myshopify.com",
-    designerType: soft?.designerType || "apparel",
-    sizeType: soft?.sizeType || "apparel",
-    sizes: JSON.stringify(sizes),
-    selectedSizeIds: JSON.stringify(sizes.map((size) => size.id)),
-    printAreaWidth: COMFORT_FRONT.width,
-    printAreaHeight: COMFORT_FRONT.height,
-    placeholderPositions: comfortPlaceholderPositions(),
-    aspectRatio: "3:4",
-  });
-  }
-  await correctComfortPrintArea();
-}
-
-/**
- * L–4XL front on Printify Choice. Size S is 3703×4200 and size M is 4107×4658.
- * The first catalog variant is S, which is what the original insert copied.
- * Import keeps the largest placeholder. This corrects only that stored S size.
- */
-const COMFORT_FRONT = { width: 4494, height: 5097 };
-
-function comfortPlaceholderPositions(): string {
-  return JSON.stringify([
-    { position: "front", ...COMFORT_FRONT },
-    { position: "back", ...COMFORT_FRONT },
-  ]);
-}
-
 function frontPrintPx(raw: string | null): { width: number; height: number } | null {
   try {
     const list = JSON.parse(raw || "[]") as Array<{ position?: string; width?: number; height?: number }>;
@@ -213,27 +155,6 @@ function frontPrintPx(raw: string | null): { width: number; height: number } | n
     return null;
   }
   return null;
-}
-
-async function correctComfortPrintArea(): Promise<void> {
-  const [row] = await db
-    .select({
-      id: productTypes.id,
-      positions: productTypes.placeholderPositions,
-    })
-    .from(productTypes)
-    .where(eq(productTypes.printifyBlueprintId, COMFORT_BLUEPRINT))
-    .limit(1);
-  if (!row) return;
-  const front = frontPrintPx(row.positions);
-  if (front?.width === COMFORT_FRONT.width && front?.height === COMFORT_FRONT.height) return;
-  if (!(front?.width === 3703 && front?.height === 4200)) return;
-  await db.update(productTypes).set({
-    printAreaWidth: COMFORT_FRONT.width,
-    printAreaHeight: COMFORT_FRONT.height,
-    placeholderPositions: comfortPlaceholderPositions(),
-    aspectRatio: "3:4",
-  }).where(eq(productTypes.id, row.id));
 }
 
 async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
@@ -451,27 +372,17 @@ function blankAccessError(status: number, message: string): Error {
   return err;
 }
 
-/**
- * Petposterous may open its own types and may read the shared type 54 blanks.
- * Saves stay on a type this shop owns. Other operator sessions are unchanged.
- */
+/** An operator shop opens only types whose shell lives on that shop. */
 export async function assertColourBlankAccess(productTypeId: number, requestShop: string | null | undefined, write: boolean): Promise<void> {
-  const profile = operatorCatalogueForShop(requestShop);
-  if (profile.shop !== PETPOSTEROUS_CATALOGUE_SHOP) return;
-  if (!write && productTypeId === SHARED_COLOUR_BLANK_TYPE_ID) return;
+  const session = catalogueShopDomain(requestShop);
+  if (!catalogueShopAllowed(session)) return;
   const [row] = await db
-    .select({ shop: productTypes.shopifyShopDomain })
+    .select({ shop: productTypes.shopifyShopDomain, platformRef: productTypes.isPlatformCatalogRef })
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
-  if (catalogueShopDomain(row?.shop) === profile.shop) return;
-  if (!write && productTypeId === SHARED_COLOUR_BLANK_TYPE_ID) return;
-  throw blankAccessError(
-    write ? 403 : 404,
-    write
-      ? "These blanks are shared from another shop. This page can show them, and saves stay on your own product type."
-      : "That product type is not on this shop.",
-  );
+  if (row && !row.platformRef && catalogueShopDomain(row.shop) === session) return;
+  throw blankAccessError(write ? 403 : 404, "That product type is not on this shop.");
 }
 
 /** Photographs and the colour list live on this id. A linked type reads the source and does not own a copy. */
@@ -499,9 +410,6 @@ export async function assertBlankLibraryWritable(productTypeId: number): Promise
 
 export async function prepareColourBlanks(productTypeId: number): Promise<void> {
   await ensureColourBlankTable();
-  await ensureComfortColorsType().catch((err) => {
-    console.warn("[colour-blanks] Comfort Colors type was not added:", (err as Error).message);
-  });
   if (productTypeId === 54) await seedSoftstyleColours();
   else {
     await seedGarmentDyedColours(productTypeId).catch((err) => {
@@ -535,12 +443,17 @@ export async function colourBlankGrid(productTypeId: number, options?: { restric
     ? calibratedPrintFractions({ blueprintId: typeRow?.blueprint ?? null, printWidthPx: front.width, printHeightPx: front.height })
     : null;
   const known = await db
-    .select({ id: productTypes.id, name: productTypes.name, shop: productTypes.shopifyShopDomain })
+    .select({
+      id: productTypes.id,
+      name: productTypes.name,
+      shop: productTypes.shopifyShopDomain,
+      platformRef: productTypes.isPlatformCatalogRef,
+    })
     .from(productTypes)
     .orderBy(asc(productTypes.id));
   const restrictShop = options?.restrictToShop ? catalogueShopDomain(options.restrictToShop) : "";
   const visible = restrictShop
-    ? known.filter((row) => row.id === SHARED_COLOUR_BLANK_TYPE_ID || catalogueShopDomain(row.shop) === restrictShop)
+    ? known.filter((row) => !row.platformRef && catalogueShopDomain(row.shop) === restrictShop)
     : known;
   const colourRows = await db
     .select()

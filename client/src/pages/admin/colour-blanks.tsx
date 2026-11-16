@@ -282,11 +282,13 @@ function readFile(file: File): Promise<string> {
 }
 
 export default function ColourBlanksPage() {
-  const platform = useQuery<{ defaultProductTypeId?: number }>({
+  const platform = useQuery<{ defaultProductTypeId?: number; catalogueShop?: string }>({
     queryKey: ["/api/platform/admin/status"],
   });
   const [pickedType, setPickedType] = useState<number | null>(null);
-  const typeId = pickedType ?? platform.data?.defaultProductTypeId ?? (platform.isFetched ? 54 : 0);
+  const stagingShop = "ai-art-studio-staging.myshopify.com";
+  const stagingDefault = !platform.data?.catalogueShop || platform.data.catalogueShop === stagingShop;
+  const typeId = pickedType ?? platform.data?.defaultProductTypeId ?? (platform.isFetched && stagingDefault ? 54 : 0);
   const [drafts, setDrafts] = useState<Record<string, Colour>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});

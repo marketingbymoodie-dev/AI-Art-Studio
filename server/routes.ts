@@ -18781,6 +18781,165 @@ ${orientationExtra}
     await handlePrintifyImportRequest(req, res);
   });
 
+  async function operatorShopForOwnedImport(req: any, res: Response): Promise<{ shop: string; installation: any; merchant: any } | null> {
+    if (!requirePlatformAdmin(req, res)) return null;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Blueprint import is staging only." });
+      return null;
+    }
+    const { catalogueShopAllowed, catalogueShopDomain } = await import("@shared/operatorCatalogue");
+    const shop = catalogueShopDomain(req.shopDomain);
+    if (!catalogueShopAllowed(shop)) {
+      res.status(403).json({ error: "Blueprint import is not available for this store." });
+      return null;
+    }
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation?.accessToken || installation.status !== "active") {
+      res.status(400).json({ error: "Shopify is not connected for this store." });
+      return null;
+    }
+    const merchant = installation.merchantId ? await storage.getMerchant(installation.merchantId) : null;
+    if (!merchant?.printifyApiToken || !merchant.printifyShopId || !merchant.userId) {
+      res.status(400).json({ error: "Printify is not connected for this store." });
+      return null;
+    }
+    return { shop, installation, merchant };
+  }
+
+  app.get("/api/platform/catalogue-studio/import-providers", isAuthenticated, async (req: any, res: Response) => {
+    const opened = await operatorShopForOwnedImport(req, res);
+    if (!opened) return;
+    const blueprintId = parseInt(String(req.query.blueprintId || ""), 10);
+    if (!blueprintId) return res.status(400).json({ error: "Choose a blueprint." });
+    try {
+      const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`, {
+        headers: { Authorization: `Bearer ${opened.merchant.printifyApiToken}` },
+      });
+      if (!response.ok) return res.status(502).json({ error: "Printify did not return print providers." });
+      const providers = await response.json();
+      const list = Array.isArray(providers) ? providers : [];
+      res.json({
+        providers: list.map((provider: { id?: number; title?: string }) => ({
+          id: Number(provider.id),
+          title: String(provider.title || `Provider ${provider.id}`),
+        })).filter((provider: { id: number }) => provider.id > 0),
+      });
+    } catch (error) {
+      console.error("[owned-type] providers:", error);
+      res.status(500).json({ error: "Print providers could not be loaded." });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/import-owned-type", isAuthenticated, async (req: any, res: Response) => {
+    const opened = await operatorShopForOwnedImport(req, res);
+    if (!opened) return;
+    const blueprintId = parseInt(String(req.body?.blueprintId || ""), 10);
+    const providerId = parseInt(String(req.body?.providerId || ""), 10);
+    const name = String(req.body?.name || "").trim();
+    if (!blueprintId || !providerId || !name) {
+      return res.status(400).json({ error: "Blueprint, print provider, and name are required." });
+    }
+    const captured: { status: number; body: any } = { status: 200, body: null };
+    const capture = {
+      status(code: number) { captured.status = code; return this; },
+      json(body: any) { captured.body = body; return this; },
+    };
+    const importReq = Object.assign({}, req, {
+      user: { ...(req.user || {}), claims: { ...(req.user?.claims || {}), sub: opened.merchant.userId } },
+      body: { blueprintId, providerId, name },
+    });
+    await handlePrintifyImportRequest(importReq, capture, { autoCapVariants: true });
+    let productTypeId = Number(captured.body?.id);
+    if (captured.body?.code === "BLUEPRINT_ALREADY_IMPORTED") {
+      productTypeId = Number(captured.body.existingProductTypeId);
+    } else if (captured.status >= 400 || !productTypeId) {
+      return res.status(captured.status || 400).json(captured.body || { error: "Import failed." });
+    }
+    const imported = await storage.getProductType(productTypeId);
+    if (!imported || imported.merchantId !== opened.merchant.id) {
+      return res.status(409).json({ error: "This blueprint is already imported for another store." });
+    }
+    const { catalogueShopDomain } = await import("@shared/operatorCatalogue");
+    const shellShop = catalogueShopDomain(imported.shopifyShopDomain);
+    if (imported.shopifyProductId && shellShop && shellShop !== opened.shop) {
+      return res.status(409).json({ error: "This blueprint already has a shell on another shop." });
+    }
+    try {
+      if (!imported.shopifyProductId) {
+        await createShopifyProductForTypeHealed(req, opened.shop, opened.installation, imported, opened.merchant);
+      }
+    } catch (error: any) {
+      console.error("[owned-type] shell:", error);
+      return res.status(500).json({ error: error?.message || "The product type was created, but the Shopify shell was not." });
+    }
+    const fresh = await storage.getProductType(productTypeId);
+    if (!fresh?.shopifyProductId) {
+      return res.status(500).json({ error: "The Shopify shell was not saved on this product type." });
+    }
+    const variantIds = fresh.shopifyVariantIds && typeof fresh.shopifyVariantIds === "object"
+      ? Object.values(fresh.shopifyVariantIds as Record<string, unknown>).map(String).filter(Boolean)
+      : [];
+    if (!variantIds.length) {
+      return res.status(500).json({ error: "The Shopify shell has no variant ids yet." });
+    }
+    const handleBase = `bp-${blueprintId}`;
+    let handle = handleBase;
+    const taken = await storage.getCustomizerPageByHandle(opened.shop, handle);
+    if (taken && taken.productTypeId !== fresh.id) handle = `${handleBase}-${fresh.id}`;
+    const existingPages = await storage.listCustomizerPagesByProductTypeId(fresh.id);
+    let page = existingPages.find((row) => catalogueShopDomain(row.shop) === opened.shop && row.baseProductId);
+    if (!page) {
+      let shopifyPageId: string | null = null;
+      const pageRes = await shopifyApiCall(opened.shop, opened.installation.accessToken, "pages.json", {
+        method: "POST",
+        body: JSON.stringify({
+          page: {
+            title: fresh.name,
+            handle,
+            body_html: buildCustomizerBootHtml(),
+            published: true,
+          },
+        }),
+      });
+      if (pageRes.ok && pageRes.data?.page?.id) shopifyPageId = String(pageRes.data.page.id);
+      else console.error("[owned-type] Shopify page was not created:", pageRes.error);
+      page = await storage.createCustomizerPage({
+        shop: opened.shop,
+        shopifyPageId,
+        handle,
+        title: fresh.name,
+        baseProductId: fresh.shopifyProductId,
+        baseVariantId: variantIds[0] || "0",
+        baseProductTitle: `Custom ${fresh.name}`,
+        baseProductHandle: fresh.shopifyProductHandle,
+        baseProductPrice: "0.00",
+        productTypeId: fresh.id,
+        styleConfig: defaultStyleConfigForDesignerType(fresh.designerType),
+        status: "active",
+      });
+    }
+    let variantMapSize = 0;
+    try {
+      const parsed = JSON.parse(fresh.variantMap || "{}");
+      variantMapSize = parsed && typeof parsed === "object" ? Object.keys(parsed).length : 0;
+    } catch {
+      variantMapSize = 0;
+    }
+    res.json({
+      productTypeId: fresh.id,
+      name: fresh.name,
+      blueprintId: fresh.printifyBlueprintId,
+      providerId: fresh.printifyProviderId,
+      shopifyProductId: fresh.shopifyProductId,
+      variantCount: variantIds.length,
+      variantMapSize,
+      hasCosts: Boolean(fresh.printifyCosts),
+      flatCalibrationStatus: fresh.flatCalibrationStatus || "pending",
+      customizerPage: { id: page.id, handle: page.handle, title: page.title, status: page.status },
+      printifyShopId: opened.merchant.printifyShopId,
+    });
+  });
+
   // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
   // mockup calibration for an existing product. Returns 202 and runs in the
   // background; poll the product's flatCalibrationStatus for progress.

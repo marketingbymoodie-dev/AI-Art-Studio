@@ -279,14 +279,9 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
   const installation = await storage.getShopifyInstallationByShop(shop);
   if (!installation?.accessToken) throw new ColourEditRefusal(["Shopify is not connected for this shop."]);
   const { cataloguePrintifyMerchant } = await import("./operatorCatalogue");
-  const { operatorCatalogueForShop } = await import("@shared/operatorCatalogue");
   const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, shop);
-  const expectedPrintifyShop = operatorCatalogueForShop(shop).printifyShopId;
   if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
     throw new ColourEditRefusal(["Printify is not connected for this product type."]);
-  }
-  if (expectedPrintifyShop && String(merchant.printifyShopId) !== expectedPrintifyShop) {
-    throw new ColourEditRefusal([`Printify shop ${expectedPrintifyShop} is not connected for this store.`]);
   }
 
   const frame = parseJson<FrameColour[]>(typeRow.frameColors, []);

@@ -1,37 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
   PETPOSTEROUS_CATALOGUE_SHOP,
-  PETPOSTEROUS_PRINTIFY_SHOP_ID,
-  PETPOSTEROUS_PRODUCT_TYPE_ID,
-  SHARED_COLOUR_BLANK_TYPE_ID,
   STAGING_CATALOGUE_SHOP,
+  STAGING_FALLBACK_PRODUCT_TYPE_ID,
   candidateVisibleToShop,
   catalogueShopAllowed,
   operatorCatalogueForShop,
 } from "./operatorCatalogue";
 
 describe("operatorCatalogueForShop", () => {
-  it("gives Petposterous its own type and Printify shop", () => {
+  it("lets Petposterous choose its own types and does not pin a Printify shop", () => {
     expect(operatorCatalogueForShop("h7epay-gh")).toEqual({
       shop: PETPOSTEROUS_CATALOGUE_SHOP,
-      defaultProductTypeId: PETPOSTEROUS_PRODUCT_TYPE_ID,
-      printifyShopId: PETPOSTEROUS_PRINTIFY_SHOP_ID,
+      fallbackProductTypeId: null,
     });
-    expect(operatorCatalogueForShop("https://h7epay-gh.myshopify.com/admin")).toMatchObject({
+    expect(operatorCatalogueForShop("https://h7epay-gh.myshopify.com/admin")).toEqual({
       shop: PETPOSTEROUS_CATALOGUE_SHOP,
-      defaultProductTypeId: 56,
-      printifyShopId: "29135517",
+      fallbackProductTypeId: null,
     });
   });
 
-  it("keeps every other shop on the staging catalogue", () => {
+  it("keeps the staging demo on type 54 when nothing is selected", () => {
     expect(operatorCatalogueForShop("ai-art-studio-staging.myshopify.com")).toEqual({
       shop: STAGING_CATALOGUE_SHOP,
-      defaultProductTypeId: SHARED_COLOUR_BLANK_TYPE_ID,
-      printifyShopId: null,
+      fallbackProductTypeId: STAGING_FALLBACK_PRODUCT_TYPE_ID,
     });
     expect(operatorCatalogueForShop("some-merchant.myshopify.com").shop).toBe(STAGING_CATALOGUE_SHOP);
-    expect(operatorCatalogueForShop(null).defaultProductTypeId).toBe(54);
+    expect(operatorCatalogueForShop(null).fallbackProductTypeId).toBe(54);
   });
 
   it("shows a session only its own candidates", () => {
@@ -41,5 +36,6 @@ describe("operatorCatalogueForShop", () => {
     expect(candidateVisibleToShop(STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP)).toBe(false);
     expect(catalogueShopAllowed("other.myshopify.com")).toBe(false);
     expect(catalogueShopAllowed(PETPOSTEROUS_CATALOGUE_SHOP)).toBe(true);
+    expect(catalogueShopAllowed(STAGING_CATALOGUE_SHOP)).toBe(true);
   });
 });

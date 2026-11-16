@@ -452,9 +452,7 @@ export async function promoteCatalogueCandidate(args: {
   const shop = String(typeRow.shopifyShopDomain || candidate?.shopDomain || "");
   const installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
   const { cataloguePrintifyMerchant } = await import("./operatorCatalogue");
-  const { operatorCatalogueForShop } = await import("@shared/operatorCatalogue");
   const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, shop);
-  const printifyShopId = operatorCatalogueForShop(shop).printifyShopId;
 
   const sizes = parseSizes(typeRow.sizes);
   const selectedIds: string[] = (() => {
@@ -569,9 +567,6 @@ export async function promoteCatalogueCandidate(args: {
   });
   if (!categoryId) reasons.push("This product type has no product category on its studio product.");
   if (!merchant?.printifyApiToken || !merchant.printifyShopId) reasons.push("Printify is not connected on this product type.");
-  else if (printifyShopId && String(merchant.printifyShopId) !== printifyShopId) {
-    reasons.push(`Printify shop ${printifyShopId} is not connected for this store.`);
-  }
   if (!installation?.accessToken) reasons.push("Shopify is not connected for this shop.");
   if (!typeRow.printifyBlueprintId || !typeRow.printifyProviderId) reasons.push("This product type has no Printify blueprint.");
   if (installation?.accessToken && shop) {

@@ -4,10 +4,9 @@
  * refused batch is removed.
  */
 import { randomUUID } from "crypto";
-import { eq } from "drizzle-orm";
 import { reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { catalogueShopDomain, operatorCatalogueForShop } from "@shared/operatorCatalogue";
-import { catalogueCandidateChoices, designCandidates, productTypes } from "@shared/schema";
+import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
+import { catalogueCandidateChoices, designCandidates } from "@shared/schema";
 import { db } from "./db";
 import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
 
@@ -43,14 +42,18 @@ async function assertCatalogueImportShop(shop: string | null | undefined): Promi
   if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
     throw new Error("Catalogue import is staging only.");
   }
-  const profile = operatorCatalogueForShop(shop);
-  const [row] = await db
-    .select({ shop: productTypes.shopifyShopDomain })
-    .from(productTypes)
-    .where(eq(productTypes.id, profile.defaultProductTypeId))
-    .limit(1);
-  if (catalogueShopDomain(row?.shop) !== profile.shop) throw new Error("Catalogue import is not available for this store.");
-  return profile.shop;
+  const domain = catalogueShopDomain(shop);
+  if (!catalogueShopAllowed(domain)) throw new Error("Catalogue import is not available for this store.");
+  const { storage } = await import("./storage");
+  const installation = await storage.getShopifyInstallationByShop(domain);
+  if (!installation?.accessToken || installation.status !== "active") {
+    throw new Error("Connect Shopify before importing designs.");
+  }
+  const merchant = installation.merchantId ? await storage.getMerchant(installation.merchantId) : null;
+  if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
+    throw new Error("Connect Printify before importing designs.");
+  }
+  return domain;
 }
 
 async function removeStaged(batchId: string, filenames: string[]): Promise<void> {

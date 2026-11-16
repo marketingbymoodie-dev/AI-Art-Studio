@@ -3,7 +3,7 @@
  * Approve and Link are the only writes to panel rows. Products and variants are not touched.
  */
 import type { Express, RequestHandler, Response } from "express";
-import { operatorCatalogueForShop, PETPOSTEROUS_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
+import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { requirePlatformAdmin } from "../platformAdmin";
 import {
   approveColourBlank,
@@ -50,8 +50,8 @@ async function linkedWriteBlocked(raw: unknown, res: Response): Promise<boolean>
 }
 
 async function rejectBlankWrite(req: any, raw: unknown, res: Response): Promise<boolean> {
-  const profile = operatorCatalogueForShop(req.shopDomain);
-  const id = explicitTypeId(raw) ?? profile.defaultProductTypeId;
+  const { defaultCatalogueTypeId } = await import("../operatorCatalogue");
+  const id = explicitTypeId(raw) ?? await defaultCatalogueTypeId(req.shopDomain);
   try {
     await assertColourBlankAccess(id, req.shopDomain, true);
   } catch (e: any) {
@@ -67,12 +67,13 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
   app.get("/api/platform/catalogue-studio/colour-blanks", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      const profile = operatorCatalogueForShop(req.shopDomain);
-      const requested = typeId(req.query.productTypeId, profile.defaultProductTypeId);
+      const { defaultCatalogueTypeId } = await import("../operatorCatalogue");
+      const session = catalogueShopDomain(req.shopDomain);
+      const requested = typeId(req.query.productTypeId, await defaultCatalogueTypeId(req.shopDomain));
       await assertColourBlankAccess(requested, req.shopDomain, false);
       res.json(await colourBlankGrid(
         requested,
-        profile.shop === PETPOSTEROUS_CATALOGUE_SHOP ? { restrictToShop: profile.shop } : undefined,
+        catalogueShopAllowed(session) ? { restrictToShop: session } : undefined,
       ));
     } catch (e: any) {
       res.status(Number(e?.status) || 500).json({ error: String(e?.message || e) });

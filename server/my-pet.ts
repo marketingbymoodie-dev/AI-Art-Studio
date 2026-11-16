@@ -12,14 +12,17 @@
  */
 import { createHash, randomUUID } from "crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { catalogueShopDomain, STAGING_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import {
   designCandidates,
+  designProducts,
   generationEvents,
   generationJobs,
   myPetEmailCaptures,
   myPetPetPhotos,
   myPetRenders,
   myPetSettings,
+  productTypes,
   type MyPetSettingsRow,
 } from "@shared/schema";
 import {
@@ -40,8 +43,7 @@ import { db } from "./db";
 import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
 import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from "./generation-providers";
 import { generationErrorCategory } from "./generation-events";
-import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
-import { softstyleType } from "./mockup-library-store";
+import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, softstyleType, writeLibraryObject } from "./mockup-library-store";
 import { decodeDataUrlOrBase64Image, getMyPetObject, myPetObjectExists, putMyPetObject, removeMyPetObjects, signedMyPetThumbnail, signedMyPetUrl } from "./my-pet-storage";
 import { renderReplicateImageEdit } from "./replit_integrations/image/client";
 import { storage } from "./storage";
@@ -59,6 +61,26 @@ const PHOTO_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Storefront preview and picker URLs. Same 30-day window as a cart _mockup_url. */
 const STOREFRONT_PREVIEW_TTL_SECONDS = 30 * 24 * 60 * 60;
 const EMAIL_PREVIEW_RETENTION_MS = STOREFRONT_PREVIEW_TTL_SECONDS * 1000;
+
+/** Composite on the design's own product type. Staging with no type stays on type 54. */
+async function composeProductType(shop: string, shopifyProductId: string): Promise<{ id: number; name: string }> {
+  const [design] = await db
+    .select({ productTypeId: designProducts.productTypeId })
+    .from(designProducts)
+    .where(and(eq(designProducts.shop, shop), eq(designProducts.shopifyProductId, shopifyProductId)))
+    .limit(1);
+  const typeId = Number(design?.productTypeId);
+  if (Number.isInteger(typeId) && typeId > 0) {
+    const [row] = await db
+      .select({ id: productTypes.id, name: productTypes.name })
+      .from(productTypes)
+      .where(eq(productTypes.id, typeId))
+      .limit(1);
+    if (row) return row;
+  }
+  if (catalogueShopDomain(shop) === STAGING_CATALOGUE_SHOP) return softstyleType();
+  throw new Error("This product has no product type, so the pet render cannot choose a garment.");
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Settings
@@ -495,7 +517,7 @@ export async function generateMyPetRender(args: {
     );
   }
 
-  const productType = await softstyleType();
+  const productType = await composeProductType(args.shop, args.shopifyProductId);
   // STAGING-104 — reverted staging-103's forceRecolour workaround after an
   // offline trace proved the produced path on real staging data (render
   // 25a79e80 / candidate 07a0d57a) composites the Sunburst output correctly
@@ -800,7 +822,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     return { previewUrl, colorName: color.name, previewUrlsByColor };
   }
 
-  const productType = await softstyleType();
+  const productType = await composeProductType(args.shop, render.shopifyProductId);
   // STAGING-104 — matches generate's revert of forceRecolour. Produced path
   // gives photorealistic per-colour panel photo output; the same code path
   // generate uses, so recomposite stays identity-equal (modulo signed URL

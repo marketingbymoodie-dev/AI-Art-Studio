@@ -1,19 +1,19 @@
 /**
  * Which shop an operator catalogue session reads and writes.
- * Staging keeps the demo catalogue. Petposterous is an owner shop with its own
- * type, Printify shop, and products. Every other merchant stays off this list.
+ * Staging keeps the demo catalogue. Petposterous is an operator shop with its
+ * own products. Product types are not pinned here: each shop lists the types
+ * whose Shopify shell lives on that shop. Type 54 is the staging fallback
+ * only when nothing is selected.
  */
 export const STAGING_CATALOGUE_SHOP = "ai-art-studio-staging.myshopify.com";
 export const PETPOSTEROUS_CATALOGUE_SHOP = "h7epay-gh.myshopify.com";
-export const PETPOSTEROUS_PRINTIFY_SHOP_ID = "29135517";
-export const PETPOSTEROUS_PRODUCT_TYPE_ID = 56;
-/** Shared Softstyle blanks. Petposterous may read this set; it does not own it. */
-export const SHARED_COLOUR_BLANK_TYPE_ID = 54;
+/** Staging demo garment when the operator has not chosen a type. */
+export const STAGING_FALLBACK_PRODUCT_TYPE_ID = 54;
 
 export type OperatorCatalogueProfile = {
   shop: string;
-  defaultProductTypeId: number;
-  printifyShopId: string | null;
+  /** Set only for the staging demo. Other operator shops pick a type from their rows. */
+  fallbackProductTypeId: number | null;
 };
 
 export function catalogueShopDomain(shop: string | null | undefined): string {
@@ -29,17 +29,9 @@ export function catalogueShopDomain(shop: string | null | undefined): string {
 
 export function operatorCatalogueForShop(shopDomain: string | null | undefined): OperatorCatalogueProfile {
   if (catalogueShopDomain(shopDomain) === PETPOSTEROUS_CATALOGUE_SHOP) {
-    return {
-      shop: PETPOSTEROUS_CATALOGUE_SHOP,
-      defaultProductTypeId: PETPOSTEROUS_PRODUCT_TYPE_ID,
-      printifyShopId: PETPOSTEROUS_PRINTIFY_SHOP_ID,
-    };
+    return { shop: PETPOSTEROUS_CATALOGUE_SHOP, fallbackProductTypeId: null };
   }
-  return {
-    shop: STAGING_CATALOGUE_SHOP,
-    defaultProductTypeId: SHARED_COLOUR_BLANK_TYPE_ID,
-    printifyShopId: null,
-  };
+  return { shop: STAGING_CATALOGUE_SHOP, fallbackProductTypeId: STAGING_FALLBACK_PRODUCT_TYPE_ID };
 }
 
 export function catalogueShopAllowed(shop: string | null | undefined): boolean {

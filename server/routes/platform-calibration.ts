@@ -39,7 +39,7 @@ import {
   type FlatCalibratorGeometry,
   type ViewName,
 } from "../flat-calibration";
-import { operatorCatalogueForShop, SHARED_COLOUR_BLANK_TYPE_ID } from "@shared/operatorCatalogue";
+import { operatorCatalogueForShop } from "@shared/operatorCatalogue";
 import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
   parseFlatCalibrationManifest,
@@ -967,19 +967,23 @@ export function registerPlatformCalibrationRoutes(
 ) {
   const { storage, isAuthenticated } = deps;
 
-  app.get("/api/platform/admin/status", isAuthenticated, (req: any, res: Response) => {
+  app.get("/api/platform/admin/status", isAuthenticated, async (req: any, res: Response) => {
     const isPlatformAdmin = isPlatformAdminRequest(req);
     if (!isPlatformAdmin) {
       res.json({ isPlatformAdmin: false });
       return;
     }
     const profile = operatorCatalogueForShop(req.shopDomain);
+    const { cataloguePrintifyMerchant, defaultCatalogueTypeId } = await import("../operatorCatalogue");
+    const [defaultProductTypeId, merchant] = await Promise.all([
+      defaultCatalogueTypeId(req.shopDomain),
+      cataloguePrintifyMerchant(null, profile.shop),
+    ]);
     res.json({
       isPlatformAdmin: true,
       catalogueShop: profile.shop,
-      defaultProductTypeId: profile.defaultProductTypeId,
-      sharedBlankTypeId: SHARED_COLOUR_BLANK_TYPE_ID,
-      printifyShopId: profile.printifyShopId,
+      defaultProductTypeId,
+      printifyShopId: merchant?.printifyShopId || null,
     });
   });
 

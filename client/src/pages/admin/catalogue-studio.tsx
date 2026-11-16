@@ -129,6 +129,121 @@ function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: 
   return error || fallback;
 }
 
+type CatalogBlueprint = { blueprintId: number; label: string; brand?: string; publish?: { published?: boolean } };
+
+function ImportBlueprintToShop({ onImported }: { onImported: (productTypeId: number) => void }) {
+  const catalog = useQuery<{ blueprints?: CatalogBlueprint[] }>({
+    queryKey: ["/api/admin/catalog/allowed-blueprints"],
+  });
+  const published = (catalog.data?.blueprints || []).filter((row) => row.publish?.published);
+  const [blueprintId, setBlueprintId] = useState("");
+  const [providerId, setProviderId] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const providers = useQuery<{ providers?: Array<{ id: number; title: string }> }>({
+    queryKey: [`/api/platform/catalogue-studio/import-providers?blueprintId=${blueprintId}`],
+    enabled: Boolean(blueprintId),
+  });
+
+  async function importType() {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/import-owned-type", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blueprintId: Number(blueprintId), providerId: Number(providerId), name: name.trim() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(String(body?.error || "Import failed"));
+        return;
+      }
+      const page = body.customizerPage || {};
+      setMessage(
+        `Imported ${body.name} as product type ${body.productTypeId}. ` +
+        `Shell ${body.shopifyProductId}, ${body.variantCount} variants, ` +
+        `${body.hasCosts ? "costs saved" : "no costs"}, calibration ${body.flatCalibrationStatus}, ` +
+        `customizer page ${page.handle} (${page.status}).`,
+      );
+      onImported(Number(body.productTypeId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Import failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-md border border-dashed p-3" data-testid="import-owned-type">
+      <p className="mb-2 text-sm font-medium">Import a blueprint to this shop</p>
+      <div className="grid gap-2 md:grid-cols-3">
+        <label className="text-sm">
+          Blueprint
+          <select
+            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
+            data-testid="import-owned-blueprint"
+            value={blueprintId}
+            onChange={(event) => {
+              const next = event.target.value;
+              setBlueprintId(next);
+              setProviderId("");
+              const row = published.find((item) => String(item.blueprintId) === next);
+              setName(row?.label || "");
+            }}
+          >
+            <option value="">Choose a published blueprint</option>
+            {published.map((row) => (
+              <option key={row.blueprintId} value={row.blueprintId}>
+                {row.label} ({row.blueprintId})
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          Print provider
+          <select
+            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
+            data-testid="import-owned-provider"
+            value={providerId}
+            onChange={(event) => setProviderId(event.target.value)}
+            disabled={!blueprintId}
+          >
+            <option value="">{providers.isFetching ? "Loading providers…" : "Choose a provider"}</option>
+            {(providers.data?.providers || []).map((provider) => (
+              <option key={provider.id} value={provider.id}>{provider.title} ({provider.id})</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          Name
+          <input
+            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
+            data-testid="import-owned-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        className="mt-3"
+        data-testid="import-owned-submit"
+        disabled={busy || !blueprintId || !providerId || !name.trim()}
+        onClick={() => void importType()}
+      >
+        {busy ? "Importing…" : "Import to this shop"}
+      </Button>
+      {message ? <p className="mt-2 text-sm" data-testid="import-owned-result">{message}</p> : null}
+      {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 function Field({ label, children, id }: { label: string; children: ReactNode; id?: string }) {
   return (
     <label className="block space-y-1" id={id}>
@@ -452,6 +567,11 @@ export default function CatalogueStudioPage() {
             ))}
           </select>
         </label>
+        <ImportBlueprintToShop onImported={(productTypeId) => {
+          setTypePinned(true);
+          setStudioTypeId(productTypeId);
+          void candidate.refetch();
+        }} />
         <MockupBulkImport
           productType={candidate.data ? { id: candidate.data.productTypeId, name: candidate.data.productTypeName } : null}
           storedScenes={(panels.data?.scenes ?? []).map((scene) => scene.panelId)}

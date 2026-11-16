@@ -15,11 +15,12 @@ import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolv
 import { formatSizeRange, printableSizeNames, sortCatalogueColours } from "@shared/flywheelPromote";
 import {
   candidateVisibleToShop,
+  catalogueShopAllowed,
   catalogueShopDomain,
   operatorCatalogueForShop,
   PETPOSTEROUS_CATALOGUE_SHOP,
-  PETPOSTEROUS_PRODUCT_TYPE_ID,
   STAGING_CATALOGUE_SHOP,
+  STAGING_FALLBACK_PRODUCT_TYPE_ID,
 } from "@shared/operatorCatalogue";
 import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
@@ -72,48 +73,22 @@ export async function shippingPricesBySize(productTypeId?: number): Promise<{
   compareAtBySize: Record<string, string>;
 }> {
   const empty = { sizes: [], pricesBySize: {}, compareAtBySize: {} };
-  if (Number(productTypeId) === PETPOSTEROUS_PRODUCT_TYPE_ID) {
-    return shopCataloguePrices(PETPOSTEROUS_CATALOGUE_SHOP, PETPOSTEROUS_PRODUCT_TYPE_ID);
-  }
+  const omitted = productTypeId == null;
+  const explicit = Number(productTypeId);
+  const typeId = omitted ? STAGING_FALLBACK_PRODUCT_TYPE_ID : explicit;
+  if (!Number.isInteger(typeId) || typeId <= 0) return empty;
   const { db } = await import("../db");
-  const [row] = await db
-    .select({
-      sizes: productTypes.sizes,
-      shop: customizerPages.shop,
-      baseProductId: customizerPages.baseProductId,
-    })
-    .from(customizerPages)
-    .innerJoin(productTypes, eq(customizerPages.productTypeId, productTypes.id))
-    .where(and(eq(customizerPages.handle, "softstyle-t-shirt"), eq(customizerPages.status, "active")))
+  const [typeRow] = await db
+    .select({ shop: productTypes.shopifyShopDomain })
+    .from(productTypes)
+    .where(eq(productTypes.id, typeId))
     .limit(1);
-  if (!row?.shop || !row.baseProductId) return empty;
-  const installation = await storage.getShopifyInstallationByShop(row.shop);
-  if (!installation?.accessToken) return empty;
-  let parsed: Array<{ name?: string }> = [];
-  try {
-    const raw = JSON.parse(row.sizes || "[]");
-    parsed = Array.isArray(raw) ? raw : [];
-  } catch {
-    parsed = [];
-  }
-  const prodRes = await getProductRestCompat(row.shop, installation.accessToken, row.baseProductId);
-  const variants = filterCatalogByPrintSides(prodRes.data?.product?.variants || [], "front");
-  const pricesBySize: Record<string, string> = {};
-  const sizes: string[] = [];
-  for (const size of parsed) {
-    const name = String(size?.name || "").trim();
-    if (!name || pricesBySize[name]) continue;
-    const prices = [...new Set(
-      variants
-        .filter((v) => v.option1 === name && v.price)
-        .map((v) => Number(v.price).toFixed(2)),
-    )];
-    if (prices.length !== 1) continue;
-    pricesBySize[name] = prices[0];
-    sizes.push(name);
-  }
-  const applied = applySoftstyleCataloguePrices(pricesBySize);
-  return { sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize };
+  const shop = catalogueShopDomain(typeRow?.shop || "");
+  if (!shop) return empty;
+  const prices = await shopCataloguePrices(shop, typeId);
+  if (typeId !== STAGING_FALLBACK_PRODUCT_TYPE_ID) return prices;
+  const applied = applySoftstyleCataloguePrices(prices.pricesBySize);
+  return { sizes: prices.sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize };
 }
 
 /** Prices already on this shop's studio product. The Softstyle table is not applied. */
@@ -255,30 +230,36 @@ async function candidateIdFor(res: Response, value: unknown, requestShop: string
   return resolved.id;
 }
 
-/** Softstyle unless the operator picked another product type. Petposterous stays on its own types. */
+/** The selected type when this shop owns it. Staging with no selection stays on type 54. */
 async function studioGarment(raw: unknown, requestShop: string | null | undefined): Promise<{ id: number; name: string }> {
   const profile = operatorCatalogueForShop(requestShop);
   const id = Number(raw);
   const { db } = await import("../db");
+  const { defaultCatalogueTypeId } = await import("../operatorCatalogue");
   if (Number.isInteger(id) && id > 0) {
     const [row] = await db
-      .select({ id: productTypes.id, name: productTypes.name, shop: productTypes.shopifyShopDomain })
+      .select({
+        id: productTypes.id,
+        name: productTypes.name,
+        shop: productTypes.shopifyShopDomain,
+        platformRef: productTypes.isPlatformCatalogRef,
+      })
       .from(productTypes)
       .where(eq(productTypes.id, id))
       .limit(1);
-    if (row && (profile.shop !== PETPOSTEROUS_CATALOGUE_SHOP || catalogueShopDomain(row.shop) === profile.shop)) {
-      return { id: row.id, name: row.name };
-    }
+    const owned = Boolean(row && !row.platformRef && catalogueShopDomain(row.shop) === profile.shop);
+    const stagingFallback = profile.fallbackProductTypeId != null && id === profile.fallbackProductTypeId;
+    if (row && (owned || stagingFallback)) return { id: row.id, name: row.name };
   }
-  if (profile.shop === PETPOSTEROUS_CATALOGUE_SHOP) {
-    const [row] = await db
-      .select({ id: productTypes.id, name: productTypes.name })
-      .from(productTypes)
-      .where(eq(productTypes.id, profile.defaultProductTypeId))
-      .limit(1);
-    return { id: row?.id ?? profile.defaultProductTypeId, name: row?.name || "Softstyle" };
-  }
-  return softstyleType();
+  if (profile.fallbackProductTypeId) return softstyleType();
+  const fallbackId = await defaultCatalogueTypeId(requestShop);
+  if (!fallbackId) return { id: 0, name: "" };
+  const [row] = await db
+    .select({ id: productTypes.id, name: productTypes.name })
+    .from(productTypes)
+    .where(eq(productTypes.id, fallbackId))
+    .limit(1);
+  return { id: row?.id ?? fallbackId, name: row?.name || "" };
 }
 
 function frameColourList(raw: unknown): Array<{ name: string; hex: string }> {
@@ -356,7 +337,6 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const id = resolved.id;
       const { db } = await import("../db");
       const { prepareColourBlanks } = await import("../colour-blanks");
-      const profile = operatorCatalogueForShop(req.shopDomain);
       const garment = await studioGarment(req.query.productTypeId, req.shopDomain);
       await prepareColourBlanks(garment.id);
       const [prices, scenes, choice, recentScenes, stored, queue, blankColours, typeList] = await Promise.all([
@@ -367,14 +347,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         readCandidateRow(id),
         operatorQueue(req.shopDomain),
         libraryColoursFor(garment.id),
-        db.select({ id: productTypes.id, name: productTypes.name, shop: productTypes.shopifyShopDomain }).from(productTypes).orderBy(asc(productTypes.id)),
+        db.select({
+          id: productTypes.id,
+          name: productTypes.name,
+          shop: productTypes.shopifyShopDomain,
+          platformRef: productTypes.isPlatformCatalogRef,
+        }).from(productTypes).orderBy(asc(productTypes.id)),
       ]);
       if (id !== PENDING_CANDIDATE.id && (!stored || !(await candidateOwnedOrListed(req.shopDomain, stored)))) {
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
-      const visibleTypes = profile.shop === PETPOSTEROUS_CATALOGUE_SHOP
-        ? typeList.filter((row) => catalogueShopDomain(row.shop) === profile.shop)
+      const sessionShop = catalogueShopDomain(req.shopDomain);
+      const visibleTypes = catalogueShopAllowed(sessionShop)
+        ? typeList.filter((row) => !row.platformRef && catalogueShopDomain(row.shop) === sessionShop)
         : typeList;
       const nextCandidateId = nextQueueId(queue.map((row) => row.id), id);
       const fixture = id === PENDING_CANDIDATE.id;
@@ -546,15 +532,9 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const { cataloguePrintifyMerchant } = await import("../operatorCatalogue");
-      const { operatorCatalogueForShop: printifyProfileFor } = await import("@shared/operatorCatalogue");
       const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, typeRow.shopifyShopDomain);
-      const expectedPrintifyShop = printifyProfileFor(typeRow.shopifyShopDomain).printifyShopId;
       if (!merchant?.printifyApiToken || !merchant.printifyShopId) {
         res.status(400).json({ error: "Printify is not connected on this product type." });
-        return;
-      }
-      if (expectedPrintifyShop && String(merchant.printifyShopId) !== expectedPrintifyShop) {
-        res.status(400).json({ error: `Printify shop ${expectedPrintifyShop} is not connected for this store.` });
         return;
       }
       const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
@@ -1113,7 +1093,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   mountDesignColourRoutes(app, "/api/platform/catalogue-studio/design-products", async (req, res) => {
     if (!requirePlatformAdmin(req, res)) return null;
-    const profile = operatorCatalogueForShop(req.shopDomain);
-    return profile.shop === PETPOSTEROUS_CATALOGUE_SHOP ? profile.shop : undefined;
+    const session = catalogueShopDomain(req.shopDomain);
+    return catalogueShopAllowed(session) ? session : undefined;
   }, [isAuthenticated]);
 }
