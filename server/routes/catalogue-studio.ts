@@ -358,6 +358,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         res.status(404).json({ error: "That candidate is not stored." });
         return;
       }
+      const profile = operatorCatalogueForShop(req.shopDomain);
       const sessionShop = catalogueShopDomain(req.shopDomain);
       const visibleTypes = catalogueShopAllowed(sessionShop)
         ? typeList.filter((row) => !row.platformRef && catalogueShopDomain(row.shop) === sessionShop)
