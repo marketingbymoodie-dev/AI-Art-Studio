@@ -117,6 +117,43 @@ export type ComposeBlankRow = {
   kind: "produced" | "white-master";
 };
 
+export type InUseBlankKind = "produced" | "white-master";
+
+export type InUseBlankPanel = {
+  panelId: string;
+  name: string;
+  kind: string;
+};
+
+/**
+ * Newest blank per scene. A produced photo counts. So does a colour whose own
+ * in-use blank is the white master (White). Repainting some other colour from
+ * that master does not.
+ * Panels must be newest first.
+ */
+export function inUseBlankKind(
+  panelsNewestFirst: readonly InUseBlankPanel[],
+  colourName: string,
+): InUseBlankKind | null {
+  const wanted = blankNameKey(colourName);
+  if (!wanted) return null;
+  const seen = new Set<string>();
+  let produced = false;
+  let whiteMaster = false;
+  for (const panel of panelsNewestFirst) {
+    const key = blankNameKey(panel.name || "");
+    if (key !== wanted) continue;
+    const slot = `${panel.panelId}\0${key}`;
+    if (seen.has(slot)) continue;
+    seen.add(slot);
+    if (panel.kind === "produced") produced = true;
+    else if (panel.kind === "white-master") whiteMaster = true;
+  }
+  if (produced) return "produced";
+  if (whiteMaster) return "white-master";
+  return null;
+}
+
 /**
  * Same choice compose makes: an exact name uses that photograph,
  * otherwise the white master is repainted. Rows must be newest first.

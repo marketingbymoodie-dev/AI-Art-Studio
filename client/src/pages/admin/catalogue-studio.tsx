@@ -74,15 +74,19 @@ type PendingCandidate = {
 type OfferedColour = {
   name: string;
   hex: string;
-  path: "produced" | "recolour";
+  path: "produced" | "white-master" | "recolour";
   missingHex?: boolean;
   hasProducedBlank?: boolean;
 };
 
+function approvedColourTick(row: { path: string }): boolean {
+  return row.path === "produced" || row.path === "white-master";
+}
+
 function offeredColours(
   data: {
     colourTickMode?: string;
-    colors: Array<{ name: string; hex: string; missingHex?: boolean; hasProducedBlank?: boolean }>;
+    colors: Array<{ name: string; hex: string; missingHex?: boolean; hasProducedBlank?: boolean; inUseBlank?: "produced" | "white-master" | null }>;
     productTypeId: number;
   } | undefined,
   scene: SceneGroup | undefined,
@@ -92,12 +96,15 @@ function offeredColours(
     return data.colors.map((color) => {
       const hex = String(color.hex || "").replace(/^#/, "");
       const missingHex = Boolean(color.missingHex) || !/^[0-9A-Fa-f]{6}$/.test(hex);
+      const inUse = color.inUseBlank === "white-master" || color.inUseBlank === "produced"
+        ? color.inUseBlank
+        : color.hasProducedBlank ? "produced" as const : null;
       return {
         name: color.name,
         hex: missingHex ? "" : hex.toUpperCase(),
         missingHex,
-        hasProducedBlank: Boolean(color.hasProducedBlank),
-        path: color.hasProducedBlank ? "produced" as const : "recolour" as const,
+        hasProducedBlank: inUse != null,
+        path: inUse === "white-master" ? "white-master" as const : inUse === "produced" ? "produced" as const : "recolour" as const,
       };
     });
   }
@@ -147,117 +154,26 @@ function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: 
   return error || fallback;
 }
 
-type CatalogBlueprint = { blueprintId: number; label: string; brand?: string; publish?: { published?: boolean } };
-
-function ImportBlueprintToShop({ onImported }: { onImported: (productTypeId: number) => void }) {
-  const catalog = useQuery<{ blueprints?: CatalogBlueprint[] }>({
-    queryKey: ["/api/admin/catalog/allowed-blueprints"],
-  });
-  const published = (catalog.data?.blueprints || []).filter((row) => row.publish?.published);
-  const [blueprintId, setBlueprintId] = useState("");
-  const [providerId, setProviderId] = useState("");
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const providers = useQuery<{ providers?: Array<{ id: number; title: string }> }>({
-    queryKey: [`/api/platform/catalogue-studio/import-providers?blueprintId=${blueprintId}`],
-    enabled: Boolean(blueprintId),
-  });
-
-  async function importType() {
-    setBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const res = await apiFetch("/api/platform/catalogue-studio/import-owned-type", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blueprintId: Number(blueprintId), providerId: Number(providerId), name: name.trim() }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(String(body?.error || "Import failed"));
-        return;
-      }
-      const page = body.customizerPage || {};
-      setMessage(
-        `Imported ${body.name} as product type ${body.productTypeId}. ` +
-        `Shell ${body.shopifyProductId}, ${body.variantCount} variants, ` +
-        `${body.hasCosts ? "costs saved" : "no costs"}, calibration ${body.flatCalibrationStatus}, ` +
-        `customizer page ${page.handle} (${page.status}).`,
-      );
-      onImported(Number(body.productTypeId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
+function ShopProductImport({ productTypeId }: { productTypeId: number }) {
+  const pricesHref = `/admin/customizer-pages?resyncProductType=${productTypeId}`;
   return (
     <div className="mt-4 rounded-md border border-dashed p-3" data-testid="import-owned-type">
       <p className="mb-2 text-sm font-medium">Import a blueprint to this shop</p>
-      <div className="grid gap-2 md:grid-cols-3">
-        <label className="text-sm">
-          Blueprint
-          <select
-            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
-            data-testid="import-owned-blueprint"
-            value={blueprintId}
-            onChange={(event) => {
-              const next = event.target.value;
-              setBlueprintId(next);
-              setProviderId("");
-              const row = published.find((item) => String(item.blueprintId) === next);
-              setName(row?.label || "");
-            }}
-          >
-            <option value="">Choose a published blueprint</option>
-            {published.map((row) => (
-              <option key={row.blueprintId} value={row.blueprintId}>
-                {row.label} ({row.blueprintId})
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm">
-          Print provider
-          <select
-            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
-            data-testid="import-owned-provider"
-            value={providerId}
-            onChange={(event) => setProviderId(event.target.value)}
-            disabled={!blueprintId}
-          >
-            <option value="">{providers.isFetching ? "Loading providers…" : "Choose a provider"}</option>
-            {(providers.data?.providers || []).map((provider) => (
-              <option key={provider.id} value={provider.id}>{provider.title} ({provider.id})</option>
-            ))}
-          </select>
-        </label>
-        <label className="text-sm">
-          Name
-          <input
-            className="mt-1 block w-full rounded-md border bg-background px-2 py-1"
-            data-testid="import-owned-name"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
+      <p className="text-sm text-muted-foreground">
+        New products for this shop are imported from Customizer Pages. Create Page includes the pricing step, and a page cannot be saved while a retail price is blank or $0.00.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Link href="/admin/customizer-pages">
+          <Button type="button" size="sm" data-testid="import-owned-submit">
+            Create Page
+          </Button>
+        </Link>
+        <Link href={pricesHref}>
+          <Button type="button" size="sm" variant="outline" data-testid="import-owned-prices">
+            Set prices for this product
+          </Button>
+        </Link>
       </div>
-      <Button
-        type="button"
-        size="sm"
-        className="mt-3"
-        data-testid="import-owned-submit"
-        disabled={busy || !blueprintId || !providerId || !name.trim()}
-        onClick={() => void importType()}
-      >
-        {busy ? "Importing…" : "Import to this shop"}
-      </Button>
-      {message ? <p className="mt-2 text-sm" data-testid="import-owned-result">{message}</p> : null}
-      {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
     </div>
   );
 }
@@ -415,7 +331,7 @@ export default function CatalogueStudioPage() {
     const storedIsForThisList = storedColours.length > 0
       && storedColours.every((row) => availableNames.has(row.name.toLowerCase()));
     const matched = storedIsForThisList ? initialTickedColours(storedColours, available) : [];
-    const ticks = (matched.length ? matched : available.filter((row) => row.path === "produced"))
+    const ticks = (matched.length ? matched : available.filter((row) => approvedColourTick(row)))
       .map(({ name, hex }) => ({ name, hex }));
     setPanelId(next);
     setTicked(ticks);
@@ -588,11 +504,7 @@ export default function CatalogueStudioPage() {
             ))}
           </select>
         </label>
-        <ImportBlueprintToShop onImported={(productTypeId) => {
-          setTypePinned(true);
-          setStudioTypeId(productTypeId);
-          void candidate.refetch();
-        }} />
+        <ShopProductImport productTypeId={studioTypeId} />
         <MockupBulkImport
           productType={candidate.data ? { id: candidate.data.productTypeId, name: candidate.data.productTypeName } : null}
           storedScenes={(panels.data?.scenes ?? []).map((scene) => scene.panelId)}

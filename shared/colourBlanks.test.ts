@@ -5,6 +5,7 @@ import {
   colourMatchKeys,
   composeBlankChoice,
   describeColourUse,
+  inUseBlankKind,
   frameColourHidden,
   normaliseBlankHex,
 } from "./colourBlanks";
@@ -42,6 +43,19 @@ describe("softstyle colour seed", () => {
     expect(composeBlankChoice(rows, "White").mode).toBe("produced");
     expect(composeBlankChoice(rows, "Navy")).toEqual({ mode: "recolour", sourceName: "White", rowId: "white" });
     expect(composeBlankChoice([], "Navy").mode).toBe("unavailable");
+  });
+
+  it("treats a colour's own white master as an approved blank and not a recolour", () => {
+    const panels = [
+      { panelId: "front", name: "White", kind: "white-master" },
+      { panelId: "front", name: "White", kind: "produced" },
+      { panelId: "front", name: "Black", kind: "produced" },
+      { panelId: "back", name: "Bay", kind: "produced" },
+    ];
+    expect(inUseBlankKind(panels, "White")).toBe("white-master");
+    expect(inUseBlankKind(panels, "Black")).toBe("produced");
+    expect(inUseBlankKind(panels, "Bay")).toBe("produced");
+    expect(inUseBlankKind(panels, "Navy")).toBeNull();
   });
 
   it("matches a colour name to its slug and says why it cannot be turned off", () => {

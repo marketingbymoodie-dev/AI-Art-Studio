@@ -266,13 +266,15 @@ type StudioLibraryColour = {
   name: string;
   hex: string;
   missingHex: boolean;
+  /** True when this colour has a produced photo or its own in-use white master. */
   hasProducedBlank: boolean;
+  inUseBlank: "produced" | "white-master" | null;
 };
 
 /** Active Colour blanks rows, in list order, with that row's hex. Inactive rows are omitted. */
 async function libraryColoursFor(productTypeId: number): Promise<StudioLibraryColour[]> {
   const { blankLibraryTypeId, ensureColourBlankTable } = await import("../colour-blanks");
-  const { blankNameKey } = await import("@shared/colourBlanks");
+  const { inUseBlankKind } = await import("@shared/colourBlanks");
   const { panelsForType } = await import("../mockup-library-store");
   const libraryId = await blankLibraryTypeId(productTypeId);
   const { db } = await import("../db");
@@ -290,21 +292,22 @@ async function libraryColoursFor(productTypeId: number): Promise<StudioLibraryCo
     ))
     .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
   if (!rows.length) return [];
-  const produced = new Set<string>();
-  for (const panel of await panelsForType(libraryId)) {
-    if (panel.kind !== "produced") continue;
-    const key = blankNameKey(panel.garmentColor || "");
-    if (key) produced.add(key);
-  }
+  const panels = (await panelsForType(libraryId)).map((panel) => ({
+    panelId: panel.panelId,
+    name: panel.garmentColor || "",
+    kind: panel.kind,
+  }));
   return rows.map((row) => {
     const raw = String(row.hex || "").replace(/^#/, "").trim();
     const ok = /^[0-9A-Fa-f]{6}$/.test(raw);
-    const linked = blankNameKey(row.linkStoredName || "");
+    const linked = String(row.linkStoredName || "").trim();
+    const inUseBlank = inUseBlankKind(panels, row.name) || (linked ? inUseBlankKind(panels, linked) : null);
     return {
       name: row.name,
       hex: ok ? raw.toUpperCase() : "",
       missingHex: !ok,
-      hasProducedBlank: produced.has(blankNameKey(row.name)) || (linked.length > 0 && produced.has(linked)),
+      hasProducedBlank: inUseBlank != null,
+      inUseBlank,
     };
   });
 }

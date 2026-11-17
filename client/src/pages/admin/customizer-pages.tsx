@@ -366,6 +366,11 @@ export default function AdminCustomizerPages() {
     const parsed = raw ? parseInt(raw, 10) : NaN;
     return Number.isFinite(parsed) ? parsed : null;
   });
+  const [pendingResyncProductTypeId, setPendingResyncProductTypeId] = useState<number | null>(() => {
+    const raw = new URLSearchParams(window.location.search).get("resyncProductType");
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  });
   const [listSearch, setListSearch] = useState("");
   const [listCategory, setListCategory] = useState("all");
   const [listStatus, setListStatus] = useState("all");
@@ -523,6 +528,19 @@ export default function AdminCustomizerPages() {
   useEffect(() => {
     if (pendingCreateProductTypeId != null || pendingCreateBlueprintId != null) setCreateOpen(true);
   }, [pendingCreateProductTypeId, pendingCreateBlueprintId]);
+
+  // Open Resync Prices for an existing page. Does not write prices.
+  useEffect(() => {
+    if (pendingResyncProductTypeId == null) return;
+    const pages = pagesData?.pages;
+    if (!pages) return;
+    const page = pages.find((row) => row.productTypeId === pendingResyncProductTypeId);
+    if (page) setSyncPricesTarget(page);
+    setPendingResyncProductTypeId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("resyncProductType");
+    window.history.replaceState({}, "", url.toString());
+  }, [pendingResyncProductTypeId, pagesData]);
 
   // Once blanks have loaded, pre-select the deep-linked product and clear the query param.
   useEffect(() => {
