@@ -262,42 +262,62 @@ async function studioGarment(raw: unknown, requestShop: string | null | undefine
   return { id: row?.id ?? fallbackId, name: row?.name || "" };
 }
 
-function frameColourList(raw: unknown): Array<{ name: string; hex: string }> {
-  let list: unknown = raw;
-  if (typeof raw === "string") {
-    try {
-      list = JSON.parse(raw || "[]");
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(list)) return [];
-  const colours: Array<{ name: string; hex: string }> = [];
-  for (const row of list) {
-    const name = String((row as { name?: string })?.name || "").trim();
-    const hex = String((row as { hex?: string })?.hex || "").replace(/^#/, "").trim();
-    if (!name || !hex) continue;
-    colours.push({ name, hex });
-  }
-  return colours;
-}
+type StudioLibraryColour = {
+  name: string;
+  hex: string;
+  missingHex: boolean;
+  hasProducedBlank: boolean;
+};
 
-async function libraryColoursFor(productTypeId: number): Promise<Array<{ name: string; hex: string }>> {
+/** Active Colour blanks rows, in list order, with that row's hex. Inactive rows are omitted. */
+async function libraryColoursFor(productTypeId: number): Promise<StudioLibraryColour[]> {
   const { blankLibraryTypeId, ensureColourBlankTable } = await import("../colour-blanks");
+  const { blankNameKey } = await import("@shared/colourBlanks");
+  const { panelsForType } = await import("../mockup-library-store");
   const libraryId = await blankLibraryTypeId(productTypeId);
-  if (libraryId === 54) return [];
   const { db } = await import("../db");
   await ensureColourBlankTable();
-  productTypeId = libraryId;
   const rows = await db
-    .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
+    .select({
+      name: mockupLibraryColours.name,
+      hex: mockupLibraryColours.hex,
+      linkStoredName: mockupLibraryColours.linkStoredName,
+    })
     .from(mockupLibraryColours)
     .where(and(
-      eq(mockupLibraryColours.productTypeId, productTypeId),
+      eq(mockupLibraryColours.productTypeId, libraryId),
       eq(mockupLibraryColours.active, true),
     ))
     .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
-  return rows.map((row) => ({ name: row.name, hex: row.hex }));
+  if (!rows.length) return [];
+  const produced = new Set<string>();
+  for (const panel of await panelsForType(libraryId)) {
+    if (panel.kind !== "produced") continue;
+    const key = blankNameKey(panel.garmentColor || "");
+    if (key) produced.add(key);
+  }
+  return rows.map((row) => {
+    const raw = String(row.hex || "").replace(/^#/, "").trim();
+    const ok = /^[0-9A-Fa-f]{6}$/.test(raw);
+    const linked = blankNameKey(row.linkStoredName || "");
+    return {
+      name: row.name,
+      hex: ok ? raw.toUpperCase() : "",
+      missingHex: !ok,
+      hasProducedBlank: produced.has(blankNameKey(row.name)) || (linked.length > 0 && produced.has(linked)),
+    };
+  });
+}
+
+async function retailIsPositive(productTypeId: number): Promise<boolean> {
+  if (!Number.isInteger(productTypeId) || productTypeId <= 0) return false;
+  const { db } = await import("../db");
+  const { isNonPositiveRetailPrice } = await import("@shared/productIntelligence");
+  const pages = await db
+    .select({ price: customizerPages.baseProductPrice, status: customizerPages.status })
+    .from(customizerPages)
+    .where(eq(customizerPages.productTypeId, productTypeId));
+  return pages.some((page) => page.status === "active" && !isNonPositiveRetailPrice(page.price));
 }
 
 async function studioScenes(productTypeId: number) {
@@ -391,12 +411,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         for (const color of scene.colours) colourByName.set(color.name, { name: color.name, hex: color.hex });
       }
       const sceneColours = sortCatalogueColours([...colourByName.values()]);
-      const studioColours = fixture && garment.id === 54
+      const usingBlanks = blankColours.length > 0 && !(fixture && garment.id === 54);
+      const coloursForStudio = fixture && garment.id === 54
         ? PENDING_CANDIDATE.colors
-        : blankColours.length ? sortCatalogueColours(blankColours) : sceneColours;
-      const colourTickMode = String(typeRow?.shop || "") === PETPOSTEROUS_CATALOGUE_SHOP ? "all" : "stored";
-      const frameColours = colourTickMode === "all" ? frameColourList(typeRow?.frameColors) : [];
-      const coloursForStudio = frameColours.length ? frameColours : studioColours;
+        : usingBlanks ? blankColours : sceneColours;
+      const colourTickMode = usingBlanks ? "blanks" : "stored";
       const colourSizes: Record<string, string> = {};
       const offeredNames = offered.map((size) => size.name);
       for (const color of coloursForStudio) {
@@ -922,6 +941,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const { enqueueCataloguePublish } = await import("../catalogue-publish-jobs");
+      const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
+      if (!(await retailIsPositive(garment.id))) {
+        const reason = "Retail is $0.00 for this type. Set the price table before publishing a design.";
+        res.status(400).json({ error: reason, reasons: [reason] });
+        return;
+      }
       const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
       const job = await enqueueCataloguePublish({
         candidateId: id,
@@ -940,7 +965,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         deviceStructure: String(req.body?.deviceStructure || ""),
         darknessLevel: Number(req.body?.darknessLevel),
         title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
-        productTypeId: Number(req.body?.productTypeId) || undefined,
+        productTypeId: garment.id || undefined,
       });
       res.json(job);
     } catch (e: any) {
@@ -976,6 +1001,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     try {
       const { promoteCatalogueCandidate } = await import("../flywheel-promote");
       const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
+      if (!(await retailIsPositive(garment.id))) {
+        const reason = "Retail is $0.00 for this type. Set the price table before publishing a design.";
+        res.status(400).json({ error: reason, reasons: [reason] });
+        return;
+      }
       const prices = await shippingPricesBySize(garment.id);
       const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;

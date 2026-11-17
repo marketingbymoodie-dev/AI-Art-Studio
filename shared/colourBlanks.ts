@@ -57,6 +57,37 @@ export function frameColourHidden(name: unknown, id: unknown, hidden: Set<string
   return values.some((value) => colourMatchKeys(value).some((key) => hidden.has(key)));
 }
 
+export type ColourBlankSwatch = { name: string; hex: string; sortOrder: number };
+
+/** Storefront and Studio swatches take hex and order from the Colour blanks list. */
+export function overlayBlankSwatches<T extends { name?: string; id?: string; hex?: string }>(
+  colours: T[],
+  blanks: readonly ColourBlankSwatch[],
+): T[] {
+  if (!blanks.length || !colours.length) return colours;
+  const byKey = new Map<string, { hex: string; sortOrder: number }>();
+  blanks.forEach((row, index) => {
+    const hex = String(row.hex || "").replace(/^#/, "").trim().toUpperCase();
+    const sortOrder = Number.isFinite(row.sortOrder) ? row.sortOrder : index;
+    for (const key of colourMatchKeys(row.name)) {
+      if (!byKey.has(key)) byKey.set(key, { hex, sortOrder });
+    }
+  });
+  return colours
+    .map((colour, index) => {
+      const keys = [
+        ...colourMatchKeys(String(colour.name || "")),
+        ...colourMatchKeys(String(colour.id || "")),
+      ];
+      const hit = keys.map((key) => byKey.get(key)).find(Boolean);
+      if (!hit) return { colour, order: 100000 + index };
+      const hex = /^[0-9A-F]{6}$/.test(hit.hex) ? hit.hex : colour.hex;
+      return { colour: { ...colour, hex }, order: hit.sortOrder };
+    })
+    .sort((a, b) => a.order - b.order)
+    .map((row) => row.colour);
+}
+
 export function describeColourUse(
   name: string,
   products: string[],

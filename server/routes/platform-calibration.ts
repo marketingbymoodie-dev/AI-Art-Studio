@@ -979,8 +979,13 @@ export function registerPlatformCalibrationRoutes(
       defaultCatalogueTypeId(req.shopDomain),
       cataloguePrintifyMerchant(null, profile.shop),
     ]);
+    const host = String(req.get("host") || "");
+    const railwayEnv = String(process.env.RAILWAY_ENVIRONMENT_NAME || "");
+    const publicDomain = String(process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || "");
+    const stagingBackend = /staging/i.test(host) || /staging/i.test(railwayEnv) || /staging/i.test(publicDomain);
     res.json({
       isPlatformAdmin: true,
+      stagingBackend,
       catalogueShop: profile.shop,
       defaultProductTypeId,
       printifyShopId: merchant?.printifyShopId || null,

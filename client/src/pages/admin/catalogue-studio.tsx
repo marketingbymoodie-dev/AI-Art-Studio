@@ -71,16 +71,34 @@ type PendingCandidate = {
   } | null;
 };
 
+type OfferedColour = {
+  name: string;
+  hex: string;
+  path: "produced" | "recolour";
+  missingHex?: boolean;
+  hasProducedBlank?: boolean;
+};
+
 function offeredColours(
-  data: { colourTickMode?: string; colors: Array<{ name: string; hex: string }>; productTypeId: number } | undefined,
+  data: {
+    colourTickMode?: string;
+    colors: Array<{ name: string; hex: string; missingHex?: boolean; hasProducedBlank?: boolean }>;
+    productTypeId: number;
+  } | undefined,
   scene: SceneGroup | undefined,
-) {
-  if (!data) return [] as Array<{ name: string; hex: string; path: "produced" | "recolour" }>;
-  if (data.colourTickMode === "all") {
+): OfferedColour[] {
+  if (!data) return [];
+  if (data.colourTickMode === "blanks") {
     return data.colors.map((color) => {
-      const onScene = scene?.colours.find((row) => row.name.toLowerCase() === color.name.toLowerCase());
-      const produced = onScene && onScene.kind !== "white-master";
-      return { name: color.name, hex: color.hex, path: produced ? "produced" as const : "recolour" as const };
+      const hex = String(color.hex || "").replace(/^#/, "");
+      const missingHex = Boolean(color.missingHex) || !/^[0-9A-Fa-f]{6}$/.test(hex);
+      return {
+        name: color.name,
+        hex: missingHex ? "" : hex.toUpperCase(),
+        missingHex,
+        hasProducedBlank: Boolean(color.hasProducedBlank),
+        path: color.hasProducedBlank ? "produced" as const : "recolour" as const,
+      };
     });
   }
   return sceneColours(scene, data.colors, data.productTypeId !== 54);
@@ -393,13 +411,16 @@ export default function CatalogueStudioPage() {
     const scene = scenes.find((row) => row.panelId === next);
     const available = offeredColours(candidate.data, scene);
     const storedColours = candidate.data?.choice.selectedColors ?? [];
-    const freshTicks = candidate.data?.colourTickMode === "all";
-    const ticks = freshTicks
-      ? available.map(({ name, hex }) => ({ name, hex }))
-      : initialTickedColours(storedColours, available).map(({ name, hex }) => ({ name, hex }));
+    const availableNames = new Set(available.map((row) => row.name.toLowerCase()));
+    const storedIsForThisList = storedColours.length > 0
+      && storedColours.every((row) => availableNames.has(row.name.toLowerCase()));
+    const matched = storedIsForThisList ? initialTickedColours(storedColours, available) : [];
+    const ticks = (matched.length ? matched : available.filter((row) => row.path === "produced"))
+      .map(({ name, hex }) => ({ name, hex }));
     setPanelId(next);
     setTicked(ticks);
-    if (!freshTicks && (!stored || storedColours.length === 0)) {
+    setColor((current) => (ticks.some((tick) => tick.name === current) ? current : ticks[0]?.name || available[0]?.name || current));
+    if (!matched.length) {
       void fetch("/api/platform/catalogue-studio/choice", {
         method: "POST",
         credentials: "include",
@@ -650,8 +671,8 @@ export default function CatalogueStudioPage() {
               {cellSource ? (
                 <p className="text-sm" data-testid="catalogue-studio-cell-source">{cellSource}</p>
               ) : null}
-              <div className="flex gap-2">
-                {(offered.length ? offered : candidate.data?.colors || []).map((c) => (
+              <div className="flex gap-2" data-testid="catalogue-studio-swatch-strip">
+                {offered.filter((c) => ticked.some((tick) => tick.name === c.name) && !c.missingHex).map((c) => (
                   <button
                     key={c.name}
                     type="button"
@@ -811,8 +832,7 @@ export default function CatalogueStudioPage() {
                   const kept = ticked.filter((tick) => available.some((row) => row.name === tick.name));
                   setPanelId(next);
                   setTicked(kept);
-                  setColor((current) => (available.some((row) => row.name === current) ? current : available[0]?.name || current));
-                  if (candidate.data?.colourTickMode === "all") return;
+                  setColor((current) => (kept.some((row) => row.name === current) ? current : kept[0]?.name || available[0]?.name || current));
                   void fetch("/api/platform/catalogue-studio/choice", {
                     method: "POST",
                     credentials: "include",
@@ -845,7 +865,7 @@ export default function CatalogueStudioPage() {
                                 ? ticked.filter((tick) => tick.name !== row.name)
                                 : [...ticked, { name: row.name, hex: row.hex }];
                               setTicked(next);
-                              if (candidate.data?.colourTickMode === "all") return;
+                              setColor((current) => (next.some((tick) => tick.name === current) ? current : next[0]?.name || current));
                               void fetch("/api/platform/catalogue-studio/choice", {
                                 method: "POST",
                                 credentials: "include",
@@ -854,11 +874,15 @@ export default function CatalogueStudioPage() {
                               });
                             }}
                           />
-                          <span
-                            aria-hidden
-                            className="mr-2 inline-block h-3 w-3 rounded-full border border-border align-middle"
-                            style={{ backgroundColor: `#${row.hex.replace(/^#/, "")}` }}
-                          />
+                          {row.missingHex ? (
+                            <span className="mr-2 text-xs font-medium text-destructive">no hex</span>
+                          ) : (
+                            <span
+                              aria-hidden
+                              className="mr-2 inline-block h-3 w-3 rounded-full border border-border align-middle"
+                              style={{ backgroundColor: `#${row.hex.replace(/^#/, "")}` }}
+                            />
+                          )}
                           {row.name}
                           {reading
                             ? ` ${(reading.minClear * 100).toFixed(1)}% ${reading.eligible ? "pass" : "fail"}`

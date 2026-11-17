@@ -141,7 +141,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     enabled: isAuthenticated || embedded,
   });
 
-  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean; stagingBackend?: boolean }>({
     queryKey: ["/api/platform/admin/status"],
     enabled: isAuthenticated || embedded,
   });
@@ -336,6 +336,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="overflow-hidden">
+        {platformStatus?.isPlatformAdmin && platformStatus.stagingBackend ? (
+          <div
+            className="bg-amber-400 px-4 py-2 text-center text-sm font-semibold text-amber-950"
+            data-testid="staging-backend-banner"
+          >
+            Running on STAGING backend
+          </div>
+        ) : null}
         <header className="flex items-center gap-4 border-b px-4 py-3 bg-background shrink-0">
           <SidebarTrigger
             data-testid="button-sidebar-toggle"

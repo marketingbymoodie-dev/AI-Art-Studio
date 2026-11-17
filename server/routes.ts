@@ -1,4 +1,4 @@
-import { frameColourHidden } from "@shared/colourBlanks";
+import { frameColourHidden, overlayBlankSwatches, type ColourBlankSwatch } from "@shared/colourBlanks";
 import { shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueVariantGate } from "./catalogue-variant-fulfillment";
 import { generateImageBase64 } from "./replit_integrations/image/client";
@@ -831,6 +831,15 @@ async function designerHiddenColours(productTypeId: number): Promise<Set<string>
   if (!Number.isInteger(productTypeId) || productTypeId <= 0) return new Set();
   const { inactiveColourKeys } = await import("./colour-blanks");
   return inactiveColourKeys(productTypeId);
+}
+
+async function designerColourLens(productTypeId: number): Promise<{ hidden: Set<string>; swatches: ColourBlankSwatch[] }> {
+  const { activeColourBlankSwatches } = await import("./colour-blanks");
+  const [hidden, swatches] = await Promise.all([
+    designerHiddenColours(productTypeId),
+    activeColourBlankSwatches(productTypeId),
+  ]);
+  return { hidden, swatches };
 }
 
 function designerDisplayAspectRatio(productType: {
@@ -6757,7 +6766,8 @@ ${orientationExtra}
       const parsedFrameColors = typeof productType.frameColors === 'string' 
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
-      const hiddenDesignerColours = await designerHiddenColours(productType.id);
+      const designerLens = await designerColourLens(productType.id);
+      const hiddenDesignerColours = designerLens.hidden;
       const frameColors = hiddenDesignerColours.size
         ? parsedFrameColors.filter((colour: { name?: string; id?: string }) => !frameColourHidden(colour?.name, colour?.id, hiddenDesignerColours))
         : parsedFrameColors;
@@ -6881,9 +6891,9 @@ ${orientationExtra}
         : null;
 
       console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
-      const mintedFrameColors = filterFrameColorsToMintedShopify(frameColors, {
+      const mintedFrameColors = overlayBlankSwatches(filterFrameColorsToMintedShopify(frameColors, {
         shopifyVariantIds: (productType as any).shopifyVariantIds,
-      });
+      }), designerLens.swatches);
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -7383,6 +7393,7 @@ ${orientationExtra}
       option2?: string | null;
     }> | null,
     hiddenColourKeys?: Set<string>,
+    blankSwatches?: readonly ColourBlankSwatch[],
   ): Record<string, any> {
     const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
@@ -7415,10 +7426,10 @@ ${orientationExtra}
       : allSizes;
     // Customer colours = minted Shopify only. selectedColorIds is merchant intent
     // and can exceed the 100-variant cap (WP-55: 14 selected, ~11 minted).
-    const frameColors = filterFrameColorsToMintedShopify(allFrameColors, {
+    const frameColors = overlayBlankSwatches(filterFrameColorsToMintedShopify(allFrameColors, {
       catalog: catalogForColours,
       shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
-    });
+    }), blankSwatches || []);
 
     const displayAspectRatio = designerDisplayAspectRatio(productTypeToUse);
     const [aspectW, aspectH] = displayAspectRatio.split(":").map(Number);
@@ -7826,13 +7837,15 @@ ${orientationExtra}
               : null,
             atcModeForShop(shop),
           ]);
+          const fastLens = await designerColourLens(productTypeForConfig!.id);
           const fastConfig = buildDesignerConfig(
             productTypeForConfig!,
             id,
             undefined,
             sizeChart,
             undefined,
-            await designerHiddenColours(productTypeForConfig!.id),
+            fastLens.hidden,
+            fastLens.swatches,
           );
           (fastConfig as any).atcMode = fastAtcMode;
           const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
@@ -7992,13 +8005,15 @@ ${orientationExtra}
           : null,
         atcModeForShop(shop),
       ]);
+      const designerLens = await designerColourLens(Number(productTypeForConfig?.id) || id);
       const designerConfig = buildDesignerConfig(
         productTypeForConfig,
         id,
         resolvedFrom,
         sizeChart,
         undefined,
-        await designerHiddenColours(Number(productTypeForConfig?.id) || id),
+        designerLens.hidden,
+        designerLens.swatches,
       );
       (designerConfig as any).atcMode = sfAtcMode;
       const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
@@ -8651,13 +8666,15 @@ ${orientationExtra}
         // Size chart is loaded client-side; waiting here added up to 2.5s before
         // the first placeholder could render.
         const { liveCatalog } = await variantsPromise;
+        const pageLens = await designerColourLens(page.productTypeId);
         return buildDesignerConfig(
           ptForDesigner!,
           page.productTypeId,
           undefined,
           null,
           liveCatalog,
-          await designerHiddenColours(page.productTypeId),
+          pageLens.hidden,
+          pageLens.swatches,
         );
       } catch (e) {
         console.warn(
@@ -18918,6 +18935,19 @@ ${orientationExtra}
         status: "active",
       });
     }
+    const { isNonPositiveRetailPrice } = await import("@shared/productIntelligence");
+    if (isNonPositiveRetailPrice(page.baseProductPrice) && opened.installation.accessToken) {
+      const priced = await ensureShopifyRetailForLive({
+        shop: opened.shop,
+        accessToken: opened.installation.accessToken,
+        baseProductId: fresh.shopifyProductId,
+        productType: fresh,
+        pageId: page.id,
+      });
+      if (priced.cheapestPrice) {
+        page = { ...page, baseProductPrice: priced.cheapestPrice };
+      }
+    }
     let variantMapSize = 0;
     try {
       const parsed = JSON.parse(fresh.variantMap || "{}");
@@ -25682,13 +25712,15 @@ ${orientationExtra}
           allowUnpublishedHarvest: true,
         });
         const { liveCatalog } = await variantsPromise;
+        const proxyLens = await designerColourLens(page.productTypeId);
         return buildDesignerConfig(
           ptForDesigner!,
           page.productTypeId,
           undefined,
           null,
           liveCatalog,
-          await designerHiddenColours(page.productTypeId),
+          proxyLens.hidden,
+          proxyLens.swatches,
         );
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);

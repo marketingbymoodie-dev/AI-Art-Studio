@@ -385,6 +385,30 @@ export async function assertColourBlankAccess(productTypeId: number, requestShop
   throw blankAccessError(write ? 403 : 404, "That product type is not on this shop.");
 }
 
+/** Active Colour blanks rows: hex, sort order, and the active flag the Studio list uses. */
+export async function activeColourBlankSwatches(productTypeId: number): Promise<Array<{ name: string; hex: string; sortOrder: number }>> {
+  if (!Number.isInteger(productTypeId) || productTypeId <= 0) return [];
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  await ensureColourBlankTable();
+  const rows = await db
+    .select({
+      name: mockupLibraryColours.name,
+      hex: mockupLibraryColours.hex,
+      sortOrder: mockupLibraryColours.sortOrder,
+    })
+    .from(mockupLibraryColours)
+    .where(and(
+      eq(mockupLibraryColours.productTypeId, libraryId),
+      eq(mockupLibraryColours.active, true),
+    ))
+    .orderBy(asc(mockupLibraryColours.sortOrder), asc(mockupLibraryColours.name));
+  return rows.map((row) => ({
+    name: row.name,
+    hex: String(row.hex || "").replace(/^#/, "").trim().toUpperCase(),
+    sortOrder: row.sortOrder,
+  }));
+}
+
 /** Photographs and the colour list live on this id. A linked type reads the source and does not own a copy. */
 export async function blankLibraryTypeId(productTypeId: number): Promise<number> {
   const [row] = await db
