@@ -13,6 +13,7 @@
  */
 import crypto from "crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { variantKeyIsOffered, type SelectionAxis } from "@shared/variantSelection";
 import { db } from "./db";
 import {
   catalogVariantCosts,
@@ -622,7 +623,32 @@ type VariantShippingProduct = {
   id: number;
   variantMap: string | null;
   shopifyVariantIds: unknown;
+  sizes?: string | null;
+  frameColors?: string | null;
+  selectedSizeIds?: string | null;
+  selectedColorIds?: string | null;
 };
+
+function parseAxes(raw: string | null | undefined): SelectionAxis[] {
+  try {
+    const list = JSON.parse(raw || "[]");
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((row) => ({ id: String(row?.id || "").trim(), name: String(row?.name || "").trim() }))
+      .filter((row) => row.id && row.name);
+  } catch {
+    return [];
+  }
+}
+
+function parseIdList(raw: string | null | undefined): string[] {
+  try {
+    const list = JSON.parse(raw || "[]");
+    return Array.isArray(list) ? list.map(String) : [];
+  } catch {
+    return [];
+  }
+}
 
 function variantShippingRowsForProduct(
   p: VariantShippingProduct,
@@ -644,8 +670,13 @@ function variantShippingRowsForProduct(
       if (vid != null) shopifyIdsByLooseKey.set(normalizeVariantKeyLoose(label), String(vid));
     }
   }
+  const sizes = parseAxes(p.sizes);
+  const colors = parseAxes(p.frameColors);
+  const selectedSizeIds = parseIdList(p.selectedSizeIds);
+  const selectedColorIds = parseIdList(p.selectedColorIds);
   const inserts: (typeof variantShipping.$inferInsert)[] = [];
   for (const [key, entry] of Object.entries(map)) {
+    if (!variantKeyIsOffered(key, sizes, colors, selectedSizeIds, selectedColorIds)) continue;
     const pvid = entry?.printifyVariantId != null ? String(entry.printifyVariantId) : "";
     if (!pvid) continue;
     const group = groupByVariant[pvid];
@@ -702,6 +733,10 @@ export async function mapVariantShippingForProductTypes(
         id: productTypes.id,
         variantMap: productTypes.variantMap,
         shopifyVariantIds: productTypes.shopifyVariantIds,
+        sizes: productTypes.sizes,
+        frameColors: productTypes.frameColors,
+        selectedSizeIds: productTypes.selectedSizeIds,
+        selectedColorIds: productTypes.selectedColorIds,
         printifyBlueprintId: productTypes.printifyBlueprintId,
         printifyProviderId: productTypes.printifyProviderId,
       })
@@ -794,6 +829,10 @@ async function rebuildVariantShipping(
       id: productTypes.id,
       variantMap: productTypes.variantMap,
       shopifyVariantIds: productTypes.shopifyVariantIds,
+      sizes: productTypes.sizes,
+      frameColors: productTypes.frameColors,
+      selectedSizeIds: productTypes.selectedSizeIds,
+      selectedColorIds: productTypes.selectedColorIds,
     })
     .from(productTypes)
     .where(

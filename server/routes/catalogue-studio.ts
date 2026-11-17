@@ -23,6 +23,7 @@ import {
   STAGING_FALLBACK_PRODUCT_TYPE_ID,
 } from "@shared/operatorCatalogue";
 import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
+import { coloursStillOffered, filterPricesToSizes, offeredAxes } from "@shared/variantSelection";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
 import { parseMockupImport } from "@shared/mockupBundle";
@@ -79,16 +80,25 @@ export async function shippingPricesBySize(productTypeId?: number): Promise<{
   if (!Number.isInteger(typeId) || typeId <= 0) return empty;
   const { db } = await import("../db");
   const [typeRow] = await db
-    .select({ shop: productTypes.shopifyShopDomain })
+    .select({
+      shop: productTypes.shopifyShopDomain,
+      sizes: productTypes.sizes,
+      selectedSizeIds: productTypes.selectedSizeIds,
+    })
     .from(productTypes)
     .where(eq(productTypes.id, typeId))
     .limit(1);
   const shop = catalogueShopDomain(typeRow?.shop || "");
   if (!shop) return empty;
   const prices = await shopCataloguePrices(shop, typeId);
-  if (typeId !== STAGING_FALLBACK_PRODUCT_TYPE_ID) return prices;
-  const applied = applySoftstyleCataloguePrices(prices.pricesBySize);
-  return { sizes: prices.sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize };
+  const offeredNames = offeredAxes(parseSizes(typeRow?.sizes), parseIdList(typeRow?.selectedSizeIds)).map((size) => size.name);
+  const selected = offeredNames.length ? filterPricesToSizes(prices, offeredNames) : prices;
+  if (typeId !== STAGING_FALLBACK_PRODUCT_TYPE_ID) return selected;
+  const applied = applySoftstyleCataloguePrices(selected.pricesBySize);
+  return filterPricesToSizes(
+    { sizes: selected.sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize },
+    offeredNames.length ? offeredNames : selected.sizes,
+  );
 }
 
 /** Prices already on this shop's studio product. The Softstyle table is not applied. */
@@ -392,6 +402,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         .select({
           sizes: productTypes.sizes,
           selectedSizeIds: productTypes.selectedSizeIds,
+          selectedColorIds: productTypes.selectedColorIds,
           variantMap: productTypes.variantMap,
           frameColors: productTypes.frameColors,
           shop: productTypes.shopifyShopDomain,
@@ -402,7 +413,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         .limit(1);
       const sizeRows = parseSizes(typeRow?.sizes);
       const selectedIds = parseIdList(typeRow?.selectedSizeIds);
-      const offered = selectedIds.length ? sizeRows.filter((size) => selectedIds.includes(size.id)) : sizeRows;
+      const offered = offeredAxes(sizeRows, selectedIds);
       let variantMap = {};
       try {
         variantMap = JSON.parse(typeRow?.variantMap || "{}");
@@ -415,9 +426,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       }
       const sceneColours = sortCatalogueColours([...colourByName.values()]);
       const usingBlanks = blankColours.length > 0 && !(fixture && garment.id === 54);
-      const coloursForStudio = fixture && garment.id === 54
+      const rawColours = fixture && garment.id === 54
         ? PENDING_CANDIDATE.colors
         : usingBlanks ? blankColours : sceneColours;
+      const coloursForStudio = coloursStillOffered(rawColours, parseSizes(typeRow?.frameColors), parseIdList(typeRow?.selectedColorIds));
       const colourTickMode = usingBlanks ? "blanks" : "stored";
       const colourSizes: Record<string, string> = {};
       const offeredNames = offered.map((size) => size.name);

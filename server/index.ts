@@ -450,6 +450,9 @@ app.use((req, res, next) => {
     .catch((e: any) => console.warn("[design-colour-jobs] startup failed:", e?.message || e));
   httpServer.listen(PORT, () => {
     log(`serving on port ${PORT}`);
+    void import("./sync-variant-selection")
+      .then(({ syncDriftedVariantSelections }) => syncDriftedVariantSelections())
+      .catch((err: any) => console.error("[variant-selection] startup sync failed:", err?.message || err));
     void import("./creator-checkout-webhooks")
       .then(({ ensureCreatorCheckoutWebhooksForPlatformShop }) =>
         ensureCreatorCheckoutWebhooksForPlatformShop(),

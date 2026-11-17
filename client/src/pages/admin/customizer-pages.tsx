@@ -1869,7 +1869,7 @@ export default function AdminCustomizerPages() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/appai/blanks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/product-types"] });
-      toast({ title: "Variants updated", description: "Size/colour selection saved for this product." });
+      toast({ title: "Variants updated", description: "Saved. The store product, Design Studio, and shipping for this type now use this list." });
     },
     onError: (err: Error) => {
       toast({ title: "Couldn't save variants", description: parseApiErrorMessage(err), variant: "destructive" });

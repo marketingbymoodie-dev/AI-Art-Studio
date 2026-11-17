@@ -17438,6 +17438,16 @@ ${orientationExtra}
         selectedColorIds: JSON.stringify(selectedColorIds || []),
       });
 
+      try {
+        const { pruneShellVariantsToSelection } = await import("./sync-variant-selection");
+        await pruneShellVariantsToSelection(productTypeId);
+      } catch (err) {
+        console.error(`[variant-selection] product type ${productTypeId} store update failed:`, (err as Error)?.message || err);
+        return res.status(502).json({
+          error: "The selection was saved, but the store product could not be updated. Save again.",
+        });
+      }
+
       res.json(updated);
     } catch (error) {
       console.error("Error updating variant selection:", error);

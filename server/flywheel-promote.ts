@@ -31,6 +31,7 @@ import { catalogueCandidateChoices, customizerPages, designCandidates, designPro
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import { normalizeVariantKeyLoose, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { coloursStillOffered, offeredAxes } from "@shared/variantSelection";
 import { getEffectiveDesignProductLimit } from "./customizer-plans";
 import { db } from "./db";
 import { uploadPrintFileToPrintify } from "./flat-print-file";
@@ -443,7 +444,6 @@ export async function promoteCatalogueCandidate(args: {
 }): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
   const choice = await readChoice(args.candidateId);
   const panelId = String(args.panelId || choice.panelId || "");
-  const selectedColors = args.selectedColors?.length ? args.selectedColors : choice.selectedColors;
   const mockupImages = args.mockupImages?.length ? args.mockupImages : choice.mockupImages;
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
   const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, args.productTypeId)).limit(1);
@@ -463,7 +463,20 @@ export async function promoteCatalogueCandidate(args: {
       return [];
     }
   })();
-  const offered = selectedIds.length ? sizes.filter((size) => selectedIds.includes(size.id)) : sizes;
+  const offered = offeredAxes(sizes, selectedIds);
+  const selectedColorIds: string[] = (() => {
+    try {
+      const raw = JSON.parse(typeRow.selectedColorIds || "[]");
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch {
+      return [];
+    }
+  })();
+  const selectedColors = coloursStillOffered(
+    args.selectedColors?.length ? args.selectedColors : choice.selectedColors,
+    parseFrameColors(typeRow.frameColors),
+    selectedColorIds,
+  );
   const missingPrices = offered.filter((size) => !args.pricesBySize[size.name]).map((size) => size.name);
 
   const ticked = selectedColors.map((color) => color.name);
