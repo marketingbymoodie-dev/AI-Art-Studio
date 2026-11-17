@@ -40,6 +40,13 @@ export function isOwnerShopDomain(shopDomain?: string | null): boolean {
   return collectOwnerShopDomains().has(shop);
 }
 
+/** Shops baked into the owner allowlist. These keep the owner plan even when OWNER_BYPASS_QUOTA is off. */
+export function isBuiltinOwnerShopDomain(shopDomain?: string | null): boolean {
+  const shop = normalizeMyshopifyShopDomain(shopDomain);
+  if (!shop) return false;
+  return (BUILTIN_OWNER_SHOP_DOMAINS as readonly string[]).includes(shop);
+}
+
 /**
  * Platform-operator access (AppAI owner), not merchant admin.
  *

@@ -23195,15 +23195,18 @@ ${orientationExtra}
       console.warn("[zero-price-alert] admin list notify failed:", e?.message ?? e),
     );
 
+    const pageLimit = Number.isFinite(plan.pageLimit) ? plan.pageLimit : null;
     return res.json({
       pages,
-      limit: plan.pageLimit,
+      limit: pageLimit,
+      unlimited: pageLimit == null,
       count: activeCount,
       planTier: plan.planName ?? "none",
       planName: plan.planName,
       planStatus: plan.planStatus,
+      displayName: plan.displayName,
       requiresPlan: plan.requiresPlan,
-      overLimit: activeCount > plan.pageLimit && plan.isActive,
+      overLimit: pageLimit != null && activeCount > pageLimit && plan.isActive,
     });
   }));
 
@@ -23423,8 +23426,9 @@ ${orientationExtra}
     // Plan limit check - only for ACTIVE (Live) pages (enforcement catalogue stamp)
     const activeCount = await storage.countActiveCustomizerPages(shop);
     const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
-    const enforcePageLimit =
+    const cataloguePageLimit =
       findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+    const enforcePageLimit = Number.isFinite(plan.pageLimit) ? cataloguePageLimit : Number.POSITIVE_INFINITY;
     const allowed = activeCount < enforcePageLimit;
     const limit = enforcePageLimit;
 
@@ -23937,8 +23941,9 @@ ${orientationExtra}
         const plan = getEffectivePlan(installation as any, shop);
         const activeCount = await storage.countActiveCustomizerPages(shop);
         const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
-        const limit =
+        const cataloguePageLimit =
           findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+        const limit = Number.isFinite(plan.pageLimit) ? cataloguePageLimit : Number.POSITIVE_INFINITY;
         const allowed = activeCount < limit;
         if (!allowed) {
           return res.status(402).json({
@@ -26435,10 +26440,10 @@ ${orientationExtra}
       planStatus: plan.planStatus,
       isActive: plan.isActive,
       requiresPlan: plan.requiresPlan,
-      pageLimit: plan.pageLimit,
+      pageLimit: Number.isFinite(plan.pageLimit) ? plan.pageLimit : null,
       pagesCount,
       displayName: plan.displayName,
-      overLimit: plan.isActive && pagesCount > plan.pageLimit,
+      overLimit: Number.isFinite(plan.pageLimit) && plan.isActive && pagesCount > plan.pageLimit,
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
       overageBillingActive: hasUsageLine,

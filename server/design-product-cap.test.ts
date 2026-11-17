@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   canActivateDesignProductEffective,
   getEffectiveDesignProductLimit,
+  getEffectivePlan,
 } from "./customizer-plans";
 
 describe("getEffectiveDesignProductLimit", () => {
@@ -48,6 +49,27 @@ describe("getEffectiveDesignProductLimit", () => {
     expect(
       getEffectiveDesignProductLimit({ planName: "starter" }, "aiartstudio-gizsmzs2.myshopify.com"),
     ).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("keeps the Petposterous shop unlimited when the env bypass is off", () => {
+    process.env.OWNER_BYPASS_QUOTA = "false";
+    expect(
+      getEffectiveDesignProductLimit({ planName: "trial", designProductLimitOverride: 1 }, "h7epay-gh.myshopify.com"),
+    ).toBe(Number.POSITIVE_INFINITY);
+    expect(getEffectivePlan({ planName: "trial", planStatus: "trialing" }, "h7epay-gh.myshopify.com")).toMatchObject({
+      planName: "pro_plus",
+      planStatus: "active",
+      displayName: "Pro Plus (Owner)",
+      requiresPlan: false,
+      pageLimit: Number.POSITIVE_INFINITY,
+    });
+  });
+
+  it("keeps a normal merchant on the trial cap when the env bypass is off", () => {
+    process.env.OWNER_BYPASS_QUOTA = "false";
+    expect(
+      getEffectivePlan({ planName: "trial", planStatus: "trialing" }, "other-merchant.myshopify.com").pageLimit,
+    ).toBe(1);
   });
 
   it("falls back to plan when OWNER_BYPASS_QUOTA is disabled, even on owner shop", () => {

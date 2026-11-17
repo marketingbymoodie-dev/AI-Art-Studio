@@ -55,6 +55,7 @@ export interface PlanOverageBlock {
 export interface PlanApiResponse {
   planName: string | null;
   planStatus: string | null;
+  displayName?: string;
   isActive: boolean;
   generationQuota: PlanGenerationQuota;
   included?: { used: number; limit: number | null; remaining: number | null; currency: string };
@@ -218,7 +219,7 @@ export default function GenerationQuotaUsage({
   const includedNearLimit =
     !quota.unlimited && includedLimit != null && includedUsed >= includedLimit * 0.9;
   const extraAtLimit = extraLimit > 0 && overageUsedLive >= extraLimit;
-  const displayPlan = planName ? (PLAN_DISPLAY[planName] ?? planName) : "—";
+  const displayPlan = data?.displayName || (planName ? (PLAN_DISPLAY[planName] ?? planName) : "—");
   const period = quotaLabel(quota);
   const apiWantsOptInNudge = !!(overage?.showOptInForm || quota.showOptInForm);
   const showEnableForm =

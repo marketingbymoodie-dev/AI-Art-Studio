@@ -52,7 +52,7 @@ import {
   type PricingCatalogueSnapshot,
   findCataloguePlan,
 } from "@shared/customizerPlans";
-import { isOwnerShopDomain } from "./platformAdmin";
+import { isBuiltinOwnerShopDomain, isOwnerShopDomain } from "./platformAdmin";
 
 /** Merchant My Designs save/library — Starter and above only (not trial / inactive). */
 export function canSaveMerchantDesigns(
@@ -64,9 +64,11 @@ export function canSaveMerchantDesigns(
 }
 
 /**
- * When false/0/off/no, OWNER_SHOP_DOMAIN still grants platform-admin access but
- * does **not** force Pro Plus / unlimited metering / skip-Shopify billing.
- * Default (unset): bypass on. Staging QA: set OWNER_BYPASS_QUOTA=false.
+ * When false/0/off/no, a shop listed only in OWNER_SHOP_DOMAIN still has
+ * platform-admin access but does not get the owner plan. Built-in owner
+ * shops stay on that plan either way, so billing QA on the env shop does
+ * not put the operator stores back on the trial.
+ * Default (unset): bypass on.
  */
 export function isOwnerQuotaBypassEnabled(): boolean {
   const v = (process.env.OWNER_BYPASS_QUOTA ?? "true").toLowerCase().trim();
@@ -79,10 +81,12 @@ export function shopMatchesOwnerDomain(shopDomain?: string | null): boolean {
 }
 
 /**
- * Owner shop with quota bypass enabled — unlimited metering / forced Pro Plus.
- * Platform admin still uses OWNER_SHOP_DOMAIN alone (see platformAdmin.ts).
+ * Owner plan: unlimited pages, products, generations, and no Shopify charge.
+ * Built-in allowlist shops always qualify. Extra OWNER_SHOP_DOMAIN shops
+ * qualify only while OWNER_BYPASS_QUOTA is on.
  */
 export function isOwnerQuotaBypassShop(shopDomain?: string | null): boolean {
+  if (isBuiltinOwnerShopDomain(shopDomain)) return true;
   return isOwnerQuotaBypassEnabled() && shopMatchesOwnerDomain(shopDomain);
 }
 
@@ -90,8 +94,9 @@ export function isOwnerQuotaBypassShop(shopDomain?: string | null): boolean {
  * Derive the effective plan status for an installation.
  * Returns a normalized object the UI and server can act on.
  *
- * If OWNER_SHOP_DOMAIN matches and OWNER_BYPASS_QUOTA is enabled (default),
- * returns Pro Plus active — bypasses billing/DB plan state for the developer store.
+ * Built-in owner shops, and OWNER_SHOP_DOMAIN while the quota bypass is on,
+ * return Pro Plus active with no page cap. That ignores the stored trial
+ * and does not create a Shopify charge.
  */
 export function getEffectivePlan(
   installation: {
@@ -115,7 +120,7 @@ export function getEffectivePlan(
       planStatus: "active",
       isActive: true,
       requiresPlan: false,
-      pageLimit: PLAN_PAGE_LIMITS["pro_plus"],
+      pageLimit: Number.POSITIVE_INFINITY,
       displayName: "Pro Plus (Owner)",
     };
   }

@@ -170,11 +170,13 @@ function statusBadgeLabel(status: CustomizerPage["status"]): string {
 
 interface PagesResponse {
   pages: CustomizerPage[];
-  limit: number;
+  limit: number | null;
+  unlimited?: boolean;
   count: number;
   planTier: string;
   planName: string | null;
   planStatus: string | null;
+  displayName?: string;
   requiresPlan: boolean;
   overLimit: boolean;
 }
@@ -2171,10 +2173,12 @@ export default function AdminCustomizerPages() {
     });
   }, [pages, listSearch, listStatus, listCategory, blanksData?.blanks, categoryByBlueprint]);
 
+  const unlimitedPages = pagesData?.unlimited === true;
   const limit = pagesData?.limit ?? 0;
   const count = pagesData?.count ?? 0;
   const planName = pagesData?.planName ?? null;
   const planStatus = pagesData?.planStatus ?? null;
+  const planLabel = pagesData?.displayName || (planName ? (PLAN_DISPLAY[planName] ?? planName) : "—");
   const requiresPlan = pagesData?.requiresPlan ?? false;
   const overLimit = pagesData?.overLimit ?? false;
   const atLimit = false; // We allow unlimited creation now, only restrict activation
@@ -3745,7 +3749,7 @@ export default function AdminCustomizerPages() {
                   <span className="text-sm font-medium flex items-center gap-2">
                     Plan:
                     <Badge variant="secondary" className="capitalize">
-                      {planName ? (PLAN_DISPLAY[planName] ?? planName) : "—"}
+                      {planLabel}
                     </Badge>
                     {planStatus === "trialing" && (
                       <Badge variant="outline" className="text-yellow-600 border-yellow-400">Trial</Badge>
@@ -3753,7 +3757,7 @@ export default function AdminCustomizerPages() {
                   </span>
                   <div className="flex items-center gap-3">
                     <span className="text-sm text-muted-foreground">
-                      {count} / {limit} page{limit !== 1 ? "s" : ""}
+                      {unlimitedPages ? "Unlimited pages" : `${count} / ${limit} page${limit !== 1 ? "s" : ""}`}
                     </span>
                     <Button
                       size="sm"
@@ -3766,13 +3770,15 @@ export default function AdminCustomizerPages() {
                     </Button>
                   </div>
                 </div>
+                {!unlimitedPages && (
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all ${overLimit ? "bg-amber-500" : "bg-primary"}`}
                     style={{ width: limit > 0 ? `${Math.min((count / limit) * 100, 100)}%` : "0%" }}
                   />
                 </div>
-                {count >= limit && limit > 0 && (
+                )}
+                {!unlimitedPages && count >= limit && limit > 0 && (
                   <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
                     <AlertTriangle className="h-3 w-3" />
                     Active page limit reached ({limit}). Deactivate a page or upgrade to activate more.
