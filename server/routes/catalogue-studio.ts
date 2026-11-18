@@ -6,6 +6,7 @@ import type { Express, RequestHandler, Response } from "express";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
 import { draftCatalogueImage } from "../catalogue-draft";
+import { redactAnthropicSecrets } from "../concept-engine";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, mockupLibraryColours, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
@@ -1054,14 +1055,20 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.status(400).json({ error: "Catalogue import is staging only." });
       return;
     }
+    const started = Date.now();
+    const shop = String(req.shopDomain || "");
+    const filename = String(req.body?.filename || "image.png");
     try {
-      const filename = String(req.body?.filename || "image.png");
       const png = decodeCataloguePng(filename, String(req.body?.imageBase64 || ""));
+      console.log(`[catalogue-draft] start shop=${shop} file=${filename} bytes=${png.length}`);
       const draft = await draftCatalogueImage(png);
+      console.log(`[catalogue-draft] ok shop=${shop} file=${filename} model=${draft.model} ms=${Date.now() - started} cost=${draft.costUsd ?? "unknown"}`);
       res.json(draft);
     } catch (e: any) {
+      const message = redactAnthropicSecrets(String(e?.message || e)).slice(0, 300);
+      console.warn(`[catalogue-draft] fail shop=${shop} file=${filename} status=${e?.status || 400} ms=${Date.now() - started} ${message}`);
       res.status(e?.status || 400).json({
-        error: String(e?.message || e),
+        error: message,
         costUsd: typeof e?.costUsd === "number" ? e.costUsd : null,
         inputTokens: Number(e?.inputTokens) || 0,
         outputTokens: Number(e?.outputTokens) || 0,

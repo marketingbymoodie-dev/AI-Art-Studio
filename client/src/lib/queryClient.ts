@@ -26,15 +26,43 @@ function shopifyIdToken(): (() => Promise<string>) | null {
  * eight seconds pass. Later requests mint a fresh token and do not wait.
  */
 let sessionGate: Promise<void> | null = null;
+let cachedSessionToken: { value: string; at: number } | null = null;
+const TOKEN_WAIT_MS = 8000;
+const TOKEN_REUSE_MS = 45_000;
+
+function freshCachedToken(): string | null {
+  if (!cachedSessionToken) return null;
+  if (Date.now() - cachedSessionToken.at > TOKEN_REUSE_MS) return null;
+  return cachedSessionToken.value;
+}
+
+function rememberToken(token: unknown): string | null {
+  if (typeof token !== "string" || !token.trim()) return null;
+  cachedSessionToken = { value: token, at: Date.now() };
+  return token;
+}
 
 async function mintSessionToken(): Promise<string | null> {
   const idToken = shopifyIdToken();
-  if (!idToken) return null;
+  const cached = freshCachedToken();
+  if (!idToken) return cached;
+  const pending = idToken()
+    .then((token) => rememberToken(token))
+    .catch(() => null);
+  // A token minted moments ago is still valid. Don't wait on a second
+  // idToken() call that never settles — that left the draft row on "Drafting".
+  if (cached) {
+    void pending;
+    return cached;
+  }
   try {
-    const token = await idToken();
-    return typeof token === "string" && token.trim() ? token : null;
+    const token = await Promise.race([
+      pending,
+      new Promise<null>((resolve) => window.setTimeout(() => resolve(null), TOKEN_WAIT_MS)),
+    ]);
+    return token || freshCachedToken();
   } catch {
-    return null;
+    return freshCachedToken();
   }
 }
 
@@ -114,13 +142,78 @@ function clearNetwork401(): void {
   }
 }
 
+export type ApiFetchInit = RequestInit & {
+  /**
+   * XMLHttpRequest instead of fetch. App Bridge patches fetch, and a patched
+   * fetch that never settles leaves the caller hanging. XHR is not patched.
+   */
+  transport?: "xhr";
+};
+
+function headerRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
+
+function xhrFetch(url: string, options: RequestInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const succeed = (response: Response) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
+    const xhr = new XMLHttpRequest();
+    xhr.open((options.method || "GET").toUpperCase(), url);
+    xhr.withCredentials = true;
+    xhr.responseType = "text";
+    const headers = options.headers instanceof Headers ? headerRecord(options.headers) : {};
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+    xhr.onload = () => {
+      const responseHeaders = new Headers();
+      xhr.getAllResponseHeaders().trim().split(/[\r\n]+/).forEach((line) => {
+        const parts = line.split(": ");
+        if (parts.length >= 2) responseHeaders.append(parts[0], parts.slice(1).join(": "));
+      });
+      succeed(new Response(xhr.responseText, {
+        status: xhr.status,
+        statusText: xhr.statusText,
+        headers: responseHeaders,
+      }));
+    };
+    xhr.onerror = () => fail(new TypeError("Network request failed"));
+    xhr.ontimeout = () => fail(new DOMException("Request timed out", "AbortError"));
+    const signal = options.signal;
+    if (signal) {
+      if (signal.aborted) {
+        fail(new DOMException("Request aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        xhr.abort();
+        fail(new DOMException("Request aborted", "AbortError"));
+      }, { once: true });
+    }
+    xhr.send((options.body as XMLHttpRequestBodyInit | null) ?? null);
+  });
+}
+
 export async function apiFetch(
   input: RequestInfo | URL,
-  init: RequestInit = {},
+  init: ApiFetchInit = {},
   attempts = 2,
 ): Promise<Response> {
   let res!: Response;
   let previousToken: string | null = null;
+  const { transport, ...requestInit } = init;
   const adminNeedsToken =
     typeof window !== "undefined" &&
     window.location.pathname.startsWith("/admin") &&
@@ -137,12 +230,14 @@ export async function apiFetch(
       return res;
     }
     previousToken = token;
-    const headers = new Headers(init.headers);
-    if (init.body !== undefined && !headers.has("Content-Type")) {
+    const headers = new Headers(requestInit.headers);
+    if (requestInit.body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     if (token) headers.set("Authorization", `Bearer ${token}`);
-    res = await fetch(input, { ...init, headers, credentials: "include" });
+    res = transport === "xhr"
+      ? await xhrFetch(String(input), { ...requestInit, headers })
+      : await fetch(input, { ...requestInit, headers, credentials: "include" });
     if (res.status !== 401) {
       clearNetwork401();
       return res;

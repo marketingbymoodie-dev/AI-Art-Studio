@@ -7,6 +7,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: { url: string; body: { filenames?: string[]; filename?: string } }[] = [];
 const commitFailures = vi.hoisted(() => ({ current: [] as string[] }));
+const draftFailure = vi.hoisted(() => ({ current: "" }));
 
 vi.mock("@/components/admin-layout", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -35,6 +36,9 @@ vi.mock("@/lib/queryClient", () => ({
       return { ok: false, status: 400, json: async () => ({ created: 0, firstId: "", studioPath: "", failures: commitFailures.current }) };
     }
     if (String(url).endsWith("/draft")) {
+      if (draftFailure.current) {
+        return { ok: false, status: 502, json: async () => ({ error: draftFailure.current }) };
+      }
       return {
         ok: true,
         json: async () => ({
@@ -94,6 +98,7 @@ describe("catalogue import file inputs", () => {
   beforeEach(() => {
     calls.length = 0;
     commitFailures.current = [];
+    draftFailure.current = "";
   });
 
   it("replaces the batch from a folder, appends new files, and drops a row", async () => {
@@ -129,6 +134,17 @@ describe("catalogue import file inputs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove extra.png" }));
     expect(screen.queryByText("extra.png")).toBeNull();
     expect(screen.getByText("boxer-a.png")).toBeTruthy();
+  });
+
+  it("shows a vision failure on the row instead of leaving it drafting", async () => {
+    draftFailure.current = "ANTHROPIC_API_KEY is not configured";
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png")]);
+    expect(await screen.findByText("Draft failed")).toBeTruthy();
+    expect(screen.getByText("ANTHROPIC_API_KEY is not configured")).toBeTruthy();
+    expect(screen.queryByText("Drafting")).toBeNull();
+    expect((screen.getByRole("button", { name: /Create 1 pending candidate/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("shows a commit failure beside Create and leaves the drafted row in place", async () => {

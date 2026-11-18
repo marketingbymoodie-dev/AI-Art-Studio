@@ -22,6 +22,7 @@ type ReviewRow = CatalogueImportRow & {
 };
 
 const DRAFTS_AT_ONCE = 4;
+const DRAFT_TIMEOUT_MS = 75_000;
 const STYLES = PETPOSTEROUS_ART_STYLE_LAUNCH.map((id) => {
   const style = petposterousArtStyle(id);
   if (!style?.launch) throw new Error(`${id} is listed as launch but is not a launch style`);
@@ -74,12 +75,16 @@ export default function CatalogueBulkImportPage() {
       return;
     }
     setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "drafting", draftError: "" } : item));
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), DRAFT_TIMEOUT_MS);
     try {
       const imageBase64 = await fileToDataUrl(file);
       if (generation.current !== gen) return;
       const res = await apiFetch("/api/platform/catalogue-studio/candidates/import/draft", {
         method: "POST",
         body: JSON.stringify({ filename: file.name, imageBase64 }),
+        signal: controller.signal,
+        transport: "xhr",
       });
       const body = await res.json().catch(() => ({}));
       if (generation.current !== gen) return;
@@ -87,7 +92,7 @@ export default function CatalogueBulkImportPage() {
         setRows((prev) => prev.map((item) => item.filename === row.filename ? {
           ...item,
           draftState: "failed",
-          draftError: String(body.error || "The draft failed."),
+          draftError: String(body.error || body.message || `The draft failed (${res.status}).`),
           costUsd: typeof body.costUsd === "number" ? body.costUsd : item.costUsd,
         } : item));
         return;
@@ -114,7 +119,14 @@ export default function CatalogueBulkImportPage() {
       }));
     } catch (e: any) {
       if (generation.current !== gen) return;
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "failed", draftError: String(e?.message || e) } : item));
+      const timedOut = controller.signal.aborted || e?.name === "AbortError";
+      setRows((prev) => prev.map((item) => item.filename === row.filename ? {
+        ...item,
+        draftState: "failed",
+        draftError: timedOut ? "The vision draft timed out." : String(e?.message || e),
+      } : item));
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 

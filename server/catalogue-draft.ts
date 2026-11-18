@@ -55,15 +55,27 @@ export async function catalogueVisionImage(buf: Buffer): Promise<Buffer> {
   return sharp(resized).jpeg({ quality: 90 }).toBuffer();
 }
 
+function draftTimedOut(): Error {
+  return Object.assign(new Error("The vision draft timed out."), { status: 504, name: "AbortError" });
+}
+
 export async function draftCatalogueImage(png: Buffer): Promise<CatalogueDraftResult> {
   const key = anthropicApiKey();
   if (!key) throw Object.assign(new Error("ANTHROPIC_API_KEY is not configured"), { status: 503 });
   const model = anthropicQuotesModel();
-  const image = await catalogueVisionImage(png);
-  const mediaType = image[0] === 0xff && image[1] === 0xd8 ? "image/jpeg" : "image/png";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    const image = await new Promise<Buffer>((resolve, reject) => {
+      const onAbort = () => reject(draftTimedOut());
+      if (controller.signal.aborted) {
+        onAbort();
+        return;
+      }
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      catalogueVisionImage(png).then(resolve, reject);
+    });
+    const mediaType = image[0] === 0xff && image[1] === 0xd8 ? "image/jpeg" : "image/png";
     const res = await fetch(ANTHROPIC_MESSAGES_URL, {
       method: "POST",
       signal: controller.signal,
@@ -140,8 +152,9 @@ export async function draftCatalogueImage(png: Buffer): Promise<CatalogueDraftRe
     };
   } catch (err: any) {
     if (err?.status) throw err;
-    const aborted = err?.name === "AbortError";
-    throw Object.assign(new Error(aborted ? "The vision draft timed out." : "The vision draft failed."), { status: aborted ? 504 : 502 });
+    const aborted = err?.name === "AbortError" || controller.signal.aborted;
+    const message = aborted ? "The vision draft timed out." : redactAnthropicSecrets(String(err?.message || "The vision draft failed.")).slice(0, 300);
+    throw Object.assign(new Error(message), { status: aborted ? 504 : 502 });
   } finally {
     clearTimeout(timer);
   }
