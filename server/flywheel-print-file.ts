@@ -4,6 +4,7 @@
  * Customizer bake and toLosslessPrintMaster are not used here.
  */
 import sharp from "sharp";
+import { inkOrigin, type VerticalPrintAnchor } from "@shared/printPlacement";
 import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
 import { cleanupFlatGraphicAlpha, EXPANDED_CHROMA_TOLERANCE, removeChromaKeyBackground } from "./apparel-matting";
 import { readPlatformReplicateToken } from "./generation-providers";
@@ -82,8 +83,12 @@ export function fittedPrintPixels(
   };
 }
 
-/** Lanczos onto the print canvas. Artwork stays at its own aspect, centered. */
-export async function placeOnPrintCanvas(image: Buffer, canvas: PrintCanvas): Promise<Buffer> {
+/** Lanczos onto the print canvas. Artwork keeps its aspect. Default stays centred. Types 56 and 58 pass "top". */
+export async function placeOnPrintCanvas(
+  image: Buffer,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor = "center",
+): Promise<Buffer> {
   if (!(canvas.width > 0) || !(canvas.height > 0)) {
     throw new Error("This product type has no stored front print area");
   }
@@ -94,8 +99,17 @@ export async function placeOnPrintCanvas(image: Buffer, canvas: PrintCanvas): Pr
     .png()
     .toBuffer();
   const placed = await sharp(resized).metadata();
-  const left = Math.max(0, Math.round((canvas.width - (placed.width || fitted.width)) / 2));
-  const top = Math.max(0, Math.round((canvas.height - (placed.height || fitted.height)) / 2));
+  const origin = inkOrigin({
+    areaLeft: 0,
+    areaTop: 0,
+    areaWidth: canvas.width,
+    areaHeight: canvas.height,
+    inkWidth: placed.width || fitted.width,
+    inkHeight: placed.height || fitted.height,
+    anchor,
+  });
+  const left = origin.left;
+  const top = origin.top;
   return sharp({
     create: {
       width: canvas.width,
@@ -164,7 +178,12 @@ async function replicateJson(url: string, token: string, init: RequestInit = {})
 }
 
 /** Real-ESRGAN x4plus, face enhancement off, then Lanczos to the print canvas. */
-async function upscaleForPrint(source: Buffer, styleId: string, canvas: PrintCanvas): Promise<Buffer> {
+async function upscaleForPrint(
+  source: Buffer,
+  styleId: string,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor,
+): Promise<Buffer> {
   const token = readPlatformReplicateToken();
   const prediction = await replicateJson("https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions", token, {
     method: "POST",
@@ -195,7 +214,7 @@ async function upscaleForPrint(source: Buffer, styleId: string, canvas: PrintCan
   if (!url) throw new Error(`${styleId} print file failed: upscaler returned no image`);
   const image = await fetch(url);
   if (!image.ok) throw new Error(`${styleId} print file failed: upscaler download HTTP ${image.status}`);
-  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas);
+  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas, anchor);
 }
 
 /**
@@ -245,6 +264,7 @@ export async function buildFlywheelPrintFile(
   styleId: string,
   source: Buffer,
   canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor = "center",
 ): Promise<{
   path: FlywheelPrintPath;
   buffer: Buffer;
@@ -280,11 +300,11 @@ export async function buildFlywheelPrintFile(
     };
     return {
       path,
-      buffer: await placeOnPrintCanvas(raster, canvas),
+      buffer: await placeOnPrintCanvas(raster, canvas, anchor),
       svg,
       nearKeyPathsBefore,
       nearKeyPathsAfter: countNearKeySvgFills(svg),
     };
   }
-  return { path, buffer: await upscaleForPrint(source, styleId, canvas), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas, anchor), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
 }

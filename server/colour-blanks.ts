@@ -17,7 +17,7 @@ import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatal
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
-import { calibratedPrintFractions, maskFromPng, printRectOffset } from "./mockup-library";
+import { calibratedPrintFractions, maskFromPng, printRectOffset, type PrintFractions } from "./mockup-library";
 import {
   approvePaintedBlank,
   approveUploadedBlank,
@@ -155,6 +155,32 @@ function frontPrintPx(raw: string | null): { width: number; height: number } | n
     return null;
   }
   return null;
+}
+
+/** This type's own print box, from its blueprint and its front placeholder. Photographs may be shared; this never reads another type's panel fractions. */
+export async function printFractionsForType(productTypeId: number): Promise<PrintFractions | null> {
+  const [typeRow] = await db
+    .select({
+      blueprint: productTypes.printifyBlueprintId,
+      positions: productTypes.placeholderPositions,
+    })
+    .from(productTypes)
+    .where(eq(productTypes.id, productTypeId))
+    .limit(1);
+  const front = frontPrintPx(typeRow?.positions ?? null);
+  if (!front) return null;
+  const calibrated = calibratedPrintFractions({
+    blueprintId: typeRow?.blueprint ?? null,
+    printWidthPx: front.width,
+    printHeightPx: front.height,
+  });
+  if (!calibrated) return null;
+  return {
+    widthOfH: calibrated.widthOfH,
+    heightOfH: calibrated.heightOfH,
+    topOfH: calibrated.topOfH,
+    rotationDeg: calibrated.rotationDeg,
+  };
 }
 
 async function seedGarmentDyedColours(productTypeId: number): Promise<void> {

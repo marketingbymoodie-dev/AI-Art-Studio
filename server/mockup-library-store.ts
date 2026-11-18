@@ -6,6 +6,7 @@ import { randomUUID } from "crypto";
 import sharp from "sharp";
 import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { placementForProductType } from "@shared/printPlacement";
 import { catalogueCandidateChoices, designCandidates, designProducts, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
 import { measureGarmentAlignment } from "./blank-alignment";
@@ -769,8 +770,12 @@ export async function renderCandidateOnPanel(args: {
    * knob to turn without re-plumbing. No current callers pass it.
    */
   forceRecolour?: boolean;
+  /** Omit to use this type's placement. Types 56 and 58 are full-size and top-anchored. */
+  scale?: number;
+  anchor?: "top" | "center";
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {
   const loaded = await loadCandidatePanel(args);
+  const placement = placementForProductType(args.productTypeId);
   const png = await renderArtworkOnPanel({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -778,6 +783,8 @@ export async function renderCandidateOnPanel(args: {
     mode: loaded.resolved.kind,
     hex: loaded.resolved.hex,
     fractions: loaded.fractions,
+    scale: args.scale ?? placement.mockupScale,
+    anchor: args.anchor ?? placement.anchor,
   });
   return { png, source: loaded.resolved.kind };
 }
@@ -791,7 +798,7 @@ async function loadCandidatePanel(args: {
   artworkPath: string | null;
   forceRecolour?: boolean;
 }) {
-  const { blankLibraryTypeId } = await import("./colour-blanks");
+  const { blankLibraryTypeId, printFractionsForType } = await import("./colour-blanks");
   const libraryId = await blankLibraryTypeId(args.productTypeId);
   const rows = await sceneRows(libraryId, args.panelId);
   if (!rows.length) {
@@ -826,12 +833,14 @@ async function loadCandidatePanel(args: {
     getObject(sourceRow.maskPath),
     getObject(args.artworkPath),
   ]);
-  const fractions = {
+  const stored = {
     widthOfH: Number(sourceRow.printWidthOfH),
     heightOfH: Number(sourceRow.printHeightOfH),
     topOfH: Number(sourceRow.printTopOfH),
     rotationDeg: Number(sourceRow.printRotationDeg),
   };
+  const own = await printFractionsForType(args.productTypeId);
+  const fractions = own ?? stored;
   return { photo, maskPng, artwork, resolved, fractions, sourceRow };
 }
 
@@ -844,6 +853,7 @@ export async function measureCandidateInk(args: {
   artworkPath: string | null;
 }) {
   const loaded = await loadCandidatePanel(args);
+  const placement = placementForProductType(args.productTypeId);
   return measurePlacedInk({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -851,6 +861,8 @@ export async function measureCandidateInk(args: {
     mode: loaded.resolved.kind,
     hex: loaded.resolved.hex,
     fractions: loaded.fractions,
+    scale: placement.mockupScale,
+    anchor: placement.anchor,
   });
 }
 
@@ -863,6 +875,7 @@ export async function candidatePrintifyArtwork(args: {
   artworkPath: string | null;
 }) {
   const loaded = await loadCandidatePanel(args);
+  const placement = placementForProductType(args.productTypeId);
   const preview = await artworkForPrintifyPreview({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -870,6 +883,8 @@ export async function candidatePrintifyArtwork(args: {
     mode: loaded.resolved.kind,
     hex: loaded.resolved.hex,
     fractions: loaded.fractions,
+    scale: placement.mockupScale,
+    anchor: placement.anchor,
   });
   return preview;
 }

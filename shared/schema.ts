@@ -916,6 +916,12 @@ export const productTypes = pgTable("product_types", {
    */
   printSidesEnabled: boolean("print_sides_enabled"),
   /**
+   * Reserved per-type override. The column default stays "center" so types
+   * other than 56 and 58 do not move when it is added. Those two types are
+   * top-anchored in placementForProductType until this column is backfilled.
+   */
+  printVerticalAnchor: text("print_vertical_anchor").notNull().default("center"),
+  /**
    * Colour-blank photographs and the colour list are read from this product
    * type. Null means this type owns its blanks. Writes stay on the owner.
    */

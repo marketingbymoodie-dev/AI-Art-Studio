@@ -9,6 +9,7 @@ import { catalogueShopAllowed } from "@shared/operatorCatalogue";
 import { designCandidates, productTypes } from "@shared/schema";
 import { catalogueListingIsFresh, catalogueTruthIsSentence, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { db } from "./db";
+import { placementForProductType } from "@shared/printPlacement";
 import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import {
   approveCandidateChoice,
@@ -22,13 +23,19 @@ function clip(value: string, max: number): string {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-async function printFilePathFor(candidateId: string, artStyle: string, source: Buffer, canvas: { width: number; height: number }): Promise<string> {
+async function printFilePathFor(
+  candidateId: string,
+  artStyle: string,
+  source: Buffer,
+  canvas: { width: number; height: number },
+  anchor: "top" | "center",
+): Promise<string> {
   const path = `print-files/${candidateId}-${artStyle}.png`;
   try {
     await readLibraryObject(path);
     return path;
   } catch {
-    const print = await buildFlywheelPrintFile(artStyle, source, canvas);
+    const print = await buildFlywheelPrintFile(artStyle, source, canvas, anchor);
     await writeLibraryObject(path, print.buffer, "image/png");
     return path;
   }
@@ -83,7 +90,13 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
 
   const canvas = printCanvasFromStoredPlaceholders(typeRow.placeholderPositions, typeRow.name);
   const source = await readLibraryObject(choice.artworkPath);
-  const printFilePath = await printFilePathFor(recipe.candidateId, checked.artStyle, source, canvas);
+  const printFilePath = await printFilePathFor(
+    recipe.candidateId,
+    checked.artStyle,
+    source,
+    canvas,
+    placementForProductType(typeRow.id).anchor,
+  );
 
   const lettering = clip(recipe.punchline, 120);
   const truth = clip(recipe.funnyTruth, 600);

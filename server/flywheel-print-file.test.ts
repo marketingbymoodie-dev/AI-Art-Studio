@@ -139,6 +139,27 @@ describe("flywheel print file", () => {
     expect(fitted.height).not.toBe(HARVEST.height);
   });
 
+  it("keeps a short graphic's aspect and can sit at the top or the centre", async () => {
+    const source = await sharp({
+      create: { width: 200, height: 80, channels: 4, background: { r: 20, g: 20, b: 200, alpha: 1 } },
+    }).png().toBuffer();
+    const canvas = { width: 400, height: 500 };
+    const top = await placeOnPrintCanvas(source, canvas, "top");
+    const center = await placeOnPrintCanvas(source, canvas, "center");
+    const bounds = async (image: Buffer) => {
+      const { data, info } = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let minY = info.height;
+      for (let y = 0; y < info.height; y++) {
+        for (let x = 0; x < info.width; x++) {
+          if (data[(y * info.width + x) * info.channels + 3] > 10) return y;
+        }
+      }
+      return minY;
+    };
+    expect(await bounds(top)).toBe(0);
+    expect(await bounds(center)).toBeGreaterThan(100);
+  });
+
   it("centers the artwork on the print canvas without changing its aspect", async () => {
     const source = await sharp({
       create: { width: 100, height: 200, channels: 4, background: { r: 200, g: 20, b: 20, alpha: 1 } },

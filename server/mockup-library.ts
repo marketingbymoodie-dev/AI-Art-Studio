@@ -6,6 +6,7 @@
  * Do not raise it.
  */
 import sharp from "sharp";
+import { inkOrigin, type VerticalPrintAnchor } from "@shared/printPlacement";
 import { compositePlacedInk, medianShadingLuminance } from "./mockup-compositor";
 
 /** Mean per-channel absolute difference, on the 0–255 scale. Do not raise this. */
@@ -756,6 +757,9 @@ async function placeArtwork(args: {
   mode: "produced" | "recolour";
   hex: string;
   fractions?: PrintFractions;
+  /** Contain scale inside the print area. 1 matches the print file. */
+  scale?: number;
+  anchor?: VerticalPrintAnchor;
 }): Promise<PlacedArtwork> {
   const photoRaw = await decodeRgba(args.photo);
   const mask = await maskFromPng(args.maskPng, photoRaw.width, photoRaw.height);
@@ -770,7 +774,7 @@ async function placeArtwork(args: {
   const meta = await sharp(trimmed).metadata();
   const iw = meta.width || 1;
   const ih = meta.height || 1;
-  const fit = Math.min(rect.width / iw, rect.height / ih) * 0.85;
+  const fit = Math.min(rect.width / iw, rect.height / ih) * (args.scale ?? 0.85);
   const requestedWidth = Math.max(1, Math.round(iw * fit));
   const requestedHeight = Math.max(1, Math.round(ih * fit));
   const resized = await sharp(trimmed)
@@ -780,6 +784,15 @@ async function placeArtwork(args: {
     .toBuffer({ resolveWithObject: true });
   const inkWidth = resized.info.width;
   const inkHeight = resized.info.height;
+  const origin = inkOrigin({
+    areaLeft: rect.left,
+    areaTop: rect.top,
+    areaWidth: rect.width,
+    areaHeight: rect.height,
+    inkWidth,
+    inkHeight,
+    anchor: args.anchor ?? "center",
+  });
   return {
     width: photoRaw.width,
     height: photoRaw.height,
@@ -787,8 +800,8 @@ async function placeArtwork(args: {
     ink: Buffer.from(resized.data),
     inkWidth,
     inkHeight,
-    inkLeft: Math.round(rect.left + (rect.width - inkWidth) / 2),
-    inkTop: Math.round(rect.top + (rect.height - inkHeight) / 2),
+    inkLeft: origin.left,
+    inkTop: origin.top,
     mask,
     garment,
     shading,
@@ -802,6 +815,8 @@ export async function measurePlacedInk(args: {
   mode: "produced" | "recolour";
   hex: string;
   fractions?: PrintFractions;
+  scale?: number;
+  anchor?: VerticalPrintAnchor;
 }): Promise<{
   printCentreX: number;
   printCentreY: number;
@@ -849,6 +864,8 @@ export async function artworkForPrintifyPreview(args: {
   mode: "produced" | "recolour";
   hex: string;
   fractions?: PrintFractions;
+  scale?: number;
+  anchor?: VerticalPrintAnchor;
 }): Promise<{ png: Buffer; x: number; y: number; scale: number }> {
   const placed = await placeArtwork(args);
   const png = await sharp(placed.ink, {
@@ -865,6 +882,8 @@ export async function renderArtworkOnPanel(args: {
   mode: "produced" | "recolour";
   hex: string;
   fractions?: PrintFractions;
+  scale?: number;
+  anchor?: VerticalPrintAnchor;
 }): Promise<Buffer> {
   const placed = await placeArtwork(args);
   const composited = compositePlacedInk({

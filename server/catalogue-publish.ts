@@ -9,6 +9,7 @@ import { publishPreflightMessages, shopifyAdminProductUrl, type PublishWorkPhase
 import { designCandidates, generationEvents, productTypes } from "@shared/schema";
 import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 import { db } from "./db";
+import { placementForProductType } from "@shared/printPlacement";
 import { buildFlywheelPrintFile, lastPrintFileBilling, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { promoteCatalogueCandidate, PromoteRefusal } from "./flywheel-promote";
 import { catalogueShopAllowed } from "@shared/operatorCatalogue";
@@ -202,7 +203,12 @@ export async function publishCatalogueCandidate(args: {
     try {
       const canvas = printCanvasFromStoredPlaceholders(typeRow.placeholderPositions, typeRow.name);
       const source = await readLibraryObject(String(choice.artworkPath || stored.artworkPath));
-      const print = await buildFlywheelPrintFile(checked.artStyle, source, canvas);
+      const print = await buildFlywheelPrintFile(
+        checked.artStyle,
+        source,
+        canvas,
+        placementForProductType(garment.id).anchor,
+      );
       printFilePath = `print-files/${recipe.candidateId}-${checked.artStyle}.png`;
       await writeLibraryObject(printFilePath, print.buffer, "image/png");
       await db.update(designCandidates).set({ printFilePath, updatedAt: new Date() }).where(eq(designCandidates.id, recipe.candidateId));
