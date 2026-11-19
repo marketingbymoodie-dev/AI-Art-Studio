@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { placementForProductType } from "@shared/printPlacement";
-import { catalogueCandidateChoices, designCandidates, designProducts, mockupPanels, productTypes } from "@shared/schema";
+import { catalogueCandidateChoices, designCandidates, designProducts, mockupLibraryColours, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
 import { measureGarmentAlignment } from "./blank-alignment";
 import { medianShadingLuminance } from "./mockup-compositor";
@@ -809,6 +809,13 @@ async function loadCandidatePanel(args: {
     hex: row.garmentHex,
     kind: row.kind === "white-master" ? "white-master" : "produced",
   }));
+  const libraryColours = await db
+    .select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+    .from(mockupLibraryColours)
+    .where(eq(mockupLibraryColours.productTypeId, libraryId));
+  const { blankNameKey } = await import("@shared/colourBlanks");
+  const requestedKey = blankNameKey(args.colorName);
+  const linkedName = libraryColours.find((row) => blankNameKey(row.name) === requestedKey)?.linkStoredName?.trim() || "";
   const label = rows[0].label;
   // STAGING-103 — when forceRecolour is set, bypass exact-match resolution
   // and always route through the white-master recolour path. Throws with
@@ -825,7 +832,15 @@ async function loadCandidatePanel(args: {
         return { kind: "recolour" as const, hex: args.colorHex, sourceName: white.name };
       })()
     : resolvePanelColour(colours, { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, label);
-  const sourceRow = rows.find((row) => row.garmentColor.trim().toLowerCase() === (resolved.kind === "produced" ? args.colorName : resolved.sourceName).trim().toLowerCase());
+  if (!args.forceRecolour && resolved.kind === "recolour" && linkedName) {
+    const linked = colours.find((colour) => blankNameKey(colour.name) === blankNameKey(linkedName) && colour.kind === "produced");
+    if (linked) {
+      resolved.kind = "produced";
+      resolved.hex = linked.hex;
+      resolved.sourceName = linked.name;
+    }
+  }
+  const sourceRow = rows.find((row) => blankNameKey(row.garmentColor) === blankNameKey(resolved.sourceName));
   if (!sourceRow) throw new Error(`${args.colorName} on ${args.typeName} (${args.productTypeId}), panel ${label}, has no produced colourway and no white master`);
   if (!args.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
   const [photo, maskPng, artwork] = await Promise.all([

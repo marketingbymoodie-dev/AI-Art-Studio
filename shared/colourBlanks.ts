@@ -40,6 +40,29 @@ export function blankNameKey(name: string): string {
   return name.trim().toLowerCase();
 }
 
+/**
+ * Scene colours the studio may offer. An empty active list keeps every stored
+ * colour (a type with no colour list). Otherwise only names on that list remain,
+ * in list order, so an old test photograph cannot be selected.
+ */
+export function listedSceneColours<T extends { name: string }>(
+  colours: readonly T[],
+  activeNames: readonly string[],
+): T[] {
+  if (!activeNames.length) return [...colours];
+  const byKey = new Map<string, T>();
+  for (const colour of colours) {
+    const key = blankNameKey(colour.name);
+    if (key && !byKey.has(key)) byKey.set(key, colour);
+  }
+  const listed: T[] = [];
+  for (const name of activeNames) {
+    const hit = byKey.get(blankNameKey(name));
+    if (hit) listed.push(hit);
+  }
+  return listed;
+}
+
 /** Name, slug, and hyphen forms so a stored colour id matches the list name. */
 export function colourMatchKeys(name: string): string[] {
   const raw = name.trim();

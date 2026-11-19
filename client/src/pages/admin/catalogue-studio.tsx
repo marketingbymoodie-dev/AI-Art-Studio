@@ -350,11 +350,16 @@ export default function CatalogueStudioPage() {
     if (!panelId) return;
     let url: string | null = null;
     let cancelled = false;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 60_000);
+    setPreviewUrl(null);
+    setPreviewError(null);
+    setCellSource("");
     (async () => {
       const idQuery = candidate.data?.id ? `&candidate=${encodeURIComponent(candidate.data.id)}` : "";
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}`,
-        { credentials: "include" },
+        { signal: controller.signal, transport: "xhr" },
       );
       if (res.status === 204) {
         if (!cancelled) {
@@ -366,8 +371,15 @@ export default function CatalogueStudioPage() {
       }
       if (!res.ok) {
         if (!cancelled) {
+          const text = await res.text();
+          let message = text;
+          try {
+            const body = JSON.parse(text) as { error?: string; message?: string };
+            message = body.error || body.message || text;
+          } catch { /* the body is already plain text */ }
           setCellSource("");
-          setPreviewError(await res.text());
+          setPreviewUrl(null);
+          setPreviewError(message.slice(0, 500) || "The mockup preview did not load.");
         }
         return;
       }
@@ -379,10 +391,17 @@ export default function CatalogueStudioPage() {
         setCellSource(source === "produced" || source === "recolour" ? source : "");
       }
     })().catch((e) => {
-      if (!cancelled) setPreviewError(String(e?.message || e));
+      if (cancelled) return;
+      setPreviewUrl(null);
+      setCellSource("");
+      setPreviewError(e?.name === "AbortError" ? "The mockup preview timed out." : String(e?.message || e));
+    }).finally(() => {
+      window.clearTimeout(timer);
     });
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
+      controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
   }, [color, panelId, previewNonce, candidate.data?.id, studioTypeId]);

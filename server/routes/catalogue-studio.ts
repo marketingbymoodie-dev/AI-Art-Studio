@@ -335,14 +335,20 @@ async function retailIsPositive(productTypeId: number): Promise<boolean> {
 }
 
 async function studioScenes(productTypeId: number) {
-  const { colourMatchKeys } = await import("@shared/colourBlanks");
-  const { blankLibraryTypeId, inactiveColourKeys } = await import("../colour-blanks");
+  const { colourMatchKeys, listedSceneColours } = await import("@shared/colourBlanks");
+  const { activeColourBlankSwatches, blankLibraryTypeId, inactiveColourKeys } = await import("../colour-blanks");
   const libraryId = await blankLibraryTypeId(productTypeId);
-  const [scenes, hidden] = await Promise.all([listScenes(libraryId), inactiveColourKeys(libraryId)]);
-  if (!hidden.size) return scenes;
+  const [scenes, hidden, active] = await Promise.all([
+    listScenes(libraryId),
+    inactiveColourKeys(libraryId),
+    activeColourBlankSwatches(productTypeId),
+  ]);
   return scenes.map((scene) => ({
     ...scene,
-    colours: scene.colours.filter((colour) => !colourMatchKeys(colour.name).some((key) => hidden.has(key))),
+    colours: listedSceneColours(
+      scene.colours.filter((colour) => !colourMatchKeys(colour.name).some((key) => hidden.has(key))),
+      active.map((colour) => colour.name),
+    ),
   }));
 }
 

@@ -4,6 +4,7 @@ import {
   blankNameMatch,
   colourMatchKeys,
   composeBlankChoice,
+  listedSceneColours,
   describeColourUse,
   inUseBlankKind,
   frameColourHidden,
@@ -43,6 +44,22 @@ describe("softstyle colour seed", () => {
     expect(composeBlankChoice(rows, "White").mode).toBe("produced");
     expect(composeBlankChoice(rows, "Navy")).toEqual({ mode: "recolour", sourceName: "White", rowId: "white" });
     expect(composeBlankChoice([], "Navy").mode).toBe("unavailable");
+  });
+
+  it("drops test colour names that are not on the active list", () => {
+    const stored = [
+      { name: "Black" },
+      { name: "Blue" },
+      { name: "Sport Grey" },
+      { name: "Pink" },
+      { name: "Dark Heather" },
+    ];
+    expect(listedSceneColours(stored, ["White", "Black", "Sport Grey", "Dark Heather"]).map((row) => row.name)).toEqual([
+      "Black",
+      "Sport Grey",
+      "Dark Heather",
+    ]);
+    expect(listedSceneColours(stored, []).map((row) => row.name)).toEqual(stored.map((row) => row.name));
   });
 
   it("treats a colour's own white master as an approved blank and not a recolour", () => {

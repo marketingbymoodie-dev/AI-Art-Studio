@@ -174,7 +174,7 @@ function xhrFetch(url: string, options: RequestInit): Promise<Response> {
     const xhr = new XMLHttpRequest();
     xhr.open((options.method || "GET").toUpperCase(), url);
     xhr.withCredentials = true;
-    xhr.responseType = "text";
+    xhr.responseType = "arraybuffer";
     const headers = options.headers instanceof Headers ? headerRecord(options.headers) : {};
     for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
     xhr.onload = () => {
@@ -183,7 +183,7 @@ function xhrFetch(url: string, options: RequestInit): Promise<Response> {
         const parts = line.split(": ");
         if (parts.length >= 2) responseHeaders.append(parts[0], parts.slice(1).join(": "));
       });
-      succeed(new Response(xhr.responseText, {
+      succeed(new Response(xhr.response || new ArrayBuffer(0), {
         status: xhr.status,
         statusText: xhr.statusText,
         headers: responseHeaders,
