@@ -1560,6 +1560,7 @@ export async function submitFlatOrderToPrintify(
           renderId: designId,
           editedArtworkPath: resolved.design.editedArtworkPath,
           artStyle: resolved.design.artStyle,
+          productTypeId: productType.id,
           productTypePlaceholderPositions: productType.placeholderPositions,
           productTypeName: productType.name,
         });

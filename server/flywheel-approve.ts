@@ -29,13 +29,14 @@ async function printFilePathFor(
   source: Buffer,
   canvas: { width: number; height: number },
   anchor: "top" | "center",
+  chest?: { maxWidthIn: number; maxHeightIn: number } | null,
 ): Promise<string> {
   const path = `print-files/${candidateId}-${artStyle}.png`;
   try {
     await readLibraryObject(path);
     return path;
   } catch {
-    const print = await buildFlywheelPrintFile(artStyle, source, canvas, anchor);
+    const print = await buildFlywheelPrintFile(artStyle, source, canvas, anchor, chest ?? undefined);
     await writeLibraryObject(path, print.buffer, "image/png");
     return path;
   }
@@ -90,12 +91,14 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
 
   const canvas = printCanvasFromStoredPlaceholders(typeRow.placeholderPositions, typeRow.name);
   const source = await readLibraryObject(choice.artworkPath);
+  const { chestFitForProductType } = await import("./colour-blanks");
   const printFilePath = await printFilePathFor(
     recipe.candidateId,
     checked.artStyle,
     source,
     canvas,
     placementForProductType(typeRow.id).anchor,
+    await chestFitForProductType(typeRow.id),
   );
 
   const lettering = clip(recipe.punchline, 120);

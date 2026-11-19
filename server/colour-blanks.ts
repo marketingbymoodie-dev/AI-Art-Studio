@@ -14,9 +14,11 @@ import {
   type BlankFinish,
 } from "@shared/colourBlanks";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
+import { chestZoneForProductType, type ChestPrintZone } from "@shared/printPlacement";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
+import { printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { calibratedPrintFractions, maskFromPng, printRectOffset, type PrintFractions } from "./mockup-library";
 import {
   approvePaintedBlank,
@@ -180,6 +182,31 @@ export async function printFractionsForType(productTypeId: number): Promise<Prin
     heightOfH: calibrated.heightOfH,
     topOfH: calibrated.topOfH,
     rotationDeg: calibrated.rotationDeg,
+  };
+}
+
+/** Chest zone for this type, plus the print area in inches so the mockup uses the same box as the print file. */
+export async function chestFitForProductType(productTypeId: number): Promise<
+  (ChestPrintZone & { printWidthIn: number; printHeightIn: number }) | null
+> {
+  if (!Number.isInteger(productTypeId) || productTypeId <= 0) return null;
+  const [row] = await db
+    .select({
+      name: productTypes.name,
+      positions: productTypes.placeholderPositions,
+      width: productTypes.printChestWidthIn,
+      height: productTypes.printChestHeightIn,
+    })
+    .from(productTypes)
+    .where(eq(productTypes.id, productTypeId))
+    .limit(1);
+  const zone = chestZoneForProductType(productTypeId, row?.width, row?.height);
+  if (!zone) return null;
+  const canvas = printCanvasFromStoredPlaceholders(row?.positions, row?.name || `type ${productTypeId}`);
+  return {
+    ...zone,
+    printWidthIn: canvas.width / 300,
+    printHeightIn: canvas.height / 300,
   };
 }
 

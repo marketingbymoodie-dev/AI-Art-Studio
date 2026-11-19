@@ -7,6 +7,8 @@
  *
  * Built only on purchase — never at preview time (plan section 4).
  */
+import { placementForProductType } from "@shared/printPlacement";
+import { chestFitForProductType } from "./colour-blanks";
 import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { libraryObjectExists, readLibraryObject, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 
@@ -21,6 +23,7 @@ export async function buildMyPetPrintArea(args: {
   renderId: string;
   editedArtworkPath: string;
   artStyle: string;
+  productTypeId?: number;
   productTypePlaceholderPositions: unknown;
   productTypeName: string;
 }): Promise<{ url: string; path: string }> {
@@ -28,7 +31,9 @@ export async function buildMyPetPrintArea(args: {
   if (!(await libraryObjectExists(path))) {
     const source = await readLibraryObject(args.editedArtworkPath);
     const canvas = printCanvasFromStoredPlaceholders(args.productTypePlaceholderPositions, args.productTypeName);
-    const { buffer } = await buildFlywheelPrintFile(args.artStyle, source, canvas);
+    const placement = placementForProductType(args.productTypeId ?? 0);
+    const chest = args.productTypeId ? await chestFitForProductType(args.productTypeId) : null;
+    const { buffer } = await buildFlywheelPrintFile(args.artStyle, source, canvas, placement.anchor, chest ?? undefined);
     await writeLibraryObject(path, buffer, "image/png");
   }
   const url = await signedLibraryUrl(path, MY_PET_PRINT_FILE_TTL_SECONDS);

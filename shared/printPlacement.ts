@@ -38,3 +38,46 @@ export function inkOrigin(args: {
     : Math.round(args.areaTop + (args.areaHeight - args.inkHeight) / 2);
   return { left: Math.max(0, left), top: Math.max(0, top) };
 }
+
+/** Maximum design size inside the print area. Null on a type means no cap. */
+export type ChestPrintZone = { maxWidthIn: number; maxHeightIn: number };
+
+/**
+ * Approved chest zones. Comfort Colors is 14 × 14 in. Gildan's print area is
+ * only 12.84 in wide, so the width stays 11 in and the height is 14 in.
+ * Every other type has no zone and keeps its existing placement.
+ */
+export const CHEST_ZONES: Record<number, ChestPrintZone> = {
+  56: { maxWidthIn: 11, maxHeightIn: 14 },
+  58: { maxWidthIn: 14, maxHeightIn: 14 },
+};
+
+/** Stored inches win. Empty values fall back to the approved zone for that type. */
+export function chestZoneForProductType(
+  productTypeId: number,
+  storedWidth?: unknown,
+  storedHeight?: unknown,
+): ChestPrintZone | null {
+  const width = Number(storedWidth);
+  const height = Number(storedHeight);
+  if (width > 0 && height > 0) return { maxWidthIn: width, maxHeightIn: height };
+  return CHEST_ZONES[productTypeId] ?? null;
+}
+
+/** Top of the print area, horizontally centred, never larger than the print area. */
+export function chestZoneRect(args: {
+  areaLeft: number;
+  areaTop: number;
+  areaWidth: number;
+  areaHeight: number;
+  printWidthIn: number;
+  printHeightIn: number;
+  zone: ChestPrintZone;
+}): { left: number; top: number; width: number; height: number } {
+  const widthFrac = args.printWidthIn > 0 ? Math.min(1, args.zone.maxWidthIn / args.printWidthIn) : 1;
+  const heightFrac = args.printHeightIn > 0 ? Math.min(1, args.zone.maxHeightIn / args.printHeightIn) : 1;
+  const width = Math.max(1, Math.round(args.areaWidth * widthFrac));
+  const height = Math.max(1, Math.round(args.areaHeight * heightFrac));
+  const left = Math.round(args.areaLeft + (args.areaWidth - width) / 2);
+  return { left, top: Math.round(args.areaTop), width, height };
+}

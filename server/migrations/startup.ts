@@ -173,6 +173,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "shopify_variant_ids_both",    type: "JSON" },
   { table: "product_types",         column: "print_sides_enabled",         type: "BOOLEAN" },
   { table: "product_types",         column: "print_vertical_anchor",       type: "TEXT NOT NULL DEFAULT 'center'" },
+  { table: "product_types",         column: "print_chest_width_in",        type: "NUMERIC(5,2)" },
+  { table: "product_types",         column: "print_chest_height_in",       type: "NUMERIC(5,2)" },
   { table: "product_types",         column: "blank_source_product_type_id", type: "INTEGER" },
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
@@ -269,6 +271,16 @@ const DATA_MIGRATIONS: string[] = [
    SET force_flat_harvest = true
    WHERE printify_blueprint_id = 1300
       OR fulfillment_layout = 'tote_folded_v1'`,
+  `UPDATE product_types
+   SET print_chest_width_in = 11, print_chest_height_in = 14
+   WHERE id = 56
+     AND print_chest_width_in IS NULL
+     AND print_chest_height_in IS NULL`,
+  `UPDATE product_types
+   SET print_chest_width_in = 14, print_chest_height_in = 14
+   WHERE id = 58
+     AND print_chest_width_in IS NULL
+     AND print_chest_height_in IS NULL`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)

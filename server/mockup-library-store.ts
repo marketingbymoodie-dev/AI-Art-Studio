@@ -776,6 +776,8 @@ export async function renderCandidateOnPanel(args: {
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {
   const loaded = await loadCandidatePanel(args);
   const placement = placementForProductType(args.productTypeId);
+  const { chestFitForProductType } = await import("./colour-blanks");
+  const chest = await chestFitForProductType(args.productTypeId);
   const png = await renderArtworkOnPanel({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -785,6 +787,7 @@ export async function renderCandidateOnPanel(args: {
     fractions: loaded.fractions,
     scale: args.scale ?? placement.mockupScale,
     anchor: args.anchor ?? placement.anchor,
+    chest: chest ?? undefined,
   });
   return { png, source: loaded.resolved.kind };
 }
@@ -869,6 +872,8 @@ export async function measureCandidateInk(args: {
 }) {
   const loaded = await loadCandidatePanel(args);
   const placement = placementForProductType(args.productTypeId);
+  const { chestFitForProductType } = await import("./colour-blanks");
+  const chest = await chestFitForProductType(args.productTypeId);
   return measurePlacedInk({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -878,6 +883,7 @@ export async function measureCandidateInk(args: {
     fractions: loaded.fractions,
     scale: placement.mockupScale,
     anchor: placement.anchor,
+    chest: chest ?? undefined,
   });
 }
 
@@ -891,6 +897,8 @@ export async function candidatePrintifyArtwork(args: {
 }) {
   const loaded = await loadCandidatePanel(args);
   const placement = placementForProductType(args.productTypeId);
+  const { chestFitForProductType } = await import("./colour-blanks");
+  const chest = await chestFitForProductType(args.productTypeId);
   const preview = await artworkForPrintifyPreview({
     photo: loaded.photo,
     maskPng: loaded.maskPng,
@@ -900,6 +908,7 @@ export async function candidatePrintifyArtwork(args: {
     fractions: loaded.fractions,
     scale: placement.mockupScale,
     anchor: placement.anchor,
+    chest: chest ?? undefined,
   });
   return preview;
 }

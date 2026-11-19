@@ -190,4 +190,22 @@ describe("flywheel print file", () => {
     expect(inkH).toBeGreaterThan(canvas.height * 0.9);
     expect(inkW).toBeLessThan(canvas.width * 0.7);
   });
+
+  it("fits a tall design inside the chest zone instead of the full print area", async () => {
+    const source = await sharp({
+      create: { width: 100, height: 400, channels: 4, background: { r: 200, g: 20, b: 20, alpha: 1 } },
+    }).png().toBuffer();
+    const canvas = { width: 900, height: 1020 };
+    const placed = await placeOnPrintCanvas(source, canvas, "top", { maxWidthIn: 2.5, maxHeightIn: 2.5 });
+    const { data, info } = await sharp(placed).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let maxY = 0;
+    for (let y = 0; y < info.height; y++) {
+      for (let x = 0; x < info.width; x++) {
+        if (data[(y * info.width + x) * info.channels + 3] > 10 && y > maxY) maxY = y;
+      }
+    }
+    const gapIn = (info.height - 1 - maxY) / 300;
+    expect(gapIn).toBeGreaterThan(0.8);
+    expect(gapIn).toBeLessThan(1);
+  });
 });

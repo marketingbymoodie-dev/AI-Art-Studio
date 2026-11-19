@@ -922,6 +922,12 @@ export const productTypes = pgTable("product_types", {
    */
   printVerticalAnchor: text("print_vertical_anchor").notNull().default("center"),
   /**
+   * Maximum design size inside the front print area, in inches. Null means
+   * the art may fill the whole print area. Types 56 and 58 store a chest zone.
+   */
+  printChestWidthIn: decimal("print_chest_width_in", { precision: 5, scale: 2 }),
+  printChestHeightIn: decimal("print_chest_height_in", { precision: 5, scale: 2 }),
+  /**
    * Colour-blank photographs and the colour list are read from this product
    * type. Null means this type owns its blanks. Writes stay on the owner.
    */

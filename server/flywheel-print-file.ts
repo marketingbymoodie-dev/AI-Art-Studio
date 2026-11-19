@@ -4,7 +4,7 @@
  * Customizer bake and toLosslessPrintMaster are not used here.
  */
 import sharp from "sharp";
-import { inkOrigin, type VerticalPrintAnchor } from "@shared/printPlacement";
+import { chestZoneRect, inkOrigin, type ChestPrintZone, type VerticalPrintAnchor } from "@shared/printPlacement";
 import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
 import { cleanupFlatGraphicAlpha, EXPANDED_CHROMA_TOLERANCE, removeChromaKeyBackground } from "./apparel-matting";
 import { readPlatformReplicateToken } from "./generation-providers";
@@ -83,27 +83,64 @@ export function fittedPrintPixels(
   };
 }
 
+const PRINT_DPI = 300;
+
+/** Drop a transparent margin so a chest zone fits the ink, matching the mockup trim. Opaque art is left alone. */
+async function trimTransparentMargins(file: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const step = Math.max(info.channels, 4) * 8;
+  let transparent = false;
+  for (let i = 3; i < data.length; i += step) {
+    if (data[i] < 250) {
+      transparent = true;
+      break;
+    }
+  }
+  if (!transparent) return file;
+  try {
+    const trimmed = await sharp(file).trim({ threshold: 10 }).png().toBuffer();
+    const meta = await sharp(trimmed).metadata();
+    if ((meta.width || 0) < 2 || (meta.height || 0) < 2) return file;
+    return trimmed;
+  } catch {
+    return file;
+  }
+}
+
 /** Lanczos onto the print canvas. Artwork keeps its aspect. Default stays centred. Types 56 and 58 pass "top". */
 export async function placeOnPrintCanvas(
   image: Buffer,
   canvas: PrintCanvas,
   anchor: VerticalPrintAnchor = "center",
+  chest?: ChestPrintZone,
 ): Promise<Buffer> {
   if (!(canvas.width > 0) || !(canvas.height > 0)) {
     throw new Error("This product type has no stored front print area");
   }
-  const meta = await sharp(image).metadata();
-  const fitted = fittedPrintPixels(meta.width || 0, meta.height || 0, canvas);
-  const resized = await sharp(image)
+  const source = chest ? await trimTransparentMargins(image) : image;
+  const zone = chest
+    ? chestZoneRect({
+      areaLeft: 0,
+      areaTop: 0,
+      areaWidth: canvas.width,
+      areaHeight: canvas.height,
+      printWidthIn: canvas.width / PRINT_DPI,
+      printHeightIn: canvas.height / PRINT_DPI,
+      zone: chest,
+    })
+    : { left: 0, top: 0, width: canvas.width, height: canvas.height };
+  const meta = await sharp(source).metadata();
+  const fitted = fittedPrintPixels(meta.width || 0, meta.height || 0, { width: zone.width, height: zone.height });
+  const resized = await sharp(source)
     .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3", withoutEnlargement: false })
     .png()
     .toBuffer();
   const placed = await sharp(resized).metadata();
   const origin = inkOrigin({
-    areaLeft: 0,
-    areaTop: 0,
-    areaWidth: canvas.width,
-    areaHeight: canvas.height,
+    areaLeft: zone.left,
+    areaTop: zone.top,
+    areaWidth: zone.width,
+    areaHeight: zone.height,
     inkWidth: placed.width || fitted.width,
     inkHeight: placed.height || fitted.height,
     anchor,
@@ -183,6 +220,7 @@ async function upscaleForPrint(
   styleId: string,
   canvas: PrintCanvas,
   anchor: VerticalPrintAnchor,
+  chest?: ChestPrintZone,
 ): Promise<Buffer> {
   const token = readPlatformReplicateToken();
   const prediction = await replicateJson("https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions", token, {
@@ -214,7 +252,7 @@ async function upscaleForPrint(
   if (!url) throw new Error(`${styleId} print file failed: upscaler returned no image`);
   const image = await fetch(url);
   if (!image.ok) throw new Error(`${styleId} print file failed: upscaler download HTTP ${image.status}`);
-  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas, anchor);
+  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas, anchor, chest);
 }
 
 /**
@@ -265,6 +303,7 @@ export async function buildFlywheelPrintFile(
   source: Buffer,
   canvas: PrintCanvas,
   anchor: VerticalPrintAnchor = "center",
+  chest?: ChestPrintZone,
 ): Promise<{
   path: FlywheelPrintPath;
   buffer: Buffer;
@@ -300,11 +339,11 @@ export async function buildFlywheelPrintFile(
     };
     return {
       path,
-      buffer: await placeOnPrintCanvas(raster, canvas, anchor),
+      buffer: await placeOnPrintCanvas(raster, canvas, anchor, chest),
       svg,
       nearKeyPathsBefore,
       nearKeyPathsAfter: countNearKeySvgFills(svg),
     };
   }
-  return { path, buffer: await upscaleForPrint(source, styleId, canvas, anchor), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas, anchor, chest), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
 }
