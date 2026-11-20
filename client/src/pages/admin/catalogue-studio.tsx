@@ -15,6 +15,8 @@ import { Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/queryClient";
 import { MockupBulkImport } from "@/pages/admin/MockupBulkImport";
 import { EditColours } from "@/components/admin/EditColours";
+import { FindMySizeButton } from "@/components/FindMySizeDialog";
+import type { FindMySizeGuide } from "@shared/findMySize";
 
 type ColourReading = {
   name: string;
@@ -219,6 +221,17 @@ export default function CatalogueStudioPage() {
     queryFn: async () => {
       const res = await fetch(`/api/platform/catalogue-studio/panels?productTypeId=${studioTypeId}`, { credentials: "include" });
       if (!res.ok) throw new Error("Could not load scenes");
+      return res.json();
+    },
+  });
+  const sizeGuide = useQuery<{ guide: FindMySizeGuide | null }>({
+    queryKey: ["/api/storefront/find-my-size", studioTypeId, candidate.data?.catalogueShop],
+    enabled: studioTypeId > 0,
+    queryFn: async () => {
+      const params = new URLSearchParams({ productTypeId: String(studioTypeId) });
+      if (candidate.data?.catalogueShop) params.set("shop", candidate.data.catalogueShop);
+      const res = await fetch(`/api/storefront/find-my-size?${params}`);
+      if (!res.ok) return { guide: null };
       return res.json();
     },
   });
@@ -669,7 +682,10 @@ export default function CatalogueStudioPage() {
                     </Button>
                   ))}
                 </div>
-                <a href="#size-guide" className="text-sm underline">Size Guide</a>
+                <FindMySizeButton
+                  guide={sizeGuide.data?.guide}
+                  onUseSize={(name) => setSize(name)}
+                />
               </div>
               <p className="text-sm">{active?.name || color}</p>
               {cellSource ? (

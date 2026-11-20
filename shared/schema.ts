@@ -199,6 +199,11 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   scope: text("scope"),
   /** Which Shopify app minted this shop's token: primary | creators | petposterous. Null until the first verified install or webhook. */
   shopifyApp: text("shopify_app"),
+  /** Null until a merchant chooses. Petposterous is turned on by the startup fill. */
+  sizeFinderGuaranteeEnabled: boolean("size_finder_guarantee_enabled"),
+  sizeFinderGuaranteeTitle: text("size_finder_guarantee_title"),
+  sizeFinderGuaranteeDetail: text("size_finder_guarantee_detail"),
+  sizeFinderGuaranteeUrl: text("size_finder_guarantee_url"),
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
   uninstalledAt: timestamp("uninstalled_at"),
@@ -935,6 +940,17 @@ export const productTypes = pgTable("product_types", {
   /** Leading-hyphen slug, or empty. Never a bare number — Shopify owns "-1". */
   listingHandleSuffix: text("listing_handle_suffix"),
   listingStyleLabel: text("listing_style_label"),
+  /** tee | long-sleeve | sweatshirt. Null until inferred from the type name. */
+  garmentShape: text("garment_shape"),
+  /** Inches of ease for closer, relaxed, and oversized. Null uses the shape default. */
+  garmentFitEase: json("garment_fit_ease").$type<{ closer: number; relaxed: number; oversized: number }>(),
+  /** Garment measurements for the sizes this type sells. Null until a chart is copied. */
+  garmentMeasurements: json("garment_measurements").$type<{
+    model: string;
+    columns: Array<{ key: string; label: string; role: "chest" | "length" | "other" }>;
+    rows: Array<{ size: string; values: Record<string, number> }>;
+    toleranceNote: string;
+  }>(),
   /**
    * Colour-blank photographs and the colour list are read from this product
    * type. Null means this type owns its blanks. Writes stay on the owner.

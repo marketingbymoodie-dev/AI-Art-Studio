@@ -31,3 +31,12 @@ npx shopify app deploy --config creators --allow-updates
 Never mark a production promotion complete until the extension deploys for all affected apps are done, or listed as pending. Petposterous is one of those apps.
 
 While Petposterous runs on the staging backend, any push to `staging` reaches the Petposterous store immediately.
+
+When **Extensions changed: yes** and that change is pushed to `staging`, run the Petposterous extension deploy yourself and report the released version name:
+
+```bash
+Set-Location c:\Users\young\AppAI\appai-pod-shipping-map
+npx shopify app deploy --config petposterous --allow-updates
+```
+
+If the Shopify CLI needs a login or a prompt you cannot answer, stop and tell the user the exact command to run. Never answer yes to “Ready to set this feature live for merchants?”. Do not merge or push `production`, and do not run a production Shopify deploy, unless the user has already said to go live in a separate message.

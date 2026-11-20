@@ -82,7 +82,6 @@ import {
   useStorefrontTermsAccept,
 } from "@/components/terms/StorefrontTermsAccept";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import SizeChartTable from "@/components/SizeChartTable";
 import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
 import { ShipCountrySelector } from "@/components/creators/ShipCountrySelector";
 import {
@@ -96,7 +95,9 @@ import {
   findSizeCoverageRow,
   sizeTokensMatch,
 } from "@shared/shipping-size-coverage";
-import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
+import type { NormalizedSizeChart } from "@/lib/printifySizeCharts";
+import { FindMySizeButton } from "@/components/FindMySizeDialog";
+import type { FindMySizeGuide } from "@shared/findMySize";
 import {
   ProductMockup,
   ZoomControls,
@@ -611,6 +612,7 @@ interface ProductTypeConfig {
   /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
   fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
+  sizeFinder?: FindMySizeGuide | null;
   /**
    * Front+back retail prices keyed by shopify variant id and/or `sizeName:colorName`.
    * Base Shopify variant prices remain front-only; this map drives “from $X” + ATC surcharge.
@@ -620,9 +622,6 @@ interface ProductTypeConfig {
 
 type ProductInfoSectionsProps = {
   description?: string | null;
-  sizeChart?: NormalizedSizeChart | null;
-  sizeChartLoading?: boolean;
-  blueprintId?: number;
   className?: string;
   /** Creator storefront: shipping / made-to-order returns on the product page. */
   commerceTerms?: boolean;
@@ -1980,9 +1979,6 @@ function sanitizeProductDescriptionHtml(
 
 function ProductInfoSections({
   description,
-  sizeChart,
-  sizeChartLoading,
-  blueprintId,
   className,
   productName,
   commerceTerms,
@@ -1994,9 +1990,8 @@ function ProductInfoSections({
 }) {
   const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
   const hasDetails = !!safeDescription;
-  const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
   const showCommerce = !!commerceTerms;
-  if (!hasDetails && !hasSizeChartArea && !showCommerce) return null;
+  if (!hasDetails && !showCommerce) return null;
 
   return (
     <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
@@ -2011,22 +2006,6 @@ function ProductInfoSections({
             className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
             dangerouslySetInnerHTML={{ __html: safeDescription }}
           />
-        </InfoCollapsible>
-      )}
-      {hasSizeChartArea && (
-        <InfoCollapsible title="Size Chart" onClose={onSectionClose}>
-          {sizeChartLoading ? (
-            <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
-          ) : (
-            <SizeChartTable chart={sizeChart} compact />
-          )}
-          {import.meta.env.DEV && (
-            <div className="mt-2 rounded-md bg-muted/50 p-2 text-[11px] text-muted-foreground">
-              <div>Current blueprint ID: {blueprintId ?? "missing"}</div>
-              <div>Chart loaded: {sizeChart ? "yes" : "no"}</div>
-              <div>Row count: {sizeChart?.rows.length ?? 0}</div>
-            </div>
-          )}
         </InfoCollapsible>
       )}
     </div>
@@ -2983,8 +2962,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
-  const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
-  const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
   // Derived early — cart-state sync and load-design helpers reference these before JSX.
   // Dimensional sizes are sorted smallest→largest by the first inch number (11×8 before 14×11).
@@ -5384,48 +5361,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     ],
   );
 
-  useEffect(() => {
-    const blueprintId = productTypeConfig?.printifyBlueprintId;
-    if (productTypeConfig?.sizeChart) {
-      setSizeChart(productTypeConfig.sizeChart);
-      setSizeChartLoading(false);
-      return;
-    }
-    if (!blueprintId) {
-      setSizeChart(null);
-      setSizeChartLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const loadingTimeout = globalThis.setTimeout(() => {
-      if (!cancelled) {
-        console.warn("[EmbedDesign] Size chart lookup timed out", { blueprintId });
-        setSizeChart(null);
-        setSizeChartLoading(false);
-      }
-    }, 10000);
-
-    setSizeChartLoading(true);
-    getSizeChartByBlueprintId(blueprintId)
-      .then((chart) => {
-        if (!cancelled) setSizeChart(chart);
-      })
-      .catch((error) => {
-        console.warn("[EmbedDesign] Failed to load size chart", error);
-        if (!cancelled) setSizeChart(null);
-      })
-      .finally(() => {
-        globalThis.clearTimeout(loadingTimeout);
-        if (!cancelled) setSizeChartLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-      globalThis.clearTimeout(loadingTimeout);
-    };
-  }, [productTypeConfig?.printifyBlueprintId, productTypeConfig?.sizeChart]);
-
   // Saved jobs store a slug, name, or foreign merchant id. Map that onto
   // the current dropdown option so Art Style + the fill picker both light up.
   useEffect(() => {
@@ -5525,13 +5460,8 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
       printifyBlueprintId: dc.printifyBlueprintId,
       printifyProviderId: dc.printifyProviderId,
       fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
-      sizeChart: dc.sizeChart || null,
       ...designerStockFields(dc),
     });
-    if (dc.sizeChart) {
-      setSizeChart(dc.sizeChart);
-      setSizeChartLoading(false);
-    }
     if (dc.frameColors?.length > 0) {
       const pending = pendingRestoreColorRef.current;
       const restored = pending
@@ -6059,14 +5989,9 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
             colorLabel: designerConfig.colorLabel || "Color",
             printifyBlueprintId: designerConfig.printifyBlueprintId,
             fabricWeaveTexture: designerConfig.fabricWeaveTexture ?? null,
-            sizeChart: designerConfig.sizeChart || null,
             ...designerStockFields(designerConfig),
           });
 
-          if (designerConfig.sizeChart) {
-            setSizeChart(designerConfig.sizeChart);
-            setSizeChartLoading(false);
-          }
           if (designerConfig.frameColors?.length > 0) {
             const vm = designerConfig.variantMap || {};
             const pending = pendingRestoreColorRef.current;
@@ -17565,6 +17490,13 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
         selectedColorName={frameColorObjects.find((c) => c.id === selectedFrameColor)?.name}
         selectedColorId={selectedFrameColor}
       />
+      <FindMySizeButton
+        guide={productTypeConfig?.sizeFinder}
+        onUseSize={(name) => {
+          const match = printSizes.find((size) => size.name.toLowerCase() === name.toLowerCase());
+          if (match) applySelectedSize(match.id);
+        }}
+      />
       <div className="mt-0.5 min-h-[1rem]">
         {selectedSize === "" && (
           <p className="text-[11px] text-muted-foreground leading-tight">
@@ -17591,9 +17523,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
     <ProductInfoSections
       description={productTypeConfig?.description}
       productName={productTypeConfig?.name || displayName}
-      sizeChart={sizeChart}
-      sizeChartLoading={sizeChartLoading}
-      blueprintId={productTypeConfig?.printifyBlueprintId}
       commerceTerms={isStorefront}
       commerceTermsOrigin={centralAppUrl}
       onSectionClose={isMobile ? () => dismissMobileSheet({ retractRail: true }) : undefined}
@@ -20033,9 +19962,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                   className="hidden md:block"
                   description={productTypeConfig?.description}
                   productName={productTypeConfig?.name || displayName}
-                  sizeChart={sizeChart}
-                  sizeChartLoading={sizeChartLoading}
-                  blueprintId={productTypeConfig?.printifyBlueprintId}
                   commerceTerms={isStorefront}
                   commerceTermsOrigin={centralAppUrl}
                 />
@@ -21506,9 +21432,6 @@ export default function EmbedDesign({ embeddedContext, testerActions, testerPrev
                 className="md:hidden border-t pt-4 mt-2"
                 description={productTypeConfig?.description}
                 productName={productTypeConfig?.name || displayName}
-                sizeChart={sizeChart}
-                sizeChartLoading={sizeChartLoading}
-                blueprintId={productTypeConfig?.printifyBlueprintId}
                 commerceTerms={isStorefront}
                 commerceTermsOrigin={centralAppUrl}
               />

@@ -2623,6 +2623,9 @@ export async function registerRoutes(
     res.json({ chart });
   }));
 
+  const { registerFindMySizeRoutes } = await import("./find-my-size");
+  registerFindMySizeRoutes(app);
+
   // 🔒 Everything below may register /api auth middleware
   await setupAuth(app);
   registerAuthRoutes(app);
@@ -6944,6 +6947,10 @@ ${orientationExtra}
         // Determine the label for the color/option selector
         colorLabel: getColorOptionName(mintedFrameColors, productType.colorOptionName),
         sizeChart,
+        sizeFinder: await (await import("./find-my-size")).findMySizePayload({
+          shop: (productType as any).shopifyShopDomain,
+          productTypeId: productType.id,
+        }),
         canvasConfig: {
           maxDimension,
           width: canvasWidth,
@@ -14913,6 +14920,54 @@ ${orientationExtra}
       if ("listingStyleLabel" in updates) {
         updates.listingStyleLabel = String(updates.listingStyleLabel || "").replace(/\s+/g, " ").trim();
       }
+      if ("garmentShape" in updates) {
+        const shape = String(updates.garmentShape || "");
+        updates.garmentShape = shape === "long-sleeve" || shape === "sweatshirt" || shape === "tee" ? shape : null;
+      }
+      if ("garmentFitEase" in updates) {
+        const ease = updates.garmentFitEase || {};
+        const number = (value: unknown) => {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+        };
+        const closer = number(ease.closer);
+        const relaxed = number(ease.relaxed);
+        const oversized = number(ease.oversized);
+        if (closer == null || relaxed == null || oversized == null) {
+          return res.status(400).json({ error: "Ease must be a number of inches for each fit." });
+        }
+        updates.garmentFitEase = { closer, relaxed, oversized };
+      }
+      if ("garmentMeasurements" in updates && updates.garmentMeasurements != null) {
+        const source = updates.garmentMeasurements;
+        const columns = Array.isArray(source.columns)
+          ? source.columns.filter((column: { key?: string; label?: string }) => column?.key && column?.label)
+          : [];
+        const cleanRows = (Array.isArray(source.rows) ? source.rows : []).map((row: { size?: string; values?: Record<string, unknown> }) => {
+          const values: Record<string, number> = {};
+          for (const column of columns) {
+            const raw = row?.values?.[column.key];
+            if (raw === "" || raw == null) continue;
+            const parsed = Number(raw);
+            if (!Number.isFinite(parsed)) return null;
+            values[String(column.key)] = parsed;
+          }
+          return { size: String(row?.size || "").trim(), values };
+        });
+        if (cleanRows.some((row: { size?: string } | null) => !row || !row.size)) {
+          return res.status(400).json({ error: "Each measurement needs a size and a number." });
+        }
+        updates.garmentMeasurements = {
+          model: String(source.model || "").trim(),
+          columns: columns.map((column: { key: string; label: string; role?: string }) => ({
+            key: String(column.key),
+            label: String(column.label),
+            role: column.role === "chest" || column.role === "length" ? column.role : "other",
+          })),
+          rows: cleanRows,
+          toleranceNote: String(source.toleranceNote || "").trim(),
+        };
+      }
 
       const updated = await storage.updateProductType(id, updates);
       if (!updated) {
@@ -22440,7 +22495,9 @@ ${orientationExtra}
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
       .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
-      .replace(/javascript:/gi, "");
+      .replace(/javascript:/gi, "")
+      .replace(/[^.?!<>]*\bcharts?\s+below\b[^.?!<>]*[.?!]?/gi, "")
+      .replace(/<p>\s*<\/p>/gi, "");
   }
 
   /** Fetch + sanitize Printify catalog blueprint description (used by import / Create Page / activate). */
@@ -25086,6 +25143,9 @@ ${orientationExtra}
           listingGarmentWord: pt.listingGarmentWord ?? "",
           listingHandleSuffix: pt.listingHandleSuffix ?? "",
           listingStyleLabel: pt.listingStyleLabel ?? "",
+          garmentShape: pt.garmentShape ?? "",
+          garmentFitEase: pt.garmentFitEase ?? null,
+          garmentMeasurements: pt.garmentMeasurements ?? null,
           baseMockupImages: typeof pt.baseMockupImages === "string"
             ? JSON.parse(pt.baseMockupImages || "{}")
             : (pt.baseMockupImages || {}),
@@ -27219,6 +27279,8 @@ ${orientationExtra}
   registerShippingRoutes(app, { isAuthenticated });
   const { registerCatalogueStudioRoutes } = await import("./routes/catalogue-studio");
   registerCatalogueStudioRoutes(app, { isAuthenticated });
+  const { registerFindMySizeRoutes: registerSizeFinderAdmin } = await import("./find-my-size");
+  registerSizeFinderAdmin(app, { isAuthenticated });
   const { registerMyPetRoutes } = await import("./routes/my-pet");
   registerMyPetRoutes(app, { isAuthenticated });
   // Shipping Coverage Service: boot catch-up (lastRunAt-guarded) + nightly diff sync.

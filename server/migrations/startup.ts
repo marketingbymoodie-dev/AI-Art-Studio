@@ -179,6 +179,13 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "listing_garment_word",        type: "TEXT" },
   { table: "product_types",         column: "listing_handle_suffix",       type: "TEXT" },
   { table: "product_types",         column: "listing_style_label",         type: "TEXT" },
+  { table: "product_types",         column: "garment_shape",               type: "TEXT" },
+  { table: "product_types",         column: "garment_fit_ease",            type: "JSONB" },
+  { table: "product_types",         column: "garment_measurements",        type: "JSONB" },
+  { table: "shopify_installations", column: "size_finder_guarantee_enabled", type: "BOOLEAN" },
+  { table: "shopify_installations", column: "size_finder_guarantee_title", type: "TEXT" },
+  { table: "shopify_installations", column: "size_finder_guarantee_detail", type: "TEXT" },
+  { table: "shopify_installations", column: "size_finder_guarantee_url",   type: "TEXT" },
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
   { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
@@ -3614,6 +3621,16 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED listing copy backfill: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillFindMySize } = await import("../find-my-size");
+    const n = await backfillFindMySize();
+    applied++;
+    console.log(`${tag} find my size charts=${n.charts} guarantee=${n.guarantee}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED find my size backfill: ${err.message ?? err}`);
   }
 
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;

@@ -1,4 +1,5 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
+import { defaultEaseForShape, garmentShapeFromName, type FitEase, type GarmentMeasurements, type GarmentShape } from "@shared/findMySize";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, apiFetch, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -227,6 +228,9 @@ interface Blank {
   listingGarmentWord?: string | null;
   listingHandleSuffix?: string | null;
   listingStyleLabel?: string | null;
+  garmentShape?: string | null;
+  garmentFitEase?: FitEase | null;
+  garmentMeasurements?: GarmentMeasurements | null;
   /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
   oosStatus?: "ok" | "critical" | "fully_oos" | "error" | "unknown" | null;
   oosAvailableVariants?: number | null;
@@ -388,6 +392,13 @@ export default function AdminCustomizerPages() {
   const [editGarmentWord, setEditGarmentWord] = useState("");
   const [editHandleSuffix, setEditHandleSuffix] = useState("");
   const [editStyleLabel, setEditStyleLabel] = useState("");
+  const [editShape, setEditShape] = useState<GarmentShape>("tee");
+  const [editEase, setEditEase] = useState<FitEase>(defaultEaseForShape("tee"));
+  const [editMeasurements, setEditMeasurements] = useState<GarmentMeasurements | null>(null);
+  const [guaranteeEnabled, setGuaranteeEnabled] = useState(false);
+  const [guaranteeTitle, setGuaranteeTitle] = useState("");
+  const [guaranteeDetail, setGuaranteeDetail] = useState("");
+  const [guaranteeUrl, setGuaranteeUrl] = useState("");
   const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
   const [editMarkupPercent, setEditMarkupPercent] = useState(String(DEFAULT_MARKUP_PERCENT));
   const [editDescriptionLoading, setEditDescriptionLoading] = useState(false);
@@ -497,6 +508,14 @@ export default function AdminCustomizerPages() {
   const { data: blanksData, isLoading: blanksLoading } = useQuery<{ blanks: Blank[] }>({
     queryKey: ["/api/appai/blanks"],
     // Always on (not just create/edit) — the pages list badge below needs oosStatus per row.
+  });
+  const guaranteeQuery = useQuery<{ enabled: boolean; title: string; detail: string; url: string }>({
+    queryKey: ["/api/admin/size-finder"],
+    queryFn: async () => {
+      const res = await apiFetch("/api/admin/size-finder");
+      if (!res.ok) throw new Error("Could not load the size guarantee");
+      return res.json();
+    },
   });
 
   // Platform catalogue — so Create Page can list every ready-to-go product, not only imports.
@@ -611,6 +630,9 @@ export default function AdminCustomizerPages() {
       setEditGarmentWord("");
       setEditHandleSuffix("");
       setEditStyleLabel("");
+      setEditShape("tee");
+      setEditEase(defaultEaseForShape("tee"));
+      setEditMeasurements(null);
       setEditDescriptionLoading(false);
       return;
     }
@@ -622,6 +644,10 @@ export default function AdminCustomizerPages() {
     setEditGarmentWord(editBlank.listingGarmentWord || "");
     setEditHandleSuffix(editBlank.listingHandleSuffix || "");
     setEditStyleLabel(editBlank.listingStyleLabel || "");
+    const shape = (editBlank.garmentShape as GarmentShape) || garmentShapeFromName(editBlank.title || "");
+    setEditShape(shape);
+    setEditEase(editBlank.garmentFitEase || defaultEaseForShape(shape));
+    setEditMeasurements(editBlank.garmentMeasurements || null);
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
     setEditMarkupPercent(String(resolveMarkupPercent((editBlank as any).defaultMarkupPercent)));
     setEditMinMarginPercent(
@@ -631,6 +657,14 @@ export default function AdminCustomizerPages() {
     setEditGalleryPlaceholders(new Set((images.gallery || []).filter(Boolean).slice(0, MAX_GALLERY_PLACEHOLDERS)));
     setEditCustomPlaceholder("");
   }, [editTarget?.id, editBlank?.productTypeId]);
+
+  useEffect(() => {
+    if (!guaranteeQuery.data) return;
+    setGuaranteeEnabled(guaranteeQuery.data.enabled);
+    setGuaranteeTitle(guaranteeQuery.data.title);
+    setGuaranteeDetail(guaranteeQuery.data.detail);
+    setGuaranteeUrl(guaranteeQuery.data.url);
+  }, [guaranteeQuery.data]);
 
   // Backfill Printify catalog copy when Create Page left description empty.
   useEffect(() => {
@@ -840,6 +874,9 @@ export default function AdminCustomizerPages() {
           listingGarmentWord: editGarmentWord,
           listingHandleSuffix: editHandleSuffix,
           listingStyleLabel: editStyleLabel,
+          garmentShape: editShape,
+          garmentFitEase: editEase,
+          garmentMeasurements: editMeasurements,
         });
         if (!ptRes.ok) {
           const body = await ptRes.json().catch(() => ({}));
@@ -2232,6 +2269,38 @@ export default function AdminCustomizerPages() {
             <p className="text-sm text-muted-foreground mt-1">
               Create Page chooses Printify supplier and applies suggested retail before going Live.
             </p>
+            <div className="mt-4 max-w-xl space-y-2 rounded-md border p-3">
+              <p className="text-sm font-medium">Find my size guarantee</p>
+              <p className="text-xs text-muted-foreground">Shown under the size buttons on this shop. Other shops stay off until you turn it on.</p>
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox checked={guaranteeEnabled} onCheckedChange={(checked) => setGuaranteeEnabled(checked === true)} />
+                Show the guarantee
+              </label>
+              <Input value={guaranteeTitle} onChange={(event) => setGuaranteeTitle(event.target.value)} placeholder="30-day money-back & fit guarantee" />
+              <Input value={guaranteeDetail} onChange={(event) => setGuaranteeDetail(event.target.value)} placeholder="Wrong size? We'll send you a new tee." />
+              <Input value={guaranteeUrl} onChange={(event) => setGuaranteeUrl(event.target.value)} placeholder="Link to the policy page" />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void apiRequest("PATCH", "/api/admin/size-finder", {
+                    enabled: guaranteeEnabled,
+                    title: guaranteeTitle,
+                    detail: guaranteeDetail,
+                    url: guaranteeUrl,
+                  }).then(async (res) => {
+                    if (!res.ok) {
+                      const body = await res.json().catch(() => ({}));
+                      throw new Error(body.error || "Could not save the guarantee");
+                    }
+                    await queryClient.invalidateQueries({ queryKey: ["/api/admin/size-finder"] });
+                    toast({ title: "Guarantee saved" });
+                  }).catch((err: Error) => toast({ title: "Guarantee was not saved", description: err.message, variant: "destructive" }));
+                }}
+              >
+                Save guarantee
+              </Button>
+            </div>
           </div>
 
           {/* Only show Create button if plan is active */}
@@ -4131,6 +4200,99 @@ export default function AdminCustomizerPages() {
                   placeholder="Lighter Softstyle Tee"
                 />
                 <p className="text-xs text-muted-foreground">Short line at the top of this type's listing, ahead of the shared design description.</p>
+              </div>
+              <div className="space-y-3 rounded-md border p-3">
+                <p className="text-sm font-medium">Find my size</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Garment shape</Label>
+                    <Select value={editShape} onValueChange={(value) => setEditShape(value as GarmentShape)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="tee">Tee</SelectItem>
+                        <SelectItem value="long-sleeve">Long sleeve</SelectItem>
+                        <SelectItem value="sweatshirt">Sweatshirt or hoodie</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-measure-model">Garment model</Label>
+                    <Input
+                      id="edit-measure-model"
+                      value={editMeasurements?.model || ""}
+                      onChange={(event) => setEditMeasurements((current) => ({
+                        model: event.target.value,
+                        columns: current?.columns || [
+                          { key: "chestWidth", label: "Chest width", role: "chest" },
+                          { key: "bodyLength", label: "Body length", role: "length" },
+                        ],
+                        rows: current?.rows || [],
+                        toleranceNote: current?.toleranceNote || "",
+                      }))}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["closer", "relaxed", "oversized"] as const).map((fit) => (
+                    <div key={fit} className="space-y-1">
+                      <Label className="capitalize">{fit} ease (in)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        value={editEase[fit]}
+                        onChange={(event) => setEditEase((current) => ({ ...current, [fit]: Number(event.target.value) }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+                {editMeasurements?.rows?.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr>
+                          <th className="py-1 text-left">Size</th>
+                          {editMeasurements.columns.map((column) => <th key={column.key} className="py-1 text-right">{column.label}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {editMeasurements.rows.map((row) => (
+                          <tr key={row.size}>
+                            <td className="py-1">{row.size}</td>
+                            {editMeasurements.columns.map((column) => (
+                              <td key={column.key} className="py-1 text-right">
+                                <Input
+                                  className="ml-auto h-8 w-20 text-right"
+                                  inputMode="decimal"
+                                  value={row.values[column.key] ?? ""}
+                                  onChange={(event) => {
+                                    const raw = event.target.value;
+                                    setEditMeasurements((current) => {
+                                      if (!current) return current;
+                                      return {
+                                        ...current,
+                                        rows: current.rows.map((item) => {
+                                          if (item.size !== row.size) return item;
+                                          const values = { ...item.values };
+                                          if (!raw.trim()) delete values[column.key];
+                                          else values[column.key] = Number(raw);
+                                          return { ...item, values };
+                                        }),
+                                      };
+                                    });
+                                  }}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="mt-2 text-xs text-muted-foreground">Inches, for the sizes this type sells. Every listing of this type uses this table.</p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No measurements are stored yet. They are copied from the Printify chart for this blueprint. Leave them blank rather than guessing.</p>
+                )}
               </div>
 
               <div className="space-y-3 rounded-md border p-3">

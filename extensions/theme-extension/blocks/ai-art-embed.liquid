@@ -81,6 +81,10 @@
 <script src="{{ 'appai-last-creator.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-art-embed.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-default-size.js' | asset_url }}" defer></script>
+{% if product %}
+  <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"></div>
+  <script src="{{ 'appai-find-my-size.js' | asset_url }}" defer></script>
+{% endif %}
 <script src="{{ 'appai-card-swatches.js' | asset_url }}" defer></script>
 
 {% schema %}
