@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { defaultEaseForShape, measurementsFromPrintifyChart } from "@shared/findMySize";
 
 const require = createRequire(import.meta.url);
-require("./appai-find-my-size.js");
+require("../extensions/theme-extension/assets/appai-find-my-size.js");
 const finder = (window as unknown as {
   AppaiFindMySize: {
     suggest: (guide: unknown, heightCm: number, weightKg: number, fit: string) => string;
