@@ -3624,6 +3624,16 @@ export async function runStartupMigrations(): Promise<void> {
   }
 
   try {
+    const { backfillGarmentAccordionMetafields } = await import("../garment-accordion-metafields");
+    const n = await backfillGarmentAccordionMetafields();
+    applied++;
+    console.log(`${tag} garment accordion metafields set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED garment accordion metafields: ${err.message ?? err}`);
+  }
+
+  try {
     const { backfillFindMySize } = await import("../find-my-size");
     const n = await backfillFindMySize();
     applied++;

@@ -29,6 +29,7 @@ import {
   type CapOccupant,
 } from "@shared/flywheelPromote";
 import { myPetMetafieldValue } from "@shared/cataloguePublish";
+import { garmentAccordionMetafields } from "@shared/garmentAccordion";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
@@ -44,6 +45,7 @@ import { assertProductTypeReadyToPromote } from "./promote-shipping";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
 import { attachVariantToShipping } from "./shipping-reconciler";
 import { ensureMyPetMetafieldDefinition } from "./my-pet-metafields";
+import { ensureGarmentAccordionDefinitions } from "./garment-accordion-metafields";
 import {
   buildProductSetInput,
   deleteProductRestCompat,
@@ -825,6 +827,7 @@ export async function promoteCatalogueCandidate(args: {
   // Idempotent — ensures the admin checkbox exists. Best-effort; a missing pinned
   // definition only affects the admin UI, not the metafield write below.
   await ensureMyPetMetafieldDefinition(shop, installation!.accessToken);
+  await ensureGarmentAccordionDefinitions(shop, installation!.accessToken);
 
   const input = buildProductSetInput({
     title,
@@ -854,6 +857,7 @@ export async function promoteCatalogueCandidate(args: {
         type: "boolean",
         value: myPetMetafieldValue(args.myPetEnabled),
       },
+      ...garmentAccordionMetafields(typeRow.description),
     ],
   }) as Record<string, unknown>;
   input.handle = handle;
