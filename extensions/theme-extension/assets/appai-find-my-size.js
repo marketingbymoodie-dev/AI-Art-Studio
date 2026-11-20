@@ -1,9 +1,11 @@
 /**
  * Find my size on the product page. Styles are scoped under .appai-fms
  * with !important so the theme cannot restyle the buttons or hide the result.
- * The chest estimate matches shared/findMySize.ts.
+ * The chest and length estimates match shared/findMySize.ts.
  */
 (function (root) {
+  var HEM_DROP = { closer: 0, relaxed: 1, oversized: 2 };
+
   function chestInches(heightCm, weightKg) {
     var heightMm = heightCm * 10;
     var weight = weightKg * 10;
@@ -12,23 +14,61 @@
     return (male + female) / 2 / 25.4;
   }
 
-  function suggest(guide, heightCm, weightKg, fit) {
-    var body = chestInches(heightCm, weightKg);
-    var columns = (guide && guide.measurements && guide.measurements.columns) || [];
-    var chest = columns.filter(function (column) { return column.role === "chest"; })[0];
-    var ease = (guide && guide.ease) || { closer: 2, relaxed: 4, oversized: 8 };
-    if (!chest || !(body > 0) || !(Number(ease[fit]) >= 0)) return "";
-    var target = body + Number(ease[fit]);
-    var rows = guide.measurements.rows || [];
+  function lengthInches(heightCm, fit) {
+    var drop = HEM_DROP[fit];
+    if (!(drop >= 0)) return null;
+    return (heightCm / 2.54) * 0.42 + drop;
+  }
+
+  function columnByRole(columns, role) {
+    var index;
+    for (index = 0; index < columns.length; index += 1) {
+      if (columns[index].role === role) return columns[index];
+    }
+    return null;
+  }
+
+  function smallestIndex(rows, valueOf, target) {
+    var last = -1;
     var index;
     for (index = 0; index < rows.length; index += 1) {
-      var width = Number(rows[index].values[chest.key]);
-      if (width > 0 && width * 2 + 1e-9 >= target) return rows[index].size;
+      var value = valueOf(rows[index]);
+      if (!(value > 0)) continue;
+      last = index;
+      if (value + 1e-9 >= target) return index;
     }
-    for (index = rows.length - 1; index >= 0; index -= 1) {
-      if (Number(rows[index].values[chest.key]) > 0) return rows[index].size;
+    return last;
+  }
+
+  function suggest(guide, heightCm, weightKg, fit) {
+    var columns = (guide && guide.measurements && guide.measurements.columns) || [];
+    var rows = (guide && guide.measurements && guide.measurements.rows) || [];
+    var chest = columnByRole(columns, "chest");
+    var length = columnByRole(columns, "length");
+    var ease = (guide && guide.ease) || { closer: 2, relaxed: 4, oversized: 8 };
+    if (!chest || !(Number(ease[fit]) >= 0) || !(heightCm > 0) || !(weightKg > 0)) return "";
+    function at(height) {
+      var body = chestInches(height, weightKg);
+      var chestIndex = smallestIndex(rows, function (row) {
+        return Number(row.values[chest.key]) * 2;
+      }, body + Number(ease[fit]));
+      var lengthTarget = lengthInches(height, fit);
+      var lengthIndex = length && lengthTarget != null
+        ? smallestIndex(rows, function (row) { return Number(row.values[length.key]); }, lengthTarget)
+        : -1;
+      if (chestIndex < 0) return lengthIndex;
+      if (lengthIndex < 0) return chestIndex;
+      return Math.max(chestIndex, lengthIndex);
     }
-    return "";
+    var best = at(heightCm);
+    if (best < 0) return "";
+    var floor = Math.min(heightCm, 150);
+    var height;
+    for (height = floor; height < heightCm; height += 1) {
+      var shorter = at(height);
+      if (shorter > best) best = shorter;
+    }
+    return rows[best] ? rows[best].size : "";
   }
 
   function escapeHtml(value) {
@@ -174,7 +214,7 @@
         html += '<label>Weight (' + (unit === "metric" ? "kg" : "lb") + ')<input data-field="weight" inputmode="decimal" placeholder="' + (unit === "metric" ? "75" : "165") + '"></label>';
         html += '<div class="appai-fms__row">' + choice("data-fit", "closer", "Closer", fit === "closer") + choice("data-fit", "relaxed", "Relaxed", fit === "relaxed") + choice("data-fit", "oversized", "Oversized", fit === "oversized") + "</div>";
         html += '<button type="button" class="appai-fms__primary" data-find>Find my size</button>';
-        html += "<p>How we suggest a size: we estimate chest size from your height and weight, add the ease for the fit you picked, and choose the smallest size whose chest is at least that big.</p>";
+        html += "<p>How we suggest a size: we estimate the chest you need from your height and weight, and the body length you need from your height. You get the larger of those two sizes.</p>";
         html += '<div data-result></div>';
       } else {
         html += "<p><strong>" + escapeHtml(guide.measurements.model || "") + " · " + escapeHtml(guide.garmentWord || "Garment") + "</strong></p>";

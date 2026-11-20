@@ -60,6 +60,17 @@ export function defaultEaseForShape(_shape: GarmentShape): FitEase {
 const MALE_CHEST = { intercept: 928.002, stature: -0.242, weight: 0.622 };
 const FEMALE_CHEST = { intercept: 916.48, stature: -0.282, weight: 0.727 };
 
+/**
+ * High-point shoulder is about 84% of stature. The hem these tee charts
+ * are cut for sits near mid-thigh, about 42% of stature, so the
+ * shoulder-to-hem target is 42% of stature. Relaxed and oversized drop
+ * the hem a further 1 and 2 inches.
+ */
+const LENGTH_OF_STATURE = 0.84 - 0.42;
+const HEM_DROP_INCHES: Record<FitId, number> = { closer: 0, relaxed: 1, oversized: 2 };
+/** Chest girth falls with stature, so sizes are held up from this height. */
+const STATURE_FLOOR_CM = 150;
+
 function chestMillimetres(
   coeff: { intercept: number; stature: number; weight: number },
   heightCm: number,
@@ -76,6 +87,13 @@ export function estimateBodyChestInches(heightCm: number, weightKg: number): num
   return (male + female) / 2 / 25.4;
 }
 
+/** Shoulder-to-hem target, in inches, scaled from stature. */
+export function estimateBodyLengthInches(heightCm: number, fit: FitId): number | null {
+  const drop = HEM_DROP_INCHES[fit];
+  if (!(heightCm > 0) || !(drop >= 0)) return null;
+  return (heightCm / 2.54) * LENGTH_OF_STATURE + drop;
+}
+
 export function garmentChestInches(row: MeasurementRow, columns: MeasurementColumn[]): number | null {
   const chest = columns.find((column) => column.role === "chest");
   if (!chest) return null;
@@ -84,9 +102,29 @@ export function garmentChestInches(row: MeasurementRow, columns: MeasurementColu
   return width * 2;
 }
 
+export function garmentLengthInches(row: MeasurementRow, columns: MeasurementColumn[]): number | null {
+  const length = columns.find((column) => column.role === "length");
+  if (!length) return null;
+  const value = row.values[length.key];
+  return value > 0 ? value : null;
+}
+
+function smallestIndex(rows: MeasurementRow[], valueOf: (row: MeasurementRow) => number | null, target: number): number | null {
+  let last = -1;
+  for (let index = 0; index < rows.length; index += 1) {
+    const value = valueOf(rows[index]);
+    if (value == null) continue;
+    last = index;
+    if (value + 1e-9 >= target) return index;
+  }
+  return last >= 0 ? last : null;
+}
+
 /**
- * Smallest offered size whose garment chest is at least the estimated body
- * chest plus the chosen ease. Clamps to the last size when even that is small.
+ * Larger of the chest size and the body-length size. Chest girth from the
+ * Park regression falls as stature rises, so the result is also held up to
+ * the largest size any shorter stature down to 150 cm would get at this
+ * weight and fit.
  */
 export function suggestSize(args: {
   heightCm: number;
@@ -95,18 +133,35 @@ export function suggestSize(args: {
   ease: FitEase;
   columns: MeasurementColumn[];
   rows: MeasurementRow[];
-}): { size: string; bodyChestInches: number; targetChestInches: number } | null {
-  const body = estimateBodyChestInches(args.heightCm, args.weightKg);
-  if (body == null) return null;
+}): { size: string; bodyChestInches: number; targetChestInches: number; targetLengthInches: number } | null {
   const ease = args.ease[args.fit];
   if (!(ease >= 0)) return null;
-  const target = body + ease;
-  const ranked = args.rows
-    .map((row) => ({ size: row.size, chest: garmentChestInches(row, args.columns) }))
-    .filter((row): row is { size: string; chest: number } => row.chest != null);
-  if (!ranked.length) return null;
-  const fit = ranked.find((row) => row.chest + 1e-9 >= target) || ranked[ranked.length - 1];
-  return { size: fit.size, bodyChestInches: body, targetChestInches: target };
+  const at = (heightCm: number): number | null => {
+    const body = estimateBodyChestInches(heightCm, args.weightKg);
+    const lengthTarget = estimateBodyLengthInches(heightCm, args.fit);
+    if (body == null || lengthTarget == null) return null;
+    const chestIndex = smallestIndex(args.rows, (row) => garmentChestInches(row, args.columns), body + ease);
+    const lengthIndex = smallestIndex(args.rows, (row) => garmentLengthInches(row, args.columns), lengthTarget);
+    if (chestIndex == null) return lengthIndex;
+    if (lengthIndex == null) return chestIndex;
+    return Math.max(chestIndex, lengthIndex);
+  };
+  let best = at(args.heightCm);
+  if (best == null) return null;
+  const floor = Math.min(args.heightCm, STATURE_FLOOR_CM);
+  for (let height = floor; height < args.heightCm; height += 1) {
+    const shorter = at(height);
+    if (shorter != null && shorter > best) best = shorter;
+  }
+  const body = estimateBodyChestInches(args.heightCm, args.weightKg);
+  const lengthTarget = estimateBodyLengthInches(args.heightCm, args.fit);
+  if (body == null || lengthTarget == null) return null;
+  return {
+    size: args.rows[best].size,
+    bodyChestInches: body,
+    targetChestInches: body + ease,
+    targetLengthInches: lengthTarget,
+  };
 }
 
 export function columnFromChartLabel(label: string): MeasurementColumn | null {

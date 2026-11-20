@@ -60,8 +60,8 @@ function button(root: ParentNode, name: string): HTMLButtonElement {
 }
 
 describe("storefront find my size", () => {
-  it("suggests L for 185 cm / 85 kg relaxed on type 58", () => {
-    expect(finder.suggest(guide, 185, 85, "relaxed")).toBe("L");
+  it("suggests 2XL for 185 cm / 85 kg relaxed on type 58", () => {
+    expect(finder.suggest(guide, 185, 85, "relaxed")).toBe("2XL");
   });
 
   it("opens on Suggest my size, Relaxed, and centimetres, then selects L", () => {
@@ -82,9 +82,9 @@ describe("storefront find my size", () => {
 
     const height = root.querySelector("[data-field=height]") as HTMLInputElement;
     const weight = root.querySelector("[data-field=weight]") as HTMLInputElement;
-    height.value = "185";
+    height.value = "155";
     height.dispatchEvent(new Event("input", { bubbles: true }));
-    weight.value = "85";
+    weight.value = "62";
     weight.dispatchEvent(new Event("input", { bubbles: true }));
     button(root, "Relaxed").click();
     button(root, "Find my size").click();

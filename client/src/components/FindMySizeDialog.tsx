@@ -164,7 +164,7 @@ export function FindMySizeButton({
                   ))}
                 </div>
                 <button type="button" className="w-full rounded-md bg-neutral-900 px-3 py-2 text-sm text-white" onClick={find}>Find my size</button>
-                <p className="text-xs text-neutral-600">How we suggest a size: we estimate chest size from your height and weight, add the ease for the fit you picked, and choose the smallest size whose chest is at least that big.</p>
+                <p className="text-xs text-neutral-600">How we suggest a size: we estimate the chest you need from your height and weight, and the body length you need from your height. You get the larger of those two sizes.</p>
                 {notice ? <p className="rounded-md border border-neutral-900 p-3 text-sm">{notice}</p> : null}
                 {result ? (
                   <div className="rounded-md border p-3">

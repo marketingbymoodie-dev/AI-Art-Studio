@@ -53,17 +53,17 @@ describe("find my size", () => {
     const ease = defaultEaseForShape("tee");
     const cases = [
       { chart: gildan, model: "Gildan 64000", height: 175, weight: 75, fit: "closer" as const, size: "L" },
-      { chart: gildan, model: "Gildan 64000", height: 175, weight: 75, fit: "relaxed" as const, size: "L" },
-      { chart: gildan, model: "Gildan 64000", height: 175, weight: 75, fit: "oversized" as const, size: "XL" },
-      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "closer" as const, size: "L" },
-      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "relaxed" as const, size: "L" },
-      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "oversized" as const, size: "XL" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "closer" as const, size: "M" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "relaxed" as const, size: "L" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "oversized" as const, size: "XL" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "closer" as const, size: "L" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "relaxed" as const, size: "L" },
-      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "oversized" as const, size: "XL" },
+      { chart: gildan, model: "Gildan 64000", height: 175, weight: 75, fit: "relaxed" as const, size: "XL" },
+      { chart: gildan, model: "Gildan 64000", height: 175, weight: 75, fit: "oversized" as const, size: "2XL" },
+      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "closer" as const, size: "XL" },
+      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "relaxed" as const, size: "2XL" },
+      { chart: gildan, model: "Gildan 64000", height: 185, weight: 85, fit: "oversized" as const, size: "3XL" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "closer" as const, size: "L" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "relaxed" as const, size: "XL" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 175, weight: 75, fit: "oversized" as const, size: "2XL" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "closer" as const, size: "XL" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "relaxed" as const, size: "2XL" },
+      { chart: comfort, model: "Comfort Colors 1717", height: 185, weight: 85, fit: "oversized" as const, size: "3XL" },
     ];
     for (const sample of cases) {
       const parsed = guide(sample.chart, sample.model);
@@ -80,5 +80,62 @@ describe("find my size", () => {
     const body = estimateBodyChestInches(175, 75);
     expect(body).toBeGreaterThan(37);
     expect(body).toBeLessThan(40);
+  });
+
+  it("does not give a taller or heavier person a smaller size", () => {
+    const ease = defaultEaseForShape("tee");
+    const order = ["S", "M", "L", "XL", "2XL", "3XL"];
+    const rank = (size: string) => order.indexOf(size);
+    const charts = [
+      { chart: gildan, model: "Gildan 64000" },
+      { chart: comfort, model: "Comfort Colors 1717" },
+    ];
+    for (const sample of charts) {
+      const parsed = guide(sample.chart, sample.model);
+      for (const fit of ["closer", "relaxed", "oversized"] as const) {
+        for (let weight = 45; weight <= 130; weight += 1) {
+          let previous = -1;
+          for (let height = 150; height <= 200; height += 1) {
+            const size = suggestSize({
+              heightCm: height,
+              weightKg: weight,
+              fit,
+              ease,
+              columns: parsed.columns,
+              rows: parsed.rows,
+            })?.size;
+            const next = rank(size || "");
+            expect(next, `${sample.model} ${height}cm ${weight}kg ${fit}`).toBeGreaterThanOrEqual(previous);
+            previous = next;
+          }
+        }
+        for (let height = 150; height <= 200; height += 1) {
+          let previous = -1;
+          for (let weight = 45; weight <= 130; weight += 1) {
+            const size = suggestSize({
+              heightCm: height,
+              weightKg: weight,
+              fit,
+              ease,
+              columns: parsed.columns,
+              rows: parsed.rows,
+            })?.size;
+            const next = rank(size || "");
+            expect(next, `${sample.model} ${height}cm ${weight}kg ${fit}`).toBeGreaterThanOrEqual(previous);
+            previous = next;
+          }
+        }
+      }
+    }
+    const dyed = guide(comfort, "Comfort Colors 1717");
+    const at = (height: number) => suggestSize({
+      heightCm: height,
+      weightKg: 62,
+      fit: "relaxed",
+      ease,
+      columns: dyed.columns,
+      rows: dyed.rows,
+    })?.size;
+    expect(rank(at(165) || "")).toBeGreaterThanOrEqual(rank(at(155) || ""));
   });
 });
