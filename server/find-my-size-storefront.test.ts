@@ -13,8 +13,25 @@ const finder = (window as unknown as {
     openDialog: (doc: Document, guide: unknown) => HTMLElement;
     chooseSize: (doc: Document, name: string) => boolean;
     hideThemeSizeGuide: (doc: Document) => void;
+    placeLauncher: (doc: Document, guide: unknown, listing: boolean) => boolean;
+    watchLauncher: (doc: Document, guide: unknown, listing: boolean) => void;
   };
 }).AppaiFindMySize;
+
+function pickerFields(selectedSize = "M", selectedColor = "White"): string {
+  const size = (name: string) => `<label><input type="radio" name="Size" value="${name}"${name === selectedSize ? " checked" : ""}> ${name}</label>`;
+  const color = (name: string) => `<label><input type="radio" name="Color" value="${name}"${name === selectedColor ? " checked" : ""}> ${name}</label>`;
+  return `<fieldset><legend>Size</legend>${["S", "M", "L"].map(size).join("")}</fieldset>
+    <fieldset><legend>Color</legend>${["White", "Black"].map(color).join("")}</fieldset>`;
+}
+
+function replacePicker(selectedSize = "M", selectedColor = "White"): void {
+  document.querySelector("variant-picker")!.innerHTML = pickerFields(selectedSize, selectedColor);
+}
+
+async function settle(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
 
 const comfort = measurementsFromPrintifyChart({
   model: "Comfort Colors 1717",
@@ -109,5 +126,28 @@ describe("storefront find my size", () => {
     expect(css).toContain(".bmp-size-guide__trigger{display:none !important;}");
     expect((document.querySelector(".popup-link__button") as HTMLElement).style.display).toBe("none");
     expect((document.querySelector(".appai-fms__launcher") as HTMLElement).style.display).toBe("");
+  });
+
+  it("keeps one Find my size button after Use size, a size click, and a colour click", async () => {
+    document.body.innerHTML = `<variant-picker>${pickerFields()}</variant-picker>`;
+    finder.watchLauncher(document, guide, true);
+    expect(document.querySelectorAll(".appai-fms__launcher")).toHaveLength(1);
+
+    expect(finder.chooseSize(document, "L")).toBe(true);
+    expect((document.querySelector('input[value="L"]') as HTMLInputElement).checked).toBe(true);
+    replacePicker("L");
+    await settle();
+    expect(document.querySelectorAll(".appai-fms__launcher")).toHaveLength(1);
+
+    (document.querySelector('input[value="M"]') as HTMLInputElement).click();
+    replacePicker("M");
+    await settle();
+    expect(document.querySelectorAll(".appai-fms__launcher")).toHaveLength(1);
+
+    (document.querySelector('input[value="Black"]') as HTMLInputElement).click();
+    replacePicker("M", "Black");
+    await settle();
+    expect(document.querySelectorAll(".appai-fms__launcher")).toHaveLength(1);
+    expect(document.querySelector(".appai-fms__launcher")?.parentElement?.textContent).toContain("Size");
   });
 });

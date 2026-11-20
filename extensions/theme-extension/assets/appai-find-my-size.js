@@ -329,7 +329,69 @@
     }
   }
 
-  var api = { suggest: suggest, openDialog: openDialog, chooseSize: chooseSize, garmentSvg: garmentSvg, hideThemeSizeGuide: hideThemeSizeGuide };
+  function hideEmptyGuide(doc) {
+    var nodes = doc.querySelectorAll("a, button");
+    var index;
+    for (index = 0; index < nodes.length; index += 1) {
+      if (nodes[index].closest && nodes[index].closest(".appai-fms")) continue;
+      var label = String(nodes[index].textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (label !== "size guide") continue;
+      var href = nodes[index].getAttribute && nodes[index].getAttribute("href");
+      if (!href || href.charAt(0) === "#") nodes[index].hidden = true;
+    }
+  }
+
+  // Horizon swaps the variant picker HTML on size and colour changes.
+  // The launcher lives in that HTML, so a one-time append is removed with it.
+  function placeLauncher(doc, guide, listing) {
+    var field = sizeField(doc);
+    if (!field) return false;
+    if (field.querySelector(".appai-fms__launcher")) return true;
+    hideEmptyGuide(doc);
+    if (listing) hideThemeSizeGuide(doc);
+    var button = doc.createElement("button");
+    button.type = "button";
+    button.className = "appai-fms__launcher";
+    button.textContent = "Find my size";
+    button.style.cssText = "background:none;border:0;padding:0;margin:8px 0 0;text-decoration:underline;cursor:pointer;font:inherit;color:inherit;";
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      openDialog(doc, guide);
+    });
+    field.appendChild(button);
+    return true;
+  }
+
+  function watchLauncher(doc, guide, listing) {
+    placeLauncher(doc, guide, listing);
+    if (doc.__appaiFmsWatch) return;
+    doc.__appaiFmsWatch = true;
+    var queued = false;
+    function schedule() {
+      if (queued) return;
+      queued = true;
+      setTimeout(function () {
+        queued = false;
+        placeLauncher(doc, guide, listing);
+      }, 0);
+    }
+    var rootNode = doc.documentElement || doc.body;
+    if (rootNode) new MutationObserver(schedule).observe(rootNode, { childList: true, subtree: true });
+    doc.addEventListener("variant:change", schedule);
+    doc.addEventListener("variant:changed", schedule);
+    doc.addEventListener("shopify:section:load", schedule);
+  }
+
+  var api = {
+    suggest: suggest,
+    openDialog: openDialog,
+    chooseSize: chooseSize,
+    garmentSvg: garmentSvg,
+    hideThemeSizeGuide: hideThemeSizeGuide,
+    placeLauncher: placeLauncher,
+    watchLauncher: watchLauncher
+  };
   root.AppaiFindMySize = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 
@@ -341,42 +403,16 @@
   var shop = host.getAttribute("data-shop") || "";
   if (!productId) return;
 
-  function hideEmptyGuide() {
-    var nodes = root.document.querySelectorAll("a, button");
-    var index;
-    for (index = 0; index < nodes.length; index += 1) {
-      if (nodes[index].closest && nodes[index].closest(".appai-fms")) continue;
-      var label = String(nodes[index].textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
-      if (label !== "size guide") continue;
-      var href = nodes[index].getAttribute && nodes[index].getAttribute("href");
-      if (!href || href.charAt(0) === "#") nodes[index].hidden = true;
-    }
-  }
-
   fetch("/apps/appai/api/storefront/find-my-size?productId=" + encodeURIComponent(productId) + "&shop=" + encodeURIComponent(shop), { credentials: "same-origin" })
     .then(function (res) { return res.ok ? res.json() : null; })
     .then(function (body) {
       var guide = body && body.guide;
       var rows = guide && guide.measurements && guide.measurements.rows;
       if (!rows || !rows.length) {
-        hideEmptyGuide();
+        hideEmptyGuide(root.document);
         return;
       }
-      var field = sizeField(root.document);
-      if (!field) return;
-      hideEmptyGuide();
-      if (host.getAttribute("data-appai-listing") === "1") hideThemeSizeGuide(root.document);
-      var button = root.document.createElement("button");
-      button.type = "button";
-      button.className = "appai-fms__launcher";
-      button.textContent = "Find my size";
-      button.style.cssText = "background:none;border:0;padding:0;margin:8px 0 0;text-decoration:underline;cursor:pointer;font:inherit;color:inherit;";
-      field.appendChild(button);
-      button.addEventListener("click", function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        openDialog(root.document, guide);
-      });
+      watchLauncher(root.document, guide, host.getAttribute("data-appai-listing") === "1");
     })
-    .catch(function () { hideEmptyGuide(); });
+    .catch(function () { hideEmptyGuide(root.document); });
 })(typeof window !== "undefined" ? window : globalThis);
