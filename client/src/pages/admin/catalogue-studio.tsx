@@ -55,6 +55,13 @@ type PendingCandidate = {
   productTypeId: number;
   productTypeName: string;
   productTypes?: Array<{ id: number; name: string }>;
+  publishTypes?: Array<{
+    id: number;
+    name: string;
+    published: boolean;
+    productUrl: string | null;
+    colors: Array<{ name: string; hex: string; hasProducedBlank: boolean }>;
+  }>;
   pendingCount?: number;
   nextCandidateId?: string;
   recipe?: {
@@ -259,7 +266,10 @@ export default function CatalogueStudioPage() {
   const [dropError, setDropError] = useState("");
   const [publishError, setPublishError] = useState("");
   const [publishBusy, setPublishBusy] = useState(false);
-  const [productUrl, setProductUrl] = useState<string | null>(null);
+  const [publishTicks, setPublishTicks] = useState<Record<number, boolean>>({});
+  const [publishColours, setPublishColours] = useState<Record<number, string[]>>({});
+  const [myPetEnabled, setMyPetEnabled] = useState(true);
+  const publishSeed = useRef("");
   const [spendUsd, setSpendUsd] = useState(0);
   const [spendLines, setSpendLines] = useState<Array<{ label: string; usd: number; estimated: boolean }>>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
@@ -307,7 +317,59 @@ export default function CatalogueStudioPage() {
   }, [candidate.data?.id, candidate.data?.status]);
 
   useEffect(() => {
-    setProductUrl(candidate.data?.productUrl || null);
+    const id = candidate.data?.id;
+    const types = candidate.data?.publishTypes;
+    if (!id || !types) return;
+    const reset = publishSeed.current !== id;
+    if (reset) {
+      publishSeed.current = id;
+      setMyPetEnabled(true);
+      const ticks: Record<number, boolean> = {};
+      const colours: Record<number, string[]> = {};
+      for (const type of types) {
+        if (type.published) continue;
+        ticks[type.id] = true;
+        colours[type.id] = type.colors.filter((color) => color.hasProducedBlank).map((color) => color.name);
+      }
+      setPublishTicks(ticks);
+      setPublishColours(colours);
+      return;
+    }
+    setPublishTicks((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const type of types) {
+        if (type.published || type.id in next) continue;
+        next[type.id] = true;
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    setPublishColours((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const type of types) {
+        if (type.published || next[type.id]) continue;
+        next[type.id] = type.colors.filter((color) => color.hasProducedBlank).map((color) => color.name);
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [candidate.data?.id, candidate.data?.publishTypes]);
+
+  const jobPhase = jobs.data?.queue.find((row) => row.id === candidate.data?.id)?.phase || "";
+  const seenJobPhase = useRef("");
+  useEffect(() => {
+    if (!jobPhase || jobPhase === seenJobPhase.current) return;
+    const previous = seenJobPhase.current;
+    seenJobPhase.current = jobPhase;
+    if (previous && (jobPhase === "done" || jobPhase === "failed")) {
+      void candidate.refetch();
+      void published.refetch();
+    }
+  }, [jobPhase, candidate, published]);
+
+  useEffect(() => {
     setSpendUsd(candidate.data?.spendUsd || 0);
     setSpendLines(candidate.data?.spendLines || []);
   }, [candidate.data?.id, candidate.data?.productUrl, candidate.data?.spendUsd, candidate.data?.spendLines]);
@@ -452,6 +514,8 @@ export default function CatalogueStudioPage() {
   const job = queue.find((row) => row.id === candidate.data?.id);
   const jobActive = ACTIVE_JOB.has(job?.phase || "");
   const publishLabel = jobActive ? job?.label || "Queued" : "Promote and publish";
+  const listedNames = (candidate.data?.publishTypes || []).filter((type) => type.published).map((type) => type.name);
+  const openPublishTypes = (candidate.data?.publishTypes || []).filter((type) => !type.published);
 
   async function publishCandidate() {
     setPublishError("");
@@ -477,6 +541,15 @@ export default function CatalogueStudioPage() {
           deviceStructure,
           darknessLevel: Number(darkness),
           productTypeId: studioTypeId,
+          myPetEnabled,
+          targets: (candidate.data?.publishTypes || [])
+            .filter((type) => !type.published && publishTicks[type.id])
+            .map((type) => ({
+              productTypeId: type.id,
+              selectedColors: type.colors
+                .filter((color) => (publishColours[type.id] || []).includes(color.name))
+                .map((color) => ({ name: color.name, hex: color.hex })),
+            })),
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -499,7 +572,7 @@ export default function CatalogueStudioPage() {
           {candidate.data?.catalogueShop ? `${candidate.data.catalogueShop}` : ""}
           {candidate.data?.printifyShopId ? ` · Printify ${candidate.data.printifyShopId}` : ""}
           {candidate.data?.catalogueShop ? " · " : ""}
-          {candidate.data?.recipe?.filename || (candidate.data?.status === "approved" ? "Approved candidate" : "Pending candidate")}. No Shopify product.
+          {candidate.data?.recipe?.filename || (candidate.data?.status === "approved" ? "Approved candidate" : "Pending candidate")}. {listedNames.length ? `Listed on ${listedNames.join(", ")}.` : "No Shopify product."}
           {candidate.data?.pendingCount ? ` ${candidate.data.pendingCount} in the queue.` : ""}
         </p>
         <Button type="button" size="sm" variant="outline" onClick={() => setShowAdmin((v) => !v)}>
@@ -1067,15 +1140,86 @@ export default function CatalogueStudioPage() {
               {dropError ? <p className="text-xs">{dropError}</p> : null}
               {verdict === "dropped" ? <p>Dropped: {dropReason}</p> : null}
               {job?.phase === "done" ? <p>Done</p> : null}
-              {productUrl ? (
-                <a className="text-sm underline" href={productUrl} target="_blank" rel="noreferrer" data-testid="catalogue-studio-product-link">
-                  Open the Shopify product
-                </a>
-              ) : verdict === "dropped" ? null : (
-                <Button type="button" size="sm" disabled={publishBusy || jobActive} onClick={() => void publishCandidate()}>
-                  {publishLabel}
-                </Button>
-              )}
+              {(candidate.data?.publishTypes || []).map((type) => (
+                <div key={type.id} className="space-y-2" data-testid={`catalogue-publish-type-${type.id}`}>
+                  {type.published ? (
+                    <p className="text-sm">
+                      {type.name}: Already published
+                      {type.productUrl ? (
+                        <>
+                          {" "}
+                          <a className="underline" href={type.productUrl} target="_blank" rel="noreferrer">Open</a>
+                        </>
+                      ) : null}
+                    </p>
+                  ) : (
+                    <>
+                      <label className="flex items-center text-sm">
+                        <input
+                          type="checkbox"
+                          className="mr-2"
+                          checked={Boolean(publishTicks[type.id])}
+                          onChange={() => setPublishTicks((current) => ({ ...current, [type.id]: !current[type.id] }))}
+                        />
+                        Publish to {type.name}
+                      </label>
+                      {publishTicks[type.id] ? (
+                        <ul className="ml-6 space-y-1">
+                          {type.colors.map((color) => {
+                            const on = (publishColours[type.id] || []).includes(color.name);
+                            return (
+                              <li key={color.name}>
+                                <label className="flex items-center text-sm">
+                                  <input
+                                    type="checkbox"
+                                    className="mr-2"
+                                    checked={on}
+                                    onChange={() => setPublishColours((current) => {
+                                      const list = current[type.id] || [];
+                                      const next = on ? list.filter((name) => name !== color.name) : [...list, color.name];
+                                      return { ...current, [type.id]: next };
+                                    })}
+                                  />
+                                  {color.hex ? (
+                                    <span
+                                      aria-hidden
+                                      className="mr-2 inline-block h-3 w-3 rounded-full border border-border"
+                                      style={{ backgroundColor: `#${color.hex}` }}
+                                    />
+                                  ) : null}
+                                  {color.name}
+                                </label>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              ))}
+              {openPublishTypes.length && verdict !== "dropped" ? (
+                <>
+                  <label className="flex items-center text-sm" data-testid="catalogue-my-pet-enabled">
+                    <input
+                      type="checkbox"
+                      className="mr-2"
+                      checked={myPetEnabled}
+                      onChange={(event) => setMyPetEnabled(event.target.checked)}
+                    />
+                    My Pet enabled
+                  </label>
+                  <p className="text-xs text-muted-foreground">Written to every listing in this publish. You can change it later on the Shopify product.</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={publishBusy || jobActive || !openPublishTypes.some((type) => publishTicks[type.id])}
+                    onClick={() => void publishCandidate()}
+                  >
+                    {publishLabel}
+                  </Button>
+                </>
+              ) : null}
               {publishError || job?.phase === "failed" ? (
                 <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError || job?.label}</p>
               ) : null}

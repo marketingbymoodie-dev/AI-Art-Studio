@@ -928,6 +928,14 @@ export const productTypes = pgTable("product_types", {
   printChestWidthIn: decimal("print_chest_width_in", { precision: 5, scale: 2 }),
   printChestHeightIn: decimal("print_chest_height_in", { precision: 5, scale: 2 }),
   /**
+   * Words added to a design title when this type is published. Empty blocks
+   * publish. Null means the suggestion has not been stored yet.
+   */
+  listingGarmentWord: text("listing_garment_word"),
+  /** Leading-hyphen slug, or empty. Never a bare number — Shopify owns "-1". */
+  listingHandleSuffix: text("listing_handle_suffix"),
+  listingStyleLabel: text("listing_style_label"),
+  /**
    * Colour-blank photographs and the colour list are read from this product
    * type. Null means this type owns its blanks. Writes stay on the owner.
    */

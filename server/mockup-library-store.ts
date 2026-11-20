@@ -154,7 +154,7 @@ export async function recentSceneLabels(limit = 5): Promise<string[]> {
 
 type ChoiceColor = { name: string; hex: string };
 
-export type StoredMockupImage = { name: string; hex: string; path: string };
+export type StoredMockupImage = { name: string; hex: string; path: string; productTypeId?: number };
 
 export async function readChoice(candidateId: string): Promise<{
   panelId: string | null;
@@ -954,12 +954,18 @@ export async function approveCandidateChoice(args: {
     const jpeg = await sharp(rendered.png).jpeg({ quality: 90 }).toBuffer();
     const path = `candidates/${slug(args.candidateId)}/${Date.now()}-${slug(color.name)}-front.jpg`;
     await putObject(path, jpeg, "image/jpeg");
-    mockupImages.push({ name: color.name, hex: color.hex.replace(/^#/, ""), path });
+    mockupImages.push({
+      name: color.name,
+      hex: color.hex.replace(/^#/, ""),
+      path,
+      productTypeId: args.productTypeId,
+    });
   }
   if (!args.preserveStoredColours) {
+    const prior = (choice.mockupImages || []).filter((image) => image.productTypeId !== args.productTypeId);
     await db
       .update(catalogueCandidateChoices)
-      .set({ approvedAt: now, updatedAt: now, mockupImages })
+      .set({ approvedAt: now, updatedAt: now, mockupImages: [...prior, ...mockupImages] })
       .where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
   }
   return mockupImages;

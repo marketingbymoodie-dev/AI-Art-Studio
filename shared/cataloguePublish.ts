@@ -1,8 +1,13 @@
 /**
- * What the Studio publish button still has to do.
- * A stored Shopify product is finished. A stored print file, listing, or
- * mockup is not repeated.
+ * What the Studio publish button still has to do for one product type.
+ * A listing already stored for that type is finished. A stored print file,
+ * listing description, or mockup for that type is not repeated.
  */
+
+/** Omitted stays on. Only an explicit false writes the My Pet metafield off. */
+export function myPetMetafieldValue(enabled: boolean | null | undefined): "true" | "false" {
+  return enabled === false ? "false" : "true";
+}
 
 export type PublishWorkPhase = "print" | "listing" | "mockups" | "shopify";
 

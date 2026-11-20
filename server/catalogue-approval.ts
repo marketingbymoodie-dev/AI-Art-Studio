@@ -25,6 +25,10 @@ export type ApprovalRecipe = {
   title: string;
   /** Colour-blanks product type. Omitted stays on Unisex Softstyle. */
   productTypeId?: number;
+  /** Each type keeps its own colours. Omitted publishes productTypeId only. */
+  targets?: Array<{ productTypeId: number; selectedColors: ChoiceColor[] }>;
+  /** False writes My Pet off on every listing in this publish. Omitted stays on. */
+  myPetEnabled?: boolean;
 };
 
 function clip(value: string, max: number): string {

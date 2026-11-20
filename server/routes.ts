@@ -14833,11 +14833,16 @@ ${orientationExtra}
       }
 
       const { name, description, printifyBlueprintId, mockupTemplateUrl, sizes, frameColors, aspectRatio } = req.body;
+      const { suggestListingCopy } = await import("@shared/listingCopy");
+      const listing = suggestListingCopy(String(name || ""));
       
       const newProductType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description,
+        listingGarmentWord: listing.garmentWord,
+        listingHandleSuffix: listing.handleSuffix,
+        listingStyleLabel: listing.styleLabel,
         printifyBlueprintId,
         mockupTemplateUrl,
         sizes: JSON.stringify(sizes || []),
@@ -14893,6 +14898,20 @@ ${orientationExtra}
       // null = derived default (on where front+back costs exist); false = operator switched off.
       if ("printSidesEnabled" in updates && updates.printSidesEnabled !== null && typeof updates.printSidesEnabled !== "boolean") {
         return res.status(400).json({ error: "printSidesEnabled must be true, false, or null" });
+      }
+      if ("listingHandleSuffix" in updates) {
+        const { normaliseHandleSuffix } = await import("@shared/listingCopy");
+        const suffix = normaliseHandleSuffix(updates.listingHandleSuffix);
+        if (suffix == null) {
+          return res.status(400).json({ error: "A handle suffix cannot be a number. Shopify would add its own." });
+        }
+        updates.listingHandleSuffix = suffix;
+      }
+      if ("listingGarmentWord" in updates) {
+        updates.listingGarmentWord = String(updates.listingGarmentWord || "").replace(/\s+/g, " ").trim();
+      }
+      if ("listingStyleLabel" in updates) {
+        updates.listingStyleLabel = String(updates.listingStyleLabel || "").replace(/\s+/g, " ").trim();
       }
 
       const updated = await storage.updateProductType(id, updates);
@@ -18698,10 +18717,15 @@ ${orientationExtra}
                 ? "unsupported"
                 : "pending";
 
+      const { suggestListingCopy } = await import("@shared/listingCopy");
+      const listing = suggestListingCopy(name);
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description: resolvedDescription || null,
+        listingGarmentWord: listing.garmentWord,
+        listingHandleSuffix: listing.handleSuffix,
+        listingStyleLabel: listing.styleLabel,
         printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
@@ -25059,6 +25083,9 @@ ${orientationExtra}
           selectedSizeIds: savedSizeIds,
           selectedColorIds: savedColorIds,
           description: pt.description ?? "",
+          listingGarmentWord: pt.listingGarmentWord ?? "",
+          listingHandleSuffix: pt.listingHandleSuffix ?? "",
+          listingStyleLabel: pt.listingStyleLabel ?? "",
           baseMockupImages: typeof pt.baseMockupImages === "string"
             ? JSON.parse(pt.baseMockupImages || "{}")
             : (pt.baseMockupImages || {}),

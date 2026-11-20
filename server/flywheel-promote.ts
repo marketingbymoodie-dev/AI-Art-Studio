@@ -28,6 +28,7 @@ import {
   swatchBaseColorName,
   type CapOccupant,
 } from "@shared/flywheelPromote";
+import { myPetMetafieldValue } from "@shared/cataloguePublish";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
@@ -114,6 +115,13 @@ function parseSizes(raw: unknown): SizeRow[] {
 
 function slug(value: string): string {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function shopifyHandleTaken(shop: string, token: string, handle: string): Promise<boolean> {
+  const data = await adminGql(shop, token, `query($q: String!) {
+    products(first: 1, query: $q) { nodes { handle } }
+  }`, { q: `handle:${handle}` });
+  return (data?.products?.nodes || []).some((node: { handle?: string }) => String(node.handle || "") === handle);
 }
 
 async function adminGql(shop: string, token: string, query: string, variables: Record<string, unknown> = {}) {
@@ -450,6 +458,14 @@ export async function promoteCatalogueCandidate(args: {
   panelId?: string;
   /** Mockups just rendered for this publish. Falls back to the saved choice. */
   mockupImages?: Array<{ name: string; hex: string; path: string }>;
+  /** Listing copy for this type. The candidate title stays the design name. */
+  listingTitle?: string;
+  listingHandle?: string;
+  listingDescription?: string;
+  /** False writes the My Pet metafield off. Omitted stays on. */
+  myPetEnabled?: boolean;
+  /** Type-specific print file. Falls back to the candidate column. */
+  printFilePath?: string;
 }): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
   const choice = await readChoice(args.candidateId);
   const panelId = String(args.panelId || choice.panelId || "");
@@ -743,18 +759,21 @@ export async function promoteCatalogueCandidate(args: {
     return { shopifyProductId: "", printifyProductId: "", status: catalogueVisibility(args.publishNow) };
   }
 
-  const title = String(candidate!.title);
-  const description = String(candidate!.description);
+  const title = String(args.listingTitle || candidate!.title);
+  const description = String(args.listingDescription || candidate!.description);
   const tags = catalogueTags({
     artStyle: String(candidate!.artStyle),
     species: String(candidate!.species),
     humourOperator: String(candidate!.humourOperator),
   });
-  const handle = slug(title) || "design";
+  const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
+  if (await shopifyHandleTaken(shop, installation!.accessToken, handle)) {
+    throw new PromoteRefusal(["That handle is already used. Change the handle suffix."]);
+  }
   const visibility = requireProductVisibility("published");
   const shopifyStatus = shopifyStatusForVisibility(visibility, args.publishNow ? "publish" : "draft");
   const status = catalogueVisibility(args.publishNow);
-  const printBuffer = await readLibraryObject(String(candidate!.printFilePath));
+  const printBuffer = await readLibraryObject(String(args.printFilePath || candidate!.printFilePath));
   const imageId = await uploadPrintFileToPrintify(merchant!.printifyApiToken!, `${handle}-front.png`, printBuffer);
   let printifyProductId = "";
   try {
@@ -825,13 +844,14 @@ export async function promoteCatalogueCandidate(args: {
         type: "single_line_text_field",
         value: args.candidateId,
       },
-      // Per-product on/off switch for the storefront "My Pet" button. Default on;
-      // the pinned definition (ensured below) makes this a checkbox in admin.
+      // Per-product on/off switch for the storefront "My Pet" button.
+      // The pinned definition makes this a checkbox in admin, so it can be
+      // changed on the product after publishing.
       {
         namespace: "ai_art_studio",
         key: "my_pet_enabled",
         type: "boolean",
-        value: "true",
+        value: myPetMetafieldValue(args.myPetEnabled),
       },
     ],
   }) as Record<string, unknown>;
@@ -863,6 +883,10 @@ export async function promoteCatalogueCandidate(args: {
       throw new Error(errors.map((err: { message?: string }) => err.message).join("; ") || "Shopify returned no product");
     }
     shopifyProductId = String(data.productSet.product.id).replace(/\D/g, "");
+    const returnedHandle = String(data.productSet.product.handle || "");
+    if (returnedHandle && returnedHandle !== handle) {
+      throw new Error("Shopify changed the handle. Change the handle suffix and publish again.");
+    }
     const read = await adminGql(
       shop,
       installation!.accessToken,
@@ -921,7 +945,7 @@ export async function promoteCatalogueCandidate(args: {
     handle,
     title,
     status: status === "active" ? "active" : "inactive",
-    myPetEnabled: true,
+    myPetEnabled: args.myPetEnabled !== false,
     defaultSizeBackfilled: true,
     sizeOrderRestored: true,
     variantMap: variantMapOut,

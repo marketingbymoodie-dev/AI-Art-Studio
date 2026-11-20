@@ -176,6 +176,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "print_chest_width_in",        type: "NUMERIC(5,2)" },
   { table: "product_types",         column: "print_chest_height_in",       type: "NUMERIC(5,2)" },
   { table: "product_types",         column: "blank_source_product_type_id", type: "INTEGER" },
+  { table: "product_types",         column: "listing_garment_word",        type: "TEXT" },
+  { table: "product_types",         column: "listing_handle_suffix",       type: "TEXT" },
+  { table: "product_types",         column: "listing_style_label",         type: "TEXT" },
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
   { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
@@ -3601,6 +3604,16 @@ export async function runStartupMigrations(): Promise<void> {
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED catalogue shell categories: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillListingCopy } = await import("../listing-copy");
+    const n = await backfillListingCopy();
+    applied++;
+    console.log(`${tag} listing copy backfill updated=${n}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED listing copy backfill: ${err.message ?? err}`);
   }
 
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;

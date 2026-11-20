@@ -5,7 +5,7 @@
  */
 import { catalogueJobLabel, type CatalogueJobPhase } from "@shared/cataloguePublish";
 import type { ApprovalRecipe } from "./catalogue-approval";
-import { publishCatalogueCandidate, PublishRefusal } from "./catalogue-publish";
+import { publishCatalogueTargets, PublishRefusal, type CatalogueBatchResult } from "./catalogue-publish";
 import { pool } from "./db";
 
 export const CATALOGUE_PUBLISH_CONCURRENCY = 2;
@@ -19,6 +19,7 @@ type JobRow = {
   error: string;
   title: string;
   recipe: ApprovalRecipe;
+  results: CatalogueBatchResult | null;
   updated_at: Date | string;
 };
 
@@ -49,9 +50,13 @@ async function ensureJobsTable(): Promise<void> {
         error text NOT NULL DEFAULT '',
         title text NOT NULL DEFAULT '',
         recipe jsonb NOT NULL,
+        results jsonb NOT NULL DEFAULT '{}'::jsonb,
         updated_at timestamptz NOT NULL DEFAULT now()
       )
-    `).then(() => undefined).catch((err) => {
+    `).then(() => pool.query(`
+      ALTER TABLE catalogue_publish_jobs
+      ADD COLUMN IF NOT EXISTS results jsonb NOT NULL DEFAULT '{}'::jsonb
+    `)).then(() => undefined).catch((err) => {
       tableReady = null;
       throw err;
     });
@@ -165,24 +170,25 @@ async function setPhase(candidateId: string, phase: string): Promise<void> {
   );
 }
 
-async function finish(candidateId: string, status: "done" | "failed", error = ""): Promise<void> {
+async function finish(
+  candidateId: string,
+  status: "done" | "failed",
+  error = "",
+  results: CatalogueBatchResult | null = null,
+): Promise<void> {
   await pool.query(
     `UPDATE catalogue_publish_jobs
-     SET status = $2, phase = $2, error = $3, updated_at = now()
+     SET status = $2, phase = $2, error = $3, results = $4::jsonb, updated_at = now()
      WHERE candidate_id = $1 AND status = 'running'`,
-    [candidateId, status, error.slice(0, 500)],
+    [candidateId, status, error.slice(0, 500), JSON.stringify(results || {})],
   );
 }
 
 async function runJob(row: JobRow): Promise<void> {
   const recipe = row.recipe;
   try {
-    const { shippingPricesBySize } = await import("./routes/catalogue-studio");
-    const prices = await shippingPricesBySize(recipe.productTypeId);
-    await publishCatalogueCandidate({
+    const outcome = await publishCatalogueTargets({
       recipe,
-      pricesBySize: prices.pricesBySize,
-      compareAtBySize: prices.compareAtBySize,
       onPhase: (event) => {
         if (event.phase === "done") return;
         void setPhase(recipe.candidateId, event.phase).catch((err) => {
@@ -190,7 +196,13 @@ async function runJob(row: JobRow): Promise<void> {
         });
       },
     });
-    await finish(recipe.candidateId, "done");
+    const failed = outcome.types.filter((type) => type.status === "failed");
+    await finish(
+      recipe.candidateId,
+      failed.length ? "failed" : "done",
+      failed.map((type) => `${type.name}: ${type.error}`).join("\n"),
+      outcome,
+    );
   } catch (err) {
     const reasons = err instanceof PublishRefusal && err.reasons.length
       ? err.reasons

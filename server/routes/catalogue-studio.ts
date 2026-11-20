@@ -323,6 +323,44 @@ async function libraryColoursFor(productTypeId: number): Promise<StudioLibraryCo
   });
 }
 
+async function publishTargetsFor(
+  candidateId: string,
+  shop: string,
+  types: Array<{ id: number; name: string }>,
+) {
+  const { db } = await import("../db");
+  const rows = candidateId
+    ? await db
+      .select({
+        productTypeId: designProducts.productTypeId,
+        shopifyProductId: designProducts.shopifyProductId,
+        shop: designProducts.shop,
+      })
+      .from(designProducts)
+      .where(eq(designProducts.jobId, candidateId))
+    : [];
+  const shopKey = catalogueShopDomain(shop);
+  return Promise.all(types.map(async (type) => {
+    const listed = rows.find((row) =>
+      row.productTypeId === type.id
+      && catalogueShopDomain(String(row.shop || "")) === shopKey
+      && String(row.shopifyProductId || "").trim(),
+    );
+    const colors = await libraryColoursFor(type.id);
+    return {
+      id: type.id,
+      name: type.name,
+      published: Boolean(listed),
+      productUrl: listed?.shopifyProductId ? shopifyAdminProductUrl(shop, listed.shopifyProductId) : null,
+      colors: colors.map((color) => ({
+        name: color.name,
+        hex: color.hex,
+        hasProducedBlank: color.hasProducedBlank,
+      })),
+    };
+  }));
+}
+
 async function retailIsPositive(productTypeId: number): Promise<boolean> {
   if (!Number.isInteger(productTypeId) || productTypeId <= 0) return false;
   const { db } = await import("../db");
@@ -460,6 +498,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const productUrl = stored?.shopifyProductId
         ? shopifyAdminProductUrl(stored.shopDomain || STAGING_SHOP, stored.shopifyProductId)
         : null;
+      const publishTypes = await publishTargetsFor(
+        fixture ? "" : id,
+        profile.shop,
+        visibleTypes.map((row) => ({ id: row.id, name: row.name })),
+      );
       res.json({
         id,
         status: stored?.status || PENDING_CANDIDATE.status,
@@ -482,6 +525,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         colourTickMode,
         selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : coloursForStudio[0]?.name || "White",
         productTypes: visibleTypes.map((row) => ({ id: row.id, name: row.name })),
+        publishTypes,
         catalogueShop: profile.shop,
         printifyShopId: printifyMerchant?.printifyShopId || null,
         selectedSize: "L",
@@ -957,26 +1001,50 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
     if (!id) return;
     try {
-      const stored = await readCandidateRow(id);
-      if (stored?.shopifyProductId) {
-        res.json({ id, phase: "done", label: "Done", error: "" });
+      const { publishCatalogueCandidate, PublishRefusal, sceneForType } = await import("../catalogue-publish");
+      const { enqueueCataloguePublish } = await import("../catalogue-publish-jobs");
+      const { db } = await import("../db");
+      const rawTargets = Array.isArray(req.body?.targets) && req.body.targets.length
+        ? req.body.targets
+        : [{ productTypeId: req.body?.productTypeId, selectedColors: req.body?.selectedColors }];
+      const seen = new Set<number>();
+      const targets: Array<{ productTypeId: number; name: string; selectedColors: Array<{ name: string; hex: string }> }> = [];
+      for (const row of rawTargets) {
+        const garment = await studioGarment(row?.productTypeId, req.shopDomain);
+        if (!garment.id || seen.has(garment.id)) continue;
+        seen.add(garment.id);
+        const colors = sortCatalogueColours((Array.isArray(row?.selectedColors) ? row.selectedColors : []).map((c: { name?: string; hex?: string }) => ({
+          name: String(c?.name || ""),
+          hex: String(c?.hex || "").replace(/^#/, ""),
+        }))).filter((color) => color.name);
+        targets.push({ productTypeId: garment.id, name: garment.name, selectedColors: colors });
+      }
+      if (!targets.length) {
+        res.status(400).json({ error: "Choose a product type.", reasons: ["Choose a product type."] });
         return;
       }
-      const { enqueueCataloguePublish } = await import("../catalogue-publish-jobs");
-      const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);
-      if (!(await retailIsPositive(garment.id))) {
-        const reason = "Retail is $0.00 for this type. Set the price table before publishing a design.";
+      const profile = operatorCatalogueForShop(req.shopDomain);
+      const listed = await db
+        .select({
+          productTypeId: designProducts.productTypeId,
+          shopifyProductId: designProducts.shopifyProductId,
+          shop: designProducts.shop,
+        })
+        .from(designProducts)
+        .where(eq(designProducts.jobId, id));
+      const open = targets.filter((target) => !listed.some((row) =>
+        row.productTypeId === target.productTypeId
+        && catalogueShopDomain(String(row.shop || "")) === catalogueShopDomain(profile.shop)
+        && String(row.shopifyProductId || "").trim(),
+      ));
+      if (!open.length) {
+        const reason = "Every selected type is already published.";
         res.status(400).json({ error: reason, reasons: [reason] });
         return;
       }
-      const colors = Array.isArray(req.body?.selectedColors) ? req.body.selectedColors : [];
-      const job = await enqueueCataloguePublish({
+      const recipeBase = {
         candidateId: id,
         panelId: String(req.body?.panelId || ""),
-        selectedColors: sortCatalogueColours(colors.map((c: { name?: string; hex?: string }) => ({
-          name: String(c?.name || ""),
-          hex: String(c?.hex || "").replace(/^#/, ""),
-        }))).filter((color) => color.name),
         artStyle: String(req.body?.artStyle || ""),
         species: String(req.body?.species || ""),
         humourOperator: String(req.body?.humourOperator || ""),
@@ -987,7 +1055,37 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         deviceStructure: String(req.body?.deviceStructure || ""),
         darknessLevel: Number(req.body?.darknessLevel),
         title: String(req.body?.title || (id === PENDING_CANDIDATE.id ? PENDING_CANDIDATE.title : "")),
-        productTypeId: garment.id || undefined,
+        myPetEnabled: req.body?.myPetEnabled !== false,
+      };
+      const reasons: string[] = [];
+      for (const target of open) {
+        try {
+          const prices = await shippingPricesBySize(target.productTypeId);
+          const panelId = await sceneForType(target.productTypeId, recipeBase.panelId);
+          await publishCatalogueCandidate({
+            recipe: { ...recipeBase, panelId, productTypeId: target.productTypeId, selectedColors: target.selectedColors },
+            pricesBySize: prices.pricesBySize,
+            compareAtBySize: prices.compareAtBySize,
+            work: "check",
+          });
+        } catch (err) {
+          const text = err instanceof PublishRefusal && err.reasons.length
+            ? err.reasons.join("\n")
+            : String((err as Error)?.message || err);
+          for (const line of text.split("\n")) {
+            if (line.trim()) reasons.push(`${target.name}: ${line.trim()}`);
+          }
+        }
+      }
+      if (reasons.length) {
+        res.status(400).json({ error: reasons.join("\n"), reasons });
+        return;
+      }
+      const job = await enqueueCataloguePublish({
+        ...recipeBase,
+        selectedColors: open[0].selectedColors,
+        productTypeId: open[0].productTypeId,
+        targets: open.map((target) => ({ productTypeId: target.productTypeId, selectedColors: target.selectedColors })),
       });
       res.json(job);
     } catch (e: any) {

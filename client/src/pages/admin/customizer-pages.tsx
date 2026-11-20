@@ -224,6 +224,9 @@ interface Blank {
   selectedSizeIds?: string[];
   selectedColorIds?: string[];
   description?: string | null;
+  listingGarmentWord?: string | null;
+  listingHandleSuffix?: string | null;
+  listingStyleLabel?: string | null;
   /** Daily Printify stock scan (server/oos-catalogue-report.ts) — null until first scan runs. */
   oosStatus?: "ok" | "critical" | "fully_oos" | "error" | "unknown" | null;
   oosAvailableVariants?: number | null;
@@ -382,6 +385,9 @@ export default function AdminCustomizerPages() {
   const editTargetIdRef = useRef<string | null>(null);
   editTargetIdRef.current = editTarget?.id ?? null;
   const [editDescription, setEditDescription] = useState("");
+  const [editGarmentWord, setEditGarmentWord] = useState("");
+  const [editHandleSuffix, setEditHandleSuffix] = useState("");
+  const [editStyleLabel, setEditStyleLabel] = useState("");
   const [editPricingStrategy, setEditPricingStrategy] = useState("notify_only");
   const [editMarkupPercent, setEditMarkupPercent] = useState(String(DEFAULT_MARKUP_PERCENT));
   const [editDescriptionLoading, setEditDescriptionLoading] = useState(false);
@@ -602,6 +608,9 @@ export default function AdminCustomizerPages() {
   useEffect(() => {
     if (!editTarget) {
       setEditDescription("");
+      setEditGarmentWord("");
+      setEditHandleSuffix("");
+      setEditStyleLabel("");
       setEditDescriptionLoading(false);
       return;
     }
@@ -610,6 +619,9 @@ export default function AdminCustomizerPages() {
     // Seed once per page/product — do not re-run when description arrives later
     // or a stale blanks refetch would wipe a just-fetched catalog description.
     setEditDescription(plainTextFromHtml(editBlank.description));
+    setEditGarmentWord(editBlank.listingGarmentWord || "");
+    setEditHandleSuffix(editBlank.listingHandleSuffix || "");
+    setEditStyleLabel(editBlank.listingStyleLabel || "");
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
     setEditMarkupPercent(String(resolveMarkupPercent((editBlank as any).defaultMarkupPercent)));
     setEditMinMarginPercent(
@@ -825,6 +837,9 @@ export default function AdminCustomizerPages() {
           pricingStrategy: editPricingStrategy,
           defaultMarkupPercent: Number.isFinite(markup) ? markup : null,
           minMarginPercent: minM != null && Number.isFinite(minM) ? minM : null,
+          listingGarmentWord: editGarmentWord,
+          listingHandleSuffix: editHandleSuffix,
+          listingStyleLabel: editStyleLabel,
         });
         if (!ptRes.ok) {
           const body = await ptRes.json().catch(() => ({}));
@@ -4086,6 +4101,36 @@ export default function AdminCustomizerPages() {
                     ? "Pulling the Printify catalog description…"
                     : "Saved locally and synced to the linked Shopify product description."}
                 </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-garment-word">Garment word</Label>
+                <Input
+                  id="edit-garment-word"
+                  value={editGarmentWord}
+                  onChange={(e) => setEditGarmentWord(e.target.value)}
+                  placeholder="T-Shirt"
+                />
+                <p className="text-xs text-muted-foreground">Added to the design name on each listing. Publishing is blocked while this is empty.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-handle-suffix">Handle suffix</Label>
+                <Input
+                  id="edit-handle-suffix"
+                  value={editHandleSuffix}
+                  onChange={(e) => setEditHandleSuffix(e.target.value)}
+                  placeholder="-softstyle"
+                />
+                <p className="text-xs text-muted-foreground">Optional. Leave empty when this type should use the title alone. A number such as -1 is rejected.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-style-label">Style label</Label>
+                <Input
+                  id="edit-style-label"
+                  value={editStyleLabel}
+                  onChange={(e) => setEditStyleLabel(e.target.value)}
+                  placeholder="Lighter Softstyle Tee"
+                />
+                <p className="text-xs text-muted-foreground">Short line at the top of this type's listing, ahead of the shared design description.</p>
               </div>
 
               <div className="space-y-3 rounded-md border p-3">

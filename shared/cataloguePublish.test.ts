@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { promoteRefusals } from "./flywheelPromote";
-import { catalogueJobLabel, formatCatalogueSpend, publishPreflightMessages, publishWork } from "./cataloguePublish";
+import { catalogueJobLabel, formatCatalogueSpend, myPetMetafieldValue, publishPreflightMessages, publishWork } from "./cataloguePublish";
 
 const ready = {
   printFilePath: "print.png",
@@ -74,6 +74,12 @@ describe("catalogue publish phases", () => {
       ["No colours selected.", "Truth is not stored."],
       ["No colours are ticked."],
     )).toEqual(["Truth is not stored.", "No colours are ticked."]);
+  });
+
+  it("writes My Pet on unless the publish tick is off", () => {
+    expect(myPetMetafieldValue(undefined)).toBe("true");
+    expect(myPetMetafieldValue(true)).toBe("true");
+    expect(myPetMetafieldValue(false)).toBe("false");
   });
 
   it("formats a small listing charge", () => {
