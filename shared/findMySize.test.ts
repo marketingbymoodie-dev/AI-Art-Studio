@@ -5,6 +5,7 @@ import {
   garmentShapeFromName,
   measurementsFromPrintifyChart,
   suggestSize,
+  visibleMeasurementColumns,
 } from "./findMySize";
 
 const gildan = [
@@ -46,6 +47,11 @@ describe("find my size", () => {
     expect(softstyle.columns.map((column) => column.key)).toEqual(["chestWidth", "bodyLength", "sleeveLength"]);
     const dyed = guide(comfort, "Comfort Colors 1717");
     expect(dyed.rows.find((row) => row.size === "S")?.values).toMatchObject({ chestWidth: 18.25, bodyLength: 26.62 });
+    expect(dyed.columns.find((column) => column.key === "sleeveLength")?.label).toBe("Sleeve length from centre back");
+    expect(softstyle.columns.find((column) => column.key === "sleeveLength")?.label).toBe("Sleeve length");
+    expect(visibleMeasurementColumns("tee", dyed.columns).map((column) => column.key)).toEqual(["chestWidth", "bodyLength"]);
+    expect(visibleMeasurementColumns("long-sleeve", dyed.columns).map((column) => column.label)).toContain("Sleeve length from centre back");
+    expect(visibleMeasurementColumns("sweatshirt", softstyle.columns).map((column) => column.label)).toContain("Sleeve length");
     expect(dyed.toleranceNote).toBe("Finished garment measurements can vary by ±1.50 in.");
   });
 

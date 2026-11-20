@@ -170,7 +170,14 @@ export function columnFromChartLabel(label: string): MeasurementColumn | null {
   if (!clean || /tolerance/.test(lower)) return null;
   if (/^width\b/.test(lower)) return { key: "chestWidth", label: "Chest width", role: "chest" };
   if (/^length\b/.test(lower) && !/sleeve/.test(lower)) return { key: "bodyLength", label: "Body length", role: "length" };
-  if (/sleeve/.test(lower)) return { key: "sleeveLength", label: "Sleeve length", role: "other" };
+  if (/sleeve/.test(lower)) {
+    const fromCentreBack = /cent(?:er|re)\s*back/.test(lower);
+    return {
+      key: "sleeveLength",
+      label: fromCentreBack ? "Sleeve length from centre back" : "Sleeve length",
+      role: "other",
+    };
+  }
   const key = lower.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   if (!key) return null;
   return { key, label: clean, role: "other" };
@@ -235,4 +242,13 @@ export function measurementsFromPrintifyChart(args: {
 
 export function inchesToCentimetres(inches: number): number {
   return inches * 2.54;
+}
+
+/** Tee charts store a centre-back sleeve figure. Shoppers only see it on long sleeves and sweatshirts. */
+export function visibleMeasurementColumns(shape: GarmentShape, columns: MeasurementColumn[]): MeasurementColumn[] {
+  return columns.filter((column) => {
+    const sleeve = column.key === "sleeveLength" || /sleeve/i.test(column.label);
+    if (sleeve) return shape !== "tee";
+    return column.role === "chest" || column.role === "length";
+  });
 }

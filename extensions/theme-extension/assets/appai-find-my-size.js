@@ -78,25 +78,45 @@
   }
 
   function garmentSvg(shape) {
-    var sleeves = shape === "tee"
-      ? "M22 74 L62 54 L62 82 L34 96 Z M178 74 L138 54 L138 82 L166 96 Z"
-      : "M6 86 L62 54 L62 90 L14 112 Z M194 86 L138 54 L138 90 L186 112 Z";
+    var tee = shape !== "long-sleeve" && shape !== "sweatshirt";
+    var shoulder = 48;
+    var hem = 162;
+    var left = 72;
+    var right = 148;
+    var neckL = 98;
+    var neckR = 122;
+    var neckDip = 60;
+    var armpit = 74;
+    var sleeveTop = tee ? "M24 60 L72 48" : "M4 64 L72 48";
+    var sleeveBottom = tee ? "L72 74 L34 86 Z" : "L72 74 L14 90 Z";
+    var rightSleeve = tee
+      ? "L196 60 L186 86 L148 74"
+      : "L216 64 L206 90 L148 74";
+    var body = sleeveTop
+      + " L" + neckL + " " + shoulder
+      + " Q110 " + neckDip + " " + neckR + " " + shoulder
+      + " L" + right + " " + shoulder + " "
+      + rightSleeve
+      + " L" + right + " " + hem
+      + " L" + left + " " + hem + " "
+      + sleeveBottom;
     var hood = shape === "sweatshirt"
-      ? '<path d="M78 50 C88 24 112 24 122 50" fill="none" stroke="#171717" stroke-width="1.5" stroke-linecap="round"/>'
+      ? '<path d="M88 48 C88 14 132 14 132 48" fill="none" stroke="#171717" stroke-width="1.5" stroke-linecap="round"/>'
       : "";
     var rib = shape === "sweatshirt"
-      ? '<path d="M64 156 H136" fill="none" stroke="#171717" stroke-width="1.5"/>'
+      ? '<path d="M72 150 H148 M16 66 L24 88 M204 66 L196 88" fill="none" stroke="#171717" stroke-width="1.5" stroke-linecap="round"/>'
       : "";
-    return '<svg class="appai-fms__svg" viewBox="0 0 200 200" width="190" height="190" aria-hidden="true">'
-      + '<path d="M62 54 L84 40 Q100 66 116 40 L138 54 L138 172 L62 172 Z" fill="#f6f6f6" stroke="#171717" stroke-width="1.5" stroke-linejoin="round"/>'
-      + '<path d="' + sleeves + '" fill="#f6f6f6" stroke="#171717" stroke-width="1.5" stroke-linejoin="round"/>'
+    var arrowY = armpit + 14;
+    var arrowX = tee ? 208 : 230;
+    return '<svg class="appai-fms__svg" viewBox="0 0 260 190" width="238" height="174" aria-hidden="true">'
+      + '<path d="' + body + '" fill="#f7f7f7" stroke="#171717" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
       + hood + rib
-      + '<line x1="74" y1="112" x2="126" y2="112" stroke="#171717" stroke-width="1.25"/>'
-      + '<path d="M74 112 L80 108 M74 112 L80 116 M126 112 L120 108 M126 112 L120 116" fill="none" stroke="#171717" stroke-width="1.25" stroke-linecap="round"/>'
-      + '<text x="100" y="104" text-anchor="middle" font-size="13" fill="#171717">A</text>'
-      + '<line x1="150" y1="54" x2="150" y2="172" stroke="#171717" stroke-width="1.25"/>'
-      + '<path d="M150 54 L146 60 M150 54 L154 60 M150 172 L146 166 M150 172 L154 166" fill="none" stroke="#171717" stroke-width="1.25" stroke-linecap="round"/>'
-      + '<text x="164" y="116" font-size="13" fill="#171717">B</text>'
+      + '<line x1="84" y1="' + arrowY + '" x2="136" y2="' + arrowY + '" stroke="#171717" stroke-width="1.25"/>'
+      + '<path d="M84 ' + arrowY + ' l6 -3.5 M84 ' + arrowY + ' l6 3.5 M136 ' + arrowY + ' l-6 -3.5 M136 ' + arrowY + ' l-6 3.5" fill="none" stroke="#171717" stroke-width="1.25" stroke-linecap="round"/>'
+      + '<text x="110" y="' + (arrowY - 6) + '" text-anchor="middle" font-size="12" fill="#171717" font-family="inherit">A</text>'
+      + '<line x1="' + arrowX + '" y1="' + shoulder + '" x2="' + arrowX + '" y2="' + hem + '" stroke="#171717" stroke-width="1.25"/>'
+      + '<path d="M' + arrowX + ' ' + shoulder + ' l-3.5 6 M' + arrowX + ' ' + shoulder + ' l3.5 6 M' + arrowX + ' ' + hem + ' l-3.5 -6 M' + arrowX + ' ' + hem + ' l3.5 -6" fill="none" stroke="#171717" stroke-width="1.25" stroke-linecap="round"/>'
+      + '<text x="' + (arrowX + 8) + '" y="108" font-size="12" fill="#171717" font-family="inherit">B</text>'
       + "</svg>";
   }
 
@@ -145,16 +165,18 @@
 
   var styles = [
     ".appai-fms, .appai-fms * { box-sizing: border-box !important; }",
-    ".appai-fms { position: fixed !important; inset: 0 !important; z-index: 2147483000 !important; background: rgba(0,0,0,.45) !important; display: flex !important; align-items: flex-end !important; justify-content: center !important; padding: 12px !important; }",
-    ".appai-fms__panel { background: #fff !important; color: #171717 !important; width: min(32rem, 100%) !important; max-height: 90vh !important; overflow: auto !important; border-radius: 10px !important; padding: 20px !important; font-family: inherit !important; font-size: 15px !important; line-height: 1.4 !important; text-align: left !important; }",
+    ".appai-fms { position: fixed !important; inset: 0 !important; z-index: 2147483000 !important; background: rgba(0,0,0,.45) !important; display: flex !important; align-items: flex-end !important; justify-content: center !important; padding: 12px !important; font-family: var(--font-body--family, var(--font-body-family, inherit)) !important; }",
+    ".appai-fms__panel { position: relative !important; background: #fff !important; color: #171717 !important; width: min(32rem, 100%) !important; max-height: 90vh !important; overflow: auto !important; border-radius: 10px !important; padding: 20px !important; font-family: var(--font-body--family, var(--font-body-family, inherit)) !important; font-size: 15px !important; line-height: 1.4 !important; text-align: left !important; }",
+    ".appai-fms h2 { font-family: var(--font-body--family, var(--font-body-family, inherit)) !important; font-weight: 600 !important; font-style: normal !important; letter-spacing: normal !important; text-transform: none !important; line-height: 1.3 !important; padding-right: 28px !important; }",
     ".appai-fms h2, .appai-fms p, .appai-fms label, .appai-fms td, .appai-fms th { color: #171717 !important; background: transparent !important; margin: 0 0 8px !important; font-size: inherit !important; }",
+    ".appai-fms__x { position: absolute !important; top: 8px !important; right: 8px !important; width: 32px !important; height: 32px !important; min-width: 0 !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; border: 0 !important; border-radius: 0 !important; background: transparent !important; color: #171717 !important; box-shadow: none !important; display: flex !important; align-items: center !important; justify-content: center !important; cursor: pointer !important; }",
     ".appai-fms__choice, .appai-fms__back, .appai-fms__primary, .appai-fms__use { appearance: none !important; display: inline-block !important; background: #fff !important; color: #171717 !important; border: 1px solid #171717 !important; border-radius: 6px !important; padding: 8px 12px !important; margin: 0 !important; min-height: 0 !important; min-width: 0 !important; width: auto !important; box-shadow: none !important; text-decoration: none !important; font: inherit !important; font-size: 14px !important; line-height: 1.2 !important; cursor: pointer !important; opacity: 1 !important; }",
     ".appai-fms__choice[aria-pressed='true'], .appai-fms__primary, .appai-fms__use { background: #171717 !important; color: #fff !important; }",
     ".appai-fms__row { display: flex !important; gap: 8px !important; margin: 0 0 12px !important; }",
     ".appai-fms__row > button { flex: 1 1 0 !important; }",
     ".appai-fms__primary, .appai-fms__use { width: 100% !important; margin-top: 8px !important; }",
     ".appai-fms input { display: block !important; width: 100% !important; margin-top: 4px !important; padding: 8px !important; border: 1px solid #171717 !important; border-radius: 6px !important; background: #fff !important; color: #171717 !important; font: inherit !important; }",
-    ".appai-fms__svg { display: block !important; margin: 8px auto !important; width: 190px !important; height: 190px !important; max-width: 100% !important; }",
+    ".appai-fms__svg { display: block !important; margin: 8px auto !important; width: 238px !important; height: 174px !important; max-width: 100% !important; }",
     ".appai-fms__caption { text-align: center !important; }",
     ".appai-fms__message { margin-top: 12px !important; padding: 12px !important; border: 1px solid #171717 !important; border-radius: 8px !important; }",
     ".appai-fms table { width: 100% !important; border-collapse: collapse !important; }",
@@ -191,12 +213,16 @@
     }
 
     function draw() {
+      var shape = guide.shape || "tee";
       var columns = ((guide.measurements && guide.measurements.columns) || []).filter(function (column) {
-        return column.role === "chest" || column.role === "length" || column.key === "sleeveLength";
+        var sleeve = column.key === "sleeveLength" || /sleeve/i.test(column.label || "");
+        if (sleeve) return shape !== "tee";
+        return column.role === "chest" || column.role === "length";
       });
       var rows = (guide.measurements && guide.measurements.rows) || [];
       var html = "<style>" + styles + "</style>";
-      html += '<div class="appai-fms__row"><h2 id="appai-fms-title">' + (screen === "find" ? "Find my size" : "Garment measurements") + '</h2><button type="button" class="appai-fms__back" data-close>Close</button></div>';
+      html += '<button type="button" class="appai-fms__x" data-close aria-label="Close"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>';
+      html += '<h2 id="appai-fms-title">' + (screen === "find" ? "Find my size" : "Garment measurements") + "</h2>";
       html += '<div class="appai-fms__row">' + choice("data-screen", "find", "Suggest my size", screen === "find") + choice("data-screen", "compare", "Compare measurements", screen === "compare") + "</div>";
       if (screen === "find") {
         if (guide.guarantee && guide.guarantee.title) {
@@ -219,7 +245,7 @@
       } else {
         html += "<p><strong>" + escapeHtml(guide.measurements.model || "") + " · " + escapeHtml(guide.garmentWord || "Garment") + "</strong></p>";
         html += "<p>These are garment measurements, not body measurements.</p>";
-        html += garmentSvg(guide.shape || "tee");
+        html += garmentSvg(shape);
         html += '<p class="appai-fms__caption">A — Chest width · B — Body length</p>';
         html += '<div class="appai-fms__row">' + choice("data-table", "imperial", "Inches", tableUnit === "imperial") + choice("data-table", "metric", "Centimetres", tableUnit === "metric") + "</div>";
         html += "<table><tr><th>Size</th>";

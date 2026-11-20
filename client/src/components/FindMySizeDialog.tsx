@@ -3,6 +3,7 @@ import {
   FIT_ORDER,
   inchesToCentimetres,
   suggestSize,
+  visibleMeasurementColumns,
   type FindMySizeGuide,
   type FitId,
 } from "@shared/findMySize";
@@ -16,21 +17,25 @@ const FIT_LABEL: Record<FitId, string> = {
 };
 
 function GarmentDrawing({ shape }: { shape: FindMySizeGuide["shape"] }) {
-  const sleeves = shape === "tee"
-    ? "M22 74 L62 54 L62 82 L34 96 Z M178 74 L138 54 L138 82 L166 96 Z"
-    : "M6 86 L62 54 L62 90 L14 112 Z M194 86 L138 54 L138 90 L186 112 Z";
+  const tee = shape === "tee";
+  const shoulder = 48;
+  const hem = 162;
+  const arrowY = 88;
+  const arrowX = tee ? 208 : 230;
+  const body = tee
+    ? "M24 60 L72 48 L98 48 Q110 60 122 48 L148 48 L196 60 L186 86 L148 74 L148 162 L72 162 L72 74 L34 86 Z"
+    : "M4 64 L72 48 L98 48 Q110 60 122 48 L148 48 L216 64 L206 90 L148 74 L148 162 L72 162 L72 74 L14 90 Z";
   return (
-    <svg viewBox="0 0 200 200" className="mx-auto h-[190px] w-[190px]" aria-hidden="true">
-      <path d="M62 54 L84 40 Q100 66 116 40 L138 54 L138 172 L62 172 Z" fill="#f6f6f6" stroke="#171717" strokeWidth="1.5" strokeLinejoin="round" />
-      <path d={sleeves} fill="#f6f6f6" stroke="#171717" strokeWidth="1.5" strokeLinejoin="round" />
-      {shape === "sweatshirt" ? <path d="M78 50 C88 24 112 24 122 50" fill="none" stroke="#171717" strokeWidth="1.5" strokeLinecap="round" /> : null}
-      {shape === "sweatshirt" ? <path d="M64 156 H136" fill="none" stroke="#171717" strokeWidth="1.5" /> : null}
-      <line x1="74" y1="112" x2="126" y2="112" stroke="#171717" strokeWidth="1.25" />
-      <path d="M74 112 L80 108 M74 112 L80 116 M126 112 L120 108 M126 112 L120 116" fill="none" stroke="#171717" strokeWidth="1.25" strokeLinecap="round" />
-      <text x="100" y="104" textAnchor="middle" fontSize="13" fill="#171717">A</text>
-      <line x1="150" y1="54" x2="150" y2="172" stroke="#171717" strokeWidth="1.25" />
-      <path d="M150 54 L146 60 M150 54 L154 60 M150 172 L146 166 M150 172 L154 166" fill="none" stroke="#171717" strokeWidth="1.25" strokeLinecap="round" />
-      <text x="164" y="116" fontSize="13" fill="#171717">B</text>
+    <svg viewBox="0 0 260 190" className="mx-auto h-[174px] w-[238px]" aria-hidden="true">
+      <path d={body} fill="#f7f7f7" stroke="#171717" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      {shape === "sweatshirt" ? <path d="M88 48 C88 14 132 14 132 48" fill="none" stroke="#171717" strokeWidth="1.5" strokeLinecap="round" /> : null}
+      {shape === "sweatshirt" ? <path d="M72 150 H148 M16 66 L24 88 M204 66 L196 88" fill="none" stroke="#171717" strokeWidth="1.5" strokeLinecap="round" /> : null}
+      <line x1="84" y1={arrowY} x2="136" y2={arrowY} stroke="#171717" strokeWidth="1.25" />
+      <path d={`M84 ${arrowY} l6 -3.5 M84 ${arrowY} l6 3.5 M136 ${arrowY} l-6 -3.5 M136 ${arrowY} l-6 3.5`} fill="none" stroke="#171717" strokeWidth="1.25" strokeLinecap="round" />
+      <text x="110" y={arrowY - 6} textAnchor="middle" fontSize="12" fill="#171717">A</text>
+      <line x1={arrowX} y1={shoulder} x2={arrowX} y2={hem} stroke="#171717" strokeWidth="1.25" />
+      <path d={`M${arrowX} ${shoulder} l-3.5 6 M${arrowX} ${shoulder} l3.5 6 M${arrowX} ${hem} l-3.5 -6 M${arrowX} ${hem} l3.5 -6`} fill="none" stroke="#171717" strokeWidth="1.25" strokeLinecap="round" />
+      <text x={arrowX + 8} y="108" fontSize="12" fill="#171717">B</text>
     </svg>
   );
 }
@@ -60,7 +65,7 @@ export function FindMySizeButton({
   const [notice, setNotice] = useState("");
   const rows = guide?.measurements.rows || [];
   const columns = useMemo(
-    () => (guide?.measurements.columns || []).filter((column) => column.role !== "other" || column.key === "sleeveLength"),
+    () => visibleMeasurementColumns(guide?.shape || "tee", guide?.measurements.columns || []),
     [guide],
   );
   const chest = guide?.measurements.columns.find((column) => column.role === "chest");
@@ -114,15 +119,18 @@ export function FindMySizeButton({
           <div
             role="dialog"
             aria-labelledby="find-my-size-title"
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-5 text-neutral-900 shadow-xl"
+            className="relative max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-5 text-neutral-900 shadow-xl"
+            style={{ fontFamily: "var(--font-body--family, var(--font-body-family, inherit))" }}
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="mb-4 flex items-start justify-between gap-3">
-              <h2 id="find-my-size-title" className="text-lg font-semibold">
-                {screen === "find" ? "Find my size" : "Garment measurements"}
-              </h2>
-              <button type="button" className="text-sm underline" onClick={() => setOpen(false)}>Close</button>
-            </div>
+            <button type="button" className="absolute right-2 top-2 flex h-8 w-8 items-center justify-center text-neutral-900" aria-label="Close" onClick={() => setOpen(false)}>
+              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                <path d="M3 3 L13 13 M13 3 L3 13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+            <h2 id="find-my-size-title" className="mb-4 pr-8 text-lg font-semibold" style={{ fontFamily: "inherit", letterSpacing: "normal", textTransform: "none" }}>
+              {screen === "find" ? "Find my size" : "Garment measurements"}
+            </h2>
             {screen === "find" ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-2">

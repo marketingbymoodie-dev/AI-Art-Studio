@@ -100,7 +100,27 @@ describe("storefront find my size", () => {
     const root = finder.openDialog(document, guide);
     button(root, "Compare measurements").click();
     expect(root.textContent).toContain("Garment measurements");
-    expect(root.querySelector("svg")).toBeTruthy();
+    expect(root.textContent).not.toContain("Sleeve");
+    const close = root.querySelector("[data-close]") as HTMLButtonElement;
+    expect(close.getAttribute("aria-label")).toBe("Close");
+    expect(close.textContent?.trim()).toBe("");
+    const flat = root.querySelector(".appai-fms__svg")?.innerHTML || "";
+    expect(flat).toContain("L72 48 L98 48");
+    expect(flat).toContain('y1="48"');
+    expect(root.querySelector("style")?.textContent).toContain("--font-body--family");
+    expect(button(root, "Suggest my size").getAttribute("aria-pressed")).toBe("false");
+    button(root, "Back to Find my size").click();
+    expect(root.textContent).toContain("How we suggest a size");
+    expect(button(root, "Suggest my size").getAttribute("aria-pressed")).toBe("true");
+    expect(root.querySelector("[data-field=height]")).toBeTruthy();
+  });
+
+  it("labels sleeve length on a sweatshirt", () => {
+    document.body.innerHTML = "<div></div>";
+    const root = finder.openDialog(document, { ...guide, shape: "sweatshirt", garmentWord: "Sweatshirt" });
+    button(root, "Compare measurements").click();
+    expect(root.textContent).toContain("Sleeve length from centre back");
+    expect(root.querySelector(".appai-fms__svg")?.innerHTML).toContain("L72 48 L98 48");
     expect(button(root, "Suggest my size").getAttribute("aria-pressed")).toBe("false");
     button(root, "Back to Find my size").click();
     expect(root.textContent).toContain("How we suggest a size");
