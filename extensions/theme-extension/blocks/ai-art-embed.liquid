@@ -84,6 +84,13 @@
 {% if product %}
   <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"></div>
   <script src="{{ 'appai-find-my-size.js' | asset_url }}" defer></script>
+  {% comment %}
+    Catalogue listings carry design_candidate_id. Older design products
+    carry the ai-art-studio-design tag. Shells do not. No per-product switch.
+  {% endcomment %}
+  {% if product.metafields.ai_art_studio.design_candidate_id.value != blank or product.tags contains 'ai-art-studio-design' %}
+    <script src="{{ 'appai-hide-listing-thumbs.js' | asset_url }}" defer></script>
+  {% endif %}
 {% endif %}
 <script src="{{ 'appai-card-swatches.js' | asset_url }}" defer></script>
 
