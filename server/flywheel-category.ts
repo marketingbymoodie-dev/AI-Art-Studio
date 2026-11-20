@@ -2,9 +2,11 @@
  * One-off: the Softstyle studio product has no Shopify category, so promote
  * refuses. Sets Clothing Tops > T-Shirts on the staging base product only.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { customizerPages, productTypes } from "@shared/schema";
 import { db } from "./db";
+import { hasShopifyAppCredentials } from "./shopify-app-credentials";
+import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 import { storage } from "./storage";
 
 const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
@@ -17,9 +19,11 @@ async function adminGql(shop: string, token: string, query: string, variables: R
     body: JSON.stringify({ query, variables }),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.errors?.length) {
-    const message = json?.errors?.map((err: { message?: string }) => err.message).filter(Boolean).join("; ");
-    throw new Error(message || `Shopify HTTP ${res.status}`);
+  const graphqlErrors = Array.isArray(json?.errors) ? json.errors : [];
+  if (!res.ok || graphqlErrors.length) {
+    const message = graphqlErrors.map((err: { message?: string }) => err.message).filter(Boolean).join("; ");
+    const fallback = typeof json?.errors === "string" ? json.errors : "";
+    throw new Error(message || fallback || `Shopify HTTP ${res.status}`);
   }
   return json.data;
 }
@@ -78,4 +82,57 @@ export async function ensureSoftstyleProductCategory(): Promise<{ categoryId: st
   const installation = await storage.getShopifyInstallationByShop(shop);
   if (!installation?.accessToken) throw new Error("Shopify is not connected for the staging shop.");
   return ensureTshirtCategory(shop, page.baseProductId, installation.accessToken);
+}
+
+const SHELL_SHOPS: Record<number, string> = {
+  54: "ai-art-studio-staging.myshopify.com",
+  56: "h7epay-gh.myshopify.com",
+  58: "h7epay-gh.myshopify.com",
+};
+
+/**
+ * Staging boot: put Clothing Tops > T-Shirts on the catalogue shells that
+ * promote reads. Skips production. A category that is already set is left as it is.
+ */
+export async function ensureCatalogueShellCategories(): Promise<void> {
+  if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") return;
+  if (!hasShopifyAppCredentials()) return;
+  const rows = await db
+    .select({
+      id: productTypes.id,
+      shop: productTypes.shopifyShopDomain,
+      productId: productTypes.shopifyProductId,
+    })
+    .from(productTypes)
+    .where(inArray(productTypes.id, [54, 56, 58]));
+  const tokenByShop = new Map<string, string>();
+  for (const row of rows) {
+    const expectedShop = SHELL_SHOPS[row.id];
+    const shop = String(row.shop || "");
+    if (!expectedShop || shop !== expectedShop || !row.productId) continue;
+    let token = tokenByShop.get(shop) || "";
+    if (!token) {
+      const installation = await storage.getShopifyInstallationByShop(shop);
+      if (!installation?.accessToken) {
+        console.error(`[shell-category] ${row.id} has no Shopify token`);
+        continue;
+      }
+      token = installation.accessToken;
+      try {
+        const result = await ensureTshirtCategory(shop, row.productId, token);
+        tokenByShop.set(shop, token);
+        console.log(`[shell-category] type ${row.id} ${result.already ? "already" : "set"} ${result.fullName} ${result.categoryId}`);
+        continue;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/invalid api key|unrecognized login|401/i.test(message)) throw err;
+        const refreshed = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
+        if (!refreshed.ok) throw new Error(refreshed.error);
+        token = refreshed.accessToken;
+        tokenByShop.set(shop, token);
+      }
+    }
+    const result = await ensureTshirtCategory(shop, row.productId, token);
+    console.log(`[shell-category] type ${row.id} ${result.already ? "already" : "set"} ${result.fullName} ${result.categoryId}`);
+  }
 }

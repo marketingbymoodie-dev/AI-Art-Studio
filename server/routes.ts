@@ -4861,6 +4861,13 @@ ${orientationExtra}
 
     try { await ensureProductPublishedToOnlineStore(shop, accessToken, createdProduct.product.id); } catch (_) { /* non-fatal */ }
 
+    // Promote copies this category onto the design. The shop import used to
+    // create the shell without one, so every apparel shell gets Clothing Tops > T-Shirts.
+    if (String(productType.designerType || "") === "apparel") {
+      const { ensureTshirtCategory } = await import("./flywheel-category");
+      await ensureTshirtCategory(shop, newShopifyProductId, accessToken);
+    }
+
     await storage.updateProductType(productType.id, {
       shopifyProductId: newShopifyProductId,
       shopifyProductHandle: shopifyHandle,

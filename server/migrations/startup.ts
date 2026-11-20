@@ -3585,6 +3585,15 @@ export async function runStartupMigrations(): Promise<void> {
     console.error(`${tag} FAILED my pet metafield backfill: ${err.message ?? err}`);
   }
 
+  try {
+    const { ensureCatalogueShellCategories } = await import("../flywheel-category");
+    await ensureCatalogueShellCategories();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalogue shell categories: ${err.message ?? err}`);
+  }
+
   const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;
   console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
