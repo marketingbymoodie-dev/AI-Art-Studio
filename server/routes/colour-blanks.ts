@@ -92,6 +92,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
         hex: String(req.body?.hex || ""),
         finish: String(req.body?.finish || ""),
         linkStoredName: req.body?.linkStoredName ? String(req.body.linkStoredName) : null,
+        shopifyBaseColor: req.body?.shopifyBaseColor == null ? undefined : String(req.body.shopifyBaseColor),
       }));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -120,6 +121,7 @@ export function registerColourBlankRoutes(app: Express, deps: { isAuthenticated:
         hex: String(req.body?.hex || ""),
         finish: String(req.body?.finish || "solid"),
         linkStoredName: req.body?.linkStoredName ? String(req.body.linkStoredName) : null,
+        shopifyBaseColor: req.body?.shopifyBaseColor == null ? undefined : String(req.body.shopifyBaseColor),
       }));
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });

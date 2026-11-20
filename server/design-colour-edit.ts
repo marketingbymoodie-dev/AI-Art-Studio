@@ -493,7 +493,13 @@ async function setPrintifyEnabled(work: Work, variantIds: number[], enabled: boo
 }
 
 async function linkedColourOptionValueId(work: Work, colourName: string, hex: string): Promise<string> {
-  const metaobjectId = await colourPatternMetaobjectId(work.shop, work.token, colourName, hex);
+  const { missingShopifyBaseColourMessage } = await import("@shared/flywheelPromote");
+  const { resolvedShopifyBaseColor, shopifyBaseColorsByName } = await import("./colour-blanks");
+  const baseColor = resolvedShopifyBaseColor(colourName, await shopifyBaseColorsByName(work.productTypeId));
+  if (!baseColor) {
+    throw new ColourEditRefusal([missingShopifyBaseColourMessage([colourName]) || `${colourName} has no Shopify base colour.`]);
+  }
+  const metaobjectId = await colourPatternMetaobjectId(work.shop, work.token, colourName, hex, baseColor);
   const productId = gid("Product", work.plan.shopifyProductId);
   const readOption = async () => {
     const data = await adminGql(work.shop, work.token, `query($id: ID!) {

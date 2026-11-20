@@ -22,6 +22,8 @@ import {
   variantMediaAssignments,
   colorPatternMetaobjectFields,
   METAOBJECT_SCOPE_REFUSAL,
+  missingShopifyBaseColourMessage,
+  normaliseShopifyBaseColor,
   promoteRefusals,
   swatchBaseColorName,
   type CapOccupant,
@@ -210,6 +212,7 @@ async function colorMetaobjectId(
   name: string,
   hex: string,
   taxonomy: SwatchTaxonomy,
+  baseColor?: string | null,
 ): Promise<string> {
   const found = await adminGql(
     shop,
@@ -223,7 +226,7 @@ async function colorMetaobjectId(
     (node: { displayName?: string }) => String(node.displayName || "").toLowerCase() === name.toLowerCase(),
   );
   if (existing?.id) return String(existing.id);
-  const baseName = swatchBaseColorName(name);
+  const baseName = baseColor === undefined ? swatchBaseColorName(name) : normaliseShopifyBaseColor(baseColor);
   const baseColorId = baseName ? taxonomy.colors.get(baseName.toLowerCase()) : undefined;
   if (!baseColorId) throw new Error(`No Shopify base colour for ${name}.`);
   const created = await adminGql(
@@ -252,9 +255,15 @@ async function colorMetaobjectId(
 }
 
 /** Shopify colour-pattern entry for a swatch. Reused when a colour is added to a linked option. */
-export async function colourPatternMetaobjectId(shop: string, token: string, name: string, hex: string): Promise<string> {
+export async function colourPatternMetaobjectId(
+  shop: string,
+  token: string,
+  name: string,
+  hex: string,
+  baseColor?: string | null,
+): Promise<string> {
   const taxonomy = await loadSwatchTaxonomy(shop, token);
-  return colorMetaobjectId(shop, token, name, hex, taxonomy);
+  return colorMetaobjectId(shop, token, name, hex, taxonomy, baseColor);
 }
 
 async function linkColourSwatches(
@@ -303,7 +312,7 @@ export async function linkCatalogueProductSwatches(args: {
   shop: string;
   token: string;
   shopifyProductId: string;
-  colours: Array<{ name: string; hex: string }>;
+  colours: Array<{ name: string; hex: string; baseColor?: string | null }>;
 }): Promise<void> {
   const productGid = args.shopifyProductId.startsWith("gid://")
     ? args.shopifyProductId
@@ -313,7 +322,7 @@ export async function linkCatalogueProductSwatches(args: {
   for (const color of args.colours) {
     swatches.push({
       name: color.name,
-      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex, taxonomy),
+      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex, taxonomy, color.baseColor),
     });
   }
   await linkColourSwatches(args.shop, args.token, productGid, swatches);
@@ -477,6 +486,15 @@ export async function promoteCatalogueCandidate(args: {
     parseFrameColors(typeRow.frameColors),
     selectedColorIds,
   );
+  const { resolvedShopifyBaseColor, shopifyBaseColorsByName } = await import("./colour-blanks");
+  const storedBases = await shopifyBaseColorsByName(args.productTypeId);
+  const missingBaseColours = selectedColors
+    .map((color) => color.name)
+    .filter((name, index, names) => names.findIndex((row) => row.toLowerCase() === name.toLowerCase()) === index)
+    .filter((name) => !resolvedShopifyBaseColor(name, storedBases));
+  if (missingBaseColours.length) {
+    throw new PromoteRefusal([missingShopifyBaseColourMessage(missingBaseColours) || "A ticked colour has no Shopify base colour."]);
+  }
   const missingPrices = offered.filter((size) => !args.pricesBySize[size.name]).map((size) => size.name);
 
   const ticked = selectedColors.map((color) => color.name);
@@ -576,6 +594,7 @@ export async function promoteCatalogueCandidate(args: {
     publishNow: args.publishNow,
     capMessage,
     missingPrices,
+    missingBaseColours,
     deferApprovalArtifacts: args.deferApprovalArtifacts === true,
   });
   if (!categoryId) reasons.push("This product type has no product category on its studio product.");
@@ -864,7 +883,10 @@ export async function promoteCatalogueCandidate(args: {
       shop,
       token: installation!.accessToken,
       shopifyProductId: data.productSet.product.id,
-      colours: orderedColours,
+      colours: orderedColours.map((color) => ({
+        ...color,
+        baseColor: resolvedShopifyBaseColor(color.name, storedBases),
+      })),
     });
   } catch (err) {
     if (shopifyProductId) {

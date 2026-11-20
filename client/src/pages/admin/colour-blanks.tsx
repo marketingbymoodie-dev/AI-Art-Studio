@@ -5,6 +5,7 @@ import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { apiFetch, isSessionAuthError } from "@/lib/queryClient";
+import { SHOPIFY_BASE_COLOURS } from "@shared/flywheelPromote";
 
 type Finish = "solid" | "heather" | "produced";
 
@@ -15,6 +16,7 @@ type Colour = {
   printifyTitle: string;
   hex: string;
   finish: Finish;
+  shopifyBaseColor: string | null;
   linkStoredName: string | null;
   match: "present" | "name-mismatch" | "missing";
   storedName: string | null;
@@ -368,6 +370,7 @@ export default function ColourBlanksPage() {
           printifyOptionId: colour.printifyOptionId,
           hex: colour.hex,
           finish: colour.finish,
+          shopifyBaseColor: colour.shopifyBaseColor,
           linkStoredName: colour.linkStoredName,
         }),
       });
@@ -395,6 +398,7 @@ export default function ColourBlanksPage() {
           printifyOptionId: String(data.get("printifyOptionId") || ""),
           hex: String(data.get("hex") || ""),
           finish: String(data.get("finish") || "solid"),
+          shopifyBaseColor: String(data.get("shopifyBaseColor") || ""),
           linkStoredName: String(data.get("linkStoredName") || ""),
         }),
       });
@@ -767,6 +771,20 @@ export default function ColourBlanksPage() {
           <td className="p-1">
             <select
               className="rounded-md border bg-background px-2 py-1"
+              value={draft.shopifyBaseColor || ""}
+              data-testid={`colour-base-${slug(colour.name)}`}
+              onChange={(event) => patchDraft(colour.id, { shopifyBaseColor: event.target.value || null })}
+            >
+              <option value="">Not set</option>
+              {SHOPIFY_BASE_COLOURS.map((base) => <option key={base} value={base}>{base}</option>)}
+            </select>
+            {colour.active && !draft.shopifyBaseColor ? (
+              <span className="mt-1 block text-destructive" data-testid={`colour-base-missing-${slug(colour.name)}`}>Missing</span>
+            ) : null}
+          </td>
+          <td className="p-1">
+            <select
+              className="rounded-md border bg-background px-2 py-1"
               value={draft.finish}
               onChange={(event) => patchDraft(colour.id, { finish: asFinish(event.target.value) })}
             >
@@ -1126,6 +1144,11 @@ export default function ColourBlanksPage() {
 
         <details className="rounded-md border p-3" open>
           <summary className="cursor-pointer text-sm font-medium" data-testid="colour-list-toggle">Colour list ({gridColours.length} active)</summary>
+          {gridColours.some((colour) => !colour.shopifyBaseColor) ? (
+            <p className="mt-2 text-sm text-destructive" data-testid="colour-base-missing">
+              {gridColours.filter((colour) => !colour.shopifyBaseColor).map((colour) => colour.name).join(", ")} {gridColours.filter((colour) => !colour.shopifyBaseColor).length === 1 ? "has" : "have"} no Shopify base colour. Set it before publishing.
+            </p>
+          ) : null}
           <p className="mt-2 text-xs text-muted-foreground">
             Saving a name here does not rename stored blanks. Heather and produced colours have no paint button until you switch them to solid.
             Inactive colours are hidden from the grid, Studio, and the storefront until you turn them back on.
@@ -1139,6 +1162,7 @@ export default function ColourBlanksPage() {
                   <th className="p-1 font-medium">Printify colour</th>
                   <th className="p-1 font-medium">Option</th>
                   <th className="p-1 font-medium">Hex</th>
+                  <th className="p-1 font-medium">Shopify base colour</th>
                   <th className="p-1 font-medium">Finish</th>
                   <th className="p-1 font-medium">Stored as</th>
                   <th className="p-1" />
@@ -1159,6 +1183,7 @@ export default function ColourBlanksPage() {
                       <th className="p-1 font-medium">Printify colour</th>
                       <th className="p-1 font-medium">Option</th>
                       <th className="p-1 font-medium">Hex</th>
+                      <th className="p-1 font-medium">Shopify base colour</th>
                       <th className="p-1 font-medium">Finish</th>
                       <th className="p-1 font-medium">Stored as</th>
                       <th className="p-1" />
@@ -1180,6 +1205,10 @@ export default function ColourBlanksPage() {
             <Input name="printifyTitle" placeholder="Printify colour" className="w-36" />
             <Input name="printifyOptionId" placeholder="Option id" className="w-24" />
             <Input name="hex" placeholder="Hex" className="w-24" required />
+            <select name="shopifyBaseColor" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="">
+              <option value="">Shopify base colour</option>
+              {SHOPIFY_BASE_COLOURS.map((base) => <option key={base} value={base}>{base}</option>)}
+            </select>
             <select name="finish" className="rounded-md border bg-background px-2 py-1 text-sm" defaultValue="solid">
               <option value="solid">Solid</option>
               <option value="heather">Heather</option>

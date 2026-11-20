@@ -15,6 +15,7 @@ import {
 } from "@shared/colourBlanks";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { chestZoneForProductType, type ChestPrintZone } from "@shared/printPlacement";
+import { normaliseShopifyBaseColor, swatchBaseColorName } from "@shared/flywheelPromote";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
@@ -49,6 +50,7 @@ export function ensureColourBlankTable(): Promise<void> {
         link_stored_name text,
         sort_order integer NOT NULL DEFAULT 0,
         active boolean NOT NULL DEFAULT true,
+        shopify_base_color text,
         created_at timestamp NOT NULL DEFAULT now()
       )`);
       await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS mockup_library_colours_type_name_uidx
@@ -66,12 +68,64 @@ export function ensureColourBlankTable(): Promise<void> {
             AND p.printify_blueprint_id = 706
             AND lower(trim(c.name)) <> 'white'`);
       }
+      const baseColumn = await pool.query(`SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'mockup_library_colours' AND column_name = 'shopify_base_color'`);
+      if (!baseColumn.rows.length) {
+        await pool.query(`ALTER TABLE mockup_library_colours ADD COLUMN shopify_base_color text`);
+        await prefillShopifyBaseColours();
+      }
     })().catch((err) => {
       tableReady = null;
       throw err;
     });
   }
   return tableReady;
+}
+
+/** Fill empty base colours once, when the column is added. Later edits are kept. */
+export async function prefillShopifyBaseColours(): Promise<number> {
+  const rows = await db
+    .select({
+      id: mockupLibraryColours.id,
+      name: mockupLibraryColours.name,
+      base: mockupLibraryColours.shopifyBaseColor,
+    })
+    .from(mockupLibraryColours);
+  let filled = 0;
+  for (const row of rows) {
+    if (String(row.base || "").trim()) continue;
+    const base = swatchBaseColorName(row.name);
+    if (!base) continue;
+    await db.update(mockupLibraryColours)
+      .set({ shopifyBaseColor: base })
+      .where(eq(mockupLibraryColours.id, row.id));
+    filled += 1;
+  }
+  return filled;
+}
+
+/**
+ * Base colour for one garment name on this type's colour list.
+ * A row with an empty field stays empty. A type with no list uses the name map.
+ */
+export async function shopifyBaseColorsByName(productTypeId: number): Promise<Map<string, string | null>> {
+  const libraryId = await blankLibraryTypeId(productTypeId);
+  await ensureColourBlankTable();
+  const rows = await db
+    .select({ name: mockupLibraryColours.name, base: mockupLibraryColours.shopifyBaseColor })
+    .from(mockupLibraryColours)
+    .where(eq(mockupLibraryColours.productTypeId, libraryId));
+  const stored = new Map<string, string | null>();
+  for (const row of rows) {
+    stored.set(row.name.trim().toLowerCase(), normaliseShopifyBaseColor(row.base));
+  }
+  return stored;
+}
+
+export function resolvedShopifyBaseColor(colourName: string, stored: Map<string, string | null>): string | null {
+  const key = colourName.trim().toLowerCase();
+  if (stored.has(key)) return stored.get(key) || null;
+  return swatchBaseColorName(colourName);
 }
 
 async function seedSoftstyleColours(): Promise<void> {
@@ -89,6 +143,7 @@ async function seedSoftstyleColours(): Promise<void> {
     finish: row.finish,
     linkStoredName: row.linkStoredName,
     sortOrder: row.sortOrder,
+    shopifyBaseColor: swatchBaseColorName(row.name),
   }))).onConflictDoNothing();
 }
 
@@ -247,6 +302,7 @@ async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
       finish: "produced" as const,
       linkStoredName: null,
       sortOrder: index,
+      shopifyBaseColor: swatchBaseColorName(colour.name),
       active: blankNameKey(colour.name) === "white",
     };
   })).onConflictDoNothing();
@@ -556,6 +612,7 @@ export async function colourBlankGrid(productTypeId: number, options?: { restric
       finish: asFinish(row.finish),
       linkStoredName: row.linkStoredName,
       sortOrder: row.sortOrder,
+      shopifyBaseColor: normaliseShopifyBaseColor(row.shopifyBaseColor),
       active,
       lockReason: active ? describeColourUse(row.name, use.products, use.orders) : null,
       match: match.state,
@@ -682,6 +739,14 @@ async function requireColour(id: string) {
   return row;
 }
 
+function storedBaseColor(value: string | null | undefined): string | null {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const base = normaliseShopifyBaseColor(trimmed);
+  if (!base) throw new Error(`${trimmed} is not a Shopify base colour.`);
+  return base;
+}
+
 export async function saveColourBlank(id: string, patch: {
   name: string;
   printifyTitle: string;
@@ -689,6 +754,7 @@ export async function saveColourBlank(id: string, patch: {
   hex: string;
   finish: string;
   linkStoredName: string | null;
+  shopifyBaseColor?: string | null;
 }) {
   const current = await requireColour(id);
   const name = patch.name.trim();
@@ -712,6 +778,9 @@ export async function saveColourBlank(id: string, patch: {
     hex,
     finish,
     linkStoredName: patch.linkStoredName?.trim() || null,
+    shopifyBaseColor: patch.shopifyBaseColor === undefined
+      ? current.shopifyBaseColor
+      : storedBaseColor(patch.shopifyBaseColor),
   }).where(eq(mockupLibraryColours.id, id));
   return { id };
 }
@@ -723,6 +792,7 @@ export async function createColourBlank(productTypeId: number, patch: {
   hex: string;
   finish: string;
   linkStoredName: string | null;
+  shopifyBaseColor?: string | null;
 }) {
   await ensureColourBlankTable();
   const name = patch.name.trim();
@@ -741,6 +811,7 @@ export async function createColourBlank(productTypeId: number, patch: {
     hex: normaliseBlankHex(patch.hex),
     finish: asFinish(patch.finish),
     linkStoredName: patch.linkStoredName?.trim() || null,
+    shopifyBaseColor: storedBaseColor(patch.shopifyBaseColor) || swatchBaseColorName(name),
     sortOrder: (last?.sortOrder ?? -1) + 1,
   }).returning({ id: mockupLibraryColours.id });
   if (!inserted) throw new Error("The colour was not added");

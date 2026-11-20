@@ -97,6 +97,8 @@ export function promoteRefusals(input: {
   publishNow: boolean;
   capMessage: string | null;
   missingPrices: string[];
+  /** Ticked colours whose Colour blanks row has no Shopify base colour. */
+  missingBaseColours?: string[];
   /**
    * The combined publish button builds the print file, listing, and mockups
    * after this check. Those gaps are not refusals yet.
@@ -105,6 +107,8 @@ export function promoteRefusals(input: {
 }): string[] {
   const missing: string[] = [];
   const defer = input.deferApprovalArtifacts === true;
+  const baseMessage = missingShopifyBaseColourMessage(input.missingBaseColours || []);
+  if (baseMessage) missing.push(baseMessage);
   if (!defer && !input.printFilePath) missing.push("No print file for this candidate.");
   if (!input.panelId) missing.push("No mockup panel is chosen for this candidate.");
   for (const colour of input.tickedColours) {
@@ -138,7 +142,28 @@ export function promoteRefusals(input: {
 export const METAOBJECT_SCOPE_REFUSAL =
   "This shop's Shopify token has no metaobject scope, so colour swatches cannot be linked. Reinstall the app before promoting.";
 
-/** Display names on the Softstyle ticks, and the Printify titles those hexes map to. */
+/** Shopify's colour-taxonomy names. A garment colour stores one of these. */
+export const SHOPIFY_BASE_COLOURS = [
+  "Beige",
+  "Black",
+  "Blue",
+  "Brown",
+  "Gold",
+  "Gray",
+  "Green",
+  "Navy",
+  "Orange",
+  "Pink",
+  "Purple",
+  "Red",
+  "White",
+  "Yellow",
+] as const;
+
+/**
+ * Garment colour → closest Shopify base colour.
+ * Comfort Colors names that are not themselves taxonomy values are listed here.
+ */
 const SWATCH_BASE_COLOR: Record<string, string> = {
   white: "White",
   black: "Black",
@@ -157,7 +182,8 @@ const SWATCH_BASE_COLOR: Record<string, string> = {
   "sport grey": "Gray",
   "sport gray": "Gray",
   "light blue": "Blue",
-  navy: "Blue",
+  navy: "Navy",
+  "true navy": "Navy",
   royal: "Blue",
   "military green": "Green",
   natural: "White",
@@ -165,11 +191,82 @@ const SWATCH_BASE_COLOR: Record<string, string> = {
   charcoal: "Gray",
   grey: "Gray",
   gray: "Gray",
+  bay: "Green",
+  berry: "Purple",
+  blossom: "Pink",
+  chambray: "Blue",
+  ivory: "Beige",
+  pepper: "Gray",
+  banana: "Yellow",
+  "blue jean": "Blue",
+  "blue spruce": "Green",
+  brick: "Red",
+  "bright salmon": "Pink",
+  "burnt orange": "Orange",
+  butter: "Yellow",
+  "chalky mint": "Green",
+  chili: "Red",
+  "china blue": "Blue",
+  citrus: "Yellow",
+  crimson: "Red",
+  crunchberry: "Pink",
+  cumin: "Brown",
+  denim: "Blue",
+  espresso: "Brown",
+  "flo blue": "Blue",
+  granite: "Gray",
+  grape: "Purple",
+  graphite: "Gray",
+  hemp: "Green",
+  "ice blue": "Blue",
+  "island green": "Green",
+  "island reef": "Blue",
+  khaki: "Beige",
+  "lagoon blue": "Blue",
+  "light green": "Green",
+  melon: "Orange",
+  midnight: "Navy",
+  moss: "Green",
+  mustard: "Yellow",
+  "mystic blue": "Blue",
+  "neon pink": "Pink",
+  orchid: "Purple",
+  periwinkle: "Blue",
+  "royal caribe": "Blue",
+  seafoam: "Green",
+  terracotta: "Orange",
+  "topaz blue": "Blue",
+  violet: "Purple",
+  "washed denim": "Blue",
+  watermelon: "Pink",
+  yam: "Orange",
 };
 
-/** Shopify's Base color name for a garment colour. Null when we have no mapping. */
+/** A stored or typed value, kept only when it is one of Shopify's base colours. */
+export function normaliseShopifyBaseColor(value: string | null | undefined): string | null {
+  const key = String(value || "").trim().toLowerCase();
+  if (!key) return null;
+  return SHOPIFY_BASE_COLOURS.find((colour) => colour.toLowerCase() === key) ?? null;
+}
+
+/** Shopify's base colour for a garment colour. Null when we have no mapping. */
 export function swatchBaseColorName(colourName: string): string | null {
-  return SWATCH_BASE_COLOR[colourName.trim().toLowerCase()] ?? null;
+  const key = colourName.trim().toLowerCase();
+  return SWATCH_BASE_COLOR[key] ?? normaliseShopifyBaseColor(key);
+}
+
+/** Said at the start of publish, before print files or mockups are built. */
+export function missingShopifyBaseColourMessage(names: string[]): string | null {
+  const list = names.map((name) => name.trim()).filter(Boolean);
+  if (!list.length) return null;
+  const joined = list.length === 1
+    ? list[0]
+    : list.length === 2
+      ? `${list[0]} and ${list[1]}`
+      : `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`;
+  const verb = list.length === 1 ? "has" : "have";
+  const pronoun = list.length === 1 ? "it" : "them";
+  return `${joined} ${verb} no Shopify base colour. Set ${pronoun} on Colour blanks before publishing.`;
 }
 
 /** Fields shopify--color-pattern requires. Base color is a taxonomy id list, not the hex. */

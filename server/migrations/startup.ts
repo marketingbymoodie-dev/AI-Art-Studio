@@ -3586,6 +3586,15 @@ export async function runStartupMigrations(): Promise<void> {
   }
 
   try {
+    const { ensureColourBlankTable } = await import("../colour-blanks");
+    await ensureColourBlankTable();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED colour blank base colours: ${err.message ?? err}`);
+  }
+
+  try {
     const { ensureCatalogueShellCategories } = await import("../flywheel-category");
     await ensureCatalogueShellCategories();
     applied++;

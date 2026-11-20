@@ -19,6 +19,7 @@ import {
   printableSizeNames,
   sortApparelSizeNames,
   promoteRefusals,
+  missingShopifyBaseColourMessage,
   swatchBaseColorName,
 } from "./flywheelPromote";
 
@@ -242,6 +243,30 @@ describe("flywheel promote decisions", () => {
     expect(swatchBaseColorName("Maroon")).toBeNull();
     expect(swatchBaseColorName("Light Blue")).toBe("Blue");
     expect(swatchBaseColorName("Dark Heather")).toBe("Gray");
+    expect(swatchBaseColorName("Bay")).toBe("Green");
+    expect(swatchBaseColorName("Berry")).toBe("Purple");
+    expect(swatchBaseColorName("Blossom")).toBe("Pink");
+    expect(swatchBaseColorName("Chambray")).toBe("Blue");
+    expect(swatchBaseColorName("Grey")).toBe("Gray");
+    expect(swatchBaseColorName("Ivory")).toBe("Beige");
+    expect(swatchBaseColorName("Pepper")).toBe("Gray");
+    expect(swatchBaseColorName("True Navy")).toBe("Navy");
+    expect(swatchBaseColorName("Black")).toBe("Black");
+    expect(swatchBaseColorName("White")).toBe("White");
+    expect(missingShopifyBaseColourMessage(["Bay"])).toBe(
+      "Bay has no Shopify base colour. Set it on Colour blanks before publishing.",
+    );
+    const early = promoteRefusals({
+      ...ready,
+      deferApprovalArtifacts: true,
+      printFilePath: null,
+      title: "",
+      description: "",
+      storedMockupColours: [],
+      missingBaseColours: ["Bay"],
+    });
+    expect(early[0]).toBe("Bay has no Shopify base colour. Set it on Colour blanks before publishing.");
+    expect(early.join(" ")).not.toContain("No print file");
     expect(colorPatternMetaobjectFields({
       label: "Pink",
       hex: "DD74A1",

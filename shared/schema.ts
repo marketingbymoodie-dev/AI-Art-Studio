@@ -1458,6 +1458,8 @@ export const mockupLibraryColours = pgTable("mockup_library_colours", {
   sortOrder: integer("sort_order").notNull().default(0),
   /** Off the grid, Studio, and the storefront until turned back on. The row stays. */
   active: boolean("active").notNull().default(true),
+  /** Shopify colour taxonomy value, e.g. Green for Bay. Empty blocks publish. */
+  shopifyBaseColor: text("shopify_base_color"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   uniqueIndex("mockup_library_colours_type_name_uidx").on(table.productTypeId, table.name),
