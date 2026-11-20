@@ -33,8 +33,20 @@ export function paceVendor(lane: Lane): Promise<void> {
   return run;
 }
 
-export function shopifyThrottled(body: { errors?: Array<{ message?: string; extensions?: { code?: string } }> }): boolean {
-  return (body.errors || []).some((err) =>
+type ShopifyGraphqlError = { message?: string; extensions?: { code?: string } };
+
+/** Shopify sometimes returns `errors` as a string or one object, not a list. */
+export function shopifyGraphqlErrors(body: { errors?: unknown } | null | undefined): ShopifyGraphqlError[] {
+  const errors = body?.errors;
+  if (!errors) return [];
+  if (Array.isArray(errors)) return errors;
+  if (typeof errors === "string") return [{ message: errors }];
+  if (typeof errors === "object") return [errors as ShopifyGraphqlError];
+  return [];
+}
+
+export function shopifyThrottled(body: { errors?: unknown } | null | undefined): boolean {
+  return shopifyGraphqlErrors(body).some((err) =>
     err?.extensions?.code === "THROTTLED" || /throttl/i.test(String(err?.message || "")),
   );
 }

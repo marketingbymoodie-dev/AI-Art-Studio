@@ -109,7 +109,10 @@ async function gql<T = any>(
       continue;
     }
     const body: any = await res.json().catch(() => ({}));
-    const throttled = (body.errors || []).some((e: any) => e?.extensions?.code === "THROTTLED");
+    const graphqlErrors = Array.isArray(body.errors)
+      ? body.errors
+      : body.errors ? [typeof body.errors === "string" ? { message: body.errors } : body.errors] : [];
+    const throttled = graphqlErrors.some((e: any) => e?.extensions?.code === "THROTTLED" || /throttl/i.test(String(e?.message || "")));
     if (throttled) {
       await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
       continue;

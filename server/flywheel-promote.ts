@@ -49,7 +49,7 @@ import {
   deleteProductRestCompat,
 } from "./shopify-product-graphql";
 import { storage } from "./storage";
-import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
+import { paceVendor, shopifyGraphqlErrors, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
 const PRINTIFY_API = "https://api.printify.com/v1";
 const SHOPIFY_API = "2025-10";
@@ -140,8 +140,9 @@ async function adminGql(shop: string, token: string, query: string, variables: R
       await new Promise((resolve) => setTimeout(resolve, delay));
       continue;
     }
-    if (!res.ok || json?.errors?.length) {
-      const message = json?.errors?.map((err: { message?: string }) => err.message).filter(Boolean).join("; ");
+    const graphqlErrors = shopifyGraphqlErrors(json);
+    if (!res.ok || graphqlErrors.length) {
+      const message = graphqlErrors.map((err) => err.message).filter(Boolean).join("; ");
       throw new Error(message || `Shopify HTTP ${res.status}`);
     }
     return json.data;
