@@ -82,7 +82,7 @@
 <script src="{{ 'appai-art-embed.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-default-size.js' | asset_url }}" defer></script>
 {% if product %}
-  <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"></div>
+  <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"{% if product.metafields.ai_art_studio.design_candidate_id.value != blank or product.tags contains 'ai-art-studio-design' %} data-appai-listing="1"{% endif %}></div>
   <script src="{{ 'appai-find-my-size.js' | asset_url }}" defer></script>
   {% comment %}
     Catalogue listings carry design_candidate_id. Older design products

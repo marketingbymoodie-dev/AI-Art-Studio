@@ -311,7 +311,25 @@
     return root;
   }
 
-  var api = { suggest: suggest, openDialog: openDialog, chooseSize: chooseSize, garmentSvg: garmentSvg };
+  function hideThemeSizeGuide(doc) {
+    if (!doc.getElementById("appai-hide-theme-size-guide")) {
+      var style = doc.createElement("style");
+      style.id = "appai-hide-theme-size-guide";
+      style.textContent = ".bmp-size-guide__trigger{display:none !important;}";
+      (doc.head || doc.documentElement).appendChild(style);
+    }
+    var nodes = doc.querySelectorAll("a, button");
+    var index;
+    for (index = 0; index < nodes.length; index += 1) {
+      var node = nodes[index];
+      if (node.closest && (node.closest(".appai-fms") || node.closest(".bmp-size-guide__dialog"))) continue;
+      var label = String(node.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (label !== "size guide" && label !== "size chart") continue;
+      node.style.setProperty("display", "none", "important");
+    }
+  }
+
+  var api = { suggest: suggest, openDialog: openDialog, chooseSize: chooseSize, garmentSvg: garmentSvg, hideThemeSizeGuide: hideThemeSizeGuide };
   root.AppaiFindMySize = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 
@@ -347,6 +365,7 @@
       var field = sizeField(root.document);
       if (!field) return;
       hideEmptyGuide();
+      if (host.getAttribute("data-appai-listing") === "1") hideThemeSizeGuide(root.document);
       var button = root.document.createElement("button");
       button.type = "button";
       button.className = "appai-fms__launcher";

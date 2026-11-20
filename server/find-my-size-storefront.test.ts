@@ -12,6 +12,7 @@ const finder = (window as unknown as {
     suggest: (guide: unknown, heightCm: number, weightKg: number, fit: string) => string;
     openDialog: (doc: Document, guide: unknown) => HTMLElement;
     chooseSize: (doc: Document, name: string) => boolean;
+    hideThemeSizeGuide: (doc: Document) => void;
   };
 }).AppaiFindMySize;
 
@@ -95,5 +96,18 @@ describe("storefront find my size", () => {
     const root = finder.openDialog(document, guide);
     button(root, "Find my size").click();
     expect(root.textContent).toContain("Enter your height and weight.");
+  });
+
+  it("hides the theme Size Guide trigger and leaves Find my size", () => {
+    document.body.innerHTML = `
+      <button class="bmp-size-guide__trigger"><span>Size Guide</span></button>
+      <button class="popup-link__button">Size chart</button>
+      <button class="appai-fms__launcher">Find my size</button>
+    `;
+    finder.hideThemeSizeGuide(document);
+    const css = document.getElementById("appai-hide-theme-size-guide")?.textContent || "";
+    expect(css).toContain(".bmp-size-guide__trigger{display:none !important;}");
+    expect((document.querySelector(".popup-link__button") as HTMLElement).style.display).toBe("none");
+    expect((document.querySelector(".appai-fms__launcher") as HTMLElement).style.display).toBe("");
   });
 });
