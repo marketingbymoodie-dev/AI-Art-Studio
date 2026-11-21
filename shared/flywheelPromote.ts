@@ -29,6 +29,44 @@ export function catalogueTags(row: {
   return [row.artStyle, row.species, row.humourOperator].map((value) => value.trim());
 }
 
+/** Unlisted customizer bases. Catalogue collections exclude this tag. */
+export const CATALOGUE_STUDIO_TAG = "aas-studio-product";
+
+/** Stable tag for one shirt type, e.g. aas-type-56. */
+export function catalogueTypeTag(productTypeId: number | null | undefined): string | null {
+  const id = Number(productTypeId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return `aas-type-${id}`;
+}
+
+/** Style tags plus the shirt-type tag. Printify keeps catalogueTags only. */
+export function catalogueListingTags(row: {
+  artStyle: string;
+  species: string;
+  humourOperator: string;
+  productTypeId?: number | null;
+}): string[] {
+  const tags = catalogueTags(row);
+  const typeTag = catalogueTypeTag(row.productTypeId);
+  return typeTag ? [...tags, typeTag] : tags;
+}
+
+/** Smart-collection rules: this shirt type, and never an unlisted studio product. */
+export function catalogueCollectionRules(productTypeId: number): {
+  appliedDisjunctively: false;
+  rules: Array<{ column: "TAG"; relation: "EQUALS" | "NOT_EQUALS"; condition: string }>;
+} {
+  const typeTag = catalogueTypeTag(productTypeId);
+  if (!typeTag) throw new Error("A collection needs a product type id.");
+  return {
+    appliedDisjunctively: false,
+    rules: [
+      { column: "TAG", relation: "EQUALS", condition: typeTag },
+      { column: "TAG", relation: "NOT_EQUALS", condition: CATALOGUE_STUDIO_TAG },
+    ],
+  };
+}
+
 export function mockupFileName(handle: string, colour: string): string {
   const slug = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return `${slug(handle)}-${slug(colour)}-front.jpg`;

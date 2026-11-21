@@ -12,6 +12,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   PRINTIFY_FULL_BLEED,
   capRefusal,
+  catalogueListingTags,
   catalogueTags,
   catalogueVisibility,
   compareColourThenSize,
@@ -763,6 +764,12 @@ export async function promoteCatalogueCandidate(args: {
     species: String(candidate!.species),
     humourOperator: String(candidate!.humourOperator),
   });
+  const shopifyTags = catalogueListingTags({
+    artStyle: String(candidate!.artStyle),
+    species: String(candidate!.species),
+    humourOperator: String(candidate!.humourOperator),
+    productTypeId: typeRow.id,
+  });
   const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
   if (await shopifyHandleTaken(shop, installation!.accessToken, handle)) {
     throw new PromoteRefusal(["That handle is already used. Change the handle suffix."]);
@@ -835,7 +842,7 @@ export async function promoteCatalogueCandidate(args: {
     vendor: merchant!.storeName || "Petposterous",
     product_type: typeRow.name,
     status: shopifyStatus,
-    tags,
+    tags: shopifyTags,
     options: [
       { name: "Size", values: sortApparelSizeNames(orderedShopifyVariants.map((variant) => variant.option1)) },
       { name: "Color", values: colourOrder },

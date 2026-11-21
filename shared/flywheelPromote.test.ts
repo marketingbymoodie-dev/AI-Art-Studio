@@ -3,7 +3,10 @@ import { inheritCatalogueMemberships } from "./shipping-desired-state";
 import {
   PRINTIFY_FULL_BLEED,
   capRefusal,
+  catalogueCollectionRules,
+  catalogueListingTags,
   catalogueTags,
+  catalogueTypeTag,
   catalogueVisibility,
   colorPatternMetaobjectFields,
   catalogueVariantPositions,
@@ -55,6 +58,24 @@ describe("flywheel promote decisions", () => {
       "pug",
       "pp-owner-vs-pet",
     ]);
+  });
+
+  it("adds a shirt-type tag for Shopify and keeps studio products out of that collection", () => {
+    expect(catalogueTypeTag(56)).toBe("aas-type-56");
+    expect(catalogueTypeTag(58)).toBe("aas-type-58");
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 56,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-56"]);
+    expect(catalogueCollectionRules(58)).toEqual({
+      appliedDisjunctively: false,
+      rules: [
+        { column: "TAG", relation: "EQUALS", condition: "aas-type-58" },
+        { column: "TAG", relation: "NOT_EQUALS", condition: "aas-studio-product" },
+      ],
+    });
   });
 
   it("names the design and the colour in the image file", () => {
