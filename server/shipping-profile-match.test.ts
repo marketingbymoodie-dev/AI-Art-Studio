@@ -56,7 +56,7 @@ describe("unconfirmedVariantIds", () => {
       ],
       "gid://shopify/DeliveryProfile/9",
     );
-    expect(missing).toEqual(["2", "3"]);
+    expect(missing).toEqual(["2"]);
   });
 });
 

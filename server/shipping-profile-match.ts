@@ -60,8 +60,9 @@ export function numericShopifyId(id: string | null | undefined): string {
 }
 
 /**
- * Variant ids we asked to move that Shopify did not report on `profileId`.
- * A null node, a null delivery profile, or a different profile all count.
+ * Live variants Shopify did not report on `profileId`.
+ * A null node means the variant no longer exists, so it cannot fall back to
+ * General. A returned variant on another profile, or with no profile, counts.
  */
 export function unconfirmedVariantIds(
   expectedVariantIds: string[],
@@ -69,12 +70,16 @@ export function unconfirmedVariantIds(
   profileId: string,
 ): string[] {
   const want = numericShopifyId(profileId);
-  const onProfile = new Set(
-    found
-      .filter((row) => row.id && want && numericShopifyId(row.profileId) === want)
-      .map((row) => numericShopifyId(row.id)),
-  );
-  return expectedVariantIds.map(numericShopifyId).filter((id) => id && !onProfile.has(id));
+  const seen = new Map<string, string>();
+  for (const row of found) {
+    const id = numericShopifyId(row.id);
+    if (!id) continue;
+    seen.set(id, numericShopifyId(row.profileId));
+  }
+  return expectedVariantIds.map(numericShopifyId).filter((id) => {
+    if (!id || !seen.has(id)) return false;
+    return seen.get(id) !== want;
+  });
 }
 
 /**
