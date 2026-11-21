@@ -552,6 +552,31 @@ function hsvToRgb(hue: number, s: number, v: number): [number, number, number] {
   return [rr * 255, gg * 255, bb * 255];
 }
 
+function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
+  const tmp = new Float32Array(w * h);
+  const dst = new Float32Array(w * h);
+  const div = radius * 2 + 1;
+  for (let y = 0; y < h; y++) {
+    let sum = 0;
+    for (let x = -radius; x <= radius; x++) sum += src[y * w + Math.min(w - 1, Math.max(0, x))];
+    for (let x = 0; x < w; x++) {
+      tmp[y * w + x] = sum / div;
+      sum -= src[y * w + Math.min(w - 1, Math.max(0, x - radius))];
+      sum += src[y * w + Math.min(w - 1, Math.max(0, x + radius + 1))];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let y = -radius; y <= radius; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
+    for (let y = 0; y < h; y++) {
+      dst[y * w + x] = sum / div;
+      sum -= tmp[Math.min(h - 1, Math.max(0, y - radius)) * w + x];
+      sum += tmp[Math.min(h - 1, Math.max(0, y + radius + 1)) * w + x];
+    }
+  }
+  return dst;
+}
+
 /**
  * Natural's chip E7CEB5 is a flat fabric swatch. The paint pins the photo's
  * median pixel to that swatch, which sits about twenty luminance points under
@@ -585,33 +610,55 @@ export function photoExposedWarmTint(r: number, g: number, b: number, medianL: n
 }
 
 /**
- * The mask paint is allowed to use. A scene-reference mask is shared from a
- * coloured photo, so a prop in that colour (the green lead matches sage) is
- * inside it. The white-shirt segment is not. A few light pixels just outside
- * that segment are still the hem; a coloured prop is not one of them.
+ * Pale shirt pixels the white-shirt segment left outside its edge.
+ * Same saturation limit as the pre-18 Oct white rule. Lightness is a little
+ * lower so the underarm rim and the hem next to a prop are still the shirt.
+ * A coloured prop fails the saturation test.
+ */
+function paleShirtPixel(r: number, g: number, b: number, minLightness: number, maxSat: number): boolean {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  const sat = max === 0 ? 0 : (max - min) / max;
+  return lightness > minLightness && sat < maxSat;
+}
+
+/**
+ * The mask paint is allowed to use. Before 18 Oct this was the white-shirt
+ * segment (lightness above 185, saturation under 0.17, close 7, open 4).
+ * The stored scene mask is not used: it was taken from the sage photo and
+ * includes the green lead. A 7px grow picks up pale shirt pixels on the rim.
+ * A 12px grow picks up only near-white pixels, so a white gap behind a thin
+ * prop is painted and the prop itself is not.
  */
 export function shirtPaintMask(rgba: Uint8Array, w: number, h: number, storedMask: Uint8Array): Uint8Array {
   const shirt = segmentWhiteGarment(rgba, w, h);
   let shirtPixels = 0;
   for (let i = 0; i < shirt.length; i++) if (shirt[i]) shirtPixels++;
   if (shirtPixels < w * h * 0.05) return storedMask;
-  const grown = dilate(shirt, w, h, disk(3));
-  const out = new Uint8Array(w * h);
+  const grown = dilate(shirt, w, h, disk(7));
+  const far = dilate(shirt, w, h, disk(12));
+  const out = new Uint8Array(shirt);
   for (let i = 0; i < out.length; i++) {
-    if (!storedMask[i]) continue;
-    if (shirt[i]) {
-      out[i] = 1;
-      continue;
-    }
-    if (!grown[i]) continue;
+    if (shirt[i]) continue;
     const o = i * 4;
-    if (garmentPixel(rgba[o], rgba[o + 1], rgba[o + 2])) out[i] = 1;
+    const r = rgba[o];
+    const g = rgba[o + 1];
+    const b = rgba[o + 2];
+    if (grown[i] && paleShirtPixel(r, g, b, 160, 0.17)) out[i] = 1;
+    else if (far[i] && paleShirtPixel(r, g, b, 185, 0.08)) out[i] = 1;
   }
   return out;
 }
 
 export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uint8Array, hex: string, medianL: number): Uint8Array {
   if (hex.toUpperCase() === "FFFFFF") return new Uint8Array(rgba);
+  // The pre-18 Oct feather: dilate 7px, then a 2px box blur twice.
+  // Clip it to the mask so the ramp cannot paint a prop past the shirt.
+  const featherSrc = new Float32Array(w * h);
+  const dilated = dilate(mask, w, h, disk(7));
+  for (let i = 0; i < dilated.length; i++) featherSrc[i] = dilated[i];
+  const feather = boxBlur(boxBlur(featherSrc, w, h, 2), w, h, 2);
   const n = parseInt(hex, 16);
   const chipR = (n >> 16) & 255;
   const chipG = (n >> 8) & 255;
@@ -620,7 +667,8 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
   const [th, ts, tv] = rgbToHsv(lifted ? lifted[0] : chipR, lifted ? lifted[1] : chipG, lifted ? lifted[2] : chipB);
   const out = new Uint8Array(rgba);
   for (let i = 0; i < w * h; i++) {
-    if (!mask[i]) continue;
+    const m = mask[i] ? feather[i] : 0;
+    if (m < 0.004) continue;
     const o = i * 4;
     const L = lum(rgba[o], rgba[o + 1], rgba[o + 2]);
     const delta = medianL > 1 ? (L - medianL) / medianL : 0;
@@ -630,9 +678,9 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
     // Natural white once the tint had been pulled close to the highlights.
     const s = ts < 0.06 && !lifted ? 0 : Math.min(1, ts * (1 + 0.18 * shadow));
     const [rr, gg, bb] = hsvToRgb(th, s, v);
-    out[o] = Math.round(rr);
-    out[o + 1] = Math.round(gg);
-    out[o + 2] = Math.round(bb);
+    out[o] = Math.round(rr * m + rgba[o] * (1 - m));
+    out[o + 1] = Math.round(gg * m + rgba[o + 1] * (1 - m));
+    out[o + 2] = Math.round(bb * m + rgba[o + 2] * (1 - m));
   }
   return out;
 }
