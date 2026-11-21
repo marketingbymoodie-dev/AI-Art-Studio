@@ -3,13 +3,16 @@
  * Comfort is fabric, weight, and fit. Durability is construction, labels, and certifications.
  * Both are filled from the product type's garment details.
  */
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, ne } from "drizzle-orm";
 import {
   GARMENT_ACCORDION_NAMESPACE,
   GARMENT_COMFORT_KEY,
   GARMENT_DURABILITY_KEY,
-  garmentAccordionCopy,
+  accordionLines,
+  activeColorNames,
+  cleanGarmentAccordion,
   garmentAccordionMetafields,
+  type GarmentAccordionCopy,
 } from "@shared/garmentAccordion";
 import { designProducts, productTypes } from "@shared/schema";
 import { db } from "./db";
@@ -65,6 +68,14 @@ function productGid(shopifyProductId: string): string {
   const numeric = String(shopifyProductId).replace(/\D/g, "");
   if (!numeric) throw new Error("Missing Shopify product id");
   return `gid://shopify/Product/${numeric}`;
+}
+
+export async function readGarmentAccordionText(
+  shop: string,
+  token: string,
+  shopifyProductId: string,
+): Promise<{ comfort: string; durability: string }> {
+  return currentCopy(shop, token, shopifyProductId);
 }
 
 function paragraphText(value: string | null | undefined): string {
@@ -186,13 +197,66 @@ export async function ensureGarmentAccordionDefinitionsForAllShops(): Promise<Ga
   return results;
 }
 
+function parseStringList(raw: string | null | undefined): string[] {
+  try {
+    const value = JSON.parse(raw || "[]");
+    return Array.isArray(value) ? value.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseColorRows(raw: string | null | undefined): Array<{ id: string; name: string }> {
+  try {
+    const value = JSON.parse(raw || "[]");
+    if (!Array.isArray(value)) return [];
+    return value.map((row) => ({ id: String(row?.id || ""), name: String(row?.name || row?.title || "") }));
+  } catch {
+    return [];
+  }
+}
+
+/** Fills accordion copy once. A later edit in Customizer Pages is left as saved. */
+export async function backfillGarmentAccordionCopy(): Promise<number> {
+  const rows = await db
+    .select({
+      id: productTypes.id,
+      description: productTypes.description,
+      frameColors: productTypes.frameColors,
+      selectedColorIds: productTypes.selectedColorIds,
+    })
+    .from(productTypes)
+    .where(and(isNull(productTypes.garmentComfortCopy), isNull(productTypes.garmentDurabilityCopy)));
+  let updated = 0;
+  for (const row of rows) {
+    const copy = cleanGarmentAccordion(
+      row.description,
+      activeColorNames(parseColorRows(row.frameColors), parseStringList(row.selectedColorIds)),
+    );
+    const written = await db
+      .update(productTypes)
+      .set({
+        garmentComfortCopy: copy.comfort.join("\n"),
+        garmentDurabilityCopy: copy.durability.join("\n"),
+      })
+      .where(and(
+        eq(productTypes.id, row.id),
+        isNull(productTypes.garmentComfortCopy),
+        isNull(productTypes.garmentDurabilityCopy),
+      ))
+      .returning({ id: productTypes.id });
+    updated += written.length;
+  }
+  return updated;
+}
+
 export async function setGarmentAccordionMetafields(
   shop: string,
   token: string,
   shopifyProductId: string,
-  garmentDetailsHtml: string | null | undefined,
+  copy: GarmentAccordionCopy,
 ): Promise<boolean> {
-  const fields = garmentAccordionMetafields(garmentDetailsHtml);
+  const fields = garmentAccordionMetafields(copy);
   if (!fields.length) return false;
   const data = await adminGql(shop, token, `
     mutation($metafields: [MetafieldsSetInput!]!) {
@@ -228,12 +292,17 @@ async function currentCopy(shop: string, token: string, shopifyProductId: string
 }
 
 /** Writes the accordion metafields on existing app-published listings. Skips a product that already matches. */
-export async function backfillGarmentAccordionMetafields(): Promise<{ set: number; skipped: number; failed: number }> {
+export async function backfillGarmentAccordionMetafields(): Promise<{ set: number; skipped: number; failed: number; filled: number }> {
+  const filled = await backfillGarmentAccordionCopy();
   const rows = await db
     .select({
       shop: designProducts.shop,
       shopifyProductId: designProducts.shopifyProductId,
       description: productTypes.description,
+      frameColors: productTypes.frameColors,
+      selectedColorIds: productTypes.selectedColorIds,
+      comfort: productTypes.garmentComfortCopy,
+      durability: productTypes.garmentDurabilityCopy,
     })
     .from(designProducts)
     .leftJoin(productTypes, eq(designProducts.productTypeId, productTypes.id))
@@ -245,7 +314,12 @@ export async function backfillGarmentAccordionMetafields(): Promise<{ set: numbe
   for (const row of rows) {
     const shop = normalizeMyshopifyShopDomain(row.shop);
     const productId = String(row.shopifyProductId || "");
-    const wanted = garmentAccordionCopy(row.description);
+    const wanted = row.comfort != null || row.durability != null
+      ? { comfort: accordionLines(row.comfort), durability: accordionLines(row.durability) }
+      : cleanGarmentAccordion(
+        row.description,
+        activeColorNames(parseColorRows(row.frameColors), parseStringList(row.selectedColorIds)),
+      );
     if (!shop || !productId || (!wanted.comfort.length && !wanted.durability.length)) {
       skipped += 1;
       continue;
@@ -273,7 +347,7 @@ export async function backfillGarmentAccordionMetafields(): Promise<{ set: numbe
         skipped += 1;
         continue;
       }
-      await setGarmentAccordionMetafields(shop, token, productId, row.description);
+      await setGarmentAccordionMetafields(shop, token, productId, wanted);
       set += 1;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -285,5 +359,5 @@ export async function backfillGarmentAccordionMetafields(): Promise<{ set: numbe
       console.warn(`[garment-accordion] ${productId}:`, message);
     }
   }
-  return { set, skipped, failed };
+  return { set, skipped, failed, filled };
 }

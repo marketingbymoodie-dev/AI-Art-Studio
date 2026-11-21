@@ -14920,6 +14920,14 @@ ${orientationExtra}
       if ("listingStyleLabel" in updates) {
         updates.listingStyleLabel = String(updates.listingStyleLabel || "").replace(/\s+/g, " ").trim();
       }
+      for (const key of ["garmentComfortCopy", "garmentDurabilityCopy"] as const) {
+        if (!(key in updates)) continue;
+        updates[key] = String(updates[key] || "")
+          .split(/\n+/)
+          .map((line: string) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      }
       if ("garmentShape" in updates) {
         const shape = String(updates.garmentShape || "");
         updates.garmentShape = shape === "long-sleeve" || shape === "sweatshirt" || shape === "tee" ? shape : null;
@@ -14972,6 +14980,11 @@ ${orientationExtra}
       const updated = await storage.updateProductType(id, updates);
       if (!updated) {
         return res.status(404).json({ error: "Product type not found" });
+      }
+      if ("garmentComfortCopy" in updates || "garmentDurabilityCopy" in updates) {
+        void import("./garment-accordion-metafields")
+          .then(({ backfillGarmentAccordionMetafields }) => backfillGarmentAccordionMetafields())
+          .catch((error) => console.warn("[garment-accordion] save refresh failed:", error));
       }
       res.json(updated);
     } catch (error) {
@@ -25143,6 +25156,8 @@ ${orientationExtra}
           listingGarmentWord: pt.listingGarmentWord ?? "",
           listingHandleSuffix: pt.listingHandleSuffix ?? "",
           listingStyleLabel: pt.listingStyleLabel ?? "",
+          garmentComfortCopy: pt.garmentComfortCopy ?? null,
+          garmentDurabilityCopy: pt.garmentDurabilityCopy ?? null,
           garmentShape: pt.garmentShape ?? "",
           garmentFitEase: pt.garmentFitEase ?? null,
           garmentMeasurements: pt.garmentMeasurements ?? null,

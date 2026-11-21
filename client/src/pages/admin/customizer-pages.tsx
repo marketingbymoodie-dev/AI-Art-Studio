@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { defaultEaseForShape, garmentShapeFromName, type FitEase, type GarmentMeasurements, type GarmentShape } from "@shared/findMySize";
+import { activeColorNames, cleanGarmentAccordion } from "@shared/garmentAccordion";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, apiFetch, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
 import { useLocation } from "wouter";
@@ -228,6 +229,8 @@ interface Blank {
   listingGarmentWord?: string | null;
   listingHandleSuffix?: string | null;
   listingStyleLabel?: string | null;
+  garmentComfortCopy?: string | null;
+  garmentDurabilityCopy?: string | null;
   garmentShape?: string | null;
   garmentFitEase?: FitEase | null;
   garmentMeasurements?: GarmentMeasurements | null;
@@ -392,6 +395,8 @@ export default function AdminCustomizerPages() {
   const [editGarmentWord, setEditGarmentWord] = useState("");
   const [editHandleSuffix, setEditHandleSuffix] = useState("");
   const [editStyleLabel, setEditStyleLabel] = useState("");
+  const [editComfortCopy, setEditComfortCopy] = useState("");
+  const [editDurabilityCopy, setEditDurabilityCopy] = useState("");
   const [editShape, setEditShape] = useState<GarmentShape>("tee");
   const [editEase, setEditEase] = useState<FitEase>(defaultEaseForShape("tee"));
   const [editMeasurements, setEditMeasurements] = useState<GarmentMeasurements | null>(null);
@@ -630,6 +635,8 @@ export default function AdminCustomizerPages() {
       setEditGarmentWord("");
       setEditHandleSuffix("");
       setEditStyleLabel("");
+      setEditComfortCopy("");
+      setEditDurabilityCopy("");
       setEditShape("tee");
       setEditEase(defaultEaseForShape("tee"));
       setEditMeasurements(null);
@@ -644,6 +651,11 @@ export default function AdminCustomizerPages() {
     setEditGarmentWord(editBlank.listingGarmentWord || "");
     setEditHandleSuffix(editBlank.listingHandleSuffix || "");
     setEditStyleLabel(editBlank.listingStyleLabel || "");
+    const suggested = editBlank.garmentComfortCopy == null && editBlank.garmentDurabilityCopy == null
+      ? cleanGarmentAccordion(editBlank.description || "", activeColorNames(editBlank.frameColors || [], editBlank.selectedColorIds || []))
+      : null;
+    setEditComfortCopy(editBlank.garmentComfortCopy ?? suggested?.comfort.join("\n") ?? "");
+    setEditDurabilityCopy(editBlank.garmentDurabilityCopy ?? suggested?.durability.join("\n") ?? "");
     const shape = (editBlank.garmentShape as GarmentShape) || garmentShapeFromName(editBlank.title || "");
     setEditShape(shape);
     setEditEase(editBlank.garmentFitEase || defaultEaseForShape(shape));
@@ -874,6 +886,8 @@ export default function AdminCustomizerPages() {
           listingGarmentWord: editGarmentWord,
           listingHandleSuffix: editHandleSuffix,
           listingStyleLabel: editStyleLabel,
+          garmentComfortCopy: editComfortCopy,
+          garmentDurabilityCopy: editDurabilityCopy,
           garmentShape: editShape,
           garmentFitEase: editEase,
           garmentMeasurements: editMeasurements,
@@ -4200,6 +4214,28 @@ export default function AdminCustomizerPages() {
                   placeholder="Lighter Softstyle Tee"
                 />
                 <p className="text-xs text-muted-foreground">Short line at the top of this type's listing, ahead of the shared design description.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-garment-comfort">Garment comfort</Label>
+                <Textarea
+                  id="edit-garment-comfort"
+                  value={editComfortCopy}
+                  onChange={(e) => setEditComfortCopy(e.target.value)}
+                  rows={4}
+                  placeholder="Lightweight 4.5 oz ring-spun cotton."
+                />
+                <p className="text-xs text-muted-foreground">Premium Everyday Comfort accordion. One short line per row.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-garment-durability">Garment durability</Label>
+                <Textarea
+                  id="edit-garment-durability"
+                  value={editDurabilityCopy}
+                  onChange={(e) => setEditDurabilityCopy(e.target.value)}
+                  rows={4}
+                  placeholder="Twill-taped shoulders, no side seams, and a tear-away label."
+                />
+                <p className="text-xs text-muted-foreground">Built to Last accordion. One short line per row.</p>
               </div>
               <div className="space-y-3 rounded-md border p-3">
                 <p className="text-sm font-medium">Find my size</p>

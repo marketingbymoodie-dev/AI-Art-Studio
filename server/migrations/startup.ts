@@ -179,6 +179,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "listing_garment_word",        type: "TEXT" },
   { table: "product_types",         column: "listing_handle_suffix",       type: "TEXT" },
   { table: "product_types",         column: "listing_style_label",         type: "TEXT" },
+  { table: "product_types",         column: "garment_comfort_copy",        type: "TEXT" },
+  { table: "product_types",         column: "garment_durability_copy",     type: "TEXT" },
   { table: "product_types",         column: "garment_shape",               type: "TEXT" },
   { table: "product_types",         column: "garment_fit_ease",            type: "JSONB" },
   { table: "product_types",         column: "garment_measurements",        type: "JSONB" },
@@ -3643,7 +3645,7 @@ export async function runStartupMigrations(): Promise<void> {
     const failedDefs = defs.filter((row) => row.status === "failed");
     console.log(`${tag} garment accordion definitions created=${defs.filter((row) => row.status === "created").length} present=${defs.filter((row) => row.status === "present").length} failed=${failedDefs.length}`);
     for (const row of failedDefs) console.warn(`${tag} garment accordion definition ${row.shop} ${row.key}: ${row.error}`);
-    console.log(`${tag} garment accordion metafields set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
+    console.log(`${tag} garment accordion copy filled=${n.filled} metafields set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
   } catch (err: any) {
     errors++;
     console.error(`${tag} FAILED garment accordion metafields: ${err.message ?? err}`);

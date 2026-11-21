@@ -29,7 +29,7 @@ import {
   type CapOccupant,
 } from "@shared/flywheelPromote";
 import { myPetMetafieldValue } from "@shared/cataloguePublish";
-import { garmentAccordionMetafields } from "@shared/garmentAccordion";
+import { activeColorNames, cleanGarmentAccordion, garmentAccordionMetafields, accordionLines } from "@shared/garmentAccordion";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
@@ -828,6 +828,12 @@ export async function promoteCatalogueCandidate(args: {
   // definition only affects the admin UI, not the metafield write below.
   await ensureMyPetMetafieldDefinition(shop, installation!.accessToken);
   await ensureGarmentAccordionDefinitions(shop, installation!.accessToken);
+  const accordionCopy = typeRow.garmentComfortCopy != null || typeRow.garmentDurabilityCopy != null
+    ? { comfort: accordionLines(typeRow.garmentComfortCopy), durability: accordionLines(typeRow.garmentDurabilityCopy) }
+    : cleanGarmentAccordion(
+      typeRow.description,
+      activeColorNames(parseFrameColors(typeRow.frameColors), selectedColorIds),
+    );
 
   const input = buildProductSetInput({
     title,
@@ -857,7 +863,7 @@ export async function promoteCatalogueCandidate(args: {
         type: "boolean",
         value: myPetMetafieldValue(args.myPetEnabled),
       },
-      ...garmentAccordionMetafields(typeRow.description),
+      ...garmentAccordionMetafields(accordionCopy),
     ],
   }) as Record<string, unknown>;
   input.handle = handle;

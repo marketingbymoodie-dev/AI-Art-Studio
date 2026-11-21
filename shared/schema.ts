@@ -940,6 +940,9 @@ export const productTypes = pgTable("product_types", {
   /** Leading-hyphen slug, or empty. Never a bare number — Shopify owns "-1". */
   listingHandleSuffix: text("listing_handle_suffix"),
   listingStyleLabel: text("listing_style_label"),
+  /** Short accordion lines, one sentence per line. Null until the cleaner has stored them. */
+  garmentComfortCopy: text("garment_comfort_copy"),
+  garmentDurabilityCopy: text("garment_durability_copy"),
   /** tee | long-sleeve | sweatshirt. Null until inferred from the type name. */
   garmentShape: text("garment_shape"),
   /** Inches of ease for closer, relaxed, and oversized. Null uses the shape default. */
