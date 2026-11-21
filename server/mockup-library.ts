@@ -552,31 +552,6 @@ function hsvToRgb(hue: number, s: number, v: number): [number, number, number] {
   return [rr * 255, gg * 255, bb * 255];
 }
 
-function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
-  const tmp = new Float32Array(w * h);
-  const dst = new Float32Array(w * h);
-  const div = radius * 2 + 1;
-  for (let y = 0; y < h; y++) {
-    let sum = 0;
-    for (let x = -radius; x <= radius; x++) sum += src[y * w + Math.min(w - 1, Math.max(0, x))];
-    for (let x = 0; x < w; x++) {
-      tmp[y * w + x] = sum / div;
-      sum -= src[y * w + Math.min(w - 1, Math.max(0, x - radius))];
-      sum += src[y * w + Math.min(w - 1, Math.max(0, x + radius + 1))];
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let y = -radius; y <= radius; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
-    for (let y = 0; y < h; y++) {
-      dst[y * w + x] = sum / div;
-      sum -= tmp[Math.min(h - 1, Math.max(0, y - radius)) * w + x];
-      sum += tmp[Math.min(h - 1, Math.max(0, y + radius + 1)) * w + x];
-    }
-  }
-  return dst;
-}
-
 /**
  * Natural's chip E7CEB5 is a flat fabric swatch. The paint pins the photo's
  * median pixel to that swatch, which sits about twenty luminance points under
@@ -609,12 +584,34 @@ export function photoExposedWarmTint(r: number, g: number, b: number, medianL: n
   return [r + (255 - r) * t, g + (255 - g) * t, b + (255 - b) * t];
 }
 
+/**
+ * The mask paint is allowed to use. A scene-reference mask is shared from a
+ * coloured photo, so a prop in that colour (the green lead matches sage) is
+ * inside it. The white-shirt segment is not. A few light pixels just outside
+ * that segment are still the hem; a coloured prop is not one of them.
+ */
+export function shirtPaintMask(rgba: Uint8Array, w: number, h: number, storedMask: Uint8Array): Uint8Array {
+  const shirt = segmentWhiteGarment(rgba, w, h);
+  let shirtPixels = 0;
+  for (let i = 0; i < shirt.length; i++) if (shirt[i]) shirtPixels++;
+  if (shirtPixels < w * h * 0.05) return storedMask;
+  const grown = dilate(shirt, w, h, disk(3));
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < out.length; i++) {
+    if (!storedMask[i]) continue;
+    if (shirt[i]) {
+      out[i] = 1;
+      continue;
+    }
+    if (!grown[i]) continue;
+    const o = i * 4;
+    if (garmentPixel(rgba[o], rgba[o + 1], rgba[o + 2])) out[i] = 1;
+  }
+  return out;
+}
+
 export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uint8Array, hex: string, medianL: number): Uint8Array {
   if (hex.toUpperCase() === "FFFFFF") return new Uint8Array(rgba);
-  const featherSrc = new Float32Array(w * h);
-  const dilated = dilate(mask, w, h, disk(7));
-  for (let i = 0; i < dilated.length; i++) featherSrc[i] = dilated[i];
-  const feather = boxBlur(boxBlur(featherSrc, w, h, 2), w, h, 2);
   const n = parseInt(hex, 16);
   const chipR = (n >> 16) & 255;
   const chipG = (n >> 8) & 255;
@@ -623,8 +620,7 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
   const [th, ts, tv] = rgbToHsv(lifted ? lifted[0] : chipR, lifted ? lifted[1] : chipG, lifted ? lifted[2] : chipB);
   const out = new Uint8Array(rgba);
   for (let i = 0; i < w * h; i++) {
-    const m = feather[i];
-    if (m < 0.004) continue;
+    if (!mask[i]) continue;
     const o = i * 4;
     const L = lum(rgba[o], rgba[o + 1], rgba[o + 2]);
     const delta = medianL > 1 ? (L - medianL) / medianL : 0;
@@ -634,9 +630,9 @@ export function recolorGarment(rgba: Uint8Array, w: number, h: number, mask: Uin
     // Natural white once the tint had been pulled close to the highlights.
     const s = ts < 0.06 && !lifted ? 0 : Math.min(1, ts * (1 + 0.18 * shadow));
     const [rr, gg, bb] = hsvToRgb(th, s, v);
-    out[o] = Math.round(rr * m + rgba[o] * (1 - m));
-    out[o + 1] = Math.round(gg * m + rgba[o + 1] * (1 - m));
-    out[o + 2] = Math.round(bb * m + rgba[o + 2] * (1 - m));
+    out[o] = Math.round(rr);
+    out[o + 1] = Math.round(gg);
+    out[o + 2] = Math.round(bb);
   }
   return out;
 }
@@ -771,9 +767,10 @@ async function placeArtwork(args: {
   const fractions = args.fractions ?? DEFAULT_PRINT_FRACTIONS;
   const rect = printRectForMask(mask, photoRaw.width, photoRaw.height, fractions);
   const shading = photoRaw.rgba;
-  const median = medianShadingLuminance(Buffer.from(shading), photoRaw.width, photoRaw.height, mask);
+  const paintMask = args.mode === "recolour" ? shirtPaintMask(shading, photoRaw.width, photoRaw.height, mask) : mask;
+  const median = medianShadingLuminance(Buffer.from(shading), photoRaw.width, photoRaw.height, paintMask);
   const garment = args.mode === "recolour"
-    ? recolorGarment(shading, photoRaw.width, photoRaw.height, mask, args.hex, median)
+    ? recolorGarment(shading, photoRaw.width, photoRaw.height, paintMask, args.hex, median)
     : shading;
   const trimmed = await trimArtwork(args.artwork);
   const meta = await sharp(trimmed).metadata();

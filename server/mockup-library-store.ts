@@ -28,6 +28,7 @@ import {
   maskToPng,
   printRectForMask,
   recolorGarment,
+  shirtPaintMask,
   renderArtworkOnPanel,
   resolvePanelColour,
   scaleMask,
@@ -1113,7 +1114,8 @@ async function loadWhiteMaster(productTypeId: number, panelId: string) {
 async function paintWhiteMaster(productTypeId: number, panelId: string, hex: string) {
   const white = await loadWhiteMaster(productTypeId, panelId);
   const decoded = await decodeRgba(await getObject(white.storagePath));
-  const mask = await maskFromPng(await getObject(white.maskPath), decoded.width, decoded.height);
+  const storedMask = await maskFromPng(await getObject(white.maskPath), decoded.width, decoded.height);
+  const mask = shirtPaintMask(decoded.rgba, decoded.width, decoded.height, storedMask);
   const median = medianShadingLuminance(Buffer.from(decoded.rgba), decoded.width, decoded.height, mask);
   const rgba = recolorGarment(decoded.rgba, decoded.width, decoded.height, mask, hex.replace(/^#/, "").toUpperCase(), median);
   const png = await sharp(Buffer.from(rgba), { raw: { width: decoded.width, height: decoded.height, channels: 4 } }).png().toBuffer();

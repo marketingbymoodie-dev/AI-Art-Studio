@@ -8,6 +8,7 @@ import {
   photoExposedWarmTint,
   printifyPlacementForInk,
   recolorGarment,
+  shirtPaintMask,
   calibratedPrintFractions,
   missingPanelMessage,
   printFractionsForBody,
@@ -205,8 +206,38 @@ describe("mockup library", () => {
     expect(hotL).toBeLessThan(242);
     expect(hot![0] - hot![2]).toBeGreaterThan(8);
     const hotBody = recolorGarment(new Uint8Array([241, 241, 241, 255]), 1, 1, mask, "E7CEB5", 241);
+    const edge = recolorGarment(new Uint8Array([240, 240, 240, 255, 40, 110, 55, 255]), 2, 1, new Uint8Array([1, 0]), "263147", 240);
+    expect(edge[4]).toBe(40);
+    expect(edge[5]).toBe(110);
+    expect(edge[6]).toBe(55);
     expect(hotBody[0] - hotBody[2]).toBeGreaterThan(8);
     expect(hotBody[0]).toBeLessThan(252);
     expect(photoExposedWarmTint(164, 200, 225, 241)).toBeNull();
+  });
+
+  it("leaves a coloured prop out of the paint even when the stored mask includes it", () => {
+    const w = 80;
+    const h = 80;
+    const rgba = new Uint8Array(w * h * 4);
+    const stored = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const o = i * 4;
+        const shirt = x > 15 && x < 65 && y > 10 && y < 55;
+        const lead = y >= 58 && y < 74 && x > 20 && x < 60;
+        const [r, g, b] = lead ? [50, 110, 60] : shirt ? [236, 236, 236] : [180, 140, 90];
+        rgba[o] = r;
+        rgba[o + 1] = g;
+        rgba[o + 2] = b;
+        rgba[o + 3] = 255;
+        if (shirt || lead) stored[i] = 1;
+      }
+    }
+    const paint = shirtPaintMask(rgba, w, h, stored);
+    expect(paint[30 * w + 40]).toBe(1);
+    expect(paint[64 * w + 40]).toBe(0);
+    const painted = recolorGarment(rgba, w, h, paint, "263147", 236);
+    expect(painted[(64 * w + 40) * 4 + 1]).toBe(110);
   });
 });

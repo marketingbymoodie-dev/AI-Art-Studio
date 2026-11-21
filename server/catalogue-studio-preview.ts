@@ -213,31 +213,6 @@ function fillHoles(mask: Uint8Array, w: number, h: number): void {
   for (let i = 0; i < mask.length; i++) if (!bg[i]) mask[i] = 1;
 }
 
-function boxBlur(src: Float32Array, w: number, h: number, radius: number): Float32Array {
-  const tmp = new Float32Array(w * h);
-  const dst = new Float32Array(w * h);
-  const div = radius * 2 + 1;
-  for (let y = 0; y < h; y++) {
-    let sum = 0;
-    for (let x = -radius; x <= radius; x++) sum += src[y * w + Math.min(w - 1, Math.max(0, x))];
-    for (let x = 0; x < w; x++) {
-      tmp[y * w + x] = sum / div;
-      sum -= src[y * w + Math.min(w - 1, Math.max(0, x - radius))];
-      sum += src[y * w + Math.min(w - 1, Math.max(0, x + radius + 1))];
-    }
-  }
-  for (let x = 0; x < w; x++) {
-    let sum = 0;
-    for (let y = -radius; y <= radius; y++) sum += tmp[Math.min(h - 1, Math.max(0, y)) * w + x];
-    for (let y = 0; y < h; y++) {
-      dst[y * w + x] = sum / div;
-      sum -= tmp[Math.min(h - 1, Math.max(0, y - radius)) * w + x];
-      sum += tmp[Math.min(h - 1, Math.max(0, y + radius + 1)) * w + x];
-    }
-  }
-  return dst;
-}
-
 function garmentPixel(r: number, g: number, b: number): boolean {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -302,16 +277,11 @@ function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
 /** Recolor shirt pixels only. White is the photographed panel, not a recolor of itself. */
 function recolorGarment(rgba: Buffer, w: number, h: number, mask: Uint8Array, hex: string, medianL: number): Buffer {
   if (hex.toUpperCase() === "FFFFFF") return Buffer.from(rgba);
-  const featherSrc = new Float32Array(w * h);
-  const dilated = dilate(mask, w, h, disk(7));
-  for (let i = 0; i < dilated.length; i++) featherSrc[i] = dilated[i];
-  const feather = boxBlur(boxBlur(featherSrc, w, h, 2), w, h, 2);
   const n = parseInt(hex, 16);
   const [th, ts, tv] = rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
   const out = Buffer.from(rgba);
   for (let i = 0; i < w * h; i++) {
-    const m = feather[i];
-    if (m < 0.004) continue;
+    if (!mask[i]) continue;
     const o = i * 4;
     const L = lum(rgba[o], rgba[o + 1], rgba[o + 2]);
     const delta = medianL > 1 ? (L - medianL) / medianL : 0;
@@ -319,9 +289,9 @@ function recolorGarment(rgba: Buffer, w: number, h: number, mask: Uint8Array, he
     const shadow = Math.min(1, Math.max(0, -delta));
     const s = ts < 0.06 ? 0 : Math.min(1, ts * (1 + 0.18 * shadow));
     const [rr, gg, bb] = hsvToRgb(th, s, v);
-    out[o] = Math.round(rr * m + rgba[o] * (1 - m));
-    out[o + 1] = Math.round(gg * m + rgba[o + 1] * (1 - m));
-    out[o + 2] = Math.round(bb * m + rgba[o + 2] * (1 - m));
+    out[o] = Math.round(rr);
+    out[o + 1] = Math.round(gg);
+    out[o + 2] = Math.round(bb);
   }
   return out;
 }
