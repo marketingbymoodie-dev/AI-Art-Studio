@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { matchAppaiProfilesByName, unconfirmedVariantIds } from "./shipping-profile-match";
+import {
+  matchAppaiProfilesByName,
+  replacementProfileKey,
+  unconfirmedVariantIds,
+} from "./shipping-profile-match";
 
 const desired = [
   { name: "AppAI · Tee — provider 99 · s", classKey: "145:99", key: "145:99#all" },
@@ -53,5 +57,20 @@ describe("unconfirmedVariantIds", () => {
       "gid://shopify/DeliveryProfile/9",
     );
     expect(missing).toEqual(["2", "3"]);
+  });
+});
+
+describe("replacementProfileKey", () => {
+  const desired = [
+    { profileKey: "share:99:shirt:abc#all", classKeys: ["145:99", "706:99"] },
+    { profileKey: "1300:99#all", classKeys: ["1300:99"] },
+  ];
+
+  it("sends an old shirt profile to the shared shirt profile", () => {
+    expect(replacementProfileKey("145:99#all", desired)).toBe("share:99:shirt:abc#all");
+  });
+
+  it("does not invent a destination for a profile that stayed on its own", () => {
+    expect(replacementProfileKey("1300:99#all", desired)).toBeNull();
   });
 });

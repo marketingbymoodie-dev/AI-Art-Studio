@@ -63,7 +63,11 @@ import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
 import { parseVariantAvailabilityMap } from "@shared/productIntelligence";
 import { storage } from "./storage";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
-import { matchAppaiProfilesByName, unconfirmedVariantIds } from "./shipping-profile-match";
+import {
+  matchAppaiProfilesByName,
+  replacementProfileKey,
+  unconfirmedVariantIds,
+} from "./shipping-profile-match";
 
 const ADMIN_API = "2025-10";
 const CARRIER_NAME = "AI Art Studio";
@@ -1120,6 +1124,7 @@ async function reconcileShopShippingCore(
 
   // Confirm every desired variant is on its new Shopify profile before any
   // delete. deliveryProfileRemove returns leftover variants to General.
+  const desiredKeys = new Set(desired.profiles.map((p) => p.profileKey));
   let membershipConfirmed = failures === 0;
   if (!membershipConfirmed) {
     summary.errors.push("A profile apply failed; old profiles were left in place.");
@@ -1135,6 +1140,24 @@ async function reconcileShopShippingCore(
       summary.errors.push(`Variant confirmation failed: ${e?.message || e}`.slice(0, 400));
     }
   }
+  if (membershipConfirmed) {
+    try {
+      const leftoverProblems = await moveLeftoverVariantsOntoSharedProfiles(
+        shop,
+        token,
+        desired.profiles,
+        mapped,
+        desiredKeys,
+      );
+      if (leftoverProblems.length) {
+        membershipConfirmed = false;
+        for (const problem of leftoverProblems) summary.errors.push(problem.slice(0, 400));
+      }
+    } catch (e: any) {
+      membershipConfirmed = false;
+      summary.errors.push(`Leftover variant move failed: ${e?.message || e}`.slice(0, 400));
+    }
+  }
   if (!membershipConfirmed) {
     summary.warnings.push(
       "Old delivery profiles were left in place because the variant move was not confirmed.",
@@ -1142,7 +1165,6 @@ async function reconcileShopShippingCore(
   }
 
   // ── GC: mapped profiles whose class/group no longer has members (amendment A)
-  const desiredKeys = new Set(desired.profiles.map((p) => p.profileKey));
   for (const row of mapped) {
     if (!membershipConfirmed) break;
     if (desiredKeys.has(row.profileKey)) continue;
@@ -1175,6 +1197,121 @@ async function reconcileShopShippingCore(
     lastReconcileSummaryJson: JSON.stringify(summary).slice(0, 8000),
   });
   return summary;
+}
+
+async function moveLeftoverVariantsOntoSharedProfiles(
+  shop: string,
+  token: string,
+  profiles: DesiredProfile[],
+  mapped: ShippingStoreProfile[],
+  desiredKeys: Set<string>,
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      profileKey: shippingStoreProfiles.profileKey,
+      shopifyProfileId: shippingStoreProfiles.shopifyProfileId,
+    })
+    .from(shippingStoreProfiles)
+    .where(eq(shippingStoreProfiles.shopDomain, shop));
+  const idByKey = new Map(rows.map((row) => [row.profileKey, row.shopifyProfileId]));
+  const problems: string[] = [];
+  for (const row of mapped) {
+    if (desiredKeys.has(row.profileKey) || !row.shopifyProfileId) continue;
+    const leftovers = await variantIdsOnProfile(shop, token, row.shopifyProfileId);
+    if (leftovers.length === 0) continue;
+    const destinationKey = replacementProfileKey(
+      row.profileKey,
+      profiles.map((profile) => ({
+        profileKey: profile.profileKey,
+        classKeys: Array.from(new Set(profile.variants.map((variant) => variant.classKey))),
+      })),
+    );
+    const destinationId = destinationKey ? idByKey.get(destinationKey) : null;
+    if (!destinationKey || !destinationId) {
+      problems.push(
+        `${row.profileKey}: ${leftovers.length} variant(s) are still on the old profile and have no shared profile to move to`,
+      );
+      continue;
+    }
+    await associateVariants(shop, token, destinationId, leftovers);
+    const stillThere = await variantIdsOnProfile(shop, token, row.shopifyProfileId);
+    const found = await readVariantDeliveryProfiles(shop, token, leftovers);
+    const missing = unconfirmedVariantIds(leftovers, found, destinationId);
+    if (stillThere.length || missing.length) {
+      problems.push(
+        `${row.profileKey}: ${Math.max(stillThere.length, missing.length)} leftover variant(s) were not confirmed on ${destinationKey}`,
+      );
+    }
+  }
+  return problems;
+}
+
+async function variantIdsOnProfile(shop: string, token: string, profileId: string): Promise<string[]> {
+  const ids: string[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const data = await gql<{
+      deliveryProfile: {
+        profileItems: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: Array<{
+            variants: { pageInfo: { hasNextPage: boolean }; nodes: Array<{ id: string }> };
+          }>;
+        };
+      } | null;
+    }>(
+      shop,
+      token,
+      `query($id: ID!, $cursor: String) {
+        deliveryProfile(id: $id) {
+          profileItems(first: 25, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { variants(first: 100) { pageInfo { hasNextPage } nodes { id } } }
+          }
+        }
+      }`,
+      { id: profileId, cursor },
+    );
+    const connection = data.deliveryProfile?.profileItems;
+    if (!connection) return ids;
+    for (const item of connection.nodes) {
+      if (item.variants.pageInfo.hasNextPage) {
+        throw new Error(`Profile ${profileId} has a product with more than 100 variants still attached`);
+      }
+      for (const variant of item.variants.nodes) {
+        const numeric = variant.id.match(/(\d+)\s*$/)?.[1];
+        if (numeric) ids.push(numeric);
+      }
+    }
+    if (!connection.pageInfo.hasNextPage) return ids;
+    cursor = connection.pageInfo.endCursor;
+  }
+  throw new Error(`Profile ${profileId} still has variants after 20 pages`);
+}
+
+async function associateVariants(
+  shop: string,
+  token: string,
+  profileId: string,
+  variantIds: string[],
+): Promise<void> {
+  for (let i = 0; i < variantIds.length; i += VARIANTS_PER_MUTATION) {
+    const ids = variantIds
+      .slice(i, i + VARIANTS_PER_MUTATION)
+      .map((id) => (id.startsWith("gid://") ? id : `gid://shopify/ProductVariant/${id}`));
+    const data = await gql<any>(
+      shop,
+      token,
+      `mutation($id: ID!, $profile: DeliveryProfileInput!) {
+        deliveryProfileUpdate(id: $id, profile: $profile) {
+          profile { id }
+          userErrors { field message }
+        }
+      }`,
+      { id: profileId, profile: { variantsToAssociate: ids } },
+    );
+    throwOnUserErrors("leftover associate", data.deliveryProfileUpdate);
+  }
 }
 
 async function confirmVariantsOnDesiredProfiles(

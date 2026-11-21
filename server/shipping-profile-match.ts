@@ -76,3 +76,18 @@ export function unconfirmedVariantIds(
   );
   return expectedVariantIds.map(numericShopifyId).filter((id) => id && !onProfile.has(id));
 }
+
+/**
+ * Old per-class profile → the shared profile that now owns that class.
+ * Null when the old profile is not part of a merge (leave it for the caller).
+ */
+export function replacementProfileKey(
+  oldProfileKey: string,
+  desired: Array<{ profileKey: string; classKeys: string[] }>,
+): string | null {
+  const classKey = oldProfileKey.replace(/#.*$/, "");
+  const hit = desired.find(
+    (profile) => profile.profileKey.startsWith("share:") && profile.classKeys.includes(classKey),
+  );
+  return hit?.profileKey ?? null;
+}
