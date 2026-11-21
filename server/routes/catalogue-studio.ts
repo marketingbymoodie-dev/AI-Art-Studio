@@ -12,6 +12,7 @@ import {
   liveApparelGenerationModel,
   redrawCatalogueConcept,
 } from "../catalogue-concept";
+import { catalogueMyPetTestArtworkPath, runCatalogueMyPetTest } from "../catalogue-my-pet-test";
 import { parseCatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { redactAnthropicSecrets } from "../concept-engine";
@@ -579,6 +580,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         },
         generation: fixture || !stored ? null : parseCatalogueConceptGeneration(stored.generation),
         conceptEnabled: catalogueConceptShopAllowed(req.shopDomain),
+        myPetTestEnabled: catalogueConceptShopAllowed(req.shopDomain),
       });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -612,6 +614,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           return;
         }
         artworkPath = draw.artworkPath;
+      }
+      const petArtwork = typeof req.query.petArtwork === "string" ? req.query.petArtwork : "";
+      if (catalogueMyPetTestArtworkPath(petArtwork) && catalogueConceptShopAllowed(req.shopDomain)) {
+        artworkPath = petArtwork;
       }
       if (!artworkPath.trim()) {
         res.status(204).end();
@@ -858,6 +864,28 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         body: req.body,
       });
       res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/my-pet-test", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
+      if (!id || id === PENDING_CANDIDATE.id) {
+        if (id === PENDING_CANDIDATE.id) res.status(400).json({ error: "This candidate has no stored artwork." });
+        return;
+      }
+      const result = await runCatalogueMyPetTest({
+        shop: req.shopDomain,
+        requestId: String(req.body?.requestId || ""),
+        candidateId: id,
+        drawId: String(req.body?.drawId || ""),
+        imageData: String(req.body?.imageData || ""),
+      });
+      const spend = await catalogueSpend(id);
+      res.json({ ...result, spendUsd: spend.totalUsd, spendLines: spend.lines });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
@@ -1324,7 +1352,17 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         return;
       }
       const designProductId = await findPublishedDesign(candidateId, productTypeId);
-      res.json({ designProductId });
+      let myPetEnabled: boolean | null = null;
+      if (designProductId) {
+        const { db } = await import("../db");
+        const [row] = await db
+          .select({ myPetEnabled: designProducts.myPetEnabled })
+          .from(designProducts)
+          .where(eq(designProducts.id, designProductId))
+          .limit(1);
+        myPetEnabled = row ? row.myPetEnabled !== false : null;
+      }
+      res.json({ designProductId, myPetEnabled });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

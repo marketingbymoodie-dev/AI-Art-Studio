@@ -82,6 +82,15 @@ type PendingCandidate = {
   } | null;
   generation?: CatalogueConceptGeneration | null;
   conceptEnabled?: boolean;
+  myPetTestEnabled?: boolean;
+};
+
+type PetTestResult = {
+  artworkPath: string;
+  prompt: string;
+  model: string;
+  estimatedCostUsd: number | null;
+  actualCostUsd: number | null;
 };
 
 type OfferedColour = {
@@ -242,7 +251,7 @@ export default function CatalogueStudioPage() {
     },
   });
   const openCandidateId = requested || (candidate.data?.id && candidate.data.id !== "pending-bed-etiquette" ? candidate.data.id : "");
-  const published = useQuery<{ designProductId: string | null }>({
+  const published = useQuery<{ designProductId: string | null; myPetEnabled?: boolean | null }>({
     queryKey: ["/api/platform/catalogue-studio/design-colours", openCandidateId, studioTypeId],
     enabled: Boolean(openCandidateId),
     queryFn: async () => {
@@ -281,6 +290,12 @@ export default function CatalogueStudioPage() {
   const [renderBusy, setRenderBusy] = useState(false);
   const [renderError, setRenderError] = useState("");
   const renderLock = useRef(false);
+  const [petBusy, setPetBusy] = useState(false);
+  const [petError, setPetError] = useState("");
+  const [petTest, setPetTest] = useState<PetTestResult | null>(null);
+  const petLock = useRef(false);
+  const petFileRef = useRef<HTMLInputElement | null>(null);
+  const petDraw = useRef(1);
   const [styleId, setStyleId] = useState("");
   const [surface, setSurface] = useState("apparel");
 
@@ -342,6 +357,9 @@ export default function CatalogueStudioPage() {
     setDropError("");
     setPublishError("");
     setPublishBusy(false);
+    setPetTest(null);
+    setPetError("");
+    petDraw.current = 1;
   }, [candidate.data?.id, candidate.data?.status]);
 
   useEffect(() => {
@@ -450,8 +468,12 @@ export default function CatalogueStudioPage() {
       const selected = draws[Math.max(0, draw - 1)];
       const drawQuery = selected ? `&draw=${encodeURIComponent(selected.id)}` : "";
       const idQuery = candidate.data?.id ? `&candidate=${encodeURIComponent(candidate.data.id)}` : "";
+      const petOn = published.data?.designProductId ? published.data.myPetEnabled !== false : myPetEnabled;
+      const petQuery = !showAdmin && petOn && petTest?.artworkPath
+        ? `&petArtwork=${encodeURIComponent(petTest.artworkPath)}`
+        : "";
       const res = await apiFetch(
-        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}${drawQuery}`,
+        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}${drawQuery}${petQuery}`,
         { signal: controller.signal, transport: "xhr" },
       );
       if (res.status === 204) {
@@ -497,7 +519,13 @@ export default function CatalogueStudioPage() {
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [color, panelId, previewNonce, candidate.data?.id, candidate.data?.generation, studioTypeId, draw]);
+  }, [color, panelId, previewNonce, candidate.data?.id, candidate.data?.generation, studioTypeId, draw, showAdmin, myPetEnabled, published.data?.designProductId, published.data?.myPetEnabled, petTest?.artworkPath]);
+
+  useEffect(() => {
+    if (petDraw.current === draw) return;
+    petDraw.current = draw;
+    setPetTest(null);
+  }, [draw]);
 
   useEffect(() => {
     if (!showAdmin) return;
@@ -517,6 +545,51 @@ export default function CatalogueStudioPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showAdmin, drawCount, candidate.data?.generation?.draws.length]);
+
+  async function runPetTest(file: File | undefined) {
+    const petOn = published.data?.designProductId ? published.data.myPetEnabled !== false : myPetEnabled;
+    if (!file || petLock.current || !candidate.data?.myPetTestEnabled || !petOn) return;
+    if (file.size > 15 * 1024 * 1024) {
+      setPetError("Photo is too large");
+      if (petFileRef.current) petFileRef.current.value = "";
+      return;
+    }
+    petLock.current = true;
+    const requestId = crypto.randomUUID();
+    setPetBusy(true);
+    setPetError("");
+    try {
+      const imageData = await fileToDataUrl(file);
+      const draws = candidate.data.generation?.draws || [];
+      const selected = draws[Math.max(0, draw - 1)];
+      const res = await apiFetch("/api/platform/catalogue-studio/my-pet-test", {
+        method: "POST",
+        body: JSON.stringify({
+          requestId,
+          candidateId: candidate.data.id,
+          imageData,
+          drawId: selected?.id || "",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(body.error || "My Pet test failed"));
+      setPetTest({
+        artworkPath: String(body.artworkPath || ""),
+        prompt: String(body.prompt || ""),
+        model: String(body.model || ""),
+        estimatedCostUsd: body.estimatedCostUsd == null ? null : Number(body.estimatedCostUsd),
+        actualCostUsd: body.actualCostUsd == null ? null : Number(body.actualCostUsd),
+      });
+      if (typeof body.spendUsd === "number") setSpendUsd(body.spendUsd);
+      if (Array.isArray(body.spendLines)) setSpendLines(body.spendLines);
+    } catch (e: any) {
+      setPetError(String(e?.message || e));
+    } finally {
+      petLock.current = false;
+      setPetBusy(false);
+      if (petFileRef.current) petFileRef.current.value = "";
+    }
+  }
 
   async function redrawCandidate() {
     if (renderLock.current) return;
@@ -767,6 +840,41 @@ export default function CatalogueStudioPage() {
                 {salePrice ? `$${salePrice}` : ""}
               </p>
               <p className="text-sm text-muted-foreground">Shipping calculated at checkout</p>
+              {!showAdmin && (published.data?.designProductId ? published.data.myPetEnabled !== false : myPetEnabled) && candidate.data?.myPetTestEnabled ? (
+                <div className="space-y-2" data-testid="catalogue-my-pet-test">
+                  <input
+                    ref={petFileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      void runPetTest(file);
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    className="w-full"
+                    disabled={petBusy || !panelId}
+                    onClick={() => petFileRef.current?.click()}
+                  >
+                    {petBusy ? "Making your pet" : "My Pet"}
+                  </Button>
+                  {petError ? <p className="text-xs">{petError}</p> : null}
+                  {petTest ? (
+                    <div>
+                      <p className="text-xs text-muted-foreground">
+                        {petTest.model} · estimated {petTest.estimatedCostUsd == null ? "—" : formatCatalogueSpend(petTest.estimatedCostUsd)}
+                        {" · "}actual {petTest.actualCostUsd == null ? "—" : formatCatalogueSpend(petTest.actualCostUsd)}
+                      </p>
+                      <details>
+                        <summary>Prompt sent</summary>
+                        <pre className="mt-1 whitespace-pre-wrap text-xs">{petTest.prompt}</pre>
+                      </details>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <Button type="button" className="w-full" disabled>Add to cart</Button>
               <p className="text-xs text-muted-foreground">Guarantee · rating · returns · shipping</p>
               <Accordion type="multiple">

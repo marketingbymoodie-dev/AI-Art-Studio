@@ -55,7 +55,28 @@ import { storage } from "./storage";
 // moderation) and MY_PET_SUNBURST_ESTIMATED_COST_USD for the flat cost estimate
 // (Replicate's API does not return token usage per prediction).
 const MY_PET_REPLICATE_CREDENTIAL = CREDENTIALS["replicate:shared"];
-const MY_PET_REPLICATE_MODEL = REPLICATE_ROUTE_MODELS["replicate-sunburst"];
+export const MY_PET_REPLICATE_MODEL = REPLICATE_ROUTE_MODELS["replicate-sunburst"];
+
+/** The storefront image edit: design first, pet photo second, Sunburst on the shared Replicate token. */
+export async function runMyPetImageEdit(args: {
+  prompt: string;
+  designUrl: string;
+  petUrl: string;
+  renderParams: MyPetRenderParams;
+}): Promise<Awaited<ReturnType<typeof renderReplicateImageEdit>>> {
+  return renderReplicateImageEdit({
+    token: readPlatformReplicateToken(),
+    modelSlug: MY_PET_REPLICATE_MODEL,
+    prompt: args.prompt,
+    references: [args.designUrl, args.petUrl],
+    size: args.renderParams.size,
+    quality: args.renderParams.quality,
+    background: args.renderParams.background,
+    outputFormat: args.renderParams.outputFormat,
+    outputCompression: args.renderParams.outputCompression,
+    moderation: args.renderParams.moderation,
+  });
+}
 
 const PHOTO_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Storefront preview and picker URLs. Same 30-day window as a cart _mockup_url. */
@@ -448,28 +469,16 @@ export async function generateMyPetRender(args: {
   // Signed HTTPS URLs for both references — keeps Replicate's POST body small
   // vs. inlining multi-MB base64 data URLs, and matches the catalogue flow.
   // Both buckets are the same ones the compositor reads from.
-  const [designUrl, petUrl, token] = await Promise.all([
+  const [designUrl, petUrl] = await Promise.all([
     signedLibraryUrl(args.candidate.artworkPath),
     signedMyPetUrl(photo.storagePath),
-    Promise.resolve(readPlatformReplicateToken()),
   ]);
   const started = Date.now();
   const renderParams: MyPetRenderParams = settings.renderParams;
 
   let result;
   try {
-    result = await renderReplicateImageEdit({
-      token,
-      modelSlug: MY_PET_REPLICATE_MODEL,
-      prompt,
-      references: [designUrl, petUrl],
-      size: renderParams.size,
-      quality: renderParams.quality,
-      background: renderParams.background,
-      outputFormat: renderParams.outputFormat,
-      outputCompression: renderParams.outputCompression,
-      moderation: renderParams.moderation,
-    });
+    result = await runMyPetImageEdit({ prompt, designUrl, petUrl, renderParams });
   } catch (err) {
     await recordMyPetGenerationEvent({ shop: args.shop, success: false, durationMs: Date.now() - started, error: err });
     throw err;

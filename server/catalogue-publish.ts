@@ -54,6 +54,7 @@ const SPEND_LABEL: Record<string, string> = {
   "flywheel-print-file": "Print file",
   "catalogue-listing": "Listing",
   "catalogue-concept": "Draw",
+  "catalogue-my-pet-test": "My Pet test",
 };
 
 function clip(value: string, max: number): string {
