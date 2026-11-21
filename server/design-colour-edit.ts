@@ -5,7 +5,7 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { SOFTSTYLE_CATALOGUE_PRICES } from "@shared/softstyleCataloguePrices";
-import { diffColourNames, scenesMissingApprovedBlank, colourKey, type SceneBlank } from "@shared/designColourEdit";
+import { diffColourNames, colourKey } from "@shared/designColourEdit";
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
 import { mockupAlt } from "@shared/flywheelPromote";
@@ -328,14 +328,19 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
 
   const libraryId = await blankLibraryTypeId(typeRow.id);
   const scenes = await listScenes(libraryId);
-  const blanks: SceneBlank[] = scenes.map((scene) => ({
-    panelId: scene.panelId,
-    label: scene.label,
-    colours: scene.colours.map((colour) => ({ name: colour.name, kind: colour.kind })),
-  }));
+  const { blankScenesForLibrary, photographPanel } = await import("./mockup-library-store");
+  const { mockupLibraryColours } = await import("@shared/schema");
+  const { blankNameKey, noPhotographMessage } = await import("@shared/colourBlanks");
+  const [blankRows, links] = await Promise.all([
+    blankScenesForLibrary(libraryId),
+    db.select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+      .from(mockupLibraryColours)
+      .where(eq(mockupLibraryColours.productTypeId, libraryId)),
+  ]);
+  const linkFor = (name: string) => links.find((row) => blankNameKey(row.name) === blankNameKey(name))?.linkStoredName || "";
   const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, product.jobId)).limit(1);
   const choice = candidate ? await readChoice(product.jobId) : null;
-  const panelId = String(choice?.panelId || candidate?.panelId || blanks.find((scene) => scene.panelId)?.panelId || "");
+  const panelId = String(choice?.panelId || candidate?.panelId || scenes[0]?.panelId || "");
   const artworkPath = String(choice?.artworkPath || candidate?.artworkPath || "");
 
   let shopify: { variants: ShopifyVariant[]; sizeOption: string; colourOption: string; colourOptionLinked: boolean };
@@ -356,9 +361,8 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
       blockers.push(`${name} is not a colour on ${typeRow.name}.`);
       continue;
     }
-    const missing = scenesMissingApprovedBlank(blanks, color.name);
-    if (missing.length) {
-      blockers.push(`${color.name} has no approved blank on ${missing.map((scene) => scene.label).join(", ")}.`);
+    if (!photographPanel(blankRows, panelId, color.name, linkFor(color.name))) {
+      blockers.push(noPhotographMessage(color.name, typeRow.name));
       continue;
     }
     if (!panelId || !artworkPath) {

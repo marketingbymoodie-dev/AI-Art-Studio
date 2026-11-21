@@ -347,16 +347,31 @@ async function publishTargetsFor(
       && String(row.shopifyProductId || "").trim(),
     );
     const colors = await libraryColoursFor(type.id);
+    const { blankLibraryTypeId } = await import("../colour-blanks");
+    const { blankNameKey } = await import("@shared/colourBlanks");
+    const { blankScenesForLibrary, photographSceneLabels } = await import("../mockup-library-store");
+    const libraryId = await blankLibraryTypeId(type.id);
+    const [links, scenes] = await Promise.all([
+      db.select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+        .from(mockupLibraryColours)
+        .where(eq(mockupLibraryColours.productTypeId, libraryId)),
+      blankScenesForLibrary(libraryId),
+    ]);
     return {
       id: type.id,
       name: type.name,
       published: Boolean(listed),
       productUrl: listed?.shopifyProductId ? shopifyAdminProductUrl(shop, listed.shopifyProductId) : null,
-      colors: colors.map((color) => ({
-        name: color.name,
-        hex: color.hex,
-        hasProducedBlank: color.hasProducedBlank,
-      })),
+      colors: colors.map((color) => {
+        const link = links.find((row) => blankNameKey(row.name) === blankNameKey(color.name))?.linkStoredName || "";
+        const realScenes = photographSceneLabels(scenes, color.name, link);
+        return {
+          name: color.name,
+          hex: color.hex,
+          hasProducedBlank: realScenes.length > 0,
+          realScenes,
+        };
+      }),
     };
   }));
 }

@@ -39,7 +39,6 @@ import { coloursStillOffered, offeredAxes } from "@shared/variantSelection";
 import { getEffectiveDesignProductLimit } from "./customizer-plans";
 import { db } from "./db";
 import { uploadPrintFileToPrintify } from "./flat-print-file";
-import { resolvePanelColour, type PanelColour } from "./mockup-library";
 import { readChoice, readLibraryObject, signedLibraryUrl } from "./mockup-library-store";
 import { assertProductTypeReadyToPromote } from "./promote-shipping";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
@@ -519,25 +518,20 @@ export async function promoteCatalogueCandidate(args: {
   const ticked = selectedColors.map((color) => color.name);
   const panelColours: string[] = [];
   if (panelId) {
-    const { mockupPanels } = await import("@shared/schema");
     const { blankLibraryTypeId } = await import("./colour-blanks");
+    const { blankNameKey } = await import("@shared/colourBlanks");
+    const { blankScenesForLibrary, photographPanel } = await import("./mockup-library-store");
+    const { mockupLibraryColours } = await import("@shared/schema");
     const libraryId = await blankLibraryTypeId(args.productTypeId);
-    const rows = await db
-      .select({ garmentColor: mockupPanels.garmentColor, garmentHex: mockupPanels.garmentHex, kind: mockupPanels.kind })
-      .from(mockupPanels)
-      .where(and(eq(mockupPanels.productTypeId, libraryId), eq(mockupPanels.panelId, panelId)));
-    const scene: PanelColour[] = rows.map((row) => ({
-      name: row.garmentColor,
-      hex: row.garmentHex,
-      kind: row.kind === "white-master" ? "white-master" : "produced",
-    }));
+    const [scenes, links] = await Promise.all([
+      blankScenesForLibrary(libraryId),
+      db.select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+        .from(mockupLibraryColours)
+        .where(eq(mockupLibraryColours.productTypeId, libraryId)),
+    ]);
     for (const color of selectedColors) {
-      try {
-        resolvePanelColour(scene, color, typeRow.name, args.productTypeId, panelId);
-        panelColours.push(color.name);
-      } catch {
-        // Named by promoteRefusals when the ticked colour is absent from the scene.
-      }
+      const link = links.find((row) => blankNameKey(row.name) === blankNameKey(color.name))?.linkStoredName || "";
+      if (photographPanel(scenes, panelId, color.name, link)) panelColours.push(color.name);
     }
   }
 

@@ -69,20 +69,14 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
   const shop = String(typeRow.shop || "");
   if (!catalogueShopAllowed(shop)) throw new Error("Approval of this candidate is staging only.");
 
+  await approveCandidateChoice({
+    candidateId: recipe.candidateId,
+    productTypeId: typeRow.id,
+    typeName: typeRow.name,
+    panelId: recipe.panelId,
+    selectedColors: recipe.selectedColors,
+  });
   let choice = await readChoice(recipe.candidateId);
-  const covered = recipe.selectedColors.every((color) =>
-    choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()),
-  );
-  if (!covered) {
-    await approveCandidateChoice({
-      candidateId: recipe.candidateId,
-      productTypeId: typeRow.id,
-      typeName: typeRow.name,
-      panelId: recipe.panelId,
-      selectedColors: recipe.selectedColors,
-    });
-    choice = await readChoice(recipe.candidateId);
-  }
   if (!choice.artworkPath) throw new Error("Candidate artwork is not stored.");
   const missingMockup = recipe.selectedColors.find(
     (color) => !choice.mockupImages.some((image) => image.name.toLowerCase() === color.name.toLowerCase()),

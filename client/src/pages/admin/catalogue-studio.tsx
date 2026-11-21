@@ -62,7 +62,7 @@ type PendingCandidate = {
     name: string;
     published: boolean;
     productUrl: string | null;
-    colors: Array<{ name: string; hex: string; hasProducedBlank: boolean }>;
+    colors: Array<{ name: string; hex: string; hasProducedBlank: boolean; realScenes?: string[] }>;
   }>;
   pendingCount?: number;
   nextCandidateId?: string;
@@ -560,7 +560,7 @@ export default function CatalogueStudioPage() {
             .map((type) => ({
               productTypeId: type.id,
               selectedColors: type.colors
-                .filter((color) => (publishColours[type.id] || []).includes(color.name))
+                .filter((color) => (color.realScenes?.length || 0) > 0 && (publishColours[type.id] || []).includes(color.name))
                 .map((color) => ({ name: color.name, hex: color.hex })),
             })),
         }),
@@ -1182,19 +1182,25 @@ export default function CatalogueStudioPage() {
                       {publishTicks[type.id] ? (
                         <ul className="ml-6 space-y-1">
                           {type.colors.map((color) => {
-                            const on = (publishColours[type.id] || []).includes(color.name);
+                            const scenes = color.realScenes || [];
+                            const blocked = scenes.length === 0;
+                            const on = !blocked && (publishColours[type.id] || []).includes(color.name);
                             return (
                               <li key={color.name}>
-                                <label className="flex items-center text-sm">
+                                <label className={`flex items-center text-sm ${blocked ? "text-muted-foreground" : ""}`}>
                                   <input
                                     type="checkbox"
                                     className="mr-2"
                                     checked={on}
-                                    onChange={() => setPublishColours((current) => {
-                                      const list = current[type.id] || [];
-                                      const next = on ? list.filter((name) => name !== color.name) : [...list, color.name];
-                                      return { ...current, [type.id]: next };
-                                    })}
+                                    disabled={blocked}
+                                    onChange={() => {
+                                      if (blocked) return;
+                                      setPublishColours((current) => {
+                                        const list = current[type.id] || [];
+                                        const next = on ? list.filter((name) => name !== color.name) : [...list, color.name];
+                                        return { ...current, [type.id]: next };
+                                      });
+                                    }}
                                   />
                                   {color.hex ? (
                                     <span
@@ -1203,7 +1209,12 @@ export default function CatalogueStudioPage() {
                                       style={{ backgroundColor: `#${color.hex}` }}
                                     />
                                   ) : null}
-                                  {color.name}
+                                  <span>
+                                    {color.name}
+                                    {blocked
+                                      ? " — No photograph uploaded. This colour cannot be published."
+                                      : ` — ${scenes.join(", ")}`}
+                                  </span>
                                 </label>
                               </li>
                             );

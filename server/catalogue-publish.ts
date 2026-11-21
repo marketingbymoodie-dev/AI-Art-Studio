@@ -238,8 +238,10 @@ export async function publishCatalogueCandidate(args: {
     && await catalogueListingIsFresh(recipe.candidateId),
   );
   const preparedMockups = args.preparedMockups || [];
-  const hasMockups = mockupsCover(preparedMockups, recipe.selectedColors, garment.id)
-    || mockupsCover(choice.mockupImages, recipe.selectedColors, garment.id);
+  const preparedCover = mockupsCover(preparedMockups, recipe.selectedColors, garment.id);
+  const storedCover = mockupsCover(choice.mockupImages, recipe.selectedColors, garment.id);
+  // A stored jpeg can be an older recolour. The mockup phase always renders from an uploaded photograph.
+  const hasMockups = preparedCover || (args.work !== "mockups" && storedCover);
   if (!args.prechecked) {
     const blockers: string[] = [];
     if (!String(typeRow.listingGarmentWord || "").trim()) {
@@ -529,33 +531,24 @@ async function missingApprovedBlanks(
   colors: Array<{ name: string }>,
 ): Promise<string[]> {
   const { blankLibraryTypeId } = await import("./colour-blanks");
-  const { inUseBlankKind } = await import("@shared/colourBlanks");
+  const { blankNameKey, noPhotographMessage } = await import("@shared/colourBlanks");
+  const { blankScenesForLibrary, photographPanel } = await import("./mockup-library-store");
   const libraryId = await blankLibraryTypeId(productTypeId);
-  const [rows, panels] = await Promise.all([
+  const [rows, scenes] = await Promise.all([
     db
       .select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
       .from(mockupLibraryColours)
-      .where(and(eq(mockupLibraryColours.productTypeId, libraryId), eq(mockupLibraryColours.active, true))),
-    panelsForType(libraryId),
+      .where(eq(mockupLibraryColours.productTypeId, libraryId)),
+    blankScenesForLibrary(libraryId),
   ]);
-  const scene = panels.map((panel) => ({
-    panelId: panel.panelId,
-    name: panel.garmentColor || "",
-    kind: panel.kind,
-  }));
-  const approved = new Set<string>();
-  for (const row of rows) {
-    const linked = String(row.linkStoredName || "").trim();
-    const kind = inUseBlankKind(scene, row.name) || (linked ? inUseBlankKind(scene, linked) : null);
-    if (kind) approved.add(row.name.toLowerCase());
-  }
+  const linkFor = (name: string) => rows.find((row) => blankNameKey(row.name) === blankNameKey(name))?.linkStoredName || "";
   const missing: string[] = [];
   const seen = new Set<string>();
   for (const color of colors) {
     const key = color.name.toLowerCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    if (!approved.has(key)) missing.push(`${color.name} has no approved blank on ${typeName}.`);
+    if (!photographPanel(scenes, "", color.name, linkFor(color.name))) missing.push(noPhotographMessage(color.name, typeName));
   }
   return missing;
 }

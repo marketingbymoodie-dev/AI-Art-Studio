@@ -4,6 +4,7 @@ import {
   blankNameMatch,
   colourMatchKeys,
   composeBlankChoice,
+  newestUploadedBlank,
   listedSceneColours,
   describeColourUse,
   inUseBlankKind,
@@ -73,6 +74,23 @@ describe("softstyle colour seed", () => {
     expect(inUseBlankKind(panels, "Black")).toBe("produced");
     expect(inUseBlankKind(panels, "Bay")).toBe("produced");
     expect(inUseBlankKind(panels, "Navy")).toBeNull();
+  });
+
+  it("skips a newer painted blank and keeps the uploaded photograph", () => {
+    const rows = [
+      { name: "Black", kind: "produced", maskSource: "copied-from-white" },
+      { name: "Black", kind: "produced", maskSource: "scene-reference" },
+      { name: "Light Blue", kind: "produced", maskSource: "painted" },
+      { name: "White", kind: "produced", maskSource: "copied-from-white" },
+      { name: "White", kind: "white-master", maskSource: "scene-reference" },
+      { name: "Sport Grey", kind: "produced", maskSource: "copied-from-white" },
+      { name: "Light grey", kind: "produced", maskSource: "scene-reference" },
+    ];
+    expect(newestUploadedBlank(rows, "Black")?.maskSource).toBe("scene-reference");
+    expect(newestUploadedBlank(rows, "Light Blue")).toBeNull();
+    expect(newestUploadedBlank(rows, "White")?.kind).toBe("white-master");
+    expect(newestUploadedBlank(rows, "Navy")).toBeNull();
+    expect(newestUploadedBlank(rows, "Sport Grey", "Light grey")?.name).toBe("Light grey");
   });
 
   it("matches a colour name to its slug and says why it cannot be turned off", () => {

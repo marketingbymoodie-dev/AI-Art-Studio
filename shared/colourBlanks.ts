@@ -193,6 +193,58 @@ export function composeBlankChoice(
   return { mode: "unavailable", sourceName: "", rowId: null };
 }
 
+/** A stored recolour. A real upload can share the white mask, but these two sources are the paint itself. */
+const PAINTED_BLANK_SOURCES = new Set(["copied-from-white", "painted"]);
+
+export type UploadedBlankRow = {
+  name: string;
+  kind: string;
+  maskSource?: string | null;
+};
+
+/** A photograph that was uploaded. An approved recolour of the white master is not one. */
+export function isUploadedBlank(row: UploadedBlankRow): boolean {
+  if (PAINTED_BLANK_SOURCES.has(String(row.maskSource || ""))) return false;
+  return row.kind === "produced" || row.kind === "white-master";
+}
+
+/**
+ * Newest uploaded photograph for this colour. A newer painted row is skipped.
+ * The linked name is used only when the colour itself has no photograph.
+ * Rows must be newest first.
+ */
+export function newestUploadedBlank<T extends UploadedBlankRow>(
+  rowsNewestFirst: readonly T[],
+  colourName: string,
+  linkedName?: string | null,
+): T | null {
+  const names: string[] = [];
+  for (const name of [colourName, linkedName || ""]) {
+    const key = blankNameKey(name);
+    if (key && !names.includes(key)) names.push(key);
+  }
+  for (const name of names) {
+    const hit = rowsNewestFirst.find((row) => blankNameKey(row.name) === name && isUploadedBlank(row));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function noPhotographMessage(colourName: string, typeName: string): string {
+  return `${colourName} has no photograph on ${typeName}. Upload a blank before publishing this colour.`;
+}
+
+export function compareBlankScenes(a: { panelId: string; label?: string }, b: { panelId: string; label?: string }): number {
+  const num = (value: string) => {
+    const match = value.match(/(\d+)\s*$/);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const left = num(a.label || a.panelId);
+  const right = num(b.label || b.panelId);
+  if (left !== right) return left - right;
+  return a.panelId.localeCompare(b.panelId);
+}
+
 /** Exact stored name, a suggested link, or nothing. */
 export function blankNameMatch(
   colourName: string,

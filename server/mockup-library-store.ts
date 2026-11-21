@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { placementForProductType } from "@shared/printPlacement";
+import { compareBlankScenes, newestUploadedBlank, noPhotographMessage } from "@shared/colourBlanks";
 import { catalogueCandidateChoices, designCandidates, designProducts, mockupLibraryColours, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
 import { measureGarmentAlignment } from "./blank-alignment";
@@ -270,7 +271,7 @@ async function insertPanel(args: {
   mask: Uint8Array;
   width: number;
   height: number;
-  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-reference";
+  maskSource: "white-rule" | "copied-from-white" | "operator-confirmed" | "hex-segment" | "scene-reference" | "painted";
   isDefault: boolean;
   uploadedBy: string | null;
   printWidthOfH?: number;
@@ -770,6 +771,8 @@ export async function renderCandidateOnPanel(args: {
    * knob to turn without re-plumbing. No current callers pass it.
    */
   forceRecolour?: boolean;
+  /** Publish path. Uses an uploaded photograph and never recolours the white master. */
+  uploadedOnly?: boolean;
   /** Omit to use this type's placement. Types 56 and 58 are full-size and top-anchored. */
   scale?: number;
   anchor?: "top" | "center";
@@ -800,11 +803,12 @@ async function loadCandidatePanel(args: {
   colorHex: string;
   artworkPath: string | null;
   forceRecolour?: boolean;
+  uploadedOnly?: boolean;
 }) {
   const { blankLibraryTypeId, printFractionsForType } = await import("./colour-blanks");
   const libraryId = await blankLibraryTypeId(args.productTypeId);
   const rows = await sceneRows(libraryId, args.panelId);
-  if (!rows.length) {
+  if (!rows.length && !args.uploadedOnly) {
     resolvePanelColour([], { name: args.colorName, hex: args.colorHex }, args.typeName, args.productTypeId, args.panelId);
   }
   const colours: PanelColour[] = rows.map((row) => ({
@@ -816,10 +820,39 @@ async function loadCandidatePanel(args: {
     .select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
     .from(mockupLibraryColours)
     .where(eq(mockupLibraryColours.productTypeId, libraryId));
-  const { blankNameKey } = await import("@shared/colourBlanks");
+  const { blankNameKey, newestUploadedBlank, noPhotographMessage } = await import("@shared/colourBlanks");
   const requestedKey = blankNameKey(args.colorName);
   const linkedName = libraryColours.find((row) => blankNameKey(row.name) === requestedKey)?.linkStoredName?.trim() || "";
-  const label = rows[0].label;
+  const label = rows[0]?.label || args.panelId;
+  if (args.uploadedOnly) {
+    const chosen = newestUploadedBlank(
+      rows.map((row) => ({ ...row, name: row.garmentColor })),
+      args.colorName,
+      linkedName,
+    );
+    if (!chosen) throw new Error(noPhotographMessage(args.colorName, args.typeName));
+    if (!args.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
+    const [photo, maskPng, artwork] = await Promise.all([
+      getObject(chosen.storagePath),
+      getObject(chosen.maskPath),
+      getObject(args.artworkPath),
+    ]);
+    const stored = {
+      widthOfH: Number(chosen.printWidthOfH),
+      heightOfH: Number(chosen.printHeightOfH),
+      topOfH: Number(chosen.printTopOfH),
+      rotationDeg: Number(chosen.printRotationDeg),
+    };
+    const own = await printFractionsForType(args.productTypeId);
+    return {
+      photo,
+      maskPng,
+      artwork,
+      resolved: { kind: "produced" as const, hex: chosen.garmentHex, sourceName: chosen.garmentColor },
+      fractions: own ?? stored,
+      sourceRow: chosen,
+    };
+  }
   // STAGING-103 — when forceRecolour is set, bypass exact-match resolution
   // and always route through the white-master recolour path. Throws with
   // the same shape of error resolvePanelColour would if no white master
@@ -913,6 +946,58 @@ export async function candidatePrintifyArtwork(args: {
   return preview;
 }
 
+export type BlankSceneRows = {
+  panelId: string;
+  label: string;
+  rows: Array<{ name: string; kind: string; maskSource: string | null }>;
+};
+
+/** Every scene, newest row first, including older photographs hidden under a later paint. */
+export async function blankScenesForLibrary(libraryId: number): Promise<BlankSceneRows[]> {
+  const rows = await db
+    .select({
+      panelId: mockupPanels.panelId,
+      label: mockupPanels.label,
+      name: mockupPanels.garmentColor,
+      kind: mockupPanels.kind,
+      maskSource: mockupPanels.maskSource,
+    })
+    .from(mockupPanels)
+    .where(and(eq(mockupPanels.productTypeId, libraryId), eq(mockupPanels.view, VIEW)))
+    .orderBy(desc(mockupPanels.createdAt));
+  const groups = new Map<string, BlankSceneRows>();
+  for (const row of rows) {
+    let scene = groups.get(row.panelId);
+    if (!scene) {
+      scene = { panelId: row.panelId, label: row.label, rows: [] };
+      groups.set(row.panelId, scene);
+    }
+    scene.rows.push(row);
+  }
+  return [...groups.values()].sort(compareBlankScenes);
+}
+
+export function photographSceneLabels(
+  scenes: readonly BlankSceneRows[],
+  colourName: string,
+  linkedName?: string | null,
+): string[] {
+  return scenes
+    .filter((scene) => newestUploadedBlank(scene.rows, colourName, linkedName))
+    .map((scene) => scene.label || scene.panelId);
+}
+
+export function photographPanel(
+  scenes: readonly BlankSceneRows[],
+  requestedPanelId: string,
+  colourName: string,
+  linkedName?: string | null,
+): BlankSceneRows | null {
+  const requested = scenes.find((scene) => scene.panelId === requestedPanelId);
+  if (requested && newestUploadedBlank(requested.rows, colourName, linkedName)) return requested;
+  return scenes.find((scene) => newestUploadedBlank(scene.rows, colourName, linkedName)) || null;
+}
+
 export async function approveCandidateChoice(args: {
   candidateId: string;
   productTypeId: number;
@@ -924,16 +1009,17 @@ export async function approveCandidateChoice(args: {
 }): Promise<StoredMockupImage[]> {
   if (!args.selectedColors.length) throw new Error("No colours selected");
   const { blankLibraryTypeId } = await import("./colour-blanks");
+  const { blankNameKey } = await import("@shared/colourBlanks");
   const libraryId = await blankLibraryTypeId(args.productTypeId);
-  const rows = await sceneRows(libraryId, args.panelId);
-  const label = rows[0]?.label || args.panelId;
-  const colours: PanelColour[] = rows.map((row) => ({
-    name: row.garmentColor,
-    hex: row.garmentHex,
-    kind: row.kind === "white-master" ? "white-master" : "produced",
-  }));
-  for (const color of args.selectedColors) {
-    resolvePanelColour(colours, color, args.typeName, args.productTypeId, label);
+  const scenes = await blankScenesForLibrary(libraryId);
+  const libraryColours = await db
+    .select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+    .from(mockupLibraryColours)
+    .where(eq(mockupLibraryColours.productTypeId, libraryId));
+  const linkFor = (name: string) => libraryColours.find((row) => blankNameKey(row.name) === blankNameKey(name))?.linkStoredName || "";
+  const blocked = args.selectedColors.filter((color) => !photographPanel(scenes, args.panelId, color.name, linkFor(color.name)));
+  if (blocked.length) {
+    throw new Error(blocked.map((color) => noPhotographMessage(color.name, args.typeName)).join("\n"));
   }
   const now = new Date();
   if (!args.preserveStoredColours) {
@@ -943,13 +1029,15 @@ export async function approveCandidateChoice(args: {
   if (!choice.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
   const mockupImages: StoredMockupImage[] = [];
   for (const color of args.selectedColors) {
+    const scene = photographPanel(scenes, args.panelId, color.name, linkFor(color.name));
     const rendered = await renderCandidateOnPanel({
       productTypeId: args.productTypeId,
       typeName: args.typeName,
-      panelId: args.panelId,
+      panelId: scene?.panelId || args.panelId,
       colorName: color.name,
       colorHex: color.hex,
       artworkPath: choice.artworkPath,
+      uploadedOnly: true,
     });
     const jpeg = await sharp(rendered.png).jpeg({ quality: 90 }).toBuffer();
     const path = `candidates/${slug(args.candidateId)}/${Date.now()}-${slug(color.name)}-front.jpg`;
@@ -981,13 +1069,25 @@ export async function storeCandidateColourMockup(args: {
   colorHex: string;
   artworkPath: string;
 }): Promise<StoredMockupImage> {
+  const { blankLibraryTypeId } = await import("./colour-blanks");
+  const { blankNameKey } = await import("@shared/colourBlanks");
+  const libraryId = await blankLibraryTypeId(args.productTypeId);
+  const scenes = await blankScenesForLibrary(libraryId);
+  const libraryColours = await db
+    .select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+    .from(mockupLibraryColours)
+    .where(eq(mockupLibraryColours.productTypeId, libraryId));
+  const link = libraryColours.find((row) => blankNameKey(row.name) === blankNameKey(args.colorName))?.linkStoredName || "";
+  const scene = photographPanel(scenes, args.panelId, args.colorName, link);
+  if (!scene) throw new Error(noPhotographMessage(args.colorName, args.typeName));
   const rendered = await renderCandidateOnPanel({
     productTypeId: args.productTypeId,
     typeName: args.typeName,
-    panelId: args.panelId,
+    panelId: scene.panelId,
     colorName: args.colorName,
     colorHex: args.colorHex,
     artworkPath: args.artworkPath,
+    uploadedOnly: true,
   });
   const jpeg = await sharp(rendered.png).jpeg({ quality: 90 }).toBuffer();
   const path = `candidates/${slug(args.candidateId)}/${Date.now()}-${slug(args.colorName)}-front.jpg`;
@@ -1046,7 +1146,7 @@ export async function approvePaintedBlank(args: {
     mask: painted.mask,
     width: painted.width,
     height: painted.height,
-    maskSource: "copied-from-white",
+    maskSource: "painted",
     isDefault: false,
     uploadedBy: args.uploadedBy,
   });
