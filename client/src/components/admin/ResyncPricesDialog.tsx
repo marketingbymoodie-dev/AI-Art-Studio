@@ -78,6 +78,8 @@ export type ResyncPricesDialogProps = {
   productTypeId: number;
   /** When set, POST to customizer-pages sync endpoint */
   customizerPageId?: string;
+  /** Current compare-at editor. Omitted uses the value already stored on the product type. */
+  compareAtBySize?: Record<string, string>;
   onSuccess?: () => void;
 };
 
@@ -87,6 +89,7 @@ export default function ResyncPricesDialog({
   title,
   productTypeId,
   customizerPageId,
+  compareAtBySize,
   onSuccess,
 }: ResyncPricesDialogProps) {
   const { toast } = useToast();
@@ -409,6 +412,7 @@ export default function ResyncPricesDialog({
       const res = await apiRequest("POST", endpoint, {
         variantPrices: prices,
         ...(pricesBoth ? { variantPricesBoth: pricesBoth } : {}),
+        ...(compareAtBySize ? { compareAtBySize } : {}),
         defaultMarkupPercent: markupPercent,
       });
       const data = await res.json();

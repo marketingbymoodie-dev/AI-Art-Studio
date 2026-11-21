@@ -1,5 +1,6 @@
 import { frameColourHidden, overlayBlankSwatches, type ColourBlankSwatch } from "@shared/colourBlanks";
 import { shopifyStatusForVisibility } from "@shared/productVisibility";
+import { compareAtForSize, matchedSizeName, normaliseCompareAtBySize, parseCompareAtBySize } from "@shared/compareAtBySize";
 import { catalogueVariantGate } from "./catalogue-variant-fulfillment";
 import { generateImageBase64 } from "./replit_integrations/image/client";
 import {
@@ -14920,6 +14921,11 @@ ${orientationExtra}
       if ("listingStyleLabel" in updates) {
         updates.listingStyleLabel = String(updates.listingStyleLabel || "").replace(/\s+/g, " ").trim();
       }
+      if ("compareAtBySize" in updates) {
+        const normalised = normaliseCompareAtBySize(updates.compareAtBySize);
+        if (!normalised.ok) return res.status(400).json({ error: normalised.error });
+        updates.compareAtBySize = normalised.json;
+      }
       for (const key of ["garmentComfortCopy", "garmentDurabilityCopy"] as const) {
         if (!(key in updates)) continue;
         updates[key] = String(updates[key] || "")
@@ -23337,7 +23343,7 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -23346,10 +23352,15 @@ ${orientationExtra}
       variantPrices?: Record<string, string>;
       /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
+    const compareAtNormalised = incomingCompareAt === undefined ? null : normaliseCompareAtBySize(incomingCompareAt);
+    if (compareAtNormalised && !compareAtNormalised.ok) {
+      return res.status(400).json({ error: compareAtNormalised.error });
+    }
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
     if (!handle?.trim()) return res.status(400).json({ error: "Handle is required" });
@@ -23728,6 +23739,11 @@ ${orientationExtra}
       if (Number.isFinite(markupNum) && markupNum >= 0) {
         ptUpdates.defaultMarkupPercent = markupNum;
       }
+      if (compareAtNormalised?.ok) {
+        ptUpdates.compareAtBySize = compareAtNormalised.json;
+        if (ptForSync) (ptForSync as any).compareAtBySize = compareAtNormalised.json;
+        if (matchedType) (matchedType as any).compareAtBySize = compareAtNormalised.json;
+      }
       if (ptForMeta && !String(ptForMeta.description || "").trim() && ptForMeta.printifyBlueprintId) {
         const token = resolveCatalogPrintifyToken(merchant);
         if (token) {
@@ -23800,10 +23816,20 @@ ${orientationExtra}
           liveShopifyVariants = alreadyPriced.data?.product?.variants ?? [];
         }
         const alreadyHasRetail = allShopifyVariantsHavePositiveRetail(liveShopifyVariants);
+        const pricingType = matchedType || ptForSync;
         if (alreadyHasRetail) {
           console.log(
-            `[customizer-pages] Shopify product ${productIdNum} already has retail on ${liveShopifyVariants.length} variants — skipping PUT sync`,
+            `[customizer-pages] Shopify product ${productIdNum} already has retail on ${liveShopifyVariants.length} variants — skipping price overwrite`,
           );
+          if (pricingType) {
+            await applyShopifyCompareAtOnly({
+              shop,
+              accessToken: installation.accessToken,
+              baseProductId: variant.product_id,
+              productType: pricingType,
+              shopifyVariants: liveShopifyVariants,
+            });
+          }
         }
         const applied = alreadyHasRetail
           ? { successCount: liveShopifyVariants.length, unresolvedCount: 0 }
@@ -24231,11 +24257,52 @@ ${orientationExtra}
   }));
 
   /** One GraphQL call instead of N REST PUTs — 96 apparel variants otherwise 429. */
+  function productTypeSizeNames(productType: any): string[] {
+    let sizes: Array<{ name?: string }> = [];
+    try {
+      const raw = typeof productType?.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType?.sizes;
+      sizes = Array.isArray(raw) ? raw : [];
+    } catch {
+      sizes = [];
+    }
+    return sizes.map((size) => String(size?.name || "").trim()).filter(Boolean);
+  }
+
+  /** Compare-at that still differs from Shopify. Null clears a crossed-out price. */
+  function compareAtUpdatesForVariants(
+    productType: any,
+    shopifyVariants: Array<{ id?: number; option1?: string | null; option2?: string | null; option3?: string | null; compare_at_price?: string | null }>,
+  ): Map<number, string | null> {
+    const updates = new Map<number, string | null>();
+    const sizeNames = productTypeSizeNames(productType);
+    if (!sizeNames.length) return updates;
+    const stored = parseCompareAtBySize(productType?.compareAtBySize);
+    for (const variant of shopifyVariants) {
+      const id = Number(variant.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const size = matchedSizeName([variant.option1, variant.option2, variant.option3], sizeNames);
+      if (!size) continue;
+      const wanted = compareAtForSize(stored, size);
+      const live = wantedCompareAt(variant.compare_at_price);
+      if (wanted === live) continue;
+      updates.set(id, wanted || null);
+    }
+    return updates;
+  }
+
+  function wantedCompareAt(value: unknown): string {
+    const text = value == null ? "" : String(value).trim();
+    if (!text) return "";
+    const amount = Number(text);
+    return Number.isFinite(amount) && amount > 0 ? amount.toFixed(2) : "";
+  }
+
   async function bulkUpdateShopifyVariantPrices(
     shop: string,
     accessToken: string,
     productId: number,
     prices: Map<number, string>,
+    compareAtByVariant?: Map<number, string | null>,
   ): Promise<boolean> {
     if (prices.size === 0) return true;
     const entries = [...prices.entries()];
@@ -24259,6 +24326,7 @@ ${orientationExtra}
             variants: chunk.map(([id, price]) => ({
               id: `gid://shopify/ProductVariant/${id}`,
               price,
+              ...(compareAtByVariant?.has(id) ? { compareAtPrice: compareAtByVariant.get(id) } : {}),
             })),
           },
         }),
@@ -24289,6 +24357,32 @@ ${orientationExtra}
     return true;
   }
 
+  /** Write this type's compare-at onto the studio product without changing retail prices. */
+  async function applyShopifyCompareAtOnly(args: {
+    shop: string;
+    accessToken: string;
+    baseProductId: string | number;
+    productType: any;
+    shopifyVariants?: Array<{ id?: number; price?: string; option1?: string | null; option2?: string | null; option3?: string | null; compare_at_price?: string | null }>;
+  }): Promise<void> {
+    const productIdNum = parseInt(String(args.baseProductId).replace(/\D/g, ""), 10);
+    if (!productIdNum) return;
+    const variants = args.shopifyVariants ?? (await getProductRestCompat(args.shop, args.accessToken, productIdNum)).data?.product?.variants ?? [];
+    const compareAtByVariant = compareAtUpdatesForVariants(args.productType, variants);
+    if (compareAtByVariant.size === 0) return;
+    const prices = new Map<number, string>();
+    for (const variant of variants) {
+      const id = Number(variant.id);
+      if (!compareAtByVariant.has(id)) continue;
+      const amount = Number(variant.price);
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      prices.set(id, amount.toFixed(2));
+    }
+    if (prices.size === 0) return;
+    const ok = await bulkUpdateShopifyVariantPrices(args.shop, args.accessToken, productIdNum, prices, compareAtByVariant);
+    if (!ok) console.warn(`[sync-prices] compare-at update failed for product ${productIdNum}`);
+  }
+
   /** Shared Shopify variant price sync used by customizer pages and Products admin. */
   async function applyShopifyVariantPrices(args: {
     shop: string;
@@ -24315,6 +24409,9 @@ ${orientationExtra}
       title?: string;
       option1?: string | null;
       option2?: string | null;
+      option3?: string | null;
+      compare_at_price?: string | null;
+      price?: string;
     }> = [];
     const allVariantsResult = await getProductRestCompat(shop, accessToken, baseProductId);
     shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
@@ -24391,6 +24488,13 @@ ${orientationExtra}
       if (!uniquePuts.has(id)) uniquePuts.set(id, price);
     }
 
+    const compareAtByVariant = compareAtUpdatesForVariants(productType, shopifyVariants);
+    for (const id of compareAtByVariant.keys()) {
+      if (uniquePuts.has(id)) continue;
+      const current = livePriceById.get(id) ?? 0;
+      if (current > 0) uniquePuts.set(id, current.toFixed(2));
+    }
+
     console.log(
       `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size} (front+back ${bothPuts.size})`,
     );
@@ -24406,7 +24510,7 @@ ${orientationExtra}
     };
 
     if (uniquePuts.size > 0 && productIdNum) {
-      const bulkOk = await bulkUpdateShopifyVariantPrices(shop, accessToken, productIdNum, uniquePuts);
+      const bulkOk = await bulkUpdateShopifyVariantPrices(shop, accessToken, productIdNum, uniquePuts, compareAtByVariant);
       if (bulkOk) {
         for (const [variantNum, formatted] of uniquePuts) {
           await markPutSuccess(variantNum, formatted);
@@ -24417,7 +24521,13 @@ ${orientationExtra}
           for (let attempt = 0; attempt < 6; attempt++) {
             const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
               method: "PUT",
-              body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+              body: JSON.stringify({
+                variant: {
+                  id: variantNum,
+                  price: formatted,
+                  ...(compareAtByVariant.has(variantNum) ? { compare_at_price: compareAtByVariant.get(variantNum) } : {}),
+                },
+              }),
             });
             if (priceResult.ok) return priceResult;
             lastError = priceResult.error || "Unknown error";
@@ -24546,14 +24656,19 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
+    const { variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
+    const pageCompareAt = Object.prototype.hasOwnProperty.call(req.body || {}, "compareAtBySize")
+      ? normaliseCompareAtBySize(incomingCompareAt)
+      : null;
+    if (pageCompareAt && !pageCompareAt.ok) return res.status(400).json({ error: pageCompareAt.error });
 
     // Validate all prices
     for (const [vid, price] of Object.entries(variantPrices)) {
@@ -24582,11 +24697,17 @@ ${orientationExtra}
       (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined) ||
       productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId));
 
+    let pricingType = matchedType;
+    if (pageCompareAt?.ok && pricingType?.id) {
+      await storage.updateProductType(pricingType.id, { compareAtBySize: pageCompareAt.json });
+      pricingType = { ...pricingType, compareAtBySize: pageCompareAt.json };
+    }
+
     const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken!,
       baseProductId: dbPage.baseProductId,
-      productType: matchedType,
+      productType: pricingType,
       variantPrices,
       variantPricesBoth: variantPricesBoth ?? null,
     });
@@ -24675,14 +24796,19 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
+    const { variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
+    const typeCompareAt = Object.prototype.hasOwnProperty.call(req.body || {}, "compareAtBySize")
+      ? normaliseCompareAtBySize(incomingCompareAt)
+      : null;
+    if (typeCompareAt && !typeCompareAt.ok) return res.status(400).json({ error: typeCompareAt.error });
     for (const [vid, price] of Object.entries(variantPrices)) {
       const num = parseFloat(String(price));
       if (isNaN(num) || num <= 0) {
@@ -24700,11 +24826,17 @@ ${orientationExtra}
       }
     }
 
+    let pricingType = productType;
+    if (typeCompareAt?.ok) {
+      await storage.updateProductType(productTypeId, { compareAtBySize: typeCompareAt.json });
+      pricingType = { ...productType, compareAtBySize: typeCompareAt.json };
+    }
+
     const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken,
       baseProductId: productType.shopifyProductId,
-      productType,
+      productType: pricingType,
       variantPrices,
       variantPricesBoth: variantPricesBoth ?? null,
     });
@@ -25156,6 +25288,7 @@ ${orientationExtra}
           listingGarmentWord: pt.listingGarmentWord ?? "",
           listingHandleSuffix: pt.listingHandleSuffix ?? "",
           listingStyleLabel: pt.listingStyleLabel ?? "",
+          compareAtBySize: parseCompareAtBySize(pt.compareAtBySize),
           garmentComfortCopy: pt.garmentComfortCopy ?? null,
           garmentDurabilityCopy: pt.garmentDurabilityCopy ?? null,
           garmentShape: pt.garmentShape ?? "",

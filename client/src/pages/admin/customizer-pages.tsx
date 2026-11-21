@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo, useEffect, useCallback } from "react";
 import { defaultEaseForShape, garmentShapeFromName, type FitEase, type GarmentMeasurements, type GarmentShape } from "@shared/findMySize";
+import { normaliseCompareAtBySize, parseCompareAtBySize } from "@shared/compareAtBySize";
 import { activeColorNames, cleanGarmentAccordion } from "@shared/garmentAccordion";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest, apiFetch, parseApiErrorMessage, isSessionAuthError } from "@/lib/queryClient";
@@ -248,6 +249,7 @@ interface Blank {
     available?: Array<{ url: string; label: string; position?: string; source?: string }>;
   };
   variants: BlankVariant[];
+  compareAtBySize?: Record<string, string>;
 }
 
 function slugify(str: string): string {
@@ -358,6 +360,53 @@ function formatStyleConfigSummary(
   return `${names.slice(0, 2).join(", ")} +${names.length - 2} more`;
 }
 
+function offeredSizeNames(sizes: VariantOption[] | undefined, selectedIds: Iterable<string> | undefined): string[] {
+  const list = sizes || [];
+  const selected = new Set(selectedIds || []);
+  const picked = selected.size > 0 ? list.filter((size) => selected.has(size.id)) : list;
+  const source = picked.length > 0 ? picked : list;
+  return [...new Set(source.map((size) => size.name).filter(Boolean))];
+}
+
+function CompareAtBySizeFields({
+  sizes,
+  value,
+  onChange,
+}: {
+  sizes: string[];
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  if (sizes.length === 0) return null;
+  return (
+    <div className="space-y-2" data-testid="compare-at-by-size">
+      <div>
+        <p className="text-xs font-medium">Compare-at</p>
+        <p className="text-[11px] text-muted-foreground">
+          Optional crossed-out price for each size. Leave a size blank for no compare-at.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {sizes.map((size) => (
+          <label key={size} className="space-y-1">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{size}</span>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
+              <Input
+                className="h-8 pl-5"
+                inputMode="decimal"
+                placeholder="none"
+                value={value[size] ?? ""}
+                onChange={(event) => onChange({ ...value, [size]: event.target.value })}
+              />
+            </div>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminCustomizerPages() {
   const { toast } = useToast();
   const [, navigate] = useLocation();
@@ -448,6 +497,9 @@ export default function AdminCustomizerPages() {
   /** Tracks blueprint:provider already prepared so costs can prefetch during Variants. */
   const preparedProviderKeyRef = useRef<string | null>(null);
   const [variantPrices, setVariantPrices] = useState<Record<string, string>>({});
+  const [formCompareAt, setFormCompareAt] = useState<Record<string, string>>({});
+  const [editCompareAt, setEditCompareAt] = useState<Record<string, string>>({});
+  const [editCompareAtReady, setEditCompareAtReady] = useState(false);
   /** Front+back retail prices — only used when Printify costs include a both-sides tier. */
   const [variantPricesBoth, setVariantPricesBoth] = useState<Record<string, string>>({});
   const [priceErrors, setPriceErrors] = useState<Record<string, string>>({});
@@ -631,6 +683,7 @@ export default function AdminCustomizerPages() {
 
   useEffect(() => {
     if (!editTarget) {
+      setEditCompareAtReady(false);
       setEditDescription("");
       setEditGarmentWord("");
       setEditHandleSuffix("");
@@ -643,7 +696,10 @@ export default function AdminCustomizerPages() {
       setEditDescriptionLoading(false);
       return;
     }
-    if (!editBlank) return;
+    if (!editBlank) {
+      setEditCompareAtReady(false);
+      return;
+    }
     const images = editBlank.baseMockupImages || {};
     // Seed once per page/product — do not re-run when description arrives later
     // or a stale blanks refetch would wipe a just-fetched catalog description.
@@ -661,6 +717,8 @@ export default function AdminCustomizerPages() {
     setEditEase(editBlank.garmentFitEase || defaultEaseForShape(shape));
     setEditMeasurements(editBlank.garmentMeasurements || null);
     setEditPricingStrategy((editBlank as any).pricingStrategy || "notify_only");
+    setEditCompareAt(parseCompareAtBySize(editBlank.compareAtBySize));
+    setEditCompareAtReady(true);
     setEditMarkupPercent(String(resolveMarkupPercent((editBlank as any).defaultMarkupPercent)));
     setEditMinMarginPercent(
       (editBlank as any).minMarginPercent != null ? String((editBlank as any).minMarginPercent) : "",
@@ -891,6 +949,7 @@ export default function AdminCustomizerPages() {
           garmentShape: editShape,
           garmentFitEase: editEase,
           garmentMeasurements: editMeasurements,
+          compareAtBySize: editCompareAt,
         });
         if (!ptRes.ok) {
           const body = await ptRes.json().catch(() => ({}));
@@ -1018,6 +1077,7 @@ export default function AdminCustomizerPages() {
     setWizardVariantsReady(false);
     setVariantPrices({});
     setVariantPricesBoth({});
+    setFormCompareAt({});
     setPriceErrors({});
     setCreatedPageResult(null);
     setPlaceholderStepAlert(null);
@@ -1897,6 +1957,7 @@ export default function AdminCustomizerPages() {
       }
       setVariantPrices({});
       setVariantPricesBoth({});
+      setFormCompareAt(parseCompareAtBySize(selectedBlank?.compareAtBySize));
       setPriceErrors({});
       setAppliedSuggestedKey("");
       setFormStep(4);
@@ -2090,6 +2151,11 @@ export default function AdminCustomizerPages() {
         }
       }
     }
+    const compareAtCheck = normaliseCompareAtBySize(formCompareAt);
+    if (!compareAtCheck.ok) {
+      toast({ title: "Compare-at price", description: compareAtCheck.error, variant: "destructive" });
+      return;
+    }
     if (Object.keys(errs).length > 0) {
       setPriceErrors(errs);
       return;
@@ -2123,6 +2189,7 @@ export default function AdminCustomizerPages() {
       baseProductId: productTypeId ? undefined : formProductId,
       productTypeId,
       variantPrices,
+      compareAtBySize: formCompareAt,
       ...(supportsBothSidePricing ? { variantPricesBoth } : {}),
       defaultMarkupPercent: markupPercent,
       styleConfig: formStyleConfig,
@@ -3420,6 +3487,11 @@ export default function AdminCustomizerPages() {
                       Shipping rates vary by destination and are automatically calculated by Shopify once the customer enters their delivery address at checkout — no action needed. To offer free shipping, open <span className="text-primary font-medium">Printify Costs → Shipping</span> to find the rate for your target market and add it to the RRP below.
                     </p>
                     <div className="space-y-3 overflow-y-auto pr-1 flex-1 min-h-0">
+                      <CompareAtBySizeFields
+                        sizes={offeredSizeNames(selectedBlank?.sizes, wizardSizeIds)}
+                        value={formCompareAt}
+                        onChange={setFormCompareAt}
+                      />
                       {supportsBothSidePricing && (
                         <p className="text-xs text-muted-foreground">
                           This product can print front-only or front+back. Set both retail prices — the storefront shows
@@ -4516,12 +4588,13 @@ export default function AdminCustomizerPages() {
                 )}
               </div>
 
-              <div className="rounded-md border p-3 flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
+              <div className="rounded-md border p-3 flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
                 <div>
                   <Label>Pricing</Label>
                   <p className="text-xs text-muted-foreground mt-1">
                     Front / front+back retail when Printify supports both print sides. Open Resync Prices to
-                    update Shopify.
+                    update Shopify. Compare-at is saved with this page and written on Resync.
                   </p>
                 </div>
                 <Button
@@ -4535,6 +4608,12 @@ export default function AdminCustomizerPages() {
                   <DollarSign className="h-3.5 w-3.5 mr-1" />
                   Resync Prices
                 </Button>
+                </div>
+                <CompareAtBySizeFields
+                  sizes={offeredSizeNames(editBlank?.sizes, editBlank?.selectedSizeIds)}
+                  value={editCompareAt}
+                  onChange={setEditCompareAt}
+                />
               </div>
 
               {editStyleConfig && (
@@ -4683,6 +4762,7 @@ export default function AdminCustomizerPages() {
         title={syncPricesTarget?.title ?? ""}
         productTypeId={syncPricesTarget?.productTypeId ?? 0}
         customizerPageId={syncPricesTarget?.id}
+        compareAtBySize={editCompareAtReady && editTarget && syncPricesTarget?.id === editTarget.id ? editCompareAt : undefined}
       />
 
       <AlertDialog open={!!variantLimitAlert} onOpenChange={(v) => !v && setVariantLimitAlert(null)}>

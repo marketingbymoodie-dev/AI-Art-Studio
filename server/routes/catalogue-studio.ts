@@ -23,7 +23,7 @@ import {
   STAGING_CATALOGUE_SHOP,
   STAGING_FALLBACK_PRODUCT_TYPE_ID,
 } from "@shared/operatorCatalogue";
-import { applySoftstyleCataloguePrices } from "@shared/softstyleCataloguePrices";
+import { parseCompareAtBySize } from "@shared/compareAtBySize";
 import { coloursStillOffered, filterPricesToSizes, offeredAxes } from "@shared/variantSelection";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
 import { requirePlatformAdmin } from "../platformAdmin";
@@ -85,6 +85,7 @@ export async function shippingPricesBySize(productTypeId?: number): Promise<{
       shop: productTypes.shopifyShopDomain,
       sizes: productTypes.sizes,
       selectedSizeIds: productTypes.selectedSizeIds,
+      compareAtBySize: productTypes.compareAtBySize,
     })
     .from(productTypes)
     .where(eq(productTypes.id, typeId))
@@ -94,15 +95,17 @@ export async function shippingPricesBySize(productTypeId?: number): Promise<{
   const prices = await shopCataloguePrices(shop, typeId);
   const offeredNames = offeredAxes(parseSizes(typeRow?.sizes), parseIdList(typeRow?.selectedSizeIds)).map((size) => size.name);
   const selected = offeredNames.length ? filterPricesToSizes(prices, offeredNames) : prices;
-  if (typeId !== STAGING_FALLBACK_PRODUCT_TYPE_ID) return selected;
-  const applied = applySoftstyleCataloguePrices(selected.pricesBySize);
   return filterPricesToSizes(
-    { sizes: selected.sizes, pricesBySize: applied.pricesBySize, compareAtBySize: applied.compareAtBySize },
+    {
+      sizes: selected.sizes,
+      pricesBySize: selected.pricesBySize,
+      compareAtBySize: parseCompareAtBySize(typeRow?.compareAtBySize),
+    },
     offeredNames.length ? offeredNames : selected.sizes,
   );
 }
 
-/** Prices already on this shop's studio product. The Softstyle table is not applied. */
+/** Retail prices already on this shop's studio product. Compare-at comes from the product type. */
 async function shopCataloguePrices(shop: string, productTypeId: number): Promise<{
   sizes: string[];
   pricesBySize: Record<string, string>;

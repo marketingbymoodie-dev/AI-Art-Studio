@@ -49,6 +49,7 @@ export type RestCompatVariant = {
   inventory_policy: "continue" | "deny";
   inventory_management: "shopify" | null;
   featured_image: { src: string } | null;
+  compare_at_price?: string | null;
 };
 
 export type RestCompatProduct = {
@@ -135,6 +136,7 @@ type VariantNode = {
   position: number;
   inventoryPolicy: string;
   inventoryItem?: { tracked?: boolean } | null;
+  compareAtPrice?: string | null;
   selectedOptions: Array<{ name: string; value: string }>;
   media?: { nodes?: Array<{ preview?: { image?: { url?: string } | null } | null }> } | null;
 };
@@ -161,6 +163,7 @@ export function restVariantFromNode(node: VariantNode, productId: number, option
     inventory_policy: String(node.inventoryPolicy).toUpperCase() === "CONTINUE" ? "continue" : "deny",
     inventory_management: node.inventoryItem?.tracked ? "shopify" : null,
     featured_image: imgUrl ? { src: imgUrl } : null,
+    compare_at_price: node.compareAtPrice ? String(node.compareAtPrice) : null,
   };
 }
 
@@ -179,7 +182,7 @@ async function gql(shop: string, token: string, query: string, variables: Record
 }
 
 const VARIANT_FIELDS = `
-  id title price sku position inventoryPolicy
+  id title price compareAtPrice sku position inventoryPolicy
   inventoryItem { tracked }
   selectedOptions { name value }
   media(first: 1) { nodes { preview { image { url } } } }

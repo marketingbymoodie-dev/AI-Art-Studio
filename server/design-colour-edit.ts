@@ -4,7 +4,7 @@
  * are enabled or disabled on that Printify product. No second product is created.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { SOFTSTYLE_CATALOGUE_PRICES } from "@shared/softstyleCataloguePrices";
+import { compareAtForSize, parseCompareAtBySize } from "@shared/compareAtBySize";
 import { diffColourNames, colourKey } from "@shared/designColourEdit";
 import { printifyColorIdForMockup } from "@shared/mockupBundle";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -355,6 +355,7 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
   }
 
   const addWork: Work["add"] = [];
+  const compareAtBySize = parseCompareAtBySize(typeRow.compareAtBySize);
   for (const name of add) {
     const color = wantedResolved.find((row) => colourKey(row.name) === colourKey(name));
     if (!color?.colorId) {
@@ -377,9 +378,8 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
         blockers.push(`${color.name} ${size.name} has no Printify variant on ${typeRow.name}.`);
         continue;
       }
-      const table = SOFTSTYLE_CATALOGUE_PRICES[size.name];
       const sibling = shopify.variants.find((row) => row.size === size.name && Number(row.price) > 0);
-      const price = table?.price || (sibling ? Number(sibling.price).toFixed(2) : "");
+      const price = sibling ? Number(sibling.price).toFixed(2) : "";
       if (!price || price === "0.00") {
         blockers.push(`${color.name} ${size.name} has no price.`);
         continue;
@@ -395,7 +395,7 @@ async function loadWork(designProductId: string, wantedNames: string[] | null, s
         hex: color.hex,
         printifyVariantId,
         price,
-        compareAt: table?.compareAtPrice || sibling?.compareAt || "",
+        compareAt: compareAtForSize(compareAtBySize, size.name),
         studioVariantId: studio,
         policy: desiredInventoryPolicy(availability[availabilityKey]) || "CONTINUE",
       });

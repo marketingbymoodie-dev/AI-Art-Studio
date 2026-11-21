@@ -967,6 +967,11 @@ export const productTypes = pgTable("product_types", {
    * variant price; this map is the surcharge tier used for “from $X” + live ATC.
    */
   variantPricesBoth: text("variant_prices_both").default("{}"),
+  /**
+   * Optional crossed-out price per size name, e.g. {"S":"34.95","2XL":"39.50"}.
+   * Null or {} means this type has no compare-at. Resync clears Shopify when a size is empty.
+   */
+  compareAtBySize: text("compare_at_by_size"),
   isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
   placeholderPositions: text("placeholder_positions").default("[]"),
   /**

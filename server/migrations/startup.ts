@@ -22,6 +22,7 @@ import {
   catalogRowFieldsFromPreset,
   NEW_APPAREL_CATALOG_SLUGS,
 } from "@shared/catalogArtStyles";
+import { TYPE_54_COMPARE_AT_JSON } from "@shared/compareAtBySize";
 import { STYLE_PRESETS } from "@shared/schema";
 import {
   isOldQuotesStylePrefix,
@@ -179,6 +180,7 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "listing_garment_word",        type: "TEXT" },
   { table: "product_types",         column: "listing_handle_suffix",       type: "TEXT" },
   { table: "product_types",         column: "listing_style_label",         type: "TEXT" },
+  { table: "product_types",         column: "compare_at_by_size",          type: "TEXT" },
   { table: "product_types",         column: "garment_comfort_copy",        type: "TEXT" },
   { table: "product_types",         column: "garment_durability_copy",     type: "TEXT" },
   { table: "product_types",         column: "garment_shape",               type: "TEXT" },
@@ -293,6 +295,11 @@ const DATA_MIGRATIONS: string[] = [
    WHERE id = 58
      AND print_chest_width_in IS NULL
      AND print_chest_height_in IS NULL`,
+  // Type 54 used to read a hardcoded Softstyle compare-at table. Copy it once.
+  // Types 56 and 58 stay null so their listings are not given a crossed-out price.
+  `UPDATE product_types
+   SET compare_at_by_size = '${TYPE_54_COMPARE_AT_JSON}'
+   WHERE id = 54 AND compare_at_by_size IS NULL`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)
