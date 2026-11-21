@@ -6,7 +6,7 @@
 import { and, eq } from "drizzle-orm";
 import { catalogueTruthIsSentence, catalogueListingIsFresh, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { publishPreflightMessages, shopifyAdminProductUrl, type PublishWorkPhase } from "@shared/cataloguePublish";
-import { comparePublishTiming, listingBody, listingHandle, listingTitle } from "@shared/listingCopy";
+import { comparePublishTiming, listingBody, listingHandle, listingTitle, normaliseDesignName } from "@shared/listingCopy";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, generationEvents, mockupLibraryColours, productTypes } from "@shared/schema";
 import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
@@ -374,6 +374,7 @@ export async function publishCatalogueCandidate(args: {
       description = truth;
     }
     listingMs = Date.now() - started;
+    title = normaliseDesignName(title);
     await db.update(designCandidates).set({ title, description, updatedAt: new Date() }).where(eq(designCandidates.id, recipe.candidateId));
     await emit("listing");
   }
@@ -419,6 +420,7 @@ export async function publishCatalogueCandidate(args: {
   if (!garmentWord) {
     throw new PublishRefusal([`${typeRow.name} has no garment word. Set it on the product type before publishing.`]);
   }
+  title = normaliseDesignName(title);
   const composedTitle = listingTitle(title, garmentWord);
   const composedHandle = listingHandle(composedTitle, typeRow.listingHandleSuffix);
   const composedBody = listingBody({

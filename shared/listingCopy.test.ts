@@ -4,6 +4,7 @@ import {
   listingBody,
   listingHandle,
   listingTitle,
+  normaliseDesignName,
   normaliseHandleSuffix,
   openPublishTypeIds,
   suggestListingCopy,
@@ -32,9 +33,24 @@ describe("listing copy", () => {
   });
 
   it("shares the tee title and keeps the handles distinct", () => {
-    expect(listingTitle("Husky -Collector's Card", "T-Shirt")).toBe("Husky -Collector's Card T-Shirt");
-    expect(listingTitle("Husky -Collector's Card T-Shirt", "T-Shirt")).toBe("Husky -Collector's Card T-Shirt");
-    expect(listingHandle("Husky -Collector's Card T-Shirt", "")).toBe("husky-collector-s-card-t-shirt");
+    expect(listingTitle("Husky -Collector's Card", "T-Shirt")).toBe("Husky — Collector's Card T-Shirt");
+    expect(listingTitle("Husky -Collector's Card", "Softstyle Tee")).toBe("Husky — Collector's Card Softstyle Tee");
+    expect(listingTitle("Husky -Collector's Card T-Shirt", "T-Shirt")).toBe("Husky — Collector's Card T-Shirt");
+    expect(listingTitle("Husky — Collector's Card Softstyle Tee", "Softstyle Tee")).toBe("Husky — Collector's Card Softstyle Tee");
+    for (const raw of [
+      "Husky -Collector's Card",
+      "Husky - Collector's Card",
+      "Husky-Collector's Card",
+      "Husky —Collector's Card",
+      "Husky — Collector's Card",
+      "Husky – Collector's Card",
+      "Husky − Collector's Card",
+    ]) {
+      expect(normaliseDesignName(raw)).toBe("Husky — Collector's Card");
+    }
+    expect(normaliseDesignName("T-Shirt")).toBe("T-Shirt");
+    expect(listingTitle("Husky — Collector's Card", "T-Shirt")).toBe("Husky — Collector's Card T-Shirt");
+    expect(listingHandle("Husky — Collector's Card T-Shirt", "")).toBe("husky-collector-s-card-t-shirt");
     expect(listingHandle("Husky -Collector's Card T-Shirt", "-softstyle")).toBe("husky-collector-s-card-t-shirt-softstyle");
     expect(normaliseHandleSuffix("-1")).toBeNull();
     expect(normaliseHandleSuffix("1")).toBeNull();

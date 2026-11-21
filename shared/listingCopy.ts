@@ -13,6 +13,26 @@ function slug(value: string): string {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+/**
+ * A spaced dash, or an en dash / em dash / minus even when it touches the words.
+ * A hyphen glued inside a short token such as "T-Shirt" is left alone.
+ */
+const SEPARATOR_DASH = /\s+[\u002D\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]+\s*|\s*[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]+\s*/g;
+const GLUED_WORD_DASH = /(?<=\p{L}{2,})[\u002D\u2010\u2011](?=\p{Lu})/gu;
+
+/**
+ * The design name uses one em dash with a single space either side.
+ * "Husky -Collector's Card" and "Husky–Collector's Card" both become
+ * "Husky — Collector's Card". The garment word is appended afterwards.
+ */
+export function normaliseDesignName(designName: string): string {
+  return designName
+    .replace(SEPARATOR_DASH, " — ")
+    .replace(GLUED_WORD_DASH, " — ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** A Printify blueprint title, turned into the three listing fields. */
 export function suggestListingCopy(blueprintName: string): ListingCopy {
   const lower = blueprintName.toLowerCase();
@@ -41,7 +61,7 @@ export function normaliseHandleSuffix(value: string | null | undefined): string 
 }
 
 export function listingTitle(designName: string, garmentWord: string): string {
-  const name = designName.replace(/\s+/g, " ").trim();
+  const name = normaliseDesignName(designName);
   const word = garmentWord.replace(/\s+/g, " ").trim();
   if (!word) return name;
   if (name.toLowerCase().endsWith(` ${word.toLowerCase()}`) || name.toLowerCase() === word.toLowerCase()) return name;

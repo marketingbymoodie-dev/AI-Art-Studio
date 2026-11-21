@@ -3624,6 +3624,18 @@ export async function runStartupMigrations(): Promise<void> {
   }
 
   try {
+    const { backfillHuskyListingTitles } = await import("../listing-title-fix");
+    const titles = await backfillHuskyListingTitles();
+    applied++;
+    for (const row of titles) {
+      console.log(`${tag} listing title type=${row.productTypeId} shopify=${row.shopify} handle=${row.handle} before=${JSON.stringify(row.before)} after=${JSON.stringify(row.after)}${row.reason ? ` reason=${row.reason}` : ""}`);
+    }
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED listing title fix: ${err.message ?? err}`);
+  }
+
+  try {
     const { backfillGarmentAccordionMetafields } = await import("../garment-accordion-metafields");
     const n = await backfillGarmentAccordionMetafields();
     applied++;
