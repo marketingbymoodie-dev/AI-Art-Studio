@@ -14,6 +14,7 @@ import AdminLayout from "@/components/admin-layout";
 import {
   MY_PET_ART_STYLES,
   MY_PET_DEFAULT_RENDER_PARAMS,
+  MY_PET_LOCKED_EXPRESSION_RULE,
   MY_PET_LOCKED_PRINT_RULES,
   MY_PET_SUNBURST_ESTIMATED_COST_USD,
   type MyPetArtStyle,
@@ -230,6 +231,16 @@ export default function MyPetSettingsPage() {
                     />
                   </div>
                 ))}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Expression</CardTitle>
+                <CardDescription>Always sent. Locked — not editable. The photo supplies identity only.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{MY_PET_LOCKED_EXPRESSION_RULE}</p>
               </CardContent>
             </Card>
 

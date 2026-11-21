@@ -29,6 +29,15 @@ export const MY_PET_DEFAULT_BASE_PROMPT =
   "Replace the animal in this design with the pet in the photo, matching its markings and features. " +
   "Keep the art style, composition, pose, props and lettering exactly as they are.";
 
+/**
+ * Always sent, after the editable base prompt. A saved base prompt cannot drop it.
+ * Identity comes from the photo. Expression stays with the original artwork.
+ */
+export const MY_PET_LOCKED_EXPRESSION_RULE =
+  "Keep the original artwork's facial expression, eye direction, brow angle and emotional attitude exactly. " +
+  "Take only the pet's identity from the photo: breed shape, colours, markings, ears and fur. " +
+  "Never copy the photo's expression or mood.";
+
 /** Always appended last. Read-only on the settings page — not stored per shop. */
 export const MY_PET_LOCKED_PRINT_RULES =
   "Transparent background. No outline or stroke around text. No added text or watermarks. " +
@@ -172,9 +181,8 @@ export type CandidateDetailsForPrompt = {
 /**
  * Assemble the My Pet edit prompt for one design: base, then that design's
  * style tweak (if any and if it is non-blank), then the design's own stored
- * details, then the locked print rules last. Image 1 is named as the
- * finished design, Image 2 as the shopper's pet photo — this is an image
- * edit of two inputs, not a from-scratch generation.
+ * details, then the locked expression rule, then the locked print rules last.
+ * Image 1 is the finished design, Image 2 is the shopper's pet photo.
  */
 export function buildMyPetPrompt(
   settings: Pick<MyPetSettings, "basePrompt" | "styleTweaks">,
@@ -191,6 +199,7 @@ export function buildMyPetPrompt(
   if (candidate.artStyle?.trim()) details.push(`Style: ${candidate.artStyle.trim()}.`);
   if (candidate.punchline?.trim()) details.push(`Wording stays exactly: "${candidate.punchline.trim()}".`);
   if (details.length) lines.push(details.join(" "));
+  lines.push(MY_PET_LOCKED_EXPRESSION_RULE);
   lines.push(MY_PET_LOCKED_PRINT_RULES);
   return lines.join(" ");
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MY_PET_DEFAULT_CAPS,
   MY_PET_DEFAULT_RENDER_PARAMS,
+  MY_PET_LOCKED_EXPRESSION_RULE,
   MY_PET_LOCKED_PRINT_RULES,
   MY_PET_SUNBURST_ESTIMATED_COST_USD,
   buildMyPetPrompt,
@@ -27,6 +28,8 @@ describe("buildMyPetPrompt", () => {
     expect(prompt).toContain("Species: dog.");
     expect(prompt).toContain("Style: woodcut.");
     expect(prompt).toContain('Wording stays exactly: "Guilty. Unbothered."');
+    expect(prompt).toContain(MY_PET_LOCKED_EXPRESSION_RULE);
+    expect(prompt.indexOf(MY_PET_LOCKED_EXPRESSION_RULE)).toBeLessThan(prompt.lastIndexOf(MY_PET_LOCKED_PRINT_RULES));
     expect(prompt.endsWith(MY_PET_LOCKED_PRINT_RULES)).toBe(true);
   });
 
