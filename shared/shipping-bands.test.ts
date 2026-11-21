@@ -16,6 +16,7 @@ import {
   generateProfileZoneBands,
   isExcluded,
   planClassProfiles,
+  printifyShippingProductType,
   referenceZone,
   roundBandPrice,
   simulateCart,
@@ -484,5 +485,73 @@ describe(`property harness (seed ${SEED}, ${ITERATIONS} carts)`, () => {
       checked++;
     }
     expect(checked).toBeGreaterThan(300);
+  });
+});
+
+const SHIRT_RATES = {
+  US: { g1: { first: 495, additional: 240 } },
+  AU: { g1: { first: 1299, additional: 499 } },
+  CA: { g1: { first: 969, additional: 439 } },
+  ROW: { g1: { first: 1039, additional: 400 } },
+};
+
+function typedTable(classKey: string, productType: string, rates = SHIRT_RATES): ClassRateTable {
+  return {
+    classKey,
+    groups: [{ group: "g1", variantIds: ["1"] }],
+    rates,
+    shippingProductType: productType,
+  };
+}
+
+describe("shared shirt shipments", () => {
+  it("classifies shirts, totes, hoodies and sweatshirts apart", () => {
+    expect(printifyShippingProductType("Unisex Softstyle T-Shirt — provider 99")).toBe("shirt");
+    expect(printifyShippingProductType("Comfort Colors 1717 — provider 99")).toBe("shirt");
+    expect(printifyShippingProductType("Jersey Long Sleeve Tee — provider 99")).toBe("shirt");
+    expect(printifyShippingProductType("Adjustable Tote Bag — provider 99")).toBe("tote");
+    expect(printifyShippingProductType("Unisex Heavy Blend™ Hooded Sweatshirt — provider 99")).toBe(
+      "hoodie",
+    );
+    expect(printifyShippingProductType("Unisex Sweatshirt (AOP) — provider 10")).toBe("sweatshirt");
+  });
+
+  it("charges a mixed shirt cart as one first item plus additionals", () => {
+    const soft = typedTable("145:99", "shirt");
+    const comfort = typedTable("706:99", "shirt");
+    const tables = { "145:99": soft, "706:99": comfort };
+    const cart = [
+      { classKey: "145:99", group: "g1", quantity: 1 },
+      { classKey: "706:99", group: "g1", quantity: 1 },
+    ];
+    const separate = simulateCart(cart, "AU", {
+      "145:99": { ...soft, shippingProductType: undefined },
+      "706:99": { ...comfort, shippingProductType: undefined },
+    }) as SimOk;
+    expect(separate.profilesUsed).toBe(2);
+    expect(separate.trueCents).toBe(1299 * 2);
+
+    const shared = simulateCart(cart, "AU", tables) as SimOk;
+    expect(shared.profilesUsed).toBe(1);
+    expect(shared.trueCents).toBe(1299 + 499);
+    expect(shared.chargedCents).toBe(1895);
+    expect(shared.crossProfilePenaltyCents).toBe(0);
+
+    const one = simulateCart([{ classKey: "145:99", group: "g1", quantity: 1 }], "AU", tables) as SimOk;
+    expect(one.profilesUsed).toBe(1);
+    expect(one.chargedCents).toBe(1395);
+  });
+
+  it("keeps a tote on its own profile even when the cents match", () => {
+    const sim = simulateCart(
+      [
+        { classKey: "145:99", group: "g1", quantity: 1 },
+        { classKey: "1300:99", group: "g1", quantity: 1 },
+      ],
+      "AU",
+      { "145:99": typedTable("145:99", "shirt"), "1300:99": typedTable("1300:99", "tote") },
+    ) as SimOk;
+    expect(sim.profilesUsed).toBe(2);
+    expect(sim.trueCents).toBe(1299 * 2);
   });
 });

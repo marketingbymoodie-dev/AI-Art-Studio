@@ -385,3 +385,107 @@ describe("buildShopDesiredState", () => {
     );
   });
 });
+
+const SHIRT_VECTOR = {
+  US: { g1: { first: 495, additional: 240 } },
+  AU: { g1: { first: 1299, additional: 499 } },
+  CA: { g1: { first: 969, additional: 439 } },
+  ROW: { g1: { first: 1039, additional: 400 } },
+};
+
+function plainClass(
+  id: number,
+  classKey: string,
+  className: string,
+  rates: ClassRateTable["rates"] = SHIRT_VECTOR,
+  excluded: ExclusionSet = new Set(),
+): DesiredClassInput {
+  return {
+    shippingClassId: id,
+    className,
+    table: {
+      classKey,
+      groups: [{ group: "g1", variantIds: ["1"] }],
+      rates,
+    },
+    excluded,
+    config: DEFAULT_BAND_CONFIG,
+  };
+}
+
+describe("shared profiles for identical shirt tables", () => {
+  const soft = plainClass(10, "145:99", "Unisex Softstyle T-Shirt — provider 99");
+  const comfort = plainClass(11, "706:99", "Comfort Colors 1717 — provider 99");
+  const tote = plainClass(12, "1300:99", "Adjustable Tote Bag — provider 99");
+
+  it("merges the two shirts and leaves the tote on its own profile", () => {
+    const state = buildShopDesiredState({
+      classes: [soft, comfort, tote],
+      memberships: [
+        member("145:99", "g1", "9001"),
+        member("706:99", "g1", "9002"),
+        member("1300:99", "g1", "9003"),
+      ],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+      freeShipping: { enabled: true, thresholdCents: 7500, flatCents: 495, countries: ["US"] },
+    });
+    const keys = state.profiles.map((p) => p.profileKey).sort();
+    expect(keys).toHaveLength(2);
+    expect(keys).toContain("1300:99#all");
+    const shirts = state.profiles.find((p) => p.profileKey.startsWith("share:99:shirt:"))!;
+    expect(shirts.name).toBe("AppAI · Shirts · provider 99");
+    expect(shirts.classKey).toBe("share:99:shirt");
+    expect(shirts.shippingClassId).toBe(10);
+    expect(shirts.variants.map((v) => v.shopifyVariantId).sort()).toEqual(["9001", "9002"]);
+    const us = shirts.zones.find((z) => z.countries.join() === "US")!;
+    expect(us.rates.map((r) => r.priceCents)).toEqual([495, 0]);
+    expect(us.rates[0].maxSubtotalCents).toBe(7499);
+    expect(us.rates[1].minSubtotalCents).toBe(7500);
+    const au = shirts.zones.find((z) => z.countries.join() === "AU")!;
+    expect(au.rates[0]).toMatchObject({ priceCents: 1395, upperGrams: 240 });
+    expect(au.rates[1]).toMatchObject({ priceCents: 1895, lowerGrams: 241, upperGrams: 480 });
+    expect(state.profiles.find((p) => p.profileKey === "1300:99#all")!.name).toContain("Tote");
+  });
+
+  it("does not merge a shirt whose rate vector differs", () => {
+    const other = plainClass(13, "5:99", "Cotton Crew Tee — provider 99", {
+      ...SHIRT_VECTOR,
+      AU: { g1: { first: 1299, additional: 500 } },
+    });
+    const state = buildShopDesiredState({
+      classes: [soft, other],
+      memberships: [member("145:99", "g1", "1"), member("5:99", "g1", "2")],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+    });
+    expect(state.profiles.map((p) => p.profileKey).sort()).toEqual(["145:99#all", "5:99#all"]);
+  });
+
+  it("does not merge when one class excludes a zone the other offers", () => {
+    const blocked = plainClass(
+      14,
+      "6:99",
+      "Heavy Cotton Tee — provider 99",
+      SHIRT_VECTOR,
+      new Set(["AU::g1"]),
+    );
+    const state = buildShopDesiredState({
+      classes: [soft, blocked],
+      memberships: [member("145:99", "g1", "1"), member("6:99", "g1", "2")],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+    });
+    expect(state.profiles.map((p) => p.profileKey).sort()).toEqual(["145:99#all", "6:99#all"]);
+  });
+
+  it("leaves a single shirt on its existing key", () => {
+    const state = buildShopDesiredState({
+      classes: [soft],
+      memberships: [member("145:99", "g1", "1")],
+      shopCurrency: "USD",
+      usdPerShopUnit: 1,
+    });
+    expect(state.profiles.map((p) => p.profileKey)).toEqual(["145:99#all"]);
+  });
+});

@@ -63,7 +63,7 @@ import { normalizeVariantKeyLoose } from "@shared/variantMapResolve";
 import { parseVariantAvailabilityMap } from "@shared/productIntelligence";
 import { storage } from "./storage";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
-import { matchAppaiProfilesByName } from "./shipping-profile-match";
+import { matchAppaiProfilesByName, unconfirmedVariantIds } from "./shipping-profile-match";
 
 const ADMIN_API = "2025-10";
 const CARRIER_NAME = "AI Art Studio";
@@ -73,6 +73,7 @@ const PROFILE_BUDGET = 90;
 const PROFILE_WARN = 70;
 const ZONES_PER_MUTATION = 5;
 const VARIANTS_PER_MUTATION = 100;
+const VARIANT_CONFIRM_CHUNK = 100;
 const FX_BUFFER = Number(process.env.SHIPPING_FX_BUFFER || 1.05);
 const FX_REPIN_DRIFT = Number(process.env.SHIPPING_FX_REPIN_DRIFT || 0.075);
 
@@ -1117,9 +1118,33 @@ async function reconcileShopShippingCore(
     }
   }
 
+  // Confirm every desired variant is on its new Shopify profile before any
+  // delete. deliveryProfileRemove returns leftover variants to General.
+  let membershipConfirmed = failures === 0;
+  if (!membershipConfirmed) {
+    summary.errors.push("A profile apply failed; old profiles were left in place.");
+  } else {
+    try {
+      const problems = await confirmVariantsOnDesiredProfiles(shop, token, desired.profiles);
+      if (problems.length) {
+        membershipConfirmed = false;
+        for (const problem of problems) summary.errors.push(problem.slice(0, 400));
+      }
+    } catch (e: any) {
+      membershipConfirmed = false;
+      summary.errors.push(`Variant confirmation failed: ${e?.message || e}`.slice(0, 400));
+    }
+  }
+  if (!membershipConfirmed) {
+    summary.warnings.push(
+      "Old delivery profiles were left in place because the variant move was not confirmed.",
+    );
+  }
+
   // ── GC: mapped profiles whose class/group no longer has members (amendment A)
   const desiredKeys = new Set(desired.profiles.map((p) => p.profileKey));
   for (const row of mapped) {
+    if (!membershipConfirmed) break;
     if (desiredKeys.has(row.profileKey)) continue;
     try {
       if (row.shopifyProfileId) {
@@ -1150,6 +1175,71 @@ async function reconcileShopShippingCore(
     lastReconcileSummaryJson: JSON.stringify(summary).slice(0, 8000),
   });
   return summary;
+}
+
+async function confirmVariantsOnDesiredProfiles(
+  shop: string,
+  token: string,
+  profiles: DesiredProfile[],
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      profileKey: shippingStoreProfiles.profileKey,
+      shopifyProfileId: shippingStoreProfiles.shopifyProfileId,
+    })
+    .from(shippingStoreProfiles)
+    .where(eq(shippingStoreProfiles.shopDomain, shop));
+  const byKey = new Map(rows.map((row) => [row.profileKey, row.shopifyProfileId]));
+  const problems: string[] = [];
+  for (const profile of profiles) {
+    if (profile.variants.length === 0) continue;
+    const profileId = byKey.get(profile.profileKey);
+    if (!profileId) {
+      problems.push(`${profile.profileKey}: Shopify profile id was not stored`);
+      continue;
+    }
+    const expected = profile.variants.map((variant) => String(variant.shopifyVariantId));
+    const found = await readVariantDeliveryProfiles(shop, token, expected);
+    const missing = unconfirmedVariantIds(expected, found, profileId);
+    if (missing.length) {
+      problems.push(
+        `${profile.profileKey}: ${missing.length} variant(s) are not on ${profileId} (${missing.slice(0, 5).join(",")})`,
+      );
+    }
+  }
+  return problems;
+}
+
+async function readVariantDeliveryProfiles(
+  shop: string,
+  token: string,
+  variantIds: string[],
+): Promise<Array<{ id: string | null; profileId: string | null }>> {
+  const found: Array<{ id: string | null; profileId: string | null }> = [];
+  for (let i = 0; i < variantIds.length; i += VARIANT_CONFIRM_CHUNK) {
+    const ids = variantIds.slice(i, i + VARIANT_CONFIRM_CHUNK).map((id) =>
+      id.startsWith("gid://") ? id : `gid://shopify/ProductVariant/${id}`,
+    );
+    const data = await gql<{
+      nodes: Array<{ id?: string; deliveryProfile?: { id?: string } | null } | null>;
+    }>(
+      shop,
+      token,
+      `query($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on ProductVariant { id deliveryProfile { id } }
+        }
+      }`,
+      { ids },
+    );
+    for (const node of data.nodes || []) {
+      found.push({
+        id: node?.id ?? null,
+        profileId: node?.deliveryProfile?.id ?? null,
+      });
+    }
+  }
+  return found;
 }
 
 async function deleteProfileMapRows(storeProfileId: number, shop: string): Promise<void> {

@@ -16,6 +16,9 @@ import {
   computePseudoWeights,
   generateProfileZoneBands,
   planClassProfiles,
+  printifyShippingProductType,
+  rateVectorKey,
+  shippingProviderId,
   type Band,
   type BandConfig,
   type ClassRateTable,
@@ -463,8 +466,131 @@ export function buildShopDesiredState(params: {
     }
   }
 
-  profiles.sort((a, b) => a.profileKey.localeCompare(b.profileKey));
-  return { profiles, unresolvedVariants };
+  const shared = mergeIdenticalClassProfiles(profiles, classes);
+  shared.sort((a, b) => a.profileKey.localeCompare(b.profileKey));
+  return { profiles: shared, unresolvedVariants };
+}
+
+const PRODUCT_TYPE_LABELS: Record<string, string> = {
+  shirt: "Shirts",
+  hoodie: "Hoodies",
+  sweatshirt: "Sweatshirts",
+  tote: "Totes",
+  pillow: "Pillows",
+  pillowcase: "Pillowcases",
+  "phone-case": "Phone cases",
+  tapestry: "Tapestries",
+  comforter: "Comforters",
+  leggings: "Leggings",
+  apron: "Aprons",
+  socks: "Socks",
+  beanie: "Beanies",
+  decal: "Decals",
+  framed: "Framed prints",
+};
+
+function profileContentHash(name: string, zones: DesiredZone[]): string {
+  return stableHash(
+    JSON.stringify({
+      name,
+      zones: zones.map((z) => ({
+        k: z.zoneKey,
+        c: z.countries,
+        row: z.restOfWorld,
+        b: z.blocked,
+        r: z.rates.map((r) => rateHashPart(r)),
+      })),
+    }),
+  );
+}
+
+/**
+ * After the per-class planner. A class that already split (size groups, mixed
+ * exclusion, divergent scales) keeps its own profiles. Classes merge only when
+ * each one produced a single #all profile and the print provider, Printify
+ * product type, and every zone's first and additional rate (including whether
+ * the cell is excluded) are identical. A lone class keeps its existing key.
+ *
+ * Warning badges stay on shipping_rates per class. A "warned" cell and a
+ * "normal" cell still merge when both are shippable; the profile is not marked.
+ */
+function mergeIdenticalClassProfiles(
+  profiles: DesiredProfile[],
+  classes: DesiredClassInput[],
+): DesiredProfile[] {
+  const byClass = new Map(classes.map((c) => [c.table.classKey, c]));
+  const groups = new Map<string, DesiredProfile[]>();
+  const kept: DesiredProfile[] = [];
+
+  for (const profile of profiles) {
+    const cls = byClass.get(profile.classKey);
+    const shareable =
+      !!cls &&
+      profile.profileKey === `${profile.classKey}#all` &&
+      profiles.filter((p) => p.classKey === profile.classKey).length === 1;
+    if (!shareable || !cls) {
+      kept.push(profile);
+      continue;
+    }
+    const provider = shippingProviderId(profile.classKey);
+    const productType = printifyShippingProductType(cls.className);
+    const vector = rateVectorKey(cls.table, cls.excluded);
+    const key = `${provider}|${productType}|${vector}`;
+    const list = groups.get(key) || [];
+    list.push(profile);
+    groups.set(key, list);
+  }
+
+  for (const list of Array.from(groups.values())) {
+    if (list.length < 2) {
+      kept.push(list[0]);
+      continue;
+    }
+    const zoneJson = JSON.stringify(list[0].zones);
+    if (list.some((p) => JSON.stringify(p.zones) !== zoneJson)) {
+      kept.push(...list);
+      continue;
+    }
+    const sample = byClass.get(list[0].classKey)!;
+    const provider = shippingProviderId(list[0].classKey);
+    const productType = printifyShippingProductType(sample.className);
+    const vector = rateVectorKey(sample.table, sample.excluded);
+    const label = PRODUCT_TYPE_LABELS[productType] || productType;
+    const name = `AppAI · ${label} · provider ${provider}`.slice(0, 250);
+    const seen = new Set<string>();
+    const variants: DesiredProfile["variants"] = [];
+    for (const profile of list) {
+      for (const variant of profile.variants) {
+        if (seen.has(variant.shopifyVariantId)) continue;
+        seen.add(variant.shopifyVariantId);
+        variants.push(variant);
+      }
+    }
+    kept.push({
+      profileKey: `share:${provider}:${productType}:${stableHash(vector)}#all`,
+      name,
+      shippingClassId: Math.min(...list.map((p) => p.shippingClassId)),
+      classKey: `share:${provider}:${productType}`,
+      variantGroup: null,
+      variants,
+      zones: list[0].zones,
+      hash: profileContentHash(name, list[0].zones),
+    });
+  }
+
+  // Two different rate tables of the same product type need distinct names
+  // so an empty ID map can still be adopted by name.
+  const nameCount = new Map<string, number>();
+  for (const profile of kept) nameCount.set(profile.name, (nameCount.get(profile.name) || 0) + 1);
+  for (const profile of kept) {
+    if ((nameCount.get(profile.name) || 0) < 2) continue;
+    if (!profile.profileKey.startsWith("share:")) continue;
+    const hash = profile.profileKey.split(":").pop()?.replace("#all", "") || "";
+    profile.name = `${profile.name} · ${hash}`.slice(0, 250);
+    profile.hash = profileContentHash(profile.name, profile.zones);
+  }
+
+  return kept;
 }
 
 export type ShippingCoverageGaps = {

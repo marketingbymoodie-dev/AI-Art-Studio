@@ -19,6 +19,7 @@ import {
   allowedOvershootCents,
   buildClassRateTable,
   planClassProfiles,
+  printifyShippingProductType,
   simulateCart,
   type BandConfig,
   type CartItem,
@@ -81,6 +82,7 @@ async function loadClasses(): Promise<ClassData[]> {
       continue;
     }
     const table = buildClassRateTable(classKey, raw.byVariant, groups);
+    table.shippingProductType = printifyShippingProductType(cls.name || classKey);
     const excluded: ExclusionSet = new Set(
       rates.filter((r) => !r.shippable).map((r) => `${r.country_code}::${r.variant_group}`),
     );

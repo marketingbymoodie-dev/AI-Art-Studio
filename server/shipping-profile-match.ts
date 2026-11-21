@@ -51,3 +51,28 @@ export function matchAppaiProfilesByName<D extends NameMatchDesired, L extends N
   }
   return { ok: true, pairs };
 }
+
+/** Trailing digits of a Shopify gid or a bare numeric id. */
+export function numericShopifyId(id: string | null | undefined): string {
+  if (!id) return "";
+  const match = String(id).match(/(\d+)\s*$/);
+  return match ? match[1] : "";
+}
+
+/**
+ * Variant ids we asked to move that Shopify did not report on `profileId`.
+ * A null node, a null delivery profile, or a different profile all count.
+ */
+export function unconfirmedVariantIds(
+  expectedVariantIds: string[],
+  found: Array<{ id: string | null; profileId: string | null }>,
+  profileId: string,
+): string[] {
+  const want = numericShopifyId(profileId);
+  const onProfile = new Set(
+    found
+      .filter((row) => row.id && want && numericShopifyId(row.profileId) === want)
+      .map((row) => numericShopifyId(row.id)),
+  );
+  return expectedVariantIds.map(numericShopifyId).filter((id) => id && !onProfile.has(id));
+}

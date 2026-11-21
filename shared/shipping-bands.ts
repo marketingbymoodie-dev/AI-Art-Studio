@@ -28,6 +28,13 @@ export type ClassRateTable = {
   classKey: string;
   groups: BandGroup[];
   rates: Record<string, Record<string, BandZoneCell>>;
+  /**
+   * Printify shipping product type (shirt, tote, hoodie, …).
+   * Set by the desired-state generator. The simulator shares one profile
+   * across classes only when this, the provider, and the rate vector match.
+   * Absent = this class is billed on its own, as before.
+   */
+  shippingProductType?: string;
 };
 
 export type BandConfig = {
@@ -63,6 +70,57 @@ export const DEFAULT_BAND_CONFIG: BandConfig = {
 
 /** `${zone}::${group}` entries; zone exclusion resolved with ROW fallthrough. */
 export type ExclusionSet = Set<string>;
+
+/**
+ * Printify's product type for shipping, not our catalogue id.
+ * Shirts share a type (a long-sleeve tee is a shirt). A tote is not a shirt.
+ * Hoodies are checked before sweatshirts so "Hooded Sweatshirt" stays a hoodie.
+ * An unrecognised name is its own type, so it cannot merge with anything else.
+ */
+export function printifyShippingProductType(className: string): string {
+  const name = className.toLowerCase().replace(/™/g, "");
+  const rules: Array<[RegExp, string]> = [
+    [/\btote\b/, "tote"],
+    [/pillowcase/, "pillowcase"],
+    [/pillow/, "pillow"],
+    [/hoodie|hooded/, "hoodie"],
+    [/sweatshirt/, "sweatshirt"],
+    [/phone\s*case/, "phone-case"],
+    [/tapestry/, "tapestry"],
+    [/comforter/, "comforter"],
+    [/legging/, "leggings"],
+    [/apron/, "apron"],
+    [/\bsocks?\b/, "socks"],
+    [/beanie/, "beanie"],
+    [/decal/, "decal"],
+    [/poster|framed/, "framed"],
+    [/comfort\s*colors/, "shirt"],
+    [/\btees?\b|\bt-?shirts?\b|\bshirts?\b/, "shirt"],
+  ];
+  for (const [pattern, type] of rules) {
+    if (pattern.test(name)) return type;
+  }
+  const slug = name.replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, "-");
+  return `other:${slug || "unknown"}`;
+}
+
+/** Every zone's first and additional, plus whether that cell is excluded. */
+export function rateVectorKey(table: ClassRateTable, excluded: ExclusionSet = new Set()): string {
+  const parts: string[] = [];
+  for (const zone of Object.keys(table.rates).sort()) {
+    for (const group of Object.keys(table.rates[zone]).sort()) {
+      const cell = table.rates[zone][group];
+      const offered = isExcluded(excluded, table, zone, group) ? "x" : "ok";
+      parts.push(`${zone}:${group}:${cell.first}:${cell.additional}:${offered}`);
+    }
+  }
+  return parts.join(",");
+}
+
+export function shippingProviderId(classKey: string): string {
+  const parts = classKey.split(":");
+  return parts.length >= 2 ? parts[1] : "";
+}
 
 export type Profile = {
   /** `${classKey}#${group}` when split, `${classKey}#all` when shared. */
@@ -398,6 +456,59 @@ function bandPriceForWeight(bands: Band[], weightGrams: number): { price: number
 }
 
 /**
+ * True Printify cost for several classes that share one product type:
+ * one first-item price (the largest first-minus-additional), then each
+ * unit's own additional price.
+ */
+function trueSharedCostCents(
+  classTables: ClassRateTable[],
+  itemsByClass: Map<string, CartItem[]>,
+  zone: string,
+  excludedByClass: Record<string, ExclusionSet>,
+): { cents: number } | { blocked: string } {
+  let additionalSum = 0;
+  let maxFirstMinusAdd = -Infinity;
+  let units = 0;
+  for (const table of classTables) {
+    const items = itemsByClass.get(table.classKey) || [];
+    const excluded = excludedByClass[table.classKey] ?? new Set<string>();
+    for (const item of items) {
+      if (item.quantity <= 0) continue;
+      if (isExcluded(excluded, table, zone, item.group)) {
+        return { blocked: `${table.classKey}/${item.group} excluded in ${zone}` };
+      }
+      const hit = effectiveCell(table, zone, item.group);
+      if (!hit) return { blocked: `${table.classKey}/${item.group} has no rate for ${zone}` };
+      additionalSum += hit.cell.additional * item.quantity;
+      maxFirstMinusAdd = Math.max(maxFirstMinusAdd, hit.cell.first - hit.cell.additional);
+      units += item.quantity;
+    }
+  }
+  if (units === 0) return { cents: 0 };
+  return { cents: additionalSum + maxFirstMinusAdd };
+}
+
+/**
+ * Classes share one Shopify profile only when the caller set a product type,
+ * the class itself is a single #all profile, and the provider, type, and
+ * full rate vector match. Missing product type keeps today's one-profile-per-class.
+ */
+function sharedShipmentKey(
+  table: ClassRateTable,
+  excluded: ExclusionSet,
+  config: BandConfig,
+): string | null {
+  if (!table.shippingProductType) return null;
+  const planned = planClassProfiles(table, excluded, config);
+  if (planned.length !== 1 || !planned[0].key.endsWith("#all")) return null;
+  return [
+    shippingProviderId(table.classKey),
+    table.shippingProductType,
+    rateVectorKey(table, excluded),
+  ].join("|");
+}
+
+/**
  * Simulate a cart to one destination zone: true ceiling cost vs what the
  * generated band profiles would charge (Shopify sums one rate per profile).
  */
@@ -416,17 +527,27 @@ export function simulateCart(
     byClass.set(item.classKey, list);
   }
 
+  const buckets = new Map<string, string[]>();
+  for (const classKey of Array.from(byClass.keys())) {
+    const table = tables[classKey];
+    if (!table) return { status: "blocked", reason: `unknown class ${classKey}` };
+    const excluded = excludedByClass[classKey] ?? new Set<string>();
+    const key = sharedShipmentKey(table, excluded, config) ?? `solo:${classKey}`;
+    const list = buckets.get(key) || [];
+    list.push(classKey);
+    buckets.set(key, list);
+  }
+
   let trueCents = 0;
   let chargedCents = 0;
   let hitOpenBand = false;
   let crossProfilePenaltyCents = 0;
   let profilesUsed = 0;
 
-  for (const [classKey, items] of Array.from(byClass.entries())) {
+  const chargeClass = (classKey: string): SimResult | null => {
+    const items = byClass.get(classKey) || [];
     const table = tables[classKey];
-    if (!table) return { status: "blocked", reason: `unknown class ${classKey}` };
     const excluded = excludedByClass[classKey] ?? new Set<string>();
-
     const truth = truePrintifyClassCostCents(table, items, zone, excluded);
     if ("blocked" in truth) return { status: "blocked", reason: truth.blocked };
     trueCents += truth.cents;
@@ -455,6 +576,39 @@ export function simulateCart(
       const maxDelta = Math.max(...zoneDeltas);
       crossProfilePenaltyCents += zoneDeltas.reduce((s, d) => s + d, 0) - maxDelta;
     }
+    return null;
+  };
+
+  for (const classKeys of Array.from(buckets.values())) {
+    if (classKeys.length === 1) {
+      const blocked = chargeClass(classKeys[0]);
+      if (blocked) return blocked;
+      continue;
+    }
+    const classTables = classKeys.map((key) => tables[key]);
+    const truth = trueSharedCostCents(classTables, byClass, zone, excludedByClass);
+    if ("blocked" in truth) return { status: "blocked", reason: truth.blocked };
+    trueCents += truth.cents;
+
+    const lead = classTables[0];
+    const excluded = excludedByClass[lead.classKey] ?? new Set<string>();
+    const profile = planClassProfiles(lead, excluded, config)[0];
+    const zoneBands = generateProfileZoneBands(lead, profile, zone, excluded, config);
+    if (!zoneBands) {
+      return { status: "blocked", reason: `${profile.key} does not offer ${zone}` };
+    }
+    let weight = 0;
+    for (const table of classTables) {
+      const weights = computePseudoWeights(table);
+      for (const item of byClass.get(table.classKey) || []) {
+        weight += (weights[item.group] || 0) * item.quantity;
+      }
+    }
+    if (weight <= 0) continue;
+    const { price, open } = bandPriceForWeight(zoneBands.bands, weight);
+    chargedCents += price;
+    hitOpenBand = hitOpenBand || open;
+    profilesUsed++;
   }
 
   const overshootCents = chargedCents - trueCents;

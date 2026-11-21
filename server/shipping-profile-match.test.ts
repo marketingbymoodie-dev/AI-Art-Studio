@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchAppaiProfilesByName } from "./shipping-profile-match";
+import { matchAppaiProfilesByName, unconfirmedVariantIds } from "./shipping-profile-match";
 
 const desired = [
   { name: "AppAI · Tee — provider 99 · s", classKey: "145:99", key: "145:99#all" },
@@ -30,5 +30,28 @@ describe("matchAppaiProfilesByName", () => {
         [{ name: "AppAI · Tee — provider 3 · s", id: "x" }],
       ).ok,
     ).toBe(false);
+  });
+
+  it("accepts a shared class key when the name carries the same provider", () => {
+    const result = matchAppaiProfilesByName(
+      [{ name: "AppAI · Shirts · provider 99", classKey: "share:99:shirt", key: "share:99:shirt:abc#all" }],
+      [{ name: "AppAI · Shirts · provider 99", id: "gid://shopify/DeliveryProfile/9" }],
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("unconfirmedVariantIds", () => {
+  it("lists variants Shopify did not put on the new profile", () => {
+    const missing = unconfirmedVariantIds(
+      ["1", "2", "3"],
+      [
+        { id: "gid://shopify/ProductVariant/1", profileId: "gid://shopify/DeliveryProfile/9" },
+        { id: "gid://shopify/ProductVariant/2", profileId: "gid://shopify/DeliveryProfile/4" },
+        { id: null, profileId: null },
+      ],
+      "gid://shopify/DeliveryProfile/9",
+    );
+    expect(missing).toEqual(["2", "3"]);
   });
 });
