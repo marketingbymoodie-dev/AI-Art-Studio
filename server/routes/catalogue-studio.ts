@@ -5,6 +5,14 @@
 import type { Express, RequestHandler, Response } from "express";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
+import {
+  catalogueConceptOptions,
+  catalogueConceptShopAllowed,
+  createCatalogueConcepts,
+  liveApparelGenerationModel,
+  redrawCatalogueConcept,
+} from "../catalogue-concept";
+import { parseCatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { draftCatalogueImage } from "../catalogue-draft";
 import { redactAnthropicSecrets } from "../concept-engine";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
@@ -569,6 +577,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           darknessLevel: stored.darknessLevel,
           filename,
         },
+        generation: fixture || !stored ? null : parseCatalogueConceptGeneration(stored.generation),
+        conceptEnabled: catalogueConceptShopAllowed(req.shopDomain),
       });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -592,7 +602,18 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         ?? PENDING_CANDIDATE.colors.find((c) => c.name === requested)
         ?? { name: requested, hex: "FFFFFF" };
       const choice = await readChoice(id);
-      if (!String(choice.artworkPath || "").trim()) {
+      const drawId = typeof req.query.draw === "string" ? req.query.draw : "";
+      let artworkPath = String(choice.artworkPath || "");
+      if (drawId) {
+        const stored = await readCandidateRow(id);
+        const draw = parseCatalogueConceptGeneration(stored?.generation)?.draws.find((item) => item.id === drawId);
+        if (!draw) {
+          res.status(404).json({ error: "That draw is not on this candidate." });
+          return;
+        }
+        artworkPath = draw.artworkPath;
+      }
+      if (!artworkPath.trim()) {
         res.status(204).end();
         return;
       }
@@ -602,7 +623,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         panelId,
         colorName: known.name,
         colorHex: known.hex,
-        artworkPath: choice.artworkPath,
+        artworkPath,
       });
       res.setHeader("Content-Type", "image/png");
       res.setHeader("Cache-Control", "no-store");
@@ -809,6 +830,49 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         colors.map((c: { name?: string; hex?: string }) => ({ name: String(c?.name || ""), hex: String(c?.hex || "").replace(/^#/, "") })),
       );
       res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.get("/api/platform/catalogue-studio/concept", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (!catalogueConceptShopAllowed(req.shopDomain)) {
+      res.json({ enabled: false });
+      return;
+    }
+    try {
+      const model = await liveApparelGenerationModel();
+      res.json(catalogueConceptOptions(model));
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/concept", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const result = await createCatalogueConcepts({
+        shop: req.shopDomain,
+        requestId: String(req.body?.requestId || ""),
+        body: req.body,
+      });
+      res.json(result);
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/concept/redraw", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const result = await redrawCatalogueConcept({
+        shop: req.shopDomain,
+        requestId: String(req.body?.requestId || ""),
+        candidateId: String(req.body?.candidateId || ""),
+        body: req.body,
+      });
+      res.json(result);
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

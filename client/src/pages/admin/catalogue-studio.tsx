@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { formatCatalogueSpend } from "@shared/cataloguePublish";
+import type { CatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { initialTickedColours, sortCatalogueColours } from "@shared/flywheelPromote";
-import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
+import { PETPOSTEROUS_PROMPT_PROFILE } from "@shared/packs/petposterous";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, PETPOSTEROUS_VISUAL_SYSTEMS } from "@shared/petposterousCreative";
 import AdminLayout from "@/components/admin-layout";
 import { ProductMockup } from "@/components/designer/ProductMockup";
 import { Button } from "@/components/ui/button";
@@ -78,6 +80,8 @@ type PendingCandidate = {
     darknessLevel: number;
     filename: string;
   } | null;
+  generation?: CatalogueConceptGeneration | null;
+  conceptEnabled?: boolean;
 };
 
 type OfferedColour = {
@@ -146,6 +150,8 @@ const LAUNCH_STYLES = [
 ];
 
 const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
+const HUMOR_TONES = PETPOSTEROUS_PROMPT_PROFILE.humorOptions;
+const LOOKS = PETPOSTEROUS_VISUAL_SYSTEMS.filter((look) => look.compatibility.apparel !== "hidden");
 
 type Override = "rule" | "eligible" | "ineligible";
 
@@ -269,6 +275,12 @@ export default function CatalogueStudioPage() {
   const [humour, setHumour] = useState("");
   const [darkness, setDarkness] = useState("");
   const [species, setSpecies] = useState("");
+  const [conceptText, setConceptText] = useState("");
+  const [humorTone, setHumorTone] = useState("");
+  const [lookId, setLookId] = useState("");
+  const [renderBusy, setRenderBusy] = useState(false);
+  const [renderError, setRenderError] = useState("");
+  const renderLock = useRef(false);
   const [styleId, setStyleId] = useState("");
   const [surface, setSurface] = useState("apparel");
 
@@ -319,6 +331,9 @@ export default function CatalogueStudioPage() {
     setHumour(recipe.humourOperator || "");
     setDarkness(recipe.darknessLevel ? String(recipe.darknessLevel) : "");
     setSpecies(recipe.species || "");
+    setConceptText(candidate.data.generation?.concept || "");
+    setHumorTone(candidate.data.generation?.humor || "");
+    setLookId(candidate.data.generation?.look || "");
     setStyleId(recipe.artStyle || "");
     setPanelId("");
     setTicked([]);
@@ -431,9 +446,12 @@ export default function CatalogueStudioPage() {
     setPreviewError(null);
     setCellSource("");
     (async () => {
+      const draws = candidate.data?.generation?.draws || [];
+      const selected = draws[Math.max(0, draw - 1)];
+      const drawQuery = selected ? `&draw=${encodeURIComponent(selected.id)}` : "";
       const idQuery = candidate.data?.id ? `&candidate=${encodeURIComponent(candidate.data.id)}` : "";
       const res = await apiFetch(
-        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}`,
+        `/api/platform/catalogue-studio/pending-preview?color=${encodeURIComponent(color)}&panelId=${encodeURIComponent(panelId)}&productTypeId=${studioTypeId}${idQuery}${drawQuery}`,
         { signal: controller.signal, transport: "xhr" },
       );
       if (res.status === 204) {
@@ -479,7 +497,7 @@ export default function CatalogueStudioPage() {
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [color, panelId, previewNonce, candidate.data?.id, studioTypeId]);
+  }, [color, panelId, previewNonce, candidate.data?.id, candidate.data?.generation, studioTypeId, draw]);
 
   useEffect(() => {
     if (!showAdmin) return;
@@ -489,7 +507,7 @@ export default function CatalogueStudioPage() {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
       setDraw((current) => {
-        const count = Math.max(1, drawCount);
+        const count = Math.max(1, candidate.data?.generation?.draws.length || drawCount);
         const next = event.key === "ArrowRight" ? current + 1 : current - 1;
         if (next < 1) return count;
         if (next > count) return 1;
@@ -498,7 +516,43 @@ export default function CatalogueStudioPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showAdmin, drawCount]);
+  }, [showAdmin, drawCount, candidate.data?.generation?.draws.length]);
+
+  async function redrawCandidate() {
+    if (renderLock.current) return;
+    if (!candidate.data?.generation?.concept) return;
+    renderLock.current = true;
+    const requestId = crypto.randomUUID();
+    setRenderBusy(true);
+    setRenderError("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/concept/redraw", {
+        method: "POST",
+        body: JSON.stringify({
+          requestId,
+          candidateId: candidate.data.id,
+          concept: conceptText,
+          species,
+          humor: humorTone,
+          look: lookId,
+          wordsMode: wording.trim() ? "exact" : "none",
+          exactWords: wording,
+          draws: Math.min(4, Math.max(1, drawCount)),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(body.error || "Re-render failed"));
+      const count = Array.isArray(body.draws) ? body.draws.length : 0;
+      if (count) setDraw(count);
+      if (body.error) setRenderError(String(body.error));
+      await candidate.refetch();
+    } catch (e: any) {
+      setRenderError(String(e?.message || e));
+    } finally {
+      renderLock.current = false;
+      setRenderBusy(false);
+    }
+  }
 
   const sizes = candidate.data?.sizes ?? [];
   const salePrice = candidate.data?.pricesBySize?.[size] || "";
@@ -772,6 +826,29 @@ export default function CatalogueStudioPage() {
 
             <section className="space-y-2">
               <h2 className="font-medium">Recipe</h2>
+              {candidate.data?.conceptEnabled ? (
+                <>
+                  <Field label="Concept">
+                    <Textarea value={conceptText} onChange={(e) => setConceptText(e.target.value)} placeholder="The visual joke" />
+                  </Field>
+                  <Field label="Humour">
+                    <select className="h-9 w-full rounded-md border bg-background px-2" value={humorTone} onChange={(e) => setHumorTone(e.target.value)}>
+                      <option value="">Not chosen</option>
+                      {HUMOR_TONES.map((tone) => (
+                        <option key={tone.id} value={tone.id}>{tone.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="LOOK">
+                    <select className="h-9 w-full rounded-md border bg-background px-2" value={lookId} onChange={(e) => setLookId(e.target.value)}>
+                      <option value="">Not chosen</option>
+                      {LOOKS.map((look) => (
+                        <option key={look.id} value={look.id}>{look.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </>
+              ) : null}
               <Field label="Behaviour" id="studio-recipe-behaviour">
                 <Textarea value={behaviour} onChange={(e) => setBehaviour(e.target.value)} placeholder="Not written" />
               </Field>
@@ -815,8 +892,25 @@ export default function CatalogueStudioPage() {
                   <option value="decor">Decor</option>
                 </select>
               </Field>
-              <Button type="button" size="sm" variant="outline" disabled>Re-render</Button>
-              <p className="text-xs text-muted-foreground">Generation is not connected. Editing stays on this page.</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!candidate.data?.conceptEnabled || !candidate.data?.generation?.concept || renderBusy}
+                onClick={() => void redrawCandidate()}
+              >
+                {renderBusy ? "Rendering" : "Re-render"}
+              </Button>
+              {candidate.data?.conceptEnabled ? (
+                <p className="text-xs text-muted-foreground">
+                  {candidate.data.generation?.concept
+                    ? "Re-render uses this concept, species, humour, LOOK and exact wording. New draws are added to this candidate."
+                    : "This candidate has no saved concept. Start one from Catalogue import."}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Generation is not connected. Editing stays on this page.</p>
+              )}
+              {renderError ? <p className="text-xs">{renderError}</p> : null}
             </section>
 
             <section className="space-y-2">
@@ -1063,25 +1157,34 @@ export default function CatalogueStudioPage() {
 
             <section className="space-y-2">
               <h2 className="font-medium">Draws</h2>
-              <Field label="Draw count">
-                <Input
-                  type="number"
-                  min={1}
-                  value={drawCount}
-                  onChange={(e) => {
-                    const next = Math.max(1, Number(e.target.value) || 1);
-                    setDrawCount(next);
-                    setDraw((current) => Math.min(current, next));
-                  }}
-                />
-              </Field>
-              <p>Selected draw {draw} of {Math.max(1, drawCount)}. Arrow keys switch while this panel is open.</p>
-              {draw === 1 ? (
-                <p className="text-xs text-muted-foreground">Draw 1 is the pending artwork on the hero.</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">Draw {draw} has no render. The hero is still draw 1.</p>
-              )}
-              <Button type="button" size="sm" variant="outline" disabled>Regenerate</Button>
+              {candidate.data?.conceptEnabled && candidate.data.generation ? (
+                <Field label="New draws">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={4}
+                    value={drawCount}
+                    onChange={(e) => setDrawCount(Math.min(4, Math.max(1, Number(e.target.value) || 1)))}
+                  />
+                </Field>
+              ) : null}
+              <p>Selected draw {draw} of {Math.max(1, candidate.data?.generation?.draws.length || 1)}. Arrow keys switch while this panel is open.</p>
+              <p className="text-xs text-muted-foreground">Draw 1 stays the artwork used when you publish. Later draws are only shown here. Estimated is the text-input quote. Actual is the provider usage total, including the image.</p>
+              {(candidate.data?.generation?.draws || []).map((row, index) => (
+                <div key={row.id} className={draw === index + 1 ? "rounded border p-2" : "p-2"}>
+                  <button type="button" className="underline" onClick={() => setDraw(index + 1)}>
+                    Draw {index + 1}
+                  </button>
+                  <p className="text-xs text-muted-foreground">
+                    {row.model} · estimated {row.estimatedCostUsd == null ? "—" : formatCatalogueSpend(row.estimatedCostUsd)}
+                    {" · "}actual {row.actualCostUsd == null ? "—" : formatCatalogueSpend(row.actualCostUsd)}
+                  </p>
+                  <details>
+                    <summary>Prompt sent</summary>
+                    <pre className="mt-1 whitespace-pre-wrap text-xs">{row.prompt}</pre>
+                  </details>
+                </div>
+              ))}
             </section>
 
             <section className="space-y-2">

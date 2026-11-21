@@ -22,6 +22,7 @@ import {
   RETRO_SUNSET_STACK_STYLE,
   VINTAGE_PRINT_STYLE,
 } from "./catalogArtStyles";
+import type { CatalogueConceptGeneration } from "./catalogueConcept";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -1444,6 +1445,8 @@ export const designCandidates = pgTable("design_candidates", {
   shopifyProductId: text("shopify_product_id"),
   /** Persistent Printify product. Retirement deletes this product. */
   printifyProductId: text("printify_product_id"),
+  /** Concept-studio draws: prompt, look, and per-draw cost. Null on imported PNGs. */
+  generation: jsonb("generation").$type<CatalogueConceptGeneration>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [

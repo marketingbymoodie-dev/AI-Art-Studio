@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
   catalogueRowIssues,
@@ -7,6 +7,7 @@ import {
 } from "@shared/catalogueBulkImport";
 import { PETPOSTEROUS_ART_STYLE_LAUNCH, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
+import { formatCatalogueSpend } from "@shared/cataloguePublish";
 import { apiFetch } from "@/lib/queryClient";
 import AdminLayout from "@/components/admin-layout";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,165 @@ function fileToDataUrl(file: File): Promise<string> {
 
 function money(value: number): string {
   return `$${value.toFixed(4)}`;
+}
+
+type ConceptOptions = {
+  enabled: boolean;
+  model?: string;
+  humors?: Array<{ id: string; label: string }>;
+  looks?: Array<{ id: string; label: string }>;
+  aspects?: string[];
+};
+
+function ConceptDesign({ onCreated }: { onCreated: (path: string) => void }) {
+  const [options, setOptions] = useState<ConceptOptions | null>(null);
+  const [concept, setConcept] = useState("");
+  const [species, setSpecies] = useState("");
+  const [humor, setHumor] = useState("witty");
+  const [look, setLook] = useState("editorial-deadpan");
+  const [wordsMode, setWordsMode] = useState<"none" | "exact">("none");
+  const [exactWords, setExactWords] = useState("");
+  const [garment, setGarment] = useState<"light" | "dark">("light");
+  const [aspect, setAspect] = useState("3:4");
+  const [draws, setDraws] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<{ model: string; error: string; created: Array<{ id: string; studioPath: string; estimatedCostUsd: number | null; actualCostUsd: number | null; prompt: string }> } | null>(null);
+  const lock = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch("/api/platform/catalogue-studio/concept").then(async (res) => {
+      const body = await res.json().catch(() => ({}));
+      if (!cancelled && res.ok) setOptions(body);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!options?.enabled) return null;
+
+  async function generate() {
+    if (lock.current) return;
+    lock.current = true;
+    const requestId = crypto.randomUUID();
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/concept", {
+        method: "POST",
+        body: JSON.stringify({
+          requestId,
+          concept,
+          species,
+          humor,
+          look,
+          wordsMode,
+          exactWords,
+          garment,
+          aspect,
+          draws,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(String(body.error || "Generation failed"));
+      setResult(body);
+      if (body.studioPath) onCreated(String(body.studioPath));
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-3 rounded-md border p-3" data-testid="catalogue-concept">
+      <h2 className="text-sm font-medium">New design from concept</h2>
+      <p className="text-xs text-muted-foreground">
+        {options.model ? `Model ${options.model}. ` : ""}
+        Each draw is a pending candidate. Nothing is published. Estimated is the text-input quote. Actual is the provider usage total, including the image.
+      </p>
+      <label className="block text-xs">
+        Concept
+        <textarea className="mt-1 w-full rounded border bg-background px-2 py-1" rows={3} value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="The visual joke" />
+      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="block text-xs">
+          Species
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" value={species} onChange={(e) => setSpecies(e.target.value)} />
+        </label>
+        <label className="block text-xs">
+          Humour
+          <select className="mt-1 h-8 w-full rounded border bg-background px-2" value={humor} onChange={(e) => setHumor(e.target.value)}>
+            {(options.humors || []).map((row) => <option key={row.id} value={row.id}>{row.label}</option>)}
+          </select>
+        </label>
+        <label className="block text-xs">
+          LOOK
+          <select className="mt-1 h-8 w-full rounded border bg-background px-2" value={look} onChange={(e) => setLook(e.target.value)}>
+            {(options.looks || []).map((row) => <option key={row.id} value={row.id}>{row.label}</option>)}
+          </select>
+        </label>
+        <label className="block text-xs">
+          Words
+          <select className="mt-1 h-8 w-full rounded border bg-background px-2" value={wordsMode} onChange={(e) => setWordsMode(e.target.value === "exact" ? "exact" : "none")}>
+            <option value="none">No text</option>
+            <option value="exact">Exact words</option>
+          </select>
+        </label>
+        {wordsMode === "exact" ? (
+          <label className="block text-xs sm:col-span-2">
+            Exact words
+            <input className="mt-1 h-8 w-full rounded border bg-background px-2" value={exactWords} onChange={(e) => setExactWords(e.target.value)} />
+          </label>
+        ) : null}
+        <label className="block text-xs">
+          Garment
+          <select className="mt-1 h-8 w-full rounded border bg-background px-2" value={garment} onChange={(e) => setGarment(e.target.value === "dark" ? "dark" : "light")}>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label className="block text-xs">
+          Aspect
+          <select className="mt-1 h-8 w-full rounded border bg-background px-2" value={aspect} onChange={(e) => setAspect(e.target.value)}>
+            {(options.aspects || ["3:4"]).map((row) => <option key={row} value={row}>{row}</option>)}
+          </select>
+        </label>
+        <label className="block text-xs">
+          Draws
+          <input className="mt-1 h-8 w-full rounded border bg-background px-2" type="number" min={1} max={4} value={draws} onChange={(e) => setDraws(Math.min(4, Math.max(1, Number(e.target.value) || 1)))} />
+        </label>
+      </div>
+      <Button type="button" size="sm" disabled={busy} onClick={() => void generate()}>
+        {busy ? "Generating" : `Generate ${draws} ${draws === 1 ? "draw" : "draws"}`}
+      </Button>
+      {error ? <p className="text-xs">{error}</p> : null}
+      {result ? (
+        <div className="space-y-2 text-xs">
+          <p>Model {result.model}. {result.created.length} stored.</p>
+          {result.error ? <p>{result.error}</p> : null}
+          {result.created.map((row, index) => (
+            <div key={row.id}>
+              <p>
+                Draw {index + 1}: estimated {row.estimatedCostUsd == null ? "—" : formatCatalogueSpend(row.estimatedCostUsd)}
+                {" · "}actual {row.actualCostUsd == null ? "—" : formatCatalogueSpend(row.actualCostUsd)}
+                {" · "}
+                <Link href={row.studioPath}>Open</Link>
+              </p>
+              <details>
+                <summary>Prompt sent</summary>
+                <pre className="mt-1 whitespace-pre-wrap">{row.prompt}</pre>
+              </details>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 export default function CatalogueBulkImportPage() {
@@ -344,6 +504,7 @@ export default function CatalogueBulkImportPage() {
   return (
     <AdminLayout>
       <section className="space-y-3" data-testid="catalogue-bulk-import">
+        <ConceptDesign onCreated={() => undefined} />
         <h1 className="text-lg font-medium">Import catalogue designs</h1>
         <p className="text-xs text-muted-foreground">
           Drop a folder of PNGs. A CSV is optional. Where a CSV row exists, those values are kept and the image is not redrafted.
