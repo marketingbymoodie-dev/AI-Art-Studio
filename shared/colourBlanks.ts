@@ -193,24 +193,24 @@ export function composeBlankChoice(
   return { mode: "unavailable", sourceName: "", rowId: null };
 }
 
-/** A stored recolour. A real upload can share the white mask, but these two sources are the paint itself. */
-const PAINTED_BLANK_SOURCES = new Set(["copied-from-white", "painted"]);
-
 export type UploadedBlankRow = {
   name: string;
   kind: string;
   maskSource?: string | null;
 };
 
-/** A photograph that was uploaded. An approved recolour of the white master is not one. */
+/**
+ * A stored blank the operator approved. That includes an approved paint
+ * (`copied-from-white` or `painted`) and an uploaded photograph.
+ * A colour with no stored row is still an unapproved recolour and is not publishable.
+ */
 export function isUploadedBlank(row: UploadedBlankRow): boolean {
-  if (PAINTED_BLANK_SOURCES.has(String(row.maskSource || ""))) return false;
   return row.kind === "produced" || row.kind === "white-master";
 }
 
 /**
- * Newest uploaded photograph for this colour. A newer painted row is skipped.
- * The linked name is used only when the colour itself has no photograph.
+ * Newest stored blank for this colour, including an approved paint.
+ * The linked name is used only when the colour itself has no stored row.
  * Rows must be newest first.
  */
 export function newestUploadedBlank<T extends UploadedBlankRow>(

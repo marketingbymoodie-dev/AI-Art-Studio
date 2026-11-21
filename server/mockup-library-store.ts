@@ -848,6 +848,7 @@ async function loadCandidatePanel(args: {
       photo,
       maskPng,
       artwork,
+      // Stored pixels only. Publish does not call recolorGarment.
       resolved: { kind: "produced" as const, hex: chosen.garmentHex, sourceName: chosen.garmentColor },
       fractions: own ?? stored,
       sourceRow: chosen,

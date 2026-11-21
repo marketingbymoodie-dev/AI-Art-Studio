@@ -76,7 +76,7 @@ describe("softstyle colour seed", () => {
     expect(inUseBlankKind(panels, "Navy")).toBeNull();
   });
 
-  it("skips a newer painted blank and keeps the uploaded photograph", () => {
+  it("uses the approved stored blank and blocks a colour that was never stored", () => {
     const rows = [
       { name: "Black", kind: "produced", maskSource: "copied-from-white" },
       { name: "Black", kind: "produced", maskSource: "scene-reference" },
@@ -86,11 +86,12 @@ describe("softstyle colour seed", () => {
       { name: "Sport Grey", kind: "produced", maskSource: "copied-from-white" },
       { name: "Light grey", kind: "produced", maskSource: "scene-reference" },
     ];
-    expect(newestUploadedBlank(rows, "Black")?.maskSource).toBe("scene-reference");
-    expect(newestUploadedBlank(rows, "Light Blue")).toBeNull();
-    expect(newestUploadedBlank(rows, "White")?.kind).toBe("white-master");
+    expect(newestUploadedBlank(rows, "Black")?.maskSource).toBe("copied-from-white");
+    expect(newestUploadedBlank(rows, "Light Blue")?.maskSource).toBe("painted");
+    expect(newestUploadedBlank(rows, "White")?.maskSource).toBe("copied-from-white");
     expect(newestUploadedBlank(rows, "Navy")).toBeNull();
-    expect(newestUploadedBlank(rows, "Sport Grey", "Light grey")?.name).toBe("Light grey");
+    expect(newestUploadedBlank(rows, "Sport Grey")?.name).toBe("Sport Grey");
+    expect(newestUploadedBlank(rows, "Royal", "Light grey")?.name).toBe("Light grey");
   });
 
   it("matches a colour name to its slug and says why it cannot be turned off", () => {
