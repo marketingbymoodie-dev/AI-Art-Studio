@@ -138,6 +138,7 @@ export type ComposeBlankRow = {
   name: string;
   hex: string;
   kind: "produced" | "white-master";
+  maskSource?: string | null;
 };
 
 export type InUseBlankKind = "produced" | "white-master";
@@ -178,16 +179,18 @@ export function inUseBlankKind(
 }
 
 /**
- * Same choice compose makes: an exact name uses that photograph,
- * otherwise the white master is repainted. Rows must be newest first.
+ * Same choice the in-use blank makes: a real photograph of this colour,
+ * otherwise a painted approval, otherwise the white master is repainted.
+ * Rows must be newest first.
  */
 export function composeBlankChoice(
   rowsNewestFirst: readonly ComposeBlankRow[],
   requestedName: string,
 ): { mode: "produced" | "recolour" | "unavailable"; sourceName: string; rowId: string | null } {
-  const wanted = blankNameKey(requestedName);
-  const exact = rowsNewestFirst.find((row) => blankNameKey(row.name) === wanted);
-  if (exact) return { mode: "produced", sourceName: exact.name, rowId: exact.id };
+  const exact = newestUploadedBlank(rowsNewestFirst, requestedName);
+  if (exact && blankNameKey(exact.name) === blankNameKey(requestedName)) {
+    return { mode: "produced", sourceName: exact.name, rowId: exact.id };
+  }
   const white = rowsNewestFirst.find((row) => row.kind === "white-master");
   if (white) return { mode: "recolour", sourceName: white.name, rowId: white.id };
   return { mode: "unavailable", sourceName: "", rowId: null };
@@ -208,8 +211,15 @@ export function isUploadedBlank(row: UploadedBlankRow): boolean {
   return row.kind === "produced" || row.kind === "white-master";
 }
 
+/** An approval painted from the white master. A photograph uses some other mask source. */
+export function isPaintedBlank(row: UploadedBlankRow): boolean {
+  const source = String(row.maskSource || "").trim();
+  return source === "painted" || source === "copied-from-white";
+}
+
 /**
- * Newest stored blank for this colour, including an approved paint.
+ * Real photograph for this colour, even when a later paint is newer.
+ * A painted approval is used only when this colour has no photograph.
  * The linked name is used only when the colour itself has no stored row.
  * Rows must be newest first.
  */
@@ -224,8 +234,10 @@ export function newestUploadedBlank<T extends UploadedBlankRow>(
     if (key && !names.includes(key)) names.push(key);
   }
   for (const name of names) {
-    const hit = rowsNewestFirst.find((row) => blankNameKey(row.name) === name && isUploadedBlank(row));
-    if (hit) return hit;
+    const matches = rowsNewestFirst.filter((row) => blankNameKey(row.name) === name && isUploadedBlank(row));
+    const photo = matches.find((row) => !isPaintedBlank(row));
+    if (photo) return photo;
+    if (matches[0]) return matches[0];
   }
   return null;
 }

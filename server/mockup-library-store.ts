@@ -878,7 +878,10 @@ async function loadCandidatePanel(args: {
       resolved.sourceName = linked.name;
     }
   }
-  const sourceRow = rows.find((row) => blankNameKey(row.garmentColor) === blankNameKey(resolved.sourceName));
+  const sourceRow = newestUploadedBlank(
+    rows.map((row) => ({ ...row, name: row.garmentColor })),
+    resolved.sourceName,
+  );
   if (!sourceRow) throw new Error(`${args.colorName} on ${args.typeName} (${args.productTypeId}), panel ${label}, has no produced colourway and no white master`);
   if (!args.artworkPath) throw new Error("Candidate artwork is not stored. Upload it once on this page.");
   const [photo, maskPng, artwork] = await Promise.all([

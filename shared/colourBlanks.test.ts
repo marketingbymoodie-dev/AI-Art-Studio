@@ -86,12 +86,16 @@ describe("softstyle colour seed", () => {
       { name: "Sport Grey", kind: "produced", maskSource: "copied-from-white" },
       { name: "Light grey", kind: "produced", maskSource: "scene-reference" },
     ];
-    expect(newestUploadedBlank(rows, "Black")?.maskSource).toBe("copied-from-white");
+    expect(newestUploadedBlank(rows, "Black")?.maskSource).toBe("scene-reference");
     expect(newestUploadedBlank(rows, "Light Blue")?.maskSource).toBe("painted");
-    expect(newestUploadedBlank(rows, "White")?.maskSource).toBe("copied-from-white");
+    expect(newestUploadedBlank(rows, "White")?.maskSource).toBe("scene-reference");
     expect(newestUploadedBlank(rows, "Navy")).toBeNull();
     expect(newestUploadedBlank(rows, "Sport Grey")?.name).toBe("Sport Grey");
     expect(newestUploadedBlank(rows, "Royal", "Light grey")?.name).toBe("Light grey");
+    expect(composeBlankChoice([
+      { id: "paint", name: "Red", hex: "C00", kind: "produced", maskSource: "copied-from-white" },
+      { id: "photo", name: "Red", hex: "C00", kind: "produced", maskSource: "scene-reference" },
+    ], "Red").rowId).toBe("photo");
   });
 
   it("matches a colour name to its slug and says why it cannot be turned off", () => {

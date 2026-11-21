@@ -9,6 +9,7 @@ import {
   colourMatchKeys,
   composeBlankChoice,
   describeColourUse,
+  newestUploadedBlank,
   normaliseBlankHex,
   SOFTSTYLE_COLOUR_SEED,
   type BlankFinish,
@@ -641,10 +642,14 @@ export async function colourBlankGrid(productTypeId: number, options?: { restric
         name: row.garmentColor,
         hex: row.garmentHex,
         kind: row.kind === "white-master" ? "white-master" as const : "produced" as const,
+        maskSource: row.maskSource,
       }));
       const cells = colourRows.filter((colour) => colour.active !== false).map((colour) => {
         const exact = group.rows.filter((row) => blankNameKey(row.garmentColor) === blankNameKey(colour.name));
-        const current = exact[0] ?? null;
+        const current = newestUploadedBlank(
+          exact.map((row) => ({ ...row, name: row.garmentColor })),
+          colour.name,
+        );
         const choice = composeBlankChoice(composeRows, colour.name);
         const revision = (row: typeof exact[number]) => ({
           id: row.id,
@@ -664,7 +669,7 @@ export async function colourBlankGrid(productTypeId: number, options?: { restric
             usesThisBlank: Boolean(current && choice.rowId === current.id && choice.mode === "produced"),
           },
           current: current ? revision(current) : null,
-          history: exact.slice(1).map(revision),
+          history: exact.filter((row) => row.id !== current?.id).map(revision),
         };
       });
       const master = group.rows.find((row) => row.kind === "white-master");
