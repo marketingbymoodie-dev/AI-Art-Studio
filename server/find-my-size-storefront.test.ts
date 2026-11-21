@@ -95,6 +95,23 @@ describe("storefront find my size", () => {
     expect(selected.checked).toBe(true);
   });
 
+  it("opens the guarantee policy in a new tab", () => {
+    document.body.innerHTML = "<div></div>";
+    const root = finder.openDialog(document, {
+      ...guide,
+      guarantee: {
+        title: "30-day money-back & fit guarantee",
+        detail: "Wrong size? We'll send you a new tee.",
+        url: "https://petposterous.myshopify.com/policies/refund-policy",
+      },
+    });
+    const link = root.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://petposterous.myshopify.com/policies/refund-policy");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener");
+    expect(link?.textContent).toBe("30-day money-back & fit guarantee");
+  });
+
   it("returns from Compare measurements to Suggest my size", () => {
     document.body.innerHTML = "<div></div>";
     const root = finder.openDialog(document, guide);

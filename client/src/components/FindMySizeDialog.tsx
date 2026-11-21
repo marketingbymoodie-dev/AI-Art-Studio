@@ -139,7 +139,7 @@ export function FindMySizeButton({
                 </div>
                 {guide.guarantee ? (
                   <p className="text-sm">
-                    {guide.guarantee.url ? <a className="underline" href={guide.guarantee.url}>{guide.guarantee.title}</a> : <span className="underline">{guide.guarantee.title}</span>}
+                    {guide.guarantee.url ? <a className="underline" href={guide.guarantee.url} target="_blank" rel="noopener">{guide.guarantee.title}</a> : <span className="underline">{guide.guarantee.title}</span>}
                     <span className="mt-1 block text-neutral-600">{guide.guarantee.detail}</span>
                   </p>
                 ) : null}

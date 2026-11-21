@@ -229,7 +229,7 @@
           var title = escapeHtml(guide.guarantee.title);
           var detail = escapeHtml(guide.guarantee.detail || "");
           var href = escapeHtml(guide.guarantee.url || "");
-          html += "<p>" + (href ? '<a href="' + href + '">' + title + "</a>" : title) + (detail ? "<br>" + detail : "") + "</p>";
+          html += "<p>" + (href ? '<a href="' + href + '" target="_blank" rel="noopener">' + title + "</a>" : title) + (detail ? "<br>" + detail : "") + "</p>";
         }
         html += '<div class="appai-fms__row">' + choice("data-unit", "imperial", "ft / lb", unit === "imperial") + choice("data-unit", "metric", "cm / kg", unit === "metric") + "</div>";
         if (unit === "metric") {
