@@ -8,11 +8,14 @@
  * so the next page is right before this script runs.
  *
  * Petposterous app listings are the exception. A fresh open leaves the
- * colour selected and no size selected. The hidden variant input stays
- * so the price still renders, and add-to-cart is refused until the
- * shopper picks a size. A URL variant, a saved My Pet size, or Find my
- * size's Use size button still arrives already selected. Other shops
- * keep the M default.
+ * colour selected and no size selected. The theme still renders the
+ * first variant and then checks that size (Small) when every size
+ * button was left off, including after a colour change redraws the
+ * picker. This script clears that size again, and keeps clearing it
+ * until the shopper picks one. The hidden variant input stays so the
+ * price still renders, and add-to-cart is refused until then. A URL
+ * variant, a saved My Pet size, or Find my size's Use size button
+ * still arrives already selected. Other shops keep the M default.
  */
 (function () {
   if (typeof window.__appaiVariantOnLoad === 'undefined') {
@@ -327,9 +330,18 @@
   }
 
   function sizeRadios(picker) {
-    var radios = picker ? picker.querySelectorAll('input[type="radio"]') : [];
+    var scope = picker || document;
+    var marked = scope.querySelectorAll('[data-bmp-size-fieldset] input[type="radio"], [data-appai-size-fieldset] input[type="radio"]');
     var out = [];
-    for (var i = 0; i < radios.length; i++) if (isSizeRadio(radios[i])) out.push(radios[i]);
+    var seen = [];
+    function add(radio) {
+      if (!radio || seen.indexOf(radio) !== -1) return;
+      seen.push(radio);
+      out.push(radio);
+    }
+    for (var m = 0; m < marked.length; m++) add(marked[m]);
+    var radios = scope.querySelectorAll('input[type="radio"]');
+    for (var i = 0; i < radios.length; i++) if (isSizeRadio(radios[i])) add(radios[i]);
     return out;
   }
 
@@ -357,7 +369,11 @@
       + '.appai-size-needed.appai-size-shake{animation:appai-size-shake .45s ease}'
       + '.appai-size-needed label{box-shadow:inset 0 0 0 2px #b42318}'
       + '.appai-size-needed__message{display:inline;color:#b42318;margin:8px 12px 0 0;font:inherit;font-size:.95rem}'
-      + '.appai-size-needed .appai-fms__launcher{display:inline !important;visibility:visible !important}';
+      + '.appai-size-needed .appai-fms__launcher{display:inline !important;visibility:visible !important}'
+      + 'html[data-appai-await-size] [data-appai-size-fieldset] .variant-option__button-label:has(:checked){color:var(--color-foreground);border-color:var(--color-variant-border)}'
+      + 'html[data-appai-await-size] [data-appai-size-fieldset] .variant-option__button-label:has(:checked)::before{border-color:var(--color-variant-border)}'
+      + 'html[data-appai-await-size] [data-appai-size-fieldset] .variant-option__button-label__pill{display:none}'
+      + 'html[data-appai-await-size] [data-appai-size-fieldset] .variant-option__swatch-value{display:none}';
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -376,6 +392,7 @@
 
   window.__appaiNoteSizeChosen = function () {
     window.__appaiSizeChosen = true;
+    document.documentElement.removeAttribute('data-appai-await-size');
     clearSizePrompt();
   };
 
@@ -419,11 +436,20 @@
   function clearSizeRadios(radios) {
     if (window.__appaiSizeChosen) return;
     window.__appaiClearingSize = true;
+    document.documentElement.setAttribute('data-appai-await-size', '1');
     try {
       for (var i = 0; i < radios.length; i++) {
-        radios[i].checked = false;
-        radios[i].removeAttribute('data-current-checked');
-        radios[i].removeAttribute('data-appai-size-selected');
+        var radio = radios[i];
+        if (radio.checked) radio.checked = false;
+        radio.removeAttribute('checked');
+        if (radio.getAttribute('data-current-checked') !== 'false') radio.setAttribute('data-current-checked', 'false');
+        if (radio.getAttribute('data-previous-checked') !== 'false') radio.setAttribute('data-previous-checked', 'false');
+        radio.removeAttribute('data-appai-size-selected');
+        var field = radio.closest ? radio.closest('fieldset') : null;
+        if (!field) continue;
+        if (field.getAttribute('data-appai-size-fieldset') !== '1') field.setAttribute('data-appai-size-fieldset', '1');
+        var shown = field.querySelectorAll('.variant-option__swatch-value');
+        for (var s = 0; s < shown.length; s++) if (shown[s].textContent) shown[s].textContent = '';
       }
     } finally {
       window.__appaiClearingSize = false;
@@ -561,11 +587,18 @@
       if (isPageAddControl(event.target)) blockUnpickedAdd(event);
     }, true);
     document.addEventListener('change', function (event) {
-      if (!sizeStillRequired() || window.__appaiClearingSize) return;
+      if (window.__appaiClearingSize) return;
+      if (event.isTrusted && sizeRadioFromEvent(event)) {
+        window.__appaiNoteSizeChosen();
+        return;
+      }
+      if (!sizeStillRequired()) return;
       var target = event.target;
       if (!target || !target.closest) return;
       if (target.closest('product-card, quick-add-dialog, quick-add-modal, .appai-my-pet-modal__overlay')) return;
       setTimeout(releaseUnpickedSize, 0);
+      setTimeout(releaseUnpickedSize, 300);
+      setTimeout(releaseUnpickedSize, 800);
     }, true);
     document.addEventListener('submit', function (event) {
       if (!sizeStillRequired()) return;
@@ -611,14 +644,46 @@
     }
   }
 
+  function patchVariantPicker() {
+    function apply() {
+      var Ctor = window.customElements && customElements.get('variant-picker');
+      if (!Ctor || Ctor.prototype.__appaiUnpick) return !!Ctor;
+      var original = Ctor.prototype.connectedCallback;
+      Ctor.prototype.connectedCallback = function () {
+        if (typeof original === 'function') original.call(this);
+        if (window.__appaiRequireSize && !window.__appaiSizeChosen) releaseUnpickedSize();
+      };
+      Ctor.prototype.__appaiUnpick = true;
+      return true;
+    }
+    if (apply() || !window.customElements || !customElements.whenDefined) return;
+    customElements.whenDefined('variant-picker').then(function () {
+      apply();
+      releaseUnpickedSize();
+    });
+  }
+
   function watchUnpickedSize() {
+    ensureSizeStyles();
+    patchVariantPicker();
     releaseUnpickedSize();
-    setTimeout(releaseUnpickedSize, 400);
-    setTimeout(releaseUnpickedSize, 1200);
+    if (!window.__appaiUnpickedPoll) {
+      window.__appaiUnpickedPoll = setInterval(function () {
+        if (!window.__appaiRequireSize || window.__appaiSizeChosen) {
+          clearInterval(window.__appaiUnpickedPoll);
+          window.__appaiUnpickedPoll = 0;
+          document.documentElement.removeAttribute('data-appai-await-size');
+          return;
+        }
+        releaseUnpickedSize();
+      }, 200);
+    }
     setTimeout(function () {
       if (window.__appaiSizeChosen) return;
-      var radios = sizeRadios(listingPicker());
-      if (radios.length < 2) window.__appaiSizeChosen = true;
+      var picker = listingPicker();
+      if (!picker) return;
+      var radios = sizeRadios(picker);
+      if (radios.length > 0 && radios.length < 2) window.__appaiNoteSizeChosen();
     }, 1500);
     if (window.__appaiUnpickedSizeWatch) return;
     window.__appaiUnpickedSizeWatch = true;
