@@ -137,6 +137,8 @@
   }
 
   function chooseSize(doc, name) {
+    if (root.__appaiNoteSizeChosen) root.__appaiNoteSizeChosen();
+    else root.__appaiSizeChosen = true;
     var wanted = String(name || "").trim().toLowerCase();
     var field = sizeField(doc) || doc;
     var radios = field.querySelectorAll('input[type="radio"]');

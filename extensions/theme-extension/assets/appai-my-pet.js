@@ -422,6 +422,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     for (var k = 0; k < sizes.length; k++) {
       if (availableInAllColors(sizes[k])) universal.push(sizes[k]);
     }
+    if (window.__appaiRequireSize && !window.__appaiSizeChosen) return;
     if (!universal.length) return; // no size exists in every colour — nothing sensible to default to
     var info = currentVariantInfo(root);
     if (info.sizeId && universal.indexOf(String(info.sizeId)) !== -1) return; // already universal — leave it
@@ -733,6 +734,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     var colours = allColorOptions(root);
     var sizes = allSizeOptions(root);
     var color = canonicalOption(colours, colorName);
+    if (!sizeName && window.__appaiRequireSize && !window.__appaiSizeChosen) return null;
     var size = canonicalOption(sizes, sizeName || 'M');
     if (findExactVariant(root, color, size)) {
       return { color: color, size: size, swapped: false };
@@ -1835,6 +1837,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return checkedProductOption('colour') || currentInlineColour() || (currentVariantInfo(root).colorName || '') || '';
     }
     function currentSizeName() {
+      if (window.__appaiRequireSize && !window.__appaiSizeChosen) return '';
       return checkedProductOption('size') || (currentVariantInfo(root).sizeId || '') || '';
     }
 
@@ -2449,7 +2452,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         state.designSwitchColour = colorName || '';
         state.designSwitchSize = sizeName || '';
         if (state.applyExactVariant && colorName) {
-          state.applyExactVariant(colorName, sizeName || fallbackSize || 'M');
+          var explicitSize = sizeName || fallbackSize || '';
+          if (explicitSize || !window.__appaiRequireSize || window.__appaiSizeChosen) {
+            state.applyExactVariant(colorName, explicitSize || 'M');
+          }
         }
         if (state.designTransition && state.designTransition.token === token) {
           state.designTransition.expectsRerender = !!(state.variantDispatchedAt && (Date.now() - state.variantDispatchedAt) < 300);
@@ -2839,6 +2845,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
 
       function applyExactVariant(colorName, sizeName) {
         if (!colorName) return null;
+        if (!sizeName && window.__appaiRequireSize && !window.__appaiSizeChosen) return colorName;
+        if (sizeName && window.__appaiNoteSizeChosen) window.__appaiNoteSizeChosen();
         var colours = allColorOptions(root);
         var sizes = allSizeOptions(root);
         var color = colorName;
@@ -2895,8 +2903,12 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       function selectRestoredVariant(storedRender, res) {
         if (window.__appaiVariantOnLoad) return restoredColour();
         var color = (storedRender && storedRender.colorName) || (res && res.colorName) || '';
-        var size = (storedRender && storedRender.sizeName) || 'M';
-        if (!color) return applyExactVariant(restoredColour(), 'M') || restoredColour();
+        var size = (storedRender && storedRender.sizeName) || (res && res.sizeName) || '';
+        if (!size && window.__appaiRequireSize && !window.__appaiSizeChosen) {
+          return color || restoredColour();
+        }
+        if (!size) size = 'M';
+        if (!color) return applyExactVariant(restoredColour(), size) || restoredColour();
         var pair = resolveSavedCombo(root, color, size);
         if (pair && pair.swapped) showSwapToast(pair);
         var useColor = pair ? pair.color : color;
@@ -5292,8 +5304,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var current = currentInlineColour();
       var same = current && String(current).trim().toLowerCase() === String(picked).trim().toLowerCase();
       if (!same) {
-        var size = currentSizeName() || 'M';
-        if (state.applyExactVariant) state.applyExactVariant(picked, size);
+        var size = currentSizeName();
+        if (!size && window.__appaiRequireSize && !window.__appaiSizeChosen) selectSwatch(picked);
+        else if (state.applyExactVariant) state.applyExactVariant(picked, size || 'M');
         else {
           var scrollY = window.scrollY;
           selectSwatch(picked);
@@ -7062,6 +7075,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function atcSelection() {
+      if (window.__appaiRequireSize && !window.__appaiSizeChosen) {
+        return { catalogId: '', colour: currentColourName() || '', sizeName: '' };
+      }
       var size = currentSizeName();
       var checked = checkedProductOption('colour');
       var colour = (state.inlineApplied && !state.reverted && state.selectedColour)
@@ -8544,7 +8560,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // (and seed the per-colour client cache with the preview we already have).
       var info = currentVariantInfo(root);
       state.swatchColor = info.colorName;
-      state.swatchSize = info.sizeId;
+      state.swatchSize = (window.__appaiRequireSize && !window.__appaiSizeChosen) ? null : info.sizeId;
       if (state.swatchColor && previewUrl && !state.previewUrlByColor[state.swatchColor]) {
         state.previewUrlByColor[state.swatchColor] = previewUrl;
       }
@@ -8628,6 +8644,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var status = body.querySelector('#appai-my-pet-status');
       var color = state.swatchColor;
       var size = state.swatchSize;
+      if (window.__appaiRequireSize && !window.__appaiSizeChosen && !size && allSizeOptions(root).length > 1) {
+        if (atcBtn) atcBtn.disabled = true;
+        if (status) status.textContent = 'Please choose a size';
+        return false;
+      }
       // BUG A — null-tolerant. findExactVariant with (null, null) returns
       // the first available variant for a single-variant product; (color,
       // null) works for colour-only products; (null, size) for size-only.
@@ -8663,6 +8684,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     function selectSize(body, sizeId) {
       if (!sizeId) return;
       state.swatchSize = sizeId;
+      if (window.__appaiNoteSizeChosen) window.__appaiNoteSizeChosen();
       var allBtns = body.querySelectorAll('[data-action="swatch-size"]');
       for (var i = 0; i < allBtns.length; i++) {
         if (String(allBtns[i].getAttribute('data-size')) === String(sizeId)) {
@@ -8847,6 +8869,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // tolerant per option now, and checkComboAvailable writes the correct
       // "colour X isn't available" / "size Y isn't available" / "product
       // isn't available" message if we come back empty.
+      if (window.__appaiRequireSize && !window.__appaiSizeChosen && !state.swatchSize && allSizeOptions(root).length > 1) {
+        if (status) status.textContent = 'Please choose a size';
+        if (btn) btn.disabled = false;
+        return;
+      }
       var exact = findExactVariant(root, state.swatchColor, state.swatchSize);
       if (!exact) {
         myPetLog(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
