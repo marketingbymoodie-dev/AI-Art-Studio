@@ -442,6 +442,9 @@ export async function recoverOrCreateInstallationFromSession(
       installedAt: new Date(),
     });
     console.log(`[shopify-token] Created installation via session exchange for ${shop}`);
+    void import("./garment-accordion-metafields").then(({ ensureGarmentAccordionDefinitions }) =>
+      ensureGarmentAccordionDefinitions(shop, created.accessToken),
+    ).catch((err) => console.warn("[garment-accordion] install:", err instanceof Error ? err.message : err));
     return { ok: true, accessToken: created.accessToken, installation: created };
   } catch (err: any) {
     if (err?.code === "23505") {

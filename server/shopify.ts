@@ -441,6 +441,9 @@ if (res.locals.shopify?.session?.shop) {
       }
 
       await registerCartScript(shop, access_token);
+      void import("./garment-accordion-metafields").then(({ ensureGarmentAccordionDefinitions }) =>
+        ensureGarmentAccordionDefinitions(shop, access_token),
+      ).catch((err) => console.warn("[garment-accordion] install:", err instanceof Error ? err.message : err));
       void ensureCreatorCheckoutWebhooks({ shop, accessToken: access_token }).catch((e: any) =>
         console.warn("[creator-webhooks] post-OAuth register failed:", e?.message || e),
       );

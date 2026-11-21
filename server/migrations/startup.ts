@@ -3636,9 +3636,13 @@ export async function runStartupMigrations(): Promise<void> {
   }
 
   try {
-    const { backfillGarmentAccordionMetafields } = await import("../garment-accordion-metafields");
+    const { backfillGarmentAccordionMetafields, ensureGarmentAccordionDefinitionsForAllShops } = await import("../garment-accordion-metafields");
+    const defs = await ensureGarmentAccordionDefinitionsForAllShops();
     const n = await backfillGarmentAccordionMetafields();
     applied++;
+    const failedDefs = defs.filter((row) => row.status === "failed");
+    console.log(`${tag} garment accordion definitions created=${defs.filter((row) => row.status === "created").length} present=${defs.filter((row) => row.status === "present").length} failed=${failedDefs.length}`);
+    for (const row of failedDefs) console.warn(`${tag} garment accordion definition ${row.shop} ${row.key}: ${row.error}`);
     console.log(`${tag} garment accordion metafields set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
   } catch (err: any) {
     errors++;

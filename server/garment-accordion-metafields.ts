@@ -79,53 +79,111 @@ function paragraphText(value: string | null | undefined): string {
   }
 }
 
+export type GarmentDefinitionResult = {
+  shop: string;
+  key: string;
+  status: "created" | "present" | "failed";
+  error?: string;
+};
+
+/** Admin access cannot be set to MERCHANT_READ_WRITE for these shops; Shopify
+ * keeps it PUBLIC_READ_WRITE. Storefront PUBLIC_READ is what the theme editor needs. */
+const DEFINITION_ACCESS = { storefront: "PUBLIC_READ" } as const;
+
+function errorText(errors: Array<{ message?: string; code?: string }>): string {
+  return errors.map((err) => err.message || err.code || "").filter(Boolean).join("; ");
+}
+
 /** Idempotent. Storefront read access is what lets the theme editor bind a dynamic source. */
-export async function ensureGarmentAccordionDefinitions(shop: string, token: string): Promise<void> {
+export async function ensureGarmentAccordionDefinitions(shop: string, token: string): Promise<GarmentDefinitionResult[]> {
+  const results: GarmentDefinitionResult[] = [];
   for (const definition of DEFINITIONS) {
+    const input = {
+      name: definition.name,
+      namespace: GARMENT_ACCORDION_NAMESPACE,
+      key: definition.key,
+      description: definition.description,
+      type: "rich_text_field",
+      ownerType: "PRODUCT",
+      pin: true,
+      access: DEFINITION_ACCESS,
+    };
     try {
       const created = await adminGql(shop, token, `
         mutation($definition: MetafieldDefinitionInput!) {
           metafieldDefinitionCreate(definition: $definition) {
+            createdDefinition { id }
+            userErrors { message code }
+          }
+        }
+      `, { definition: input });
+      const errors = created?.metafieldDefinitionCreate?.userErrors || [];
+      const taken = errors.some((err: { code?: string }) => err.code === "TAKEN");
+      const hard = errors.filter((err: { code?: string }) => err.code !== "TAKEN");
+      if (hard.length) {
+        const error = errorText(hard);
+        console.warn(`[garment-accordion] definition ${definition.key} for ${shop}:`, error);
+        results.push({ shop, key: definition.key, status: "failed", error });
+        continue;
+      }
+      if (created?.metafieldDefinitionCreate?.createdDefinition?.id) {
+        results.push({ shop, key: definition.key, status: "created" });
+        continue;
+      }
+      const updated = await adminGql(shop, token, `
+        mutation($definition: MetafieldDefinitionUpdateInput!) {
+          metafieldDefinitionUpdate(definition: $definition) {
+            updatedDefinition { id }
             userErrors { message code }
           }
         }
       `, {
         definition: {
-          name: definition.name,
           namespace: GARMENT_ACCORDION_NAMESPACE,
           key: definition.key,
-          description: definition.description,
-          type: "rich_text_field",
           ownerType: "PRODUCT",
+          name: definition.name,
           pin: true,
-          access: { admin: "MERCHANT_READ_WRITE", storefront: "PUBLIC_READ" },
+          access: DEFINITION_ACCESS,
         },
       });
-      const errors = created?.metafieldDefinitionCreate?.userErrors || [];
-      const hard = errors.filter((err: { code?: string }) => err.code !== "TAKEN");
-      if (hard.length) {
-        console.warn(`[garment-accordion] definition ${definition.key} for ${shop}:`, hard.map((err: { message?: string }) => err.message).join("; "));
+      const updateErrors = updated?.metafieldDefinitionUpdate?.userErrors || [];
+      if (updateErrors.length || !taken && !updated?.metafieldDefinitionUpdate?.updatedDefinition?.id) {
+        const error = errorText(updateErrors) || "definition was not created";
+        console.warn(`[garment-accordion] definition ${definition.key} for ${shop}:`, error);
+        results.push({ shop, key: definition.key, status: "failed", error });
+        continue;
       }
-      await adminGql(shop, token, `
-        mutation($definition: MetafieldDefinitionUpdateInput!) {
-          metafieldDefinitionUpdate(definition: $definition) {
-            userErrors { message }
-          }
-        }
-      `, {
-        definition: {
-          namespace: GARMENT_ACCORDION_NAMESPACE,
-          key: definition.key,
-          ownerType: "PRODUCT",
-          name: definition.name,
-          pin: true,
-          access: { admin: "MERCHANT_READ_WRITE", storefront: "PUBLIC_READ" },
-        },
-      });
+      results.push({ shop, key: definition.key, status: "present" });
     } catch (err) {
-      console.warn(`[garment-accordion] definition ${definition.key} for ${shop}:`, err instanceof Error ? err.message : err);
+      const error = err instanceof Error ? err.message : String(err);
+      console.warn(`[garment-accordion] definition ${definition.key} for ${shop}:`, error);
+      results.push({ shop, key: definition.key, status: "failed", error });
     }
   }
+  return results;
+}
+
+/** Every installed shop, including one that has not published a listing yet. */
+export async function ensureGarmentAccordionDefinitionsForAllShops(): Promise<GarmentDefinitionResult[]> {
+  const installations = await storage.getAllShopifyInstallations();
+  const results: GarmentDefinitionResult[] = [];
+  for (const installation of installations) {
+    const shop = normalizeMyshopifyShopDomain(installation.shopDomain);
+    if (!shop || installation.uninstalledAt || installation.status === "uninstalled") continue;
+    if (!installation.accessToken || installation.accessToken === "NEEDS_RECONNECT") {
+      results.push({ shop, key: "*", status: "failed", error: "no token" });
+      continue;
+    }
+    const ready = await ensureValidOfflineAccessToken(installation);
+    if (!ready.ok) {
+      console.warn(`[garment-accordion] ${shop} token: ${ready.error}`);
+      results.push({ shop, key: "*", status: "failed", error: ready.error || "no token" });
+      continue;
+    }
+    results.push(...await ensureGarmentAccordionDefinitions(shop, ready.accessToken));
+  }
+  return results;
 }
 
 export async function setGarmentAccordionMetafields(
@@ -218,8 +276,13 @@ export async function backfillGarmentAccordionMetafields(): Promise<{ set: numbe
       await setGarmentAccordionMetafields(shop, token, productId, row.description);
       set += 1;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/owner does not exist/i.test(message)) {
+        skipped += 1;
+        continue;
+      }
       failed += 1;
-      console.warn(`[garment-accordion] ${productId}:`, err instanceof Error ? err.message : err);
+      console.warn(`[garment-accordion] ${productId}:`, message);
     }
   }
   return { set, skipped, failed };
