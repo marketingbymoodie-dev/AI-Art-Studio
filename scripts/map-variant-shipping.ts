@@ -2,7 +2,7 @@
  * Map variant_shipping rows for one product type from the stored shipping class.
  * Does not refetch Printify. Confirms the generate gate for L / charcoal / JP.
  *
- * Usage: npx tsx scripts/map-variant-shipping.ts 54
+ * Usage: npx tsx scripts/map-variant-shipping.ts <productTypeId>
  */
 import { eq } from "drizzle-orm";
 import { shippingRates, variantShipping, productTypes } from "@shared/schema";
@@ -10,7 +10,11 @@ import { db, pool } from "../server/db";
 import { mapVariantShippingForProductTypes } from "../server/shipping-tables";
 import { lookupSizeCountryCoverage } from "../server/shipping-size-coverage";
 
-const productTypeId = Number(process.argv[2] || "54");
+const productTypeId = Number(process.argv[2]);
+if (!Number.isInteger(productTypeId) || productTypeId <= 0) {
+  console.error("Pass the product type id to map.");
+  process.exit(1);
+}
 
 async function main() {
   const host = new URL(process.env.DATABASE_URL || "postgres://localhost").hostname;

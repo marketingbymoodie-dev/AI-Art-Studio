@@ -3,6 +3,8 @@
  * refuses. Sets Clothing Tops > T-Shirts on the staging base product only.
  */
 import { and, eq, inArray } from "drizzle-orm";
+import { PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
+import { CATALOGUE_SHIRT_PROVIDER_ID, COMFORT_COLORS_BLUEPRINT_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
 import { customizerPages, productTypes } from "@shared/schema";
 import { db } from "./db";
 import { hasShopifyAppCredentials } from "./shopify-app-credentials";
@@ -84,15 +86,10 @@ export async function ensureSoftstyleProductCategory(): Promise<{ categoryId: st
   return ensureTshirtCategory(shop, page.baseProductId, installation.accessToken);
 }
 
-const SHELL_SHOPS: Record<number, string> = {
-  54: "ai-art-studio-staging.myshopify.com",
-  56: "h7epay-gh.myshopify.com",
-  58: "h7epay-gh.myshopify.com",
-};
-
 /**
  * Staging boot: put Clothing Tops > T-Shirts on the catalogue shells that
  * promote reads. Skips production. A category that is already set is left as it is.
+ * Shells are the Softstyle and Comfort Colors rows on the two catalogue shops.
  */
 export async function ensureCatalogueShellCategories(): Promise<void> {
   if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") return;
@@ -104,12 +101,16 @@ export async function ensureCatalogueShellCategories(): Promise<void> {
       productId: productTypes.shopifyProductId,
     })
     .from(productTypes)
-    .where(inArray(productTypes.id, [54, 56, 58]));
+    .where(and(
+      eq(productTypes.printifyProviderId, CATALOGUE_SHIRT_PROVIDER_ID),
+      inArray(productTypes.printifyBlueprintId, [SOFTSTYLE_BLUEPRINT_ID, COMFORT_COLORS_BLUEPRINT_ID]),
+      inArray(productTypes.shopifyShopDomain, [STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP]),
+      eq(productTypes.isPlatformCatalogRef, false),
+    ));
   const tokenByShop = new Map<string, string>();
   for (const row of rows) {
-    const expectedShop = SHELL_SHOPS[row.id];
     const shop = String(row.shop || "");
-    if (!expectedShop || shop !== expectedShop || !row.productId) continue;
+    if (!row.productId) continue;
     let token = tokenByShop.get(shop) || "";
     if (!token) {
       const installation = await storage.getShopifyInstallationByShop(shop);

@@ -107,7 +107,7 @@ async function trimTransparentMargins(file: Buffer): Promise<Buffer> {
   }
 }
 
-/** Lanczos onto the print canvas. Artwork keeps its aspect. Default stays centred. Types 56 and 58 pass "top". */
+/** Lanczos onto the print canvas. Artwork keeps its aspect. Default stays centred. Catalogue shirts pass "top". */
 export async function placeOnPrintCanvas(
   image: Buffer,
   canvas: PrintCanvas,

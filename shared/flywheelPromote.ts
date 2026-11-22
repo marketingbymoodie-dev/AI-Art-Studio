@@ -42,7 +42,7 @@ export function myPetTagForListing(tags: string[], enabled: boolean): string[] {
   return [...without, MY_PET_TAG];
 }
 
-/** Stable tag for one shirt type, e.g. aas-type-56. */
+/** Stable tag for one shirt type, e.g. aas-type-12. The number is that row's id. */
 export function catalogueTypeTag(productTypeId: number | null | undefined): string | null {
   const id = Number(productTypeId);
   if (!Number.isInteger(id) || id <= 0) return null;

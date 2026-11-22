@@ -4,28 +4,47 @@
  * "center" puts it in the middle of that area. Both stay horizontally centred.
  * Scale 1 is contain: the art grows until it touches the print area's limiting side.
  *
- * Types 56 and 58 use the chest placement only on the staging demo shop and
- * Petposterous. The same ids on any other shop keep the centred 85% mockup.
+ * Softstyle (Printify blueprint 145) and Comfort Colors (blueprint 706), both
+ * provider 99, use the chest placement only on the staging demo shop and
+ * Petposterous. A null shop, or the same blueprint on any other shop, keeps
+ * the centred 85% mockup. Product type ids are not part of this choice.
  */
 import { catalogueShopAllowed } from "./operatorCatalogue";
 
 export type VerticalPrintAnchor = "top" | "center";
 
-const CHEST_PLACEMENT_TYPE_IDS = new Set([56, 58]);
+/** Gildan Softstyle. Chest zone 11 × 14 in. */
+export const SOFTSTYLE_BLUEPRINT_ID = 145;
+/** Comfort Colors 1717. Chest zone 14 × 14 in. */
+export const COMFORT_COLORS_BLUEPRINT_ID = 706;
+export const CATALOGUE_SHIRT_PROVIDER_ID = 99;
 
-export function chestPlacementForShop(productTypeId: number, shop: string | null | undefined): boolean {
-  return CHEST_PLACEMENT_TYPE_IDS.has(Number(productTypeId)) && catalogueShopAllowed(shop);
+export type CatalogueGarmentRef = {
+  shop?: string | null;
+  blueprintId?: unknown;
+  providerId?: unknown;
+};
+
+export type CatalogueShirtKind = "softstyle" | "comfort";
+
+export function catalogueShirtKind(ref: CatalogueGarmentRef): CatalogueShirtKind | null {
+  if (!catalogueShopAllowed(ref.shop)) return null;
+  if (Number(ref.providerId) !== CATALOGUE_SHIRT_PROVIDER_ID) return null;
+  const blueprint = Number(ref.blueprintId);
+  if (blueprint === SOFTSTYLE_BLUEPRINT_ID) return "softstyle";
+  if (blueprint === COMFORT_COLORS_BLUEPRINT_ID) return "comfort";
+  return null;
 }
 
 export function verticalPrintAnchorOf(raw: unknown): VerticalPrintAnchor {
   return raw === "top" ? "top" : "center";
 }
 
-export function placementForProductType(productTypeId: number, shop?: string | null): {
+export function placementForCatalogueType(ref: CatalogueGarmentRef = {}): {
   anchor: VerticalPrintAnchor;
   mockupScale: number;
 } {
-  if (chestPlacementForShop(productTypeId, shop)) return { anchor: "top", mockupScale: 1 };
+  if (catalogueShirtKind(ref)) return { anchor: "top", mockupScale: 1 };
   return { anchor: "center", mockupScale: 0.85 };
 }
 
@@ -51,30 +70,27 @@ export type ChestPrintZone = { maxWidthIn: number; maxHeightIn: number };
 /**
  * Approved chest zones. Comfort Colors is 14 × 14 in. Gildan's print area is
  * only 12.84 in wide, so the width stays 11 in and the height is 14 in.
- * Every other type has no zone and keeps its existing placement.
+ * Every other blueprint has no default zone.
  */
-export const CHEST_ZONES: Record<number, ChestPrintZone> = {
-  56: { maxWidthIn: 11, maxHeightIn: 14 },
-  58: { maxWidthIn: 14, maxHeightIn: 14 },
+const BLUEPRINT_CHEST_ZONES: Record<CatalogueShirtKind, ChestPrintZone> = {
+  softstyle: { maxWidthIn: 11, maxHeightIn: 14 },
+  comfort: { maxWidthIn: 14, maxHeightIn: 14 },
 };
 
 /**
- * Stored inches win on a catalogue shop. Types 56 and 58 outside the staging
- * demo shop and Petposterous have no chest zone, even when inches are stored.
+ * Stored inches win for any type. The blueprint default applies only when this
+ * shop and blueprint are a catalogue shirt and both stored inches are empty.
+ * A null shop never receives the blueprint default.
  */
-export function chestZoneForProductType(
-  productTypeId: number,
-  storedWidth?: unknown,
-  storedHeight?: unknown,
-  shop?: string | null,
-): ChestPrintZone | null {
-  const width = Number(storedWidth);
-  const height = Number(storedHeight);
+export function chestZoneForCatalogueType(ref: CatalogueGarmentRef & {
+  storedWidth?: unknown;
+  storedHeight?: unknown;
+}): ChestPrintZone | null {
+  const width = Number(ref.storedWidth);
+  const height = Number(ref.storedHeight);
   const stored = width > 0 && height > 0 ? { maxWidthIn: width, maxHeightIn: height } : null;
-  if (CHEST_PLACEMENT_TYPE_IDS.has(Number(productTypeId))) {
-    if (!chestPlacementForShop(productTypeId, shop)) return null;
-    return stored ?? CHEST_ZONES[productTypeId] ?? null;
-  }
+  const kind = catalogueShirtKind(ref);
+  if (kind) return stored ?? BLUEPRINT_CHEST_ZONES[kind];
   return stored;
 }
 

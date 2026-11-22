@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 import sharp from "sharp";
 import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { placementForProductType } from "@shared/printPlacement";
+import { placementForCatalogueType } from "@shared/printPlacement";
 import { compareBlankScenes, newestUploadedBlank, noPhotographMessage } from "@shared/colourBlanks";
 import { catalogueCandidateChoices, designCandidates, designProducts, mockupLibraryColours, mockupPanels, productTypes } from "@shared/schema";
 import { db, pool } from "./db";
@@ -102,13 +102,9 @@ function decodeImage(imageBase64: string): Buffer {
 }
 
 export async function softstyleType(): Promise<{ id: number; name: string }> {
-  const [row] = await db
-    .select({ id: productTypes.id, name: productTypes.name })
-    .from(productTypes)
-    .where(eq(productTypes.id, 54))
-    .limit(1);
-  if (!row) return { id: 54, name: "Unisex Softstyle T-Shirt" };
-  return { id: row.id, name: row.name || "Unisex Softstyle T-Shirt" };
+  const { stagingSoftstyleType } = await import("./operatorCatalogue");
+  const row = await stagingSoftstyleType();
+  return row ?? { id: 0, name: "" };
 }
 
 export async function listScenes(productTypeId: number): Promise<SceneGroup[]> {
@@ -748,13 +744,17 @@ export async function reviewStoredScene(productTypeId: number, panelId: string):
   return cells;
 }
 
-async function placementForStoredType(productTypeId: number) {
+export async function placementForStoredType(productTypeId: number) {
   const [row] = await db
-    .select({ shop: productTypes.shopifyShopDomain })
+    .select({
+      shop: productTypes.shopifyShopDomain,
+      blueprintId: productTypes.printifyBlueprintId,
+      providerId: productTypes.printifyProviderId,
+    })
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
-  return placementForProductType(productTypeId, row?.shop);
+  return placementForCatalogueType(row ?? {});
 }
 
 export async function renderCandidateOnPanel(args: {
@@ -770,7 +770,7 @@ export async function renderCandidateOnPanel(args: {
    * from the white master, regardless of whether the requested colour has a
    * dedicated produced row. Originally shipped as a stopgap for a reported
    * "My Pet pre-composite shows the original design" symptom; offline tracing
-   * against staging data (render 25a79e80, panel Mockup_01, product type 54)
+   * against staging data (render 25a79e80, panel Mockup_01, staging Softstyle)
    * proved the produced path composites correctly in both modes — the
    * original-design visual was the catalogue-side mockupImages (written by
    * approveCandidateChoice from the ORIGINAL artwork, uploaded to Shopify
@@ -783,7 +783,7 @@ export async function renderCandidateOnPanel(args: {
   forceRecolour?: boolean;
   /** Publish path. Uses an uploaded photograph and never recolours the white master. */
   uploadedOnly?: boolean;
-  /** Omit to use this type's placement. Types 56 and 58 are full-size and top-anchored on the catalogue shops. */
+  /** Omit to use this type's placement. Catalogue shirts (blueprint 145 or 706, provider 99) are full-size and top-anchored. */
   scale?: number;
   anchor?: "top" | "center";
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {

@@ -922,14 +922,17 @@ export const productTypes = pgTable("product_types", {
    */
   printSidesEnabled: boolean("print_sides_enabled"),
   /**
-   * Reserved per-type override. The column default stays "center" so types
-   * other than 56 and 58 do not move when it is added. Those two types are
-   * top-anchored in placementForProductType until this column is backfilled.
+   * Reserved per-type override. The column default stays "center". Catalogue
+   * Softstyle (blueprint 145) and Comfort Colors (blueprint 706), provider 99,
+   * stay top-anchored in placementForCatalogueType until an operator choice
+   * is stored here. A stored "center" is still the column default, so runtime
+   * does not treat it as that choice.
    */
   printVerticalAnchor: text("print_vertical_anchor").notNull().default("center"),
   /**
    * Maximum design size inside the front print area, in inches. Null means
-   * the art may fill the whole print area. Types 56 and 58 store a chest zone.
+   * the art may fill the whole print area, unless the shop and blueprint are
+   * a catalogue shirt (145 or 706, provider 99), which uses that shirt's zone.
    */
   printChestWidthIn: decimal("print_chest_width_in", { precision: 5, scale: 2 }),
   printChestHeightIn: decimal("print_chest_height_in", { precision: 5, scale: 2 }),

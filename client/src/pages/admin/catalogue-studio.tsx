@@ -58,6 +58,7 @@ type PendingCandidate = {
   choice: { panelId: string | null; selectedColors: TickedColour[]; artworkPath: string | null };
   recentScenes: string[];
   productTypeId: number;
+  sceneRecolourFromLibrary?: boolean;
   productTypeName: string;
   productTypes?: Array<{ id: number; name: string }>;
   publishTypes?: Array<{
@@ -113,6 +114,7 @@ function offeredColours(
     colourTickMode?: string;
     colors: Array<{ name: string; hex: string; missingHex?: boolean; hasProducedBlank?: boolean; inUseBlank?: "produced" | "white-master" | null }>;
     productTypeId: number;
+    sceneRecolourFromLibrary?: boolean;
   } | undefined,
   scene: SceneGroup | undefined,
 ): OfferedColour[] {
@@ -133,7 +135,7 @@ function offeredColours(
       };
     });
   }
-  return sceneColours(scene, data.colors, data.productTypeId !== 54);
+  return sceneColours(scene, data.colors, data.sceneRecolourFromLibrary === true);
 }
 
 function sceneColours(scene: SceneGroup | undefined, fallback: Array<{ name: string; hex: string }>, fromLibrary = false) {
@@ -227,7 +229,7 @@ export default function CatalogueStudioPage() {
   const platform = useQuery<{ defaultProductTypeId?: number }>({
     queryKey: ["/api/platform/admin/status"],
   });
-  const [studioTypeId, setStudioTypeId] = useState(54);
+  const [studioTypeId, setStudioTypeId] = useState(0);
   const [typePinned, setTypePinned] = useState(false);
   useEffect(() => {
     if (typePinned) return;
@@ -239,9 +241,11 @@ export default function CatalogueStudioPage() {
     : `/api/platform/catalogue-studio/pending?productTypeId=${studioTypeId}`;
   const candidate = useQuery<PendingCandidate>({
     queryKey: [pendingKey],
+    enabled: studioTypeId > 0,
   });
   const panels = useQuery<{ scenes: SceneGroup[] }>({
     queryKey: ["/api/platform/catalogue-studio/panels", studioTypeId],
+    enabled: studioTypeId > 0,
     queryFn: async () => {
       const res = await fetch(`/api/platform/catalogue-studio/panels?productTypeId=${studioTypeId}`, { credentials: "include" });
       if (!res.ok) throw new Error("Could not load scenes");
@@ -262,7 +266,7 @@ export default function CatalogueStudioPage() {
   const openCandidateId = requested || (candidate.data?.id && candidate.data.id !== "pending-bed-etiquette" ? candidate.data.id : "");
   const published = useQuery<{ designProductId: string | null; myPetEnabled?: boolean | null }>({
     queryKey: ["/api/platform/catalogue-studio/design-colours", openCandidateId, studioTypeId],
-    enabled: Boolean(openCandidateId),
+    enabled: Boolean(openCandidateId) && studioTypeId > 0,
     queryFn: async () => {
       const params = new URLSearchParams({ candidateId: openCandidateId, productTypeId: String(studioTypeId) });
       const res = await fetch(`/api/platform/catalogue-studio/design-colours?${params}`, { credentials: "include" });

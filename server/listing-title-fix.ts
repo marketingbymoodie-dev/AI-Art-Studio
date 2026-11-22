@@ -1,10 +1,11 @@
 /**
  * One-time title correction for the two published Husky listings.
- * Type 56's garment word becomes "Softstyle Tee". Titles use an em dash.
- * Handles, descriptions, and variants are left as they are.
+ * Petposterous Softstyle (blueprint 145, provider 99) uses "Softstyle Tee".
+ * Titles use an em dash. Handles, descriptions, and variants are left as they are.
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { listingTitle, normaliseDesignName } from "@shared/listingCopy";
+import { CATALOGUE_SHIRT_PROVIDER_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
 import { designCandidates, designProducts, productTypes } from "@shared/schema";
 import { db } from "./db";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
@@ -14,18 +15,15 @@ import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backo
 const SHOP = "h7epay-gh.myshopify.com";
 const CANDIDATE_ID = "fe24de4e-c254-4a0d-a82c-6011b22c39eb";
 const DESIGN_NAME = "Husky — Collector's Card";
-const SOFTSTYLE_TYPE_ID = 56;
 const SOFTSTYLE_WORD = "Softstyle Tee";
 
 const LISTINGS = [
   {
-    productTypeId: 56,
     shopifyProductId: "16484333944913",
     handle: "husky-collector-s-card-t-shirt-softstyle",
     title: "Husky — Collector's Card Softstyle Tee",
   },
   {
-    productTypeId: 58,
     shopifyProductId: "16484235608145",
     handle: "husky-collector-s-card",
     title: "Husky — Collector's Card T-Shirt",
@@ -83,8 +81,9 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
     .update(productTypes)
     .set({ listingGarmentWord: SOFTSTYLE_WORD })
     .where(and(
-      eq(productTypes.id, SOFTSTYLE_TYPE_ID),
       eq(productTypes.shopifyShopDomain, SHOP),
+      eq(productTypes.printifyBlueprintId, SOFTSTYLE_BLUEPRINT_ID),
+      eq(productTypes.printifyProviderId, CATALOGUE_SHIRT_PROVIDER_ID),
       eq(productTypes.listingGarmentWord, "T-Shirt"),
     ));
 
@@ -123,9 +122,10 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
     const before = row?.title || "";
     const garmentWord = String(row?.garmentWord || "").trim();
     const expected = listingTitle(DESIGN_NAME, garmentWord);
-    if (!row || row.shop !== SHOP || row.productTypeId !== spec.productTypeId || row.handle !== spec.handle || expected !== spec.title) {
+    const loggedTypeId = row?.productTypeId ?? 0;
+    if (!row || row.shop !== SHOP || row.handle !== spec.handle || expected !== spec.title) {
       changes.push({
-        productTypeId: spec.productTypeId,
+        productTypeId: loggedTypeId,
         shopifyProductId: spec.shopifyProductId,
         handle: row?.handle || spec.handle,
         before,
@@ -137,7 +137,7 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
     }
     if (!token) {
       changes.push({
-        productTypeId: spec.productTypeId,
+        productTypeId: loggedTypeId,
         shopifyProductId: spec.shopifyProductId,
         handle: spec.handle,
         before,
@@ -153,7 +153,7 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
     const liveHandle = String(current?.product?.handle || "");
     if (liveHandle !== spec.handle || !PREVIOUS_TITLES.has(liveTitle)) {
       changes.push({
-        productTypeId: spec.productTypeId,
+        productTypeId: loggedTypeId,
         shopifyProductId: spec.shopifyProductId,
         handle: liveHandle || spec.handle,
         before: liveTitle || before,
@@ -175,7 +175,7 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
       const errors = updated?.productUpdate?.userErrors || [];
       if (errors.length) {
         changes.push({
-          productTypeId: spec.productTypeId,
+          productTypeId: loggedTypeId,
           shopifyProductId: spec.shopifyProductId,
           handle: spec.handle,
           before: liveTitle,
@@ -188,7 +188,7 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
       const written = updated?.productUpdate?.product;
       if (written?.handle !== spec.handle || written?.title !== spec.title) {
         changes.push({
-          productTypeId: spec.productTypeId,
+          productTypeId: loggedTypeId,
           shopifyProductId: spec.shopifyProductId,
           handle: String(written?.handle || liveHandle),
           before: liveTitle,
@@ -206,7 +206,7 @@ export async function backfillHuskyListingTitles(): Promise<ListingTitleChange[]
       ));
     }
     changes.push({
-      productTypeId: spec.productTypeId,
+      productTypeId: loggedTypeId,
       shopifyProductId: spec.shopifyProductId,
       handle: spec.handle,
       before: liveTitle,

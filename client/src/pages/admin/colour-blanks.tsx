@@ -288,9 +288,7 @@ export default function ColourBlanksPage() {
     queryKey: ["/api/platform/admin/status"],
   });
   const [pickedType, setPickedType] = useState<number | null>(null);
-  const stagingShop = "ai-art-studio-staging.myshopify.com";
-  const stagingDefault = !platform.data?.catalogueShop || platform.data.catalogueShop === stagingShop;
-  const typeId = pickedType ?? platform.data?.defaultProductTypeId ?? (platform.isFetched && stagingDefault ? 54 : 0);
+  const typeId = pickedType ?? platform.data?.defaultProductTypeId ?? 0;
   const [drafts, setDrafts] = useState<Record<string, Colour>>({});
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [historyUrl, setHistoryUrl] = useState<Record<string, string>>({});

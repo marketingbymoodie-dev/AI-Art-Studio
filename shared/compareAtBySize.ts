@@ -1,9 +1,10 @@
 /**
  * Optional crossed-out price for one product type, keyed by size name.
  * An empty value means that size has no compare-at.
- * Type 54 keeps the old Softstyle table. Other types start empty.
+ * The staging demo Softstyle (blueprint 145, provider 99, staging shop) keeps
+ * this table. Petposterous and every other type start empty.
  */
-export const TYPE_54_COMPARE_AT_BY_SIZE: Readonly<Record<string, string>> = {
+export const STAGING_SOFTSTYLE_COMPARE_AT_BY_SIZE: Readonly<Record<string, string>> = {
   XS: "34.95",
   S: "34.95",
   M: "34.95",
@@ -13,7 +14,7 @@ export const TYPE_54_COMPARE_AT_BY_SIZE: Readonly<Record<string, string>> = {
   "3XL": "39.50",
 };
 
-export const TYPE_54_COMPARE_AT_JSON = JSON.stringify(TYPE_54_COMPARE_AT_BY_SIZE);
+export const STAGING_SOFTSTYLE_COMPARE_AT_JSON = JSON.stringify(STAGING_SOFTSTYLE_COMPARE_AT_BY_SIZE);
 
 export function formatCompareAtPrice(value: unknown): string {
   if (value == null) return "";

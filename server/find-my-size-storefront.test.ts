@@ -60,7 +60,7 @@ function button(root: ParentNode, name: string): HTMLButtonElement {
 }
 
 describe("storefront find my size", () => {
-  it("suggests 2XL for 185 cm / 85 kg relaxed on type 58", () => {
+  it("suggests 2XL for 185 cm / 85 kg relaxed on the Comfort Colors guide", () => {
     expect(finder.suggest(guide, 185, 85, "relaxed")).toBe("2XL");
   });
 

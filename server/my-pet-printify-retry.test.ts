@@ -35,7 +35,7 @@ describe("My Pet Printify retry", () => {
     expect(petFailureIsRetryable("my-pet design job-1 has no stored edited artwork")).toBe(false);
     expect(petFailureIsRetryable("woodcut has no print path")).toBe(false);
     expect(petFailureIsRetryable("my-pet design job-1 has no productTypeId")).toBe(false);
-    expect(petFailureIsRetryable("merchant for product type 54 missing Printify credentials")).toBe(false);
+    expect(petFailureIsRetryable("merchant for product type 81 missing Printify credentials")).toBe(false);
     expect(petFailureIsRetryable("tenant check failed: job shop does not match")).toBe(false);
     expect(planMyPetRetry(0, false)).toEqual({ status: "failed", attempt: 1, delayMs: null });
   });

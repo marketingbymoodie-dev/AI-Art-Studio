@@ -83,7 +83,7 @@ const PHOTO_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const STOREFRONT_PREVIEW_TTL_SECONDS = 30 * 24 * 60 * 60;
 const EMAIL_PREVIEW_RETENTION_MS = STOREFRONT_PREVIEW_TTL_SECONDS * 1000;
 
-/** Composite on the design's own product type. Staging with no type stays on type 54. */
+/** Composite on the design's own product type. Staging with no type uses the demo Softstyle row. */
 async function composeProductType(shop: string, shopifyProductId: string): Promise<{ id: number; name: string }> {
   const [design] = await db
     .select({ productTypeId: designProducts.productTypeId })
@@ -99,7 +99,10 @@ async function composeProductType(shop: string, shopifyProductId: string): Promi
       .limit(1);
     if (row) return row;
   }
-  if (catalogueShopDomain(shop) === STAGING_CATALOGUE_SHOP) return softstyleType();
+  if (catalogueShopDomain(shop) === STAGING_CATALOGUE_SHOP) {
+    const row = await softstyleType();
+    if (row.id > 0) return row;
+  }
   throw new Error("This product has no product type, so the pet render cannot choose a garment.");
 }
 

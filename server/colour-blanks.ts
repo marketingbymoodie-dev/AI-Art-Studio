@@ -15,7 +15,7 @@ import {
   type BlankFinish,
 } from "@shared/colourBlanks";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
-import { chestZoneForProductType, type ChestPrintZone } from "@shared/printPlacement";
+import { chestZoneForCatalogueType, COMFORT_COLORS_BLUEPRINT_ID, CATALOGUE_SHIRT_PROVIDER_ID, type ChestPrintZone } from "@shared/printPlacement";
 import { normaliseShopifyBaseColor, swatchBaseColorName } from "@shared/flywheelPromote";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { designCandidates, designProducts, designs, mockupLibraryColours, orders, productTypes } from "@shared/schema";
@@ -129,14 +129,14 @@ export function resolvedShopifyBaseColor(colourName: string, stored: Map<string,
   return swatchBaseColorName(colourName);
 }
 
-async function seedSoftstyleColours(): Promise<void> {
+async function seedSoftstyleColours(productTypeId: number): Promise<void> {
   const [count] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(mockupLibraryColours)
-    .where(eq(mockupLibraryColours.productTypeId, 54));
+    .where(eq(mockupLibraryColours.productTypeId, productTypeId));
   if (Number(count?.n || 0) > 0) return;
   await db.insert(mockupLibraryColours).values(SOFTSTYLE_COLOUR_SEED.map((row) => ({
-    productTypeId: 54,
+    productTypeId,
     name: row.name,
     printifyOptionId: row.printifyOptionId,
     printifyTitle: row.printifyTitle,
@@ -148,8 +148,6 @@ async function seedSoftstyleColours(): Promise<void> {
   }))).onConflictDoNothing();
 }
 
-const COMFORT_BLUEPRINT = 706;
-const COMFORT_PROVIDER = 99;
 
 async function printifyGet(path: string): Promise<unknown | null> {
   const found = await db.execute(sql`
@@ -250,6 +248,8 @@ export async function chestFitForProductType(productTypeId: number): Promise<
     .select({
       name: productTypes.name,
       shop: productTypes.shopifyShopDomain,
+      blueprintId: productTypes.printifyBlueprintId,
+      providerId: productTypes.printifyProviderId,
       positions: productTypes.placeholderPositions,
       width: productTypes.printChestWidthIn,
       height: productTypes.printChestHeightIn,
@@ -257,7 +257,13 @@ export async function chestFitForProductType(productTypeId: number): Promise<
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
-  const zone = chestZoneForProductType(productTypeId, row?.width, row?.height, row?.shop);
+  const zone = chestZoneForCatalogueType({
+    shop: row?.shop,
+    blueprintId: row?.blueprintId,
+    providerId: row?.providerId,
+    storedWidth: row?.width,
+    storedHeight: row?.height,
+  });
   if (!zone) return null;
   const canvas = printCanvasFromStoredPlaceholders(row?.positions, row?.name || `type ${productTypeId}`);
   return {
@@ -279,17 +285,18 @@ async function seedGarmentDyedColours(productTypeId: number): Promise<void> {
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
   if (!typeRow) return;
-  const garmentDyed = typeRow.blueprint === COMFORT_BLUEPRINT || /1717|garment-dyed/i.test(typeRow.name);
+  const garmentDyed = typeRow.blueprint === COMFORT_COLORS_BLUEPRINT_ID
+    && Number(typeRow.provider || CATALOGUE_SHIRT_PROVIDER_ID) === CATALOGUE_SHIRT_PROVIDER_ID;
   if (!garmentDyed) return;
   const [count] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(mockupLibraryColours)
     .where(eq(mockupLibraryColours.productTypeId, productTypeId));
   if (Number(count?.n || 0) > 0) return;
-  const provider = typeRow.provider || COMFORT_PROVIDER;
+  const provider = typeRow.provider || CATALOGUE_SHIRT_PROVIDER_ID;
   const [blueprint, variants] = await Promise.all([
-    printifyGet(`/catalog/blueprints/${typeRow.blueprint || COMFORT_BLUEPRINT}.json`),
-    printifyGet(`/catalog/blueprints/${typeRow.blueprint || COMFORT_BLUEPRINT}/print_providers/${provider}/variants.json?show-out-of-stock=1`),
+    printifyGet(`/catalog/blueprints/${typeRow.blueprint}.json`),
+    printifyGet(`/catalog/blueprints/${typeRow.blueprint}/print_providers/${provider}/variants.json?show-out-of-stock=1`),
   ]);
   const colours = coloursFromCatalog(blueprint, variants);
   if (!colours.length) return;
@@ -545,12 +552,15 @@ export async function assertBlankLibraryWritable(productTypeId: number): Promise
 
 export async function prepareColourBlanks(productTypeId: number): Promise<void> {
   await ensureColourBlankTable();
-  if (productTypeId === 54) await seedSoftstyleColours();
-  else {
-    await seedGarmentDyedColours(productTypeId).catch((err) => {
-      console.warn("[colour-blanks] garment colour seed skipped:", (err as Error).message);
-    });
+  const { stagingSoftstyleType } = await import("./operatorCatalogue");
+  const softstyle = await stagingSoftstyleType();
+  if (softstyle && productTypeId === softstyle.id) {
+    await seedSoftstyleColours(softstyle.id);
+    return;
   }
+  await seedGarmentDyedColours(productTypeId).catch((err) => {
+    console.warn("[colour-blanks] garment colour seed skipped:", (err as Error).message);
+  });
 }
 
 export async function colourBlankGrid(productTypeId: number, options?: { restrictToShop?: string | null }) {
@@ -724,7 +734,7 @@ export async function colourBlankGrid(productTypeId: number, options?: { restric
   for (const scene of scenes) for (const cell of scene.cells) delete (cell as { storagePath?: string }).storagePath;
 
   return {
-    productType: { id: productTypeId, name: typeRow?.name || (productTypeId === 54 ? "Unisex Softstyle T-Shirt" : `Type ${productTypeId}`) },
+    productType: { id: productTypeId, name: typeRow?.name || `Type ${productTypeId}` },
     sharedFrom: libraryId === productTypeId ? null : { id: libraryId, name: libraryRow?.name || `Type ${libraryId}` },
     types: visible.map((row) => ({ id: row.id, name: row.name })),
     calibration: calibrated && front ? {

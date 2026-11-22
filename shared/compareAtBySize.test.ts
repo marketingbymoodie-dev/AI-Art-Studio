@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  TYPE_54_COMPARE_AT_BY_SIZE,
+  STAGING_SOFTSTYLE_COMPARE_AT_BY_SIZE,
   compareAtForSize,
   matchedSizeName,
   normaliseCompareAtBySize,
@@ -8,8 +8,8 @@ import {
 } from "./compareAtBySize";
 
 describe("compare-at by size", () => {
-  it("keeps the old type 54 Softstyle compare-at prices", () => {
-    expect(TYPE_54_COMPARE_AT_BY_SIZE).toEqual({
+  it("keeps the staging demo Softstyle compare-at prices", () => {
+    expect(STAGING_SOFTSTYLE_COMPARE_AT_BY_SIZE).toEqual({
       XS: "34.95",
       S: "34.95",
       M: "34.95",
@@ -18,7 +18,7 @@ describe("compare-at by size", () => {
       "2XL": "39.50",
       "3XL": "39.50",
     });
-    expect(parseCompareAtBySize(JSON.stringify(TYPE_54_COMPARE_AT_BY_SIZE)).M).toBe("34.95");
+    expect(parseCompareAtBySize(JSON.stringify(STAGING_SOFTSTYLE_COMPARE_AT_BY_SIZE)).M).toBe("34.95");
   });
 
   it("treats a blank size as no crossed-out price", () => {

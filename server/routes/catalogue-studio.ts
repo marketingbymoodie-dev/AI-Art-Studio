@@ -30,8 +30,8 @@ import {
   operatorCatalogueForShop,
   PETPOSTEROUS_CATALOGUE_SHOP,
   STAGING_CATALOGUE_SHOP,
-  STAGING_FALLBACK_PRODUCT_TYPE_ID,
 } from "@shared/operatorCatalogue";
+import { CATALOGUE_SHIRT_PROVIDER_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
 import { parseCompareAtBySize } from "@shared/compareAtBySize";
 import { coloursStillOffered, filterPricesToSizes, offeredAxes } from "@shared/variantSelection";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
@@ -55,7 +55,6 @@ import {
   reviewStoredScene,
   saveArtwork,
   saveChoice,
-  softstyleType,
   stageImportFile,
   commitStagedImport,
 } from "../mockup-library-store";
@@ -86,7 +85,8 @@ export async function shippingPricesBySize(productTypeId?: number): Promise<{
   const empty = { sizes: [], pricesBySize: {}, compareAtBySize: {} };
   const omitted = productTypeId == null;
   const explicit = Number(productTypeId);
-  const typeId = omitted ? STAGING_FALLBACK_PRODUCT_TYPE_ID : explicit;
+  const { stagingSoftstyleType } = await import("../operatorCatalogue");
+  const typeId = omitted ? (await stagingSoftstyleType())?.id ?? 0 : explicit;
   if (!Number.isInteger(typeId) || typeId <= 0) return empty;
   const { db } = await import("../db");
   const [typeRow] = await db
@@ -253,7 +253,7 @@ async function candidateIdFor(res: Response, value: unknown, requestShop: string
   return resolved.id;
 }
 
-/** The selected type when this shop owns it. Staging with no selection stays on type 54. */
+/** The selected type when this shop owns it. Staging with no selection uses the demo Softstyle row. */
 async function studioGarment(raw: unknown, requestShop: string | null | undefined): Promise<{ id: number; name: string }> {
   const profile = operatorCatalogueForShop(requestShop);
   const id = Number(raw);
@@ -271,10 +271,8 @@ async function studioGarment(raw: unknown, requestShop: string | null | undefine
       .where(eq(productTypes.id, id))
       .limit(1);
     const owned = Boolean(row && !row.platformRef && catalogueShopDomain(row.shop) === profile.shop);
-    const stagingFallback = profile.fallbackProductTypeId != null && id === profile.fallbackProductTypeId;
-    if (row && (owned || stagingFallback)) return { id: row.id, name: row.name };
+    if (row && owned) return { id: row.id, name: row.name };
   }
-  if (profile.fallbackProductTypeId) return softstyleType();
   const fallbackId = await defaultCatalogueTypeId(requestShop);
   if (!fallbackId) return { id: 0, name: "" };
   const [row] = await db
@@ -301,9 +299,7 @@ async function ownedStudioTypeId(raw: unknown, requestShop: string | null | unde
     .where(eq(productTypes.id, id))
     .limit(1);
   if (!row || row.platformRef) return null;
-  const owned = catalogueShopDomain(row.shop) === profile.shop;
-  const stagingFallback = profile.fallbackProductTypeId != null && id === profile.fallbackProductTypeId;
-  return owned || stagingFallback ? row.id : null;
+  return catalogueShopDomain(row.shop) === profile.shop ? row.id : null;
 }
 
 type StudioLibraryColour = {
@@ -504,6 +500,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           variantMap: productTypes.variantMap,
           frameColors: productTypes.frameColors,
           shop: productTypes.shopifyShopDomain,
+          blueprint: productTypes.printifyBlueprintId,
+          provider: productTypes.printifyProviderId,
           merchantId: productTypes.merchantId,
         })
         .from(productTypes)
@@ -523,8 +521,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         for (const color of scene.colours) colourByName.set(color.name, { name: color.name, hex: color.hex });
       }
       const sceneColours = sortCatalogueColours([...colourByName.values()]);
-      const usingBlanks = blankColours.length > 0 && !(fixture && garment.id === 54);
-      const rawColours = fixture && garment.id === 54
+      const fixtureSoftstyle = fixture
+        && catalogueShopDomain(typeRow?.shop) === STAGING_CATALOGUE_SHOP
+        && Number(typeRow?.blueprint) === SOFTSTYLE_BLUEPRINT_ID
+        && Number(typeRow?.provider) === CATALOGUE_SHIRT_PROVIDER_ID;
+      const usingBlanks = blankColours.length > 0 && !fixtureSoftstyle;
+      const rawColours = fixtureSoftstyle
         ? PENDING_CANDIDATE.colors
         : usingBlanks ? blankColours : sceneColours;
       const coloursForStudio = coloursStillOffered(rawColours, parseSizes(typeRow?.frameColors), parseIdList(typeRow?.selectedColorIds));
@@ -576,7 +578,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         spendLines: spend.lines,
         colors: coloursForStudio,
         colourTickMode,
-        selectedColor: fixture && garment.id === 54 ? PENDING_CANDIDATE.selectedColor : coloursForStudio[0]?.name || "White",
+        selectedColor: fixtureSoftstyle ? PENDING_CANDIDATE.selectedColor : coloursForStudio[0]?.name || "White",
+        sceneRecolourFromLibrary: !(
+          catalogueShopDomain(typeRow?.shop) === STAGING_CATALOGUE_SHOP
+          && Number(typeRow?.blueprint) === SOFTSTYLE_BLUEPRINT_ID
+          && Number(typeRow?.provider) === CATALOGUE_SHIRT_PROVIDER_ID
+        ),
         productTypes: visibleTypes.map((row) => ({ id: row.id, name: row.name })),
         publishTypes,
         catalogueShop: profile.shop,

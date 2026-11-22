@@ -67,7 +67,7 @@ describe("listing copy", () => {
   });
 
   it("leaves a published type closed and keeps a type created later open", () => {
-    expect(openPublishTypeIds([56, 58, 70], [58])).toEqual([56, 70]);
+    expect(openPublishTypeIds([81, 82, 70], [82])).toEqual([81, 70]);
   });
 
   it("counts parallel artwork against sequential listings", () => {

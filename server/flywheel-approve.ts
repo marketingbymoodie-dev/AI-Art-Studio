@@ -9,10 +9,10 @@ import { catalogueShopAllowed } from "@shared/operatorCatalogue";
 import { designCandidates, productTypes } from "@shared/schema";
 import { catalogueListingIsFresh, catalogueTruthIsSentence, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { db } from "./db";
-import { placementForProductType } from "@shared/printPlacement";
 import { buildFlywheelPrintFile, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import {
   approveCandidateChoice,
+  placementForStoredType,
   readChoice,
   readLibraryObject,
   softstyleType,
@@ -91,7 +91,7 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     checked.artStyle,
     source,
     canvas,
-    placementForProductType(typeRow.id, shop).anchor,
+    (await placementForStoredType(typeRow.id)).anchor,
     await chestFitForProductType(typeRow.id),
   );
 

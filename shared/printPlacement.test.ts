@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
-import { chestZoneForProductType, chestZoneRect, inkOrigin, placementForProductType, verticalPrintAnchorOf } from "./printPlacement";
+import { chestZoneForCatalogueType, chestZoneRect, inkOrigin, placementForCatalogueType, verticalPrintAnchorOf } from "./printPlacement";
 
 describe("print placement", () => {
   const area = { areaLeft: 100, areaTop: 200, areaWidth: 400, areaHeight: 500, inkWidth: 360, inkHeight: 180 };
@@ -16,22 +16,22 @@ describe("print placement", () => {
     expect(inkOrigin({ ...area, anchor: "center" })).toEqual({ left: 120, top: 360 });
   });
 
-  it("applies the chest placement only to types 56 and 58 on the catalogue shops", () => {
-    expect(placementForProductType(56, PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ anchor: "top", mockupScale: 1 });
-    expect(placementForProductType(58, STAGING_CATALOGUE_SHOP)).toEqual({ anchor: "top", mockupScale: 1 });
-    expect(placementForProductType(54, STAGING_CATALOGUE_SHOP)).toEqual({ anchor: "center", mockupScale: 0.85 });
-    expect(placementForProductType(56, "other-merchant.myshopify.com")).toEqual({ anchor: "center", mockupScale: 0.85 });
-    expect(placementForProductType(58)).toEqual({ anchor: "center", mockupScale: 0.85 });
-    expect(placementForProductType(12)).toEqual({ anchor: "center", mockupScale: 0.85 });
+  it("applies the chest placement to blueprint 145 and 706 on the catalogue shops", () => {
+    expect(placementForCatalogueType({ shop: PETPOSTEROUS_CATALOGUE_SHOP, blueprintId: 145, providerId: 99 })).toEqual({ anchor: "top", mockupScale: 1 });
+    expect(placementForCatalogueType({ shop: STAGING_CATALOGUE_SHOP, blueprintId: 706, providerId: 99 })).toEqual({ anchor: "top", mockupScale: 1 });
+    expect(placementForCatalogueType({ shop: null, blueprintId: 145, providerId: 99 })).toEqual({ anchor: "center", mockupScale: 0.85 });
+    expect(placementForCatalogueType({ shop: "other-merchant.myshopify.com", blueprintId: 706, providerId: 99 })).toEqual({ anchor: "center", mockupScale: 0.85 });
+    expect(placementForCatalogueType({ shop: STAGING_CATALOGUE_SHOP, blueprintId: 145, providerId: 1 })).toEqual({ anchor: "center", mockupScale: 0.85 });
+    expect(placementForCatalogueType()).toEqual({ anchor: "center", mockupScale: 0.85 });
   });
 
-  it("keeps the approved chest zone on types 56 and 58 only on the catalogue shops", () => {
-    expect(chestZoneForProductType(58, undefined, undefined, PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
-    expect(chestZoneForProductType(56, undefined, undefined, STAGING_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 11, maxHeightIn: 14 });
-    expect(chestZoneForProductType(54, undefined, undefined, STAGING_CATALOGUE_SHOP)).toBeNull();
-    expect(chestZoneForProductType(58, "14.00", "14.00", PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
-    expect(chestZoneForProductType(58, "14.00", "14.00", "other-merchant.myshopify.com")).toBeNull();
-    expect(chestZoneForProductType(54, null, null)).toBeNull();
+  it("uses the blueprint chest zone only for those shirts, and stored inches on any other row", () => {
+    expect(chestZoneForCatalogueType({ shop: PETPOSTEROUS_CATALOGUE_SHOP, blueprintId: 706, providerId: 99 })).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
+    expect(chestZoneForCatalogueType({ shop: STAGING_CATALOGUE_SHOP, blueprintId: 145, providerId: 99 })).toEqual({ maxWidthIn: 11, maxHeightIn: 14 });
+    expect(chestZoneForCatalogueType({ shop: null, blueprintId: 145, providerId: 99 })).toBeNull();
+    expect(chestZoneForCatalogueType({ shop: PETPOSTEROUS_CATALOGUE_SHOP, blueprintId: 706, providerId: 99, storedWidth: "14.00", storedHeight: "14.00" })).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
+    expect(chestZoneForCatalogueType({ shop: null, blueprintId: 706, providerId: 99, storedWidth: "10", storedHeight: "12" })).toEqual({ maxWidthIn: 10, maxHeightIn: 12 });
+    expect(chestZoneForCatalogueType({ shop: "other-merchant.myshopify.com", blueprintId: 145, providerId: 99 })).toBeNull();
     const zone = chestZoneRect({
       areaLeft: 0,
       areaTop: 100,

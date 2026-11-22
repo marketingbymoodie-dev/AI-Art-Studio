@@ -32,11 +32,11 @@ describe("publish colour ticks", () => {
   });
 
   it("stores one type without replacing the other", () => {
-    const patch = publishColorTickPatch(58, ["Black", "black", ""]);
-    expect(patch).toEqual({ "58": ["Black"] });
-    expect(readPublishColorTicks({ "56": ["Natural"], ...patch })).toEqual({
-      "56": ["Natural"],
-      "58": ["Black"],
+    const patch = publishColorTickPatch(82, ["Black", "black", ""]);
+    expect(patch).toEqual({ "82": ["Black"] });
+    expect(readPublishColorTicks({ "81": ["Natural"], ...patch })).toEqual({
+      "81": ["Natural"],
+      "82": ["Black"],
     });
   });
 });
@@ -49,11 +49,11 @@ describe("publish resume", () => {
   });
 
   it("keeps the other garment's product ids when one id is saved", () => {
-    const saved = mergeCatalogueExternalIds({ "56": { printifyProductId: "p56" } }, 58, { shopifyProductId: "s58" });
-    expect(saved).toEqual({ "56": { printifyProductId: "p56" }, "58": { shopifyProductId: "s58" } });
-    expect(readCatalogueExternalId(mergeCatalogueExternalIds(saved, 58, { printifyProductId: "p58" }), 58)).toEqual({
-      shopifyProductId: "s58",
-      printifyProductId: "p58",
+    const saved = mergeCatalogueExternalIds({ "81": { printifyProductId: "p81" } }, 82, { shopifyProductId: "s82" });
+    expect(saved).toEqual({ "81": { printifyProductId: "p81" }, "82": { shopifyProductId: "s82" } });
+    expect(readCatalogueExternalId(mergeCatalogueExternalIds(saved, 82, { printifyProductId: "p82" }), 82)).toEqual({
+      shopifyProductId: "s82",
+      printifyProductId: "p82",
     });
   });
 });

@@ -62,33 +62,33 @@ describe("flywheel promote decisions", () => {
   });
 
   it("adds a shirt-type tag for Shopify and keeps studio products out of that collection", () => {
-    expect(catalogueTypeTag(56)).toBe("aas-type-56");
-    expect(catalogueTypeTag(58)).toBe("aas-type-58");
+    expect(catalogueTypeTag(81)).toBe("aas-type-81");
+    expect(catalogueTypeTag(82)).toBe("aas-type-82");
     expect(catalogueListingTags({
       artStyle: "woodcut",
       species: "pug",
       humourOperator: "pp-owner-vs-pet",
-      productTypeId: 56,
-    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-56"]);
+      productTypeId: 81,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-81"]);
     expect(catalogueListingTags({
       artStyle: "woodcut",
       species: "pug",
       humourOperator: "pp-owner-vs-pet",
-      productTypeId: 58,
+      productTypeId: 82,
       myPetEnabled: true,
-    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-58", "my-pet"]);
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-82", "my-pet"]);
     expect(catalogueListingTags({
       artStyle: "woodcut",
       species: "pug",
       humourOperator: "pp-owner-vs-pet",
-      productTypeId: 56,
+      productTypeId: 81,
       myPetEnabled: false,
-    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-56"]);
-    expect(myPetTagForListing(["aas-studio-product", "aas-type-58"], true)).toEqual(["aas-studio-product", "aas-type-58"]);
-    expect(catalogueCollectionRules(58)).toEqual({
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-81"]);
+    expect(myPetTagForListing(["aas-studio-product", "aas-type-82"], true)).toEqual(["aas-studio-product", "aas-type-82"]);
+    expect(catalogueCollectionRules(82)).toEqual({
       appliedDisjunctively: false,
       rules: [
-        { column: "TAG", relation: "EQUALS", condition: "aas-type-58" },
+        { column: "TAG", relation: "EQUALS", condition: "aas-type-82" },
         { column: "TAG", relation: "NOT_EQUALS", condition: "aas-studio-product" },
       ],
     });

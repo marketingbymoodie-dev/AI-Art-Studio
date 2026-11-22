@@ -27,7 +27,7 @@ function operatorId(req: any): string | null {
   return id ? String(id) : null;
 }
 
-function typeId(raw: unknown, fallback = 54): number {
+function typeId(raw: unknown, fallback = 0): number {
   const id = Number(raw);
   return Number.isInteger(id) && id > 0 ? id : fallback;
 }

@@ -1,19 +1,15 @@
 /**
  * Which shop an operator catalogue session reads and writes.
  * Staging keeps the demo catalogue. Petposterous is an operator shop with its
- * own products. Product types are not pinned here: each shop lists the types
- * whose Shopify shell lives on that shop. Type 54 is the staging fallback
- * only when nothing is selected.
+ * own products. Product types are not pinned by id: each shop lists the types
+ * whose Shopify shell lives on that shop. The staging demo Softstyle is the
+ * row on the staging shop with Printify blueprint 145 and provider 99.
  */
 export const STAGING_CATALOGUE_SHOP = "ai-art-studio-staging.myshopify.com";
 export const PETPOSTEROUS_CATALOGUE_SHOP = "h7epay-gh.myshopify.com";
-/** Staging demo garment when the operator has not chosen a type. */
-export const STAGING_FALLBACK_PRODUCT_TYPE_ID = 54;
 
 export type OperatorCatalogueProfile = {
   shop: string;
-  /** Set only for the staging demo. Other operator shops pick a type from their rows. */
-  fallbackProductTypeId: number | null;
 };
 
 export function catalogueShopDomain(shop: string | null | undefined): string {
@@ -29,9 +25,9 @@ export function catalogueShopDomain(shop: string | null | undefined): string {
 
 export function operatorCatalogueForShop(shopDomain: string | null | undefined): OperatorCatalogueProfile {
   if (catalogueShopDomain(shopDomain) === PETPOSTEROUS_CATALOGUE_SHOP) {
-    return { shop: PETPOSTEROUS_CATALOGUE_SHOP, fallbackProductTypeId: null };
+    return { shop: PETPOSTEROUS_CATALOGUE_SHOP };
   }
-  return { shop: STAGING_CATALOGUE_SHOP, fallbackProductTypeId: STAGING_FALLBACK_PRODUCT_TYPE_ID };
+  return { shop: STAGING_CATALOGUE_SHOP };
 }
 
 export function catalogueShopAllowed(shop: string | null | undefined): boolean {

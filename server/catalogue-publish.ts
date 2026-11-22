@@ -11,12 +11,12 @@ import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatal
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, generationEvents, mockupLibraryColours, productTypes } from "@shared/schema";
 import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 import { db } from "./db";
-import { placementForProductType } from "@shared/printPlacement";
 import { buildFlywheelPrintFile, lastPrintFileBilling, printCanvasFromStoredPlaceholders } from "./flywheel-print-file";
 import { promoteCatalogueCandidate, PromoteRefusal } from "./flywheel-promote";
 import {
   approveCandidateChoice,
   panelsForType,
+  placementForStoredType,
   readChoice,
   readLibraryObject,
   saveChoice,
@@ -295,7 +295,7 @@ export async function publishCatalogueCandidate(args: {
         checked.artStyle,
         source,
         canvas,
-        placementForProductType(garment.id, shop).anchor,
+        (await placementForStoredType(garment.id)).anchor,
         (await chestFitForProductType(garment.id)) ?? undefined,
       );
       printFilePath = typePrintPath;
