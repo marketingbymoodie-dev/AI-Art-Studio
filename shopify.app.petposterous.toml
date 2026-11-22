@@ -1,17 +1,17 @@
 # Petposterous custom-distribution app (petposterous.myshopify.com).
-# Hosted on the staging Railway app. Not the public App Store app.
+# Hosted on the production Railway app. Not the public App Store app.
 # scope-drift: ignore
 # Install only after this config is released:
 #   /shopify/install?shop=petposterous.myshopify.com&app=petposterous
 # The ?app=petposterous hint is on that install URL. The callback allowlist
-# stays the bare staging paths, because the server sends redirect_uri without
+# stays the bare production paths, because the server sends redirect_uri without
 # a query and reads the app from the signed OAuth state.
 # Deploy with: shopify app deploy --config petposterous
 # Do not deploy shopify.app.production.toml for this app.
 
 client_id = "f7e475da64e6e048d4972c9a12fea6c6"
 name = "AI Art Studio Petposterous"
-application_url = "https://ai-art-studio-staging.up.railway.app"
+application_url = "https://appai-pod-production.up.railway.app"
 embedded = true
 
 [build]
@@ -54,11 +54,11 @@ scopes = "read_products,read_themes,write_products,write_themes,write_content,re
 [app_proxy]
 prefix = "apps"
 subpath = "appai"
-url = "https://ai-art-studio-staging.up.railway.app/api/proxy"
+url = "https://appai-pod-production.up.railway.app/api/proxy"
 
 [auth]
 redirect_urls = [
-  "https://ai-art-studio-staging.up.railway.app/auth/callback",
-  "https://ai-art-studio-staging.up.railway.app/shopify/callback",
-  "https://ai-art-studio-staging.up.railway.app/api/auth/callback"
+  "https://appai-pod-production.up.railway.app/auth/callback",
+  "https://appai-pod-production.up.railway.app/shopify/callback",
+  "https://appai-pod-production.up.railway.app/api/auth/callback"
 ]
