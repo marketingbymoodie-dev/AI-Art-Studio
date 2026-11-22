@@ -99,11 +99,18 @@ export async function ensureCatalogueImportBatch(shop: string, batchId: string):
   });
 }
 
-export async function upsertCatalogueImportRow(shop: string, batchId: string, row: Partial<CatalogueImportRow> & { filename: string }): Promise<void> {
+type ImportDb = Pick<typeof db, "select" | "insert" | "update">;
+
+export async function upsertCatalogueImportRow(
+  shop: string,
+  batchId: string,
+  row: Partial<CatalogueImportRow> & { filename: string },
+  exec: ImportDb = db,
+): Promise<void> {
   if (!batchIdOk(batchId)) throw new Error("That upload is not a catalogue batch.");
   const filename = row.filename;
   const now = new Date();
-  const [existing] = await db.select().from(catalogueImportRows).where(and(
+  const [existing] = await exec.select().from(catalogueImportRows).where(and(
     eq(catalogueImportRows.batchId, batchId),
     eq(catalogueImportRows.filename, filename),
   )).limit(1);
@@ -127,13 +134,13 @@ export async function upsertCatalogueImportRow(shop: string, batchId: string, ro
     updatedAt: now,
   };
   if (!existing) {
-    await db.insert(catalogueImportRows).values({ id: randomUUID(), batchId, filename, createdAt: now, ...next });
+    await exec.insert(catalogueImportRows).values({ id: randomUUID(), batchId, filename, createdAt: now, ...next });
     return;
   }
-  await db.update(catalogueImportRows).set(next).where(eq(catalogueImportRows.id, existing.id));
+  await exec.update(catalogueImportRows).set(next).where(eq(catalogueImportRows.id, existing.id));
   const savedWording = row.exactWording;
   if (existing.candidateId && typeof savedWording === "string" && savedWording !== existing.exactWording) {
-    await db.update(designCandidates).set({ punchline: savedWording, updatedAt: now }).where(and(
+    await exec.update(designCandidates).set({ punchline: savedWording, updatedAt: now }).where(and(
       eq(designCandidates.id, existing.candidateId),
       eq(designCandidates.shopDomain, shop),
       eq(designCandidates.status, "pending"),
@@ -232,44 +239,46 @@ export async function commitCatalogueImport(args: {
     try {
       const claim = claimCatalogueHash(known, hash, () => randomUUID());
       try {
-      if (claim.created) {
-        const now = new Date();
-        await db.insert(designCandidates).values({
-          id: claim.candidateId,
-          shopDomain: shop,
-          status: "pending",
-          source: "manual",
-          humourOperator: row.humourOperator,
-          darknessLevel: 0,
-          species: row.species,
-          deviceStructure: "",
-          deviceText: row.device,
-          funnyTruth: row.truth,
-          punchline: row.exactWording,
-          artStyle: row.style,
-          behaviour: "",
-          productFamily: "apparel",
-          credentialRef: "replicate:shared",
-          artworkPath: path,
-          updatedAt: now,
-          createdAt: now,
-        });
-        await db.insert(catalogueCandidateChoices).values({
+      await db.transaction(async (tx) => {
+        if (claim.created) {
+          const now = new Date();
+          await tx.insert(designCandidates).values({
+            id: claim.candidateId,
+            shopDomain: shop,
+            status: "pending",
+            source: "manual",
+            humourOperator: row.humourOperator,
+            darknessLevel: 0,
+            species: row.species,
+            deviceStructure: "",
+            deviceText: row.device,
+            funnyTruth: row.truth,
+            punchline: row.exactWording,
+            artStyle: row.style,
+            behaviour: "",
+            productFamily: "apparel",
+            credentialRef: "replicate:shared",
+            artworkPath: path,
+            updatedAt: now,
+            createdAt: now,
+          });
+          await tx.insert(catalogueCandidateChoices).values({
+            candidateId: claim.candidateId,
+            artworkPath: path,
+            selectedColors: [],
+            updatedAt: now,
+          });
+        }
+        await upsertCatalogueImportRow(shop, args.batchId, {
+          ...row,
+          contentHash: hash,
+          importStatus: "queued",
+          failureReason: "",
           candidateId: claim.candidateId,
-          artworkPath: path,
-          selectedColors: [],
-          updatedAt: now,
-        });
-        created += 1;
-      }
-      ids.push(claim.candidateId);
-      await upsertCatalogueImportRow(shop, args.batchId, {
-        ...row,
-        contentHash: hash,
-        importStatus: "queued",
-        failureReason: "",
-        candidateId: claim.candidateId,
+        }, tx);
       });
+      if (claim.created) created += 1;
+      ids.push(claim.candidateId);
       } catch (err) {
         if (claim.created) known.delete(hash);
         throw err;

@@ -30,6 +30,7 @@ import {
   type CapOccupant,
 } from "@shared/flywheelPromote";
 import { myPetMetafieldValue } from "@shared/cataloguePublish";
+import { forgetCatalogueExternalIds, readCatalogueExternalIds, rememberCatalogueExternalId } from "./catalogue-publish-ids";
 import { activeColorNames, cleanGarmentAccordion, garmentAccordionMetafields, accordionLines } from "@shared/garmentAccordion";
 import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
@@ -119,11 +120,37 @@ function slug(value: string): string {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-async function shopifyHandleTaken(shop: string, token: string, handle: string): Promise<boolean> {
+type ListedVariant = { id: number; option1: string | null; option2: string | null };
+
+/** Empty when the handle is free. The product id when it belongs to this candidate. */
+async function shopifyProductForCandidate(
+  shop: string,
+  token: string,
+  handle: string,
+  candidateId: string,
+): Promise<string | "taken"> {
   const data = await adminGql(shop, token, `query($q: String!) {
-    products(first: 1, query: $q) { nodes { handle } }
+    products(first: 5, query: $q) {
+      nodes { id handle metafield(namespace: "ai_art_studio", key: "design_candidate_id") { value } }
+    }
   }`, { q: `handle:${handle}` });
-  return (data?.products?.nodes || []).some((node: { handle?: string }) => String(node.handle || "") === handle);
+  const node = (data?.products?.nodes || []).find((row: { handle?: string }) => String(row.handle || "") === handle);
+  if (!node) return "";
+  const owner = String(node.metafield?.value || "");
+  if (candidateId && owner === candidateId) return String(node.id || "").replace(/\D/g, "");
+  return "taken";
+}
+
+async function readListedVariants(shop: string, token: string, productId: string): Promise<ListedVariant[]> {
+  const gid = productId.startsWith("gid://") ? productId : `gid://shopify/Product/${productId.replace(/\D/g, "")}`;
+  const read = await adminGql(shop, token, `query($id: ID!) {
+    product(id: $id) { variants(first: 100) { nodes { id selectedOptions { name value } } } }
+  }`, { id: gid });
+  return (read?.product?.variants?.nodes || []).map((node: { id: string; selectedOptions: Array<{ name: string; value: string }> }) => ({
+    id: Number(String(node.id).replace(/\D/g, "")),
+    option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
+    option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
+  }));
 }
 
 async function adminGql(shop: string, token: string, query: string, variables: Record<string, unknown> = {}) {
@@ -772,57 +799,96 @@ export async function promoteCatalogueCandidate(args: {
     myPetEnabled: args.myPetEnabled !== false,
   });
   const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
-  if (await shopifyHandleTaken(shop, installation!.accessToken, handle)) {
-    throw new PromoteRefusal(["That handle is already used. Change the handle suffix."]);
-  }
   const visibility = requireProductVisibility("published");
   const shopifyStatus = shopifyStatusForVisibility(visibility, args.publishNow ? "publish" : "draft");
   const status = catalogueVisibility(args.publishNow);
-  const printBuffer = await readLibraryObject(String(args.printFilePath || candidate!.printFilePath));
-  const imageId = await uploadPrintFileToPrintify(merchant!.printifyApiToken!, `${handle}-front.png`, printBuffer);
-  let printifyProductId = "";
-  try {
-    const created = await printifyRequest(merchant!.printifyApiToken!, `/shops/${merchant!.printifyShopId}/products.json`, {
-      method: "POST",
-      body: JSON.stringify({
-        title: title.slice(0, 250),
-        description,
-        blueprint_id: Number(typeRow.printifyBlueprintId),
-        print_provider_id: Number(typeRow.printifyProviderId),
-        variants: orderedPrintifyVariants,
-        print_areas: [{
-          variant_ids: orderedPrintifyVariants.map((variant) => variant.id),
-          placeholders: [{
-            position: "front",
-            images: [{ id: imageId, ...PRINTIFY_FULL_BLEED, angle: 0 }],
-          }],
-        }],
-        tags,
-      }),
-    }, "printify-product");
-    const text = await created.text();
-    const body = text ? JSON.parse(text) : {};
-    if (!created.ok || !body?.id) {
-      throw new Error(`Printify rejected the product (${created.status}): ${text.slice(0, 200)}`);
+  const [existingProduct] = await db
+    .select({
+      id: designProducts.id,
+      shopifyProductId: designProducts.shopifyProductId,
+      printifyProductId: designProducts.printifyProductId,
+    })
+    .from(designProducts)
+    .where(and(
+      eq(designProducts.jobId, args.candidateId),
+      eq(designProducts.productTypeId, typeRow.id),
+      eq(designProducts.shop, shop),
+    ))
+    .limit(1);
+  const savedIds = await readCatalogueExternalIds(args.candidateId, typeRow.id);
+  let printifyProductId = savedIds.printifyProductId || String(existingProduct?.printifyProductId || "");
+  let shopifyProductId = savedIds.shopifyProductId || String(existingProduct?.shopifyProductId || "");
+  let createdPrintify = false;
+  let createdShopify = false;
+  const remember = async (patch: { printifyProductId?: string; shopifyProductId?: string }) => {
+    await rememberCatalogueExternalId(args.candidateId, typeRow.id, patch);
+  };
+  if (!shopifyProductId) {
+    const adopted = await shopifyProductForCandidate(shop, installation!.accessToken, handle, args.candidateId);
+    if (adopted === "taken") {
+      throw new PromoteRefusal(["That handle is already used. Change the handle suffix."]);
     }
-    printifyProductId = String(body.id);
-  } catch (err) {
-    throw new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+    if (adopted) {
+      shopifyProductId = adopted;
+      await remember({ shopifyProductId });
+    }
+  }
+  if (!printifyProductId) {
+    const printBuffer = await readLibraryObject(String(args.printFilePath || candidate!.printFilePath));
+    const imageId = await uploadPrintFileToPrintify(merchant!.printifyApiToken!, `${handle}-front.png`, printBuffer);
+    try {
+      const created = await printifyRequest(merchant!.printifyApiToken!, `/shops/${merchant!.printifyShopId}/products.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.slice(0, 250),
+          description,
+          blueprint_id: Number(typeRow.printifyBlueprintId),
+          print_provider_id: Number(typeRow.printifyProviderId),
+          variants: orderedPrintifyVariants,
+          print_areas: [{
+            variant_ids: orderedPrintifyVariants.map((variant) => variant.id),
+            placeholders: [{
+              position: "front",
+              images: [{ id: imageId, ...PRINTIFY_FULL_BLEED, angle: 0 }],
+            }],
+          }],
+          tags,
+        }),
+      }, "printify-product");
+      const text = await created.text();
+      const body = text ? JSON.parse(text) : {};
+      if (!created.ok || !body?.id) {
+        throw new Error(`Printify rejected the product (${created.status}): ${text.slice(0, 200)}`);
+      }
+      printifyProductId = String(body.id);
+      createdPrintify = true;
+      await remember({ printifyProductId });
+    } catch (err) {
+      if (createdPrintify && printifyProductId) {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!).catch(() => undefined);
+      }
+      throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+    }
   }
 
-  const images = [];
+  const images: Array<{ src: string; alt: string; filename: string }> = [];
   try {
     for (const color of orderedColours) {
       const stored = mockupImages.find((image) => image.name === color.name);
       if (!stored) throw new PromoteRefusal([`No stored mockup for ${color.name}.`]);
       images.push({
-        src: await signedLibraryUrl(stored.path),
+        src: shopifyProductId ? "" : await signedLibraryUrl(stored.path),
         alt: mockupAlt(title, color.name),
         filename: mockupFileName(handle, color.name),
       });
     }
   } catch (err) {
-    await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+    if (createdPrintify && printifyProductId) {
+      try {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+        await forgetCatalogueExternalIds(args.candidateId, typeRow.id, { printifyProductId: true }).catch(() => undefined);
+      } catch { /* keep the saved id when the product is still on Printify */ }
+    }
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
   }
 
@@ -877,59 +943,70 @@ export async function promoteCatalogueCandidate(args: {
     contentType: "IMAGE",
   }));
 
-  let shopifyProductId = "";
-  let createdVariants: Array<{ id: number; option1: string | null; option2: string | null }> = [];
+  let createdVariants: ListedVariant[] = [];
+  const discardCreated = async () => {
+    let droppedShopify = false;
+    let droppedPrintify = false;
+    if (createdShopify && shopifyProductId) {
+      try {
+        await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
+        droppedShopify = true;
+      } catch { /* keep the saved id so a rerun can attach the product that is still there */ }
+    }
+    if (createdPrintify && printifyProductId) {
+      try {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+        droppedPrintify = true;
+      } catch { /* keep the saved id so a rerun can attach the product that is still there */ }
+    }
+    await forgetCatalogueExternalIds(args.candidateId, typeRow.id, {
+      printifyProductId: droppedPrintify,
+      shopifyProductId: droppedShopify,
+    }).catch(() => undefined);
+  };
   try {
-    const data = await adminGql(
-      shop,
-      installation!.accessToken,
-      `mutation($input: ProductSetInput!) {
-        productSet(synchronous: true, input: $input) {
-          product { id handle }
-          userErrors { message }
-        }
-      }`,
-      { input },
-    );
-    const errors = data?.productSet?.userErrors || [];
-    if (errors.length || !data?.productSet?.product?.id) {
-      throw new Error(errors.map((err: { message?: string }) => err.message).join("; ") || "Shopify returned no product");
+    if (!shopifyProductId) {
+      const data = await adminGql(
+        shop,
+        installation!.accessToken,
+        `mutation($input: ProductSetInput!) {
+          productSet(synchronous: true, input: $input) {
+            product { id handle }
+            userErrors { message }
+          }
+        }`,
+        { input },
+      );
+      const errors = data?.productSet?.userErrors || [];
+      if (errors.length || !data?.productSet?.product?.id) {
+        throw new Error(errors.map((err: { message?: string }) => err.message).join("; ") || "Shopify returned no product");
+      }
+      shopifyProductId = String(data.productSet.product.id).replace(/\D/g, "");
+      createdShopify = true;
+      await remember({ shopifyProductId });
+      const returnedHandle = String(data.productSet.product.handle || "");
+      if (returnedHandle && returnedHandle !== handle) {
+        throw new Error("Shopify changed the handle. Change the handle suffix and publish again.");
+      }
     }
-    shopifyProductId = String(data.productSet.product.id).replace(/\D/g, "");
-    const returnedHandle = String(data.productSet.product.handle || "");
-    if (returnedHandle && returnedHandle !== handle) {
-      throw new Error("Shopify changed the handle. Change the handle suffix and publish again.");
-    }
-    const read = await adminGql(
-      shop,
-      installation!.accessToken,
-      `query($id: ID!) { product(id: $id) { variants(first: 100) { nodes { id selectedOptions { name value } } } } }`,
-      { id: data.productSet.product.id },
-    );
-    createdVariants = (read?.product?.variants?.nodes || []).map((node: { id: string; selectedOptions: Array<{ name: string; value: string }> }) => ({
-      id: Number(String(node.id).replace(/\D/g, "")),
-      option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
-      option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
-    }));
+    createdVariants = await readListedVariants(shop, installation!.accessToken, shopifyProductId);
+    const productGid = `gid://shopify/Product/${shopifyProductId.replace(/\D/g, "")}`;
     await linkCatalogueVariantMockups({
       shop,
       token: installation!.accessToken,
-      shopifyProductId: data.productSet.product.id,
+      shopifyProductId: productGid,
     });
     await linkCatalogueProductSwatches({
       shop,
       token: installation!.accessToken,
-      shopifyProductId: data.productSet.product.id,
+      shopifyProductId: productGid,
       colours: orderedColours.map((color) => ({
         ...color,
         baseColor: resolvedShopifyBaseColor(color.name, storedBases),
       })),
     });
   } catch (err) {
-    if (shopifyProductId) {
-      await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
-    }
-    await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+    await discardCreated();
     throw new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
   }
 
@@ -940,48 +1017,67 @@ export async function promoteCatalogueCandidate(args: {
     const colourName = meta.colorName;
     const created = createdVariants.find((variant) => variant.option1 === sizeName && variant.option2 === colourName);
     if (!created || !meta.studioVariantId) {
-      await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
-      await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+      await discardCreated();
       throw new PromoteRefusal([`Could not match a Shopify variant for ${meta.sizeId} ${meta.colorId} onto the studio shipping profile.`]);
     }
     variantMapOut[String(created.id)] = { sizeId: meta.sizeId, colorId: meta.colorId, printifyVariantId: meta.printifyVariantId };
     matched.push({ createdId: String(created.id), studioVariantId: meta.studioVariantId });
   }
 
-  const [designProduct] = await db.insert(designProducts).values({
-    merchantId: String(typeRow.merchantId),
-    shop,
-    jobId: args.candidateId,
-    productTypeId: typeRow.id,
+  const listingRow = {
     shopifyProductId,
     printifyProductId,
     handle,
     title,
     status: status === "active" ? "active" : "inactive",
     myPetEnabled: args.myPetEnabled !== false,
-    defaultSizeBackfilled: true,
-    sizeOrderRestored: true,
     variantMap: variantMapOut,
     mockupUrls: images.map((image) => image.filename),
-  }).returning({ id: designProducts.id });
+    updatedAt: new Date(),
+  };
+  let designProductId = existingProduct?.id || "";
+  let insertedListing = false;
+  if (designProductId) {
+    await db.update(designProducts).set(listingRow).where(eq(designProducts.id, designProductId));
+  } else {
+    const [designProduct] = await db.insert(designProducts).values({
+      merchantId: String(typeRow.merchantId),
+      shop,
+      jobId: args.candidateId,
+      productTypeId: typeRow.id,
+      defaultSizeBackfilled: true,
+      sizeOrderRestored: true,
+      ...listingRow,
+    }).returning({ id: designProducts.id });
+    designProductId = designProduct?.id || "";
+    insertedListing = true;
+  }
 
   const rollback = async () => {
-    if (designProduct?.id) {
-      await db.delete(designProducts).where(eq(designProducts.id, designProduct.id));
+    if (insertedListing && designProductId) {
+      await db.delete(designProducts).where(eq(designProducts.id, designProductId));
     }
-    await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
-    await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+    await discardCreated();
   };
 
   try {
     const shopDomain = normalizeMyshopifyShopDomain(shop);
     for (const row of matched) {
-      await attachVariantToShipping({
-        shop,
-        shopifyVariantId: row.createdId,
-        sourceVariantId: row.studioVariantId,
-        source: "shadow",
-      });
+      try {
+        await attachVariantToShipping({
+          shop,
+          shopifyVariantId: row.createdId,
+          sourceVariantId: row.studioVariantId,
+          source: "shadow",
+        });
+      } catch (err) {
+        const [alreadyMember] = await db
+          .select({ shopifyVariantId: shippingStoreVariants.shopifyVariantId })
+          .from(shippingStoreVariants)
+          .where(and(eq(shippingStoreVariants.shopDomain, shopDomain), eq(shippingStoreVariants.shopifyVariantId, row.createdId)))
+          .limit(1);
+        if (!alreadyMember) throw err;
+      }
       const [member] = await db
         .select({ shopifyVariantId: shippingStoreVariants.shopifyVariantId })
         .from(shippingStoreVariants)
@@ -1003,7 +1099,7 @@ export async function promoteCatalogueCandidate(args: {
         status: status === "active" ? "promoted" : "draft",
         shopifyProductId,
         printifyProductId,
-        designProductId: designProduct?.id ?? null,
+        designProductId: designProductId || null,
         updatedAt: now,
       }).where(eq(designCandidates.id, args.candidateId));
       await db.update(catalogueCandidateChoices).set({

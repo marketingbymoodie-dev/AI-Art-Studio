@@ -212,7 +212,7 @@ export async function publishCatalogueCandidate(args: {
     && catalogueShopDomain(String(row.shop || "")) === catalogueShopDomain(shop)
     && String(row.shopifyProductId || "").trim(),
   );
-  if (already?.shopifyProductId) {
+  if (already?.shopifyProductId && work !== "store" && work !== "all") {
     const spend = await snapshot(recipe.candidateId);
     return publishResult({
       shopifyProductId: already.shopifyProductId,
@@ -624,8 +624,11 @@ export async function publishCatalogueTargets(args: {
       && catalogueShopDomain(String(row.shop || "")) === catalogueShopDomain(shop)
       && String(row.shopifyProductId || "").trim(),
     );
-    if (published) continue;
     const panelId = await sceneForType(target.productTypeId, args.recipe.panelId);
+    if (published) {
+      open.push({ productTypeId: target.productTypeId, name, selectedColors: target.selectedColors, panelId });
+      continue;
+    }
     const recipe: ApprovalRecipe = {
       ...args.recipe,
       productTypeId: target.productTypeId,

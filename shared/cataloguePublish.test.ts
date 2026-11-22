@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { promoteRefusals } from "./flywheelPromote";
-import { catalogueJobLabel, formatCatalogueSpend, myPetMetafieldValue, publishColorTickPatch, publishColourNames, publishPreflightMessages, publishWork, readPublishColorTicks } from "./cataloguePublish";
+import { catalogueJobHeartbeatIsStale, catalogueJobLabel, CATALOGUE_PUBLISH_STALE_MS, formatCatalogueSpend, mergeCatalogueExternalIds, myPetMetafieldValue, publishColorTickPatch, publishColourNames, publishPreflightMessages, publishWork, readCatalogueExternalId, readPublishColorTicks } from "./cataloguePublish";
 
 const ready = {
   printFilePath: "print.png",
@@ -37,6 +37,23 @@ describe("publish colour ticks", () => {
     expect(readPublishColorTicks({ "56": ["Natural"], ...patch })).toEqual({
       "56": ["Natural"],
       "58": ["Black"],
+    });
+  });
+});
+
+describe("publish resume", () => {
+  it("leaves a fresh heartbeat alone and reclaims a stale one", () => {
+    const now = Date.parse("2026-11-22T00:00:45.000Z");
+    expect(catalogueJobHeartbeatIsStale(now - CATALOGUE_PUBLISH_STALE_MS + 1, now)).toBe(false);
+    expect(catalogueJobHeartbeatIsStale(now - CATALOGUE_PUBLISH_STALE_MS, now)).toBe(true);
+  });
+
+  it("keeps the other garment's product ids when one id is saved", () => {
+    const saved = mergeCatalogueExternalIds({ "56": { printifyProductId: "p56" } }, 58, { shopifyProductId: "s58" });
+    expect(saved).toEqual({ "56": { printifyProductId: "p56" }, "58": { shopifyProductId: "s58" } });
+    expect(readCatalogueExternalId(mergeCatalogueExternalIds(saved, 58, { printifyProductId: "p58" }), 58)).toEqual({
+      shopifyProductId: "s58",
+      printifyProductId: "p58",
     });
   });
 });

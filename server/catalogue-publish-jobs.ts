@@ -1,9 +1,9 @@
 /**
  * Catalogue promote runs after the request returns.
- * Two jobs at a time. A restart puts a running job back on the queue;
- * publish skips print, listing, and mockup steps that are already stored.
+ * Two jobs at a time. A running job heartbeats. Another process reclaims it
+ * only after that heartbeat is stale, then skips steps already stored.
  */
-import { catalogueJobLabel, type CatalogueJobPhase } from "@shared/cataloguePublish";
+import { catalogueJobLabel, CATALOGUE_PUBLISH_HEARTBEAT_MS, CATALOGUE_PUBLISH_STALE_MS, type CatalogueJobPhase } from "@shared/cataloguePublish";
 import type { ApprovalRecipe } from "./catalogue-approval";
 import { publishCatalogueTargets, PublishRefusal, type CatalogueBatchResult } from "./catalogue-publish";
 import { pool } from "./db";
@@ -35,6 +35,7 @@ let tableReady: Promise<void> | null = null;
 let inFlight = 0;
 let pumping = false;
 let started = false;
+const localRunning = new Set<string>();
 
 function jobsAllowed(): boolean {
   return process.env.RAILWAY_ENVIRONMENT_NAME !== "production";
@@ -56,6 +57,9 @@ async function ensureJobsTable(): Promise<void> {
     `).then(() => pool.query(`
       ALTER TABLE catalogue_publish_jobs
       ADD COLUMN IF NOT EXISTS results jsonb NOT NULL DEFAULT '{}'::jsonb
+    `)).then(() => pool.query(`
+      ALTER TABLE catalogue_publish_jobs
+      ADD COLUMN IF NOT EXISTS external_ids jsonb NOT NULL DEFAULT '{}'::jsonb
     `)).then(() => undefined).catch((err) => {
       tableReady = null;
       throw err;
@@ -184,8 +188,45 @@ async function finish(
   );
 }
 
+async function heartbeat(candidateId: string): Promise<void> {
+  await pool.query(
+    `UPDATE catalogue_publish_jobs
+     SET updated_at = now()
+     WHERE candidate_id = $1 AND status = 'running'`,
+    [candidateId],
+  );
+}
+
+function startHeartbeat(candidateId: string): () => void {
+  const timer = setInterval(() => {
+    void heartbeat(candidateId).catch((err) => {
+      console.warn("[catalogue-publish-jobs] heartbeat was not stored:", (err as Error).message);
+    });
+  }, CATALOGUE_PUBLISH_HEARTBEAT_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+/** A dead worker stops heartbeating. This process does not take its own live jobs. */
+export async function reclaimStaleCatalogueJobs(): Promise<number> {
+  await ensureJobsTable();
+  const owned = [...localRunning];
+  const excluded = owned.length ? owned : ["00000000-0000-0000-0000-000000000000"];
+  const result = await pool.query(
+    `UPDATE catalogue_publish_jobs
+     SET status = 'queued', phase = 'queued', updated_at = now()
+     WHERE status = 'running'
+       AND updated_at < now() - ($1::int * interval '1 millisecond')
+       AND NOT (candidate_id = ANY($2::text[]))`,
+    [CATALOGUE_PUBLISH_STALE_MS, excluded],
+  );
+  return result.rowCount || 0;
+}
+
 async function runJob(row: JobRow): Promise<void> {
   const recipe = row.recipe;
+  localRunning.add(recipe.candidateId);
+  const stopHeartbeat = startHeartbeat(recipe.candidateId);
   try {
     const outcome = await publishCatalogueTargets({
       recipe,
@@ -211,6 +252,9 @@ async function runJob(row: JobRow): Promise<void> {
     await finish(recipe.candidateId, "failed", reasons.join("\n")).catch((storeErr) => {
       console.error("[catalogue-publish-jobs] failure was not stored:", (storeErr as Error).message);
     });
+  } finally {
+    stopHeartbeat();
+    localRunning.delete(recipe.candidateId);
   }
 }
 
@@ -234,18 +278,20 @@ async function pump(): Promise<void> {
   }
 }
 
-/** Running jobs have no worker after a restart. Put them back on the queue. */
+/** Reclaim only jobs whose worker has stopped heartbeating, then keep watching. */
 export async function startCataloguePublishJobs(): Promise<void> {
   if (started || !jobsAllowed()) return;
   await ensureJobsTable();
-  const recovered = await pool.query(
-    `UPDATE catalogue_publish_jobs
-     SET status = 'queued', phase = 'queued', updated_at = now()
-     WHERE status = 'running'`,
-  );
   started = true;
-  if (recovered.rowCount) {
-    console.log(`[catalogue-publish-jobs] requeued ${recovered.rowCount} job(s) after restart`);
-  }
-  void pump();
+  const sweep = async () => {
+    const recovered = await reclaimStaleCatalogueJobs().catch((err) => {
+      console.error("[catalogue-publish-jobs] reclaim failed:", (err as Error).message);
+      return 0;
+    });
+    if (recovered) console.log(`[catalogue-publish-jobs] requeued ${recovered} stale job(s)`);
+    void pump();
+  };
+  const timer = setInterval(() => void sweep(), CATALOGUE_PUBLISH_HEARTBEAT_MS);
+  timer.unref?.();
+  void sweep();
 }

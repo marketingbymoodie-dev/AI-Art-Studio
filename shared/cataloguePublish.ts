@@ -4,6 +4,53 @@
  * listing description, or mockup for that type is not repeated.
  */
 
+/** How often a running publish shows it is still alive, and how long before another process may take it. */
+export const CATALOGUE_PUBLISH_HEARTBEAT_MS = 15_000;
+export const CATALOGUE_PUBLISH_STALE_MS = 45_000;
+
+export function catalogueJobHeartbeatIsStale(
+  updatedAt: Date | string | number,
+  now = Date.now(),
+  staleMs = CATALOGUE_PUBLISH_STALE_MS,
+): boolean {
+  const at = new Date(updatedAt).getTime();
+  return Number.isFinite(at) && now - at >= staleMs;
+}
+
+export type CatalogueExternalIds = { printifyProductId?: string; shopifyProductId?: string };
+
+export function readCatalogueExternalId(current: unknown, productTypeId: number): CatalogueExternalIds {
+  const stored = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  const value = stored[String(productTypeId)];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const row = value as CatalogueExternalIds;
+  return {
+    ...(row.printifyProductId ? { printifyProductId: String(row.printifyProductId) } : {}),
+    ...(row.shopifyProductId ? { shopifyProductId: String(row.shopifyProductId) } : {}),
+  };
+}
+
+/** Keep every other product type. A later id for this type replaces only that id. */
+export function mergeCatalogueExternalIds(
+  current: unknown,
+  productTypeId: number,
+  patch: CatalogueExternalIds,
+): Record<string, CatalogueExternalIds> {
+  const stored = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, unknown> : {};
+  const out: Record<string, CatalogueExternalIds> = {};
+  for (const [key, value] of Object.entries(stored)) {
+    if (!/^\d+$/.test(key)) continue;
+    const row = readCatalogueExternalId({ [key]: value }, Number(key));
+    if (row.printifyProductId || row.shopifyProductId) out[key] = row;
+  }
+  const key = String(productTypeId);
+  const next = { ...(out[key] || {}) };
+  if (patch.printifyProductId) next.printifyProductId = String(patch.printifyProductId);
+  if (patch.shopifyProductId) next.shopifyProductId = String(patch.shopifyProductId);
+  if (next.printifyProductId || next.shopifyProductId) out[key] = next;
+  return out;
+}
+
 /** Colour names to tick for one product type. A missing list is every offered colour. An empty list stays empty. */
 export function publishColourNames(saved: string[] | undefined, offered: string[]): string[] {
   if (!saved) return [...offered];
