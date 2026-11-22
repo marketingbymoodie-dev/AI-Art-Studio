@@ -203,6 +203,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   // unlimited (owner/demo/internal); positive int = explicit per-shop cap.
   // Platform-operator-only writes. See getEffectiveDesignProductLimit.
   { table: "shopify_installations", column: "design_product_limit_override", type: "INTEGER" },
+  { table: "shopify_installations", column: "credit_reimbursement_mode", type: "TEXT NOT NULL DEFAULT 'appai_discount'" },
+  { table: "shopify_installations", column: "enabled_credit_pack_ids", type: "TEXT NOT NULL DEFAULT '[\"5\"]'" },
   { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
   { table: "design_candidates", column: "print_file_path", type: "TEXT" },
@@ -212,6 +214,10 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "design_candidates", column: "generation", type: "JSONB" },
   { table: "design_candidates", column: "publish_color_ticks", type: "JSONB" },
   { table: "design_candidates", column: "publish_my_pet_enabled", type: "BOOLEAN" },
+  { table: "design_candidates", column: "printify_product_id", type: "TEXT" },
+  { table: "catalogue_candidate_choices", column: "mockup_images", type: "JSONB" },
+  { table: "catalogue_candidate_choices", column: "printify_product_id", type: "TEXT" },
+  { table: "catalogue_candidate_choices", column: "shopify_product_id", type: "TEXT" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },

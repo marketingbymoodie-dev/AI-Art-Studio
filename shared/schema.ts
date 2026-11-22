@@ -285,6 +285,10 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * design-products PATCH) honours it uniformly.
    */
   designProductLimitOverride: integer("design_product_limit_override"),
+  /** Unused credit-pack option. Boot adds it so a later mode can turn it on. */
+  creditReimbursementMode: text("credit_reimbursement_mode").notNull().default("appai_discount"),
+  /** JSON array of pack ids, stored as text. Unused. Default is the original pack. */
+  enabledCreditPackIds: text("enabled_credit_pack_ids").notNull().default("[\"5\"]"),
 });
 
 /** Versioned SaaS plan catalogue (commit ≠ activate). */
