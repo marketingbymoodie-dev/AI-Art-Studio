@@ -361,27 +361,32 @@ async function publishTargetsFor(
     const colors = await libraryColoursFor(type.id);
     const { blankLibraryTypeId } = await import("../colour-blanks");
     const { blankNameKey } = await import("@shared/colourBlanks");
-    const { blankScenesForLibrary, photographSceneLabels } = await import("../mockup-library-store");
+    const { blankScenesForLibrary, panelsForType } = await import("../mockup-library-store");
+    const { newestUploadedBlank } = await import("@shared/colourBlanks");
     const libraryId = await blankLibraryTypeId(type.id);
-    const [links, scenes] = await Promise.all([
+    const [links, scenes, panelRows] = await Promise.all([
       db.select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
         .from(mockupLibraryColours)
         .where(eq(mockupLibraryColours.productTypeId, libraryId)),
       blankScenesForLibrary(libraryId),
+      panelsForType(libraryId),
     ]);
     return {
       id: type.id,
       name: type.name,
       published: Boolean(listed),
       productUrl: listed?.shopifyProductId ? shopifyAdminProductUrl(shop, listed.shopifyProductId) : null,
+      panelRows: panelRows.map((row) => ({ panelId: row.panelId, isDefault: row.isDefault })),
       colors: colors.map((color) => {
         const link = links.find((row) => blankNameKey(row.name) === blankNameKey(color.name))?.linkStoredName || "";
-        const realScenes = photographSceneLabels(scenes, color.name, link);
+        const photographs = scenes
+          .filter((scene) => newestUploadedBlank(scene.rows, color.name, link))
+          .map((scene) => ({ panelId: scene.panelId, label: scene.label || scene.panelId }));
         return {
           name: color.name,
           hex: color.hex,
-          hasProducedBlank: realScenes.length > 0,
-          realScenes,
+          hasProducedBlank: photographs.length > 0,
+          photographs,
         };
       }),
     };
@@ -1099,6 +1104,33 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json({ queue });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/punchline", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
+    if (!id) return;
+    if (id === PENDING_CANDIDATE.id) {
+      res.status(400).json({ error: "That design is not stored." });
+      return;
+    }
+    try {
+      const row = await readCandidateRow(id);
+      if (!row || row.status !== "pending") {
+        res.status(400).json({ error: "Wording can be saved while the design is pending." });
+        return;
+      }
+      const punchline = String(req.body?.punchline ?? "");
+      const { db } = await import("../db");
+      await db.update(designCandidates).set({ punchline, updatedAt: new Date() }).where(and(
+        eq(designCandidates.id, id),
+        eq(designCandidates.shopDomain, row.shopDomain),
+        eq(designCandidates.status, "pending"),
+      ));
+      res.json({ ok: true, punchline });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
     }
   });
 

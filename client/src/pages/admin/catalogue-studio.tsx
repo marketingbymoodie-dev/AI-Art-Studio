@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { formatCatalogueSpend } from "@shared/cataloguePublish";
+import { publishColourScene, resolvePublishPanelId } from "@shared/colourBlanks";
 import type { CatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { initialTickedColours, sortCatalogueColours } from "@shared/flywheelPromote";
 import { PETPOSTEROUS_PROMPT_PROFILE } from "@shared/packs/petposterous";
@@ -64,7 +65,8 @@ type PendingCandidate = {
     name: string;
     published: boolean;
     productUrl: string | null;
-    colors: Array<{ name: string; hex: string; hasProducedBlank: boolean; realScenes?: string[] }>;
+    panelRows?: Array<{ panelId: string; isDefault: boolean }>;
+    colors: Array<{ name: string; hex: string; hasProducedBlank: boolean; photographs?: Array<{ panelId: string; label: string }> }>;
   }>;
   pendingCount?: number;
   nextCandidateId?: string;
@@ -279,6 +281,13 @@ export default function CatalogueStudioPage() {
   const [behaviour, setBehaviour] = useState("");
   const [truth, setTruth] = useState("");
   const [wording, setWording] = useState("Bed Etiquette");
+  const [wordingNote, setWordingNote] = useState("");
+  const wordingDirty = useRef(false);
+  const wordingSaved = useRef<string | null>(null);
+  const wordingCandidate = useRef("");
+  const wordingRef = useRef(wording);
+  const wordingSave = useRef<Promise<void>>(Promise.resolve());
+  wordingRef.current = wording;
   const [device, setDevice] = useState("");
   const [deviceStructure, setDeviceStructure] = useState("");
   const [humour, setHumour] = useState("");
@@ -340,7 +349,16 @@ export default function CatalogueStudioPage() {
     if (!candidate.data?.id || !recipe) return;
     setBehaviour(recipe.behaviour || "");
     setTruth(recipe.funnyTruth || "");
-    setWording(recipe.punchline || "");
+    const serverWording = recipe.punchline || "";
+    if (wordingCandidate.current !== candidate.data.id) {
+      wordingDirty.current = false;
+      wordingSaved.current = null;
+      wordingCandidate.current = candidate.data.id;
+      setWording(serverWording);
+      setWordingNote("");
+    } else if (!wordingDirty.current) {
+      setWording(wordingSaved.current != null ? wordingSaved.current : serverWording);
+    }
     setDevice(recipe.deviceText || "");
     setDeviceStructure(recipe.deviceStructure || "");
     setHumour(recipe.humourOperator || "");
@@ -657,11 +675,40 @@ export default function CatalogueStudioPage() {
   const listedNames = (candidate.data?.publishTypes || []).filter((type) => type.published).map((type) => type.name);
   const openPublishTypes = (candidate.data?.publishTypes || []).filter((type) => !type.published);
 
+  async function saveWording() {
+    const value = wordingRef.current;
+    const id = candidate.data?.id;
+    if (!wordingDirty.current || !id || candidate.data?.status !== "pending") return;
+    const run = wordingSave.current.catch(() => undefined).then(async () => {
+      if (!wordingDirty.current || wordingRef.current !== value) return;
+      const res = await fetch("/api/platform/catalogue-studio/punchline", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateId: id, punchline: value }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWordingNote(String(body.error || "Not saved"));
+        return;
+      }
+      if (wordingRef.current !== value) return;
+      wordingSaved.current = value;
+      wordingDirty.current = false;
+      setWordingNote("Saved");
+    });
+    wordingSave.current = run;
+    await run;
+  }
+
   async function publishCandidate() {
     setPublishError("");
     setDropError("");
     setPublishBusy(true);
     try {
+      await wordingSave.current;
+      if (wordingDirty.current) await saveWording();
+      const savedWording = wordingRef.current;
       const res = await fetch("/api/platform/catalogue-studio/publish", {
         method: "POST",
         credentials: "include",
@@ -673,8 +720,8 @@ export default function CatalogueStudioPage() {
           artStyle: styleId,
           species,
           humourOperator: humour,
-          punchline: wording,
-          title: wording,
+          punchline: savedWording,
+          title: savedWording,
           behaviour,
           funnyTruth: truth,
           deviceText: device,
@@ -687,7 +734,7 @@ export default function CatalogueStudioPage() {
             .map((type) => ({
               productTypeId: type.id,
               selectedColors: type.colors
-                .filter((color) => (color.realScenes?.length || 0) > 0 && (publishColours[type.id] || []).includes(color.name))
+                .filter((color) => color.hasProducedBlank && (publishColours[type.id] || []).includes(color.name))
                 .map((color) => ({ name: color.name, hex: color.hex })),
             })),
         }),
@@ -964,7 +1011,16 @@ export default function CatalogueStudioPage() {
                 <Textarea value={truth} onChange={(e) => setTruth(e.target.value)} placeholder="Not written" />
               </Field>
               <Field label="Exact wording">
-                <Input value={wording} onChange={(e) => setWording(e.target.value)} />
+                <Input
+                  value={wording}
+                  onChange={(e) => {
+                    wordingDirty.current = true;
+                    setWordingNote("");
+                    setWording(e.target.value);
+                  }}
+                  onBlur={() => void saveWording()}
+                />
+                {wordingNote ? <p className="text-xs text-muted-foreground" data-testid="catalogue-studio-wording-note">{wordingNote}</p> : null}
               </Field>
               <Field label="Device">
                 <Input value={device} onChange={(e) => setDevice(e.target.value)} placeholder="Not written" />
@@ -1393,8 +1449,10 @@ export default function CatalogueStudioPage() {
                       {publishTicks[type.id] ? (
                         <ul className="ml-6 space-y-1">
                           {type.colors.map((color) => {
-                            const scenes = color.realScenes || [];
-                            const blocked = scenes.length === 0;
+                            const resolved = resolvePublishPanelId(panelId, type.panelRows || []);
+                            const requested = panelId || resolved;
+                            const scene = publishColourScene(requested, resolved, color.photographs || []);
+                            const blocked = !scene;
                             const on = !blocked && (publishColours[type.id] || []).includes(color.name);
                             return (
                               <li key={color.name}>
@@ -1422,9 +1480,9 @@ export default function CatalogueStudioPage() {
                                   ) : null}
                                   <span>
                                     {color.name}
-                                    {blocked
+                                    {blocked || !scene
                                       ? " — No photograph uploaded. This colour cannot be published."
-                                      : ` — ${scenes.join(", ")}`}
+                                      : ` — ${scene.label}${scene.fallback ? " (fallback)" : ""}`}
                                   </span>
                                 </label>
                               </li>

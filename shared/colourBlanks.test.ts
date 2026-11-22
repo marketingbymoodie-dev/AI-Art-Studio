@@ -10,6 +10,8 @@ import {
   inUseBlankKind,
   frameColourHidden,
   normaliseBlankHex,
+  publishColourScene,
+  resolvePublishPanelId,
 } from "./colourBlanks";
 
 describe("softstyle colour seed", () => {
@@ -107,5 +109,43 @@ describe("softstyle colour seed", () => {
       'Navy is on the published product "Bed Etiquette" and open order #1042 (pending).',
     );
     expect(describeColourUse("White", [], [])).toBeNull();
+  });
+});
+
+describe("publish scene for a colour", () => {
+  const photographs = [
+    { panelId: "scene-1", label: "Mockup_01" },
+    { panelId: "scene-3", label: "Mockup_03" },
+  ];
+
+  it("uses the chosen scene when that colour has its photograph", () => {
+    expect(resolvePublishPanelId("scene-1", [
+      { panelId: "scene-3", isDefault: true },
+      { panelId: "scene-1", isDefault: false },
+    ])).toBe("scene-1");
+    expect(publishColourScene("scene-1", "scene-1", photographs)).toEqual({
+      panelId: "scene-1",
+      label: "Mockup_01",
+      fallback: false,
+    });
+  });
+
+  it("names the other scene when the chosen one has no photograph for that colour", () => {
+    const onlyLater = [{ panelId: "scene-3", label: "Mockup_03" }];
+    expect(publishColourScene("scene-1", "scene-1", onlyLater)).toEqual({
+      panelId: "scene-3",
+      label: "Mockup_03",
+      fallback: true,
+    });
+  });
+
+  it("follows the garment default when the chosen scene is not on that garment", () => {
+    const rows = [
+      { panelId: "scene-9", isDefault: false },
+      { panelId: "scene-3", isDefault: true },
+    ];
+    expect(resolvePublishPanelId("scene-1", rows)).toBe("scene-3");
+    expect(publishColourScene("scene-1", "scene-3", photographs)?.label).toBe("Mockup_03");
+    expect(publishColourScene("scene-1", "scene-3", photographs)?.fallback).toBe(true);
   });
 });

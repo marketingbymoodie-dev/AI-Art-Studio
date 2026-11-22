@@ -246,6 +246,30 @@ export function noPhotographMessage(colourName: string, typeName: string): strin
   return `${colourName} has no photograph on ${typeName}. Upload a blank before publishing this colour.`;
 }
 
+/** The panel publish asks for. Matches sceneForType: keep the chosen panel when this garment has it. */
+export function resolvePublishPanelId(
+  requested: string,
+  rows: readonly { panelId: string; isDefault: boolean }[],
+): string {
+  if (requested && rows.some((row) => row.panelId === requested)) return requested;
+  return rows.find((row) => row.isDefault)?.panelId || rows[0]?.panelId || "";
+}
+
+/**
+ * The one scene a colour will be rendered on.
+ * photographs is every scene that has a photo for that colour, in publish search order.
+ * fallback means that scene is not the one chosen in the Scene dropdown.
+ */
+export function publishColourScene(
+  dropdownPanelId: string,
+  resolvedPanelId: string,
+  photographs: readonly { panelId: string; label: string }[],
+): { panelId: string; label: string; fallback: boolean } | null {
+  if (!photographs.length) return null;
+  const used = photographs.find((scene) => scene.panelId === resolvedPanelId) || photographs[0];
+  return { panelId: used.panelId, label: used.label, fallback: used.panelId !== dropdownPanelId };
+}
+
 export function compareBlankScenes(a: { panelId: string; label?: string }, b: { panelId: string; label?: string }): number {
   const num = (value: string) => {
     const match = value.match(/(\d+)\s*$/);
