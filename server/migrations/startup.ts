@@ -2422,6 +2422,45 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "catalogue_import_batches",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_import_batches" (
+        "id" varchar PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalogue_import_rows",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_import_rows" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "batch_id" varchar NOT NULL,
+        "shop_domain" text NOT NULL,
+        "filename" text NOT NULL,
+        "proposed_filename" text,
+        "content_hash" text,
+        "import_status" text NOT NULL DEFAULT 'drafted',
+        "failure_reason" text,
+        "style" text NOT NULL DEFAULT '',
+        "species" text NOT NULL DEFAULT '',
+        "humour_operator" text NOT NULL DEFAULT '',
+        "truth" text NOT NULL DEFAULT '',
+        "device" text NOT NULL DEFAULT '',
+        "exact_wording" text NOT NULL DEFAULT '',
+        "source" text NOT NULL DEFAULT 'draft',
+        "low_confidence" jsonb,
+        "selected" boolean NOT NULL DEFAULT true,
+        "candidate_id" varchar,
+        "row_number" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "design_candidates",
     sql: `
       CREATE TABLE IF NOT EXISTS "design_candidates" (
@@ -2501,6 +2540,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "my_pet_email_captures_device_product_idx",
     sql: `CREATE INDEX IF NOT EXISTS "my_pet_email_captures_device_product_idx"
       ON "my_pet_email_captures" ("shop_domain", "device_key", "shopify_product_id")`,
+  },
+  {
+    name: "catalogue_import_rows_batch_file_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "catalogue_import_rows_batch_file_uidx"
+      ON "catalogue_import_rows" ("batch_id", "filename")`,
+  },
+  {
+    name: "catalogue_import_rows_shop_hash_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalogue_import_rows_shop_hash_idx"
+      ON "catalogue_import_rows" ("shop_domain", "content_hash")`,
   },
   {
     name: "design_candidates_shop_status_idx",

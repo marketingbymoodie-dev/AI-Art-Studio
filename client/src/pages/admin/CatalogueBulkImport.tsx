@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
-  catalogueRowIssues,
-  planCatalogueImport,
+  catalogueAttentionRank,
+  catalogueRowAttention,
+  catalogueRowsToRetry,
   type CatalogueImportRow,
+  type CatalogueImportStatus,
 } from "@shared/catalogueBulkImport";
 import { PETPOSTEROUS_ART_STYLE_LAUNCH, petposterousArtStyle } from "@shared/petposterousArtStyles";
 import { PETPOSTEROUS_CONCEPT_FRAMEWORKS } from "@shared/petposterousCreative";
@@ -20,6 +22,8 @@ type ReviewRow = CatalogueImportRow & {
   draftState: DraftState;
   draftError: string;
   costUsd: number | null;
+  selected: boolean;
+  importStatus: CatalogueImportStatus | "";
 };
 
 const DRAFTS_AT_ONCE = 4;
@@ -216,10 +220,61 @@ export default function CatalogueBulkImportPage() {
   const [created, setCreated] = useState<Created | null>(null);
   const filesRef = useRef<File[]>([]);
   const urlsRef = useRef<string[]>([]);
+  const batchIdRef = useRef("");
   const generation = useRef(0);
   const draftQueue = useRef<ReviewRow[]>([]);
   const draftWorkers = useRef(0);
   const addInput = useRef<HTMLInputElement>(null);
+
+  function rowPayload(row: ReviewRow) {
+    return {
+      rowNumber: row.rowNumber,
+      filename: row.filename,
+      style: row.style,
+      species: row.species,
+      humourOperator: row.humourOperator,
+      truth: row.truth,
+      device: row.device,
+      exactWording: row.exactWording,
+      source: row.source,
+      lowConfidence: row.lowConfidence,
+      proposedFilename: row.proposedFilename || "",
+      failureReason: row.failureReason || row.draftError || "",
+      importStatus: row.importStatus || (row.draftState === "failed" ? "failed" : "drafted"),
+      selected: row.selected,
+    };
+  }
+
+  async function saveRow(row: ReviewRow) {
+    if (!batchIdRef.current) return;
+    await apiFetch("/api/platform/catalogue-studio/candidates/import/row", {
+      method: "POST",
+      body: JSON.stringify({ batchId: batchIdRef.current, row: rowPayload(row) }),
+    }).catch(() => undefined);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch("/api/platform/catalogue-studio/candidates/import/open").then(async (res) => {
+      const body = await res.json().catch(() => ({}));
+      if (cancelled || !res.ok || !body.batch?.batchId || filesRef.current.length || generation.current) return;
+      batchIdRef.current = String(body.batch.batchId);
+      const restored: ReviewRow[] = (body.batch.rows || []).map((row: CatalogueImportRow) => ({
+        ...row,
+        selected: row.selected !== false,
+        importStatus: row.importStatus || "drafted",
+        previewUrl: "",
+        draftState: row.importStatus === "failed" ? "failed" as const : "done" as const,
+        draftError: row.failureReason || "",
+        costUsd: null,
+        lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
+      }));
+      setRows(restored);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function forgetPreviews() {
     for (const url of urlsRef.current) URL.revokeObjectURL(url);
@@ -231,7 +286,10 @@ export default function CatalogueBulkImportPage() {
     const file = filesRef.current.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
     if (!file) {
       if (generation.current !== gen) return;
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "failed", draftError: `${row.filename} is not in the folder.` } : item));
+      const missing = `${row.filename} is not in the folder.`;
+      const failed = { ...row, draftState: "failed" as const, draftError: missing, importStatus: "failed" as const, failureReason: missing };
+      setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+      void saveRow(failed);
       return;
     }
     setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "drafting", draftError: "" } : item));
@@ -249,42 +307,47 @@ export default function CatalogueBulkImportPage() {
       const body = await res.json().catch(() => ({}));
       if (generation.current !== gen) return;
       if (!res.ok) {
-        setRows((prev) => prev.map((item) => item.filename === row.filename ? {
-          ...item,
+        const draftError = String(body.error || body.message || `The draft failed (${res.status}).`);
+        const failed: ReviewRow = {
+          ...row,
           draftState: "failed",
-          draftError: String(body.error || body.message || `The draft failed (${res.status}).`),
-          costUsd: typeof body.costUsd === "number" ? body.costUsd : item.costUsd,
-        } : item));
+          draftError,
+          importStatus: "failed",
+          failureReason: draftError,
+          costUsd: typeof body.costUsd === "number" ? body.costUsd : row.costUsd,
+        };
+        setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+        void saveRow(failed);
         return;
       }
       setError("");
-      setRows((prev) => prev.map((item) => {
-        if (item.filename !== row.filename) return item;
-        return {
-          ...item,
-          draftState: "done",
-          draftError: "",
-          style: String(body.style || ""),
-          species: String(body.species || ""),
-          humourOperator: String(body.humourOperator || ""),
-          truth: String(body.truth || ""),
-          device: String(body.device || ""),
-          exactWording: String(body.exactWording || ""),
-          lowConfidence: {
-            style: body.lowConfidence?.style === true,
-            humourOperator: body.lowConfidence?.humourOperator === true,
-          },
-          costUsd: typeof body.costUsd === "number" ? body.costUsd : null,
-        };
-      }));
+      const done: ReviewRow = {
+        ...row,
+        draftState: "done",
+        draftError: "",
+        failureReason: "",
+        importStatus: row.importStatus === "queued" ? "queued" : "drafted",
+        style: String(body.style || ""),
+        species: String(body.species || ""),
+        humourOperator: String(body.humourOperator || ""),
+        truth: String(body.truth || ""),
+        device: String(body.device || ""),
+        exactWording: String(body.exactWording || ""),
+        lowConfidence: {
+          style: body.lowConfidence?.style === true,
+          humourOperator: body.lowConfidence?.humourOperator === true,
+        },
+        costUsd: typeof body.costUsd === "number" ? body.costUsd : null,
+      };
+      setRows((prev) => prev.map((item) => item.filename === row.filename ? done : item));
+      void saveRow(done);
     } catch (e: any) {
       if (generation.current !== gen) return;
       const timedOut = controller.signal.aborted || e?.name === "AbortError";
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? {
-        ...item,
-        draftState: "failed",
-        draftError: timedOut ? "The vision draft timed out." : String(e?.message || e),
-      } : item));
+      const draftError = timedOut ? "The vision draft timed out." : String(e?.message || e);
+      const failed: ReviewRow = { ...row, draftState: "failed", draftError, importStatus: "failed", failureReason: draftError };
+      setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+      void saveRow(failed);
     } finally {
       window.clearTimeout(timer);
     }
@@ -332,6 +395,7 @@ export default function CatalogueBulkImportPage() {
       return;
     }
     const gen = mode === "replace" ? (generation.current += 1) : generation.current;
+    if (mode === "replace" || !batchIdRef.current) batchIdRef.current = crypto.randomUUID();
     if (mode === "replace") {
       draftQueue.current = [];
       forgetPreviews();
@@ -367,6 +431,10 @@ export default function CatalogueBulkImportPage() {
         return;
       }
       const text = csvs.length === 1 ? await csvs[0].text() : "";
+      await apiFetch("/api/platform/catalogue-studio/candidates/import/batch", {
+        method: "POST",
+        body: JSON.stringify({ batchId: batchIdRef.current }),
+      }).catch(() => undefined);
       const planRes = await apiFetch("/api/platform/catalogue-studio/candidates/import/plan", {
         method: "POST",
         body: JSON.stringify({ csv: text, filenames: pngs.map((file) => nameOf(file)) }),
@@ -389,6 +457,8 @@ export default function CatalogueBulkImportPage() {
       const next: ReviewRow[] = planRows.map((row: CatalogueImportRow, index: number) => ({
         ...row,
         rowNumber: start + index + 1,
+        selected: true,
+        importStatus: "" as const,
         lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
         previewUrl: byName.get(row.filename.toLowerCase()) || "",
         draftState: row.source === "draft" ? "waiting" as const : "skipped" as const,
@@ -424,69 +494,110 @@ export default function CatalogueBulkImportPage() {
     }
   }
 
-  function edit(filename: string, patch: Partial<CatalogueImportRow>) {
+  function edit(filename: string, patch: Partial<ReviewRow>) {
     setError("");
     setRows((prev) => prev.map((row) => {
       if (row.filename !== filename) return row;
       const next = { ...row, ...patch };
       if ("style" in patch) next.lowConfidence = { ...next.lowConfidence, style: false };
       if ("humourOperator" in patch) next.lowConfidence = { ...next.lowConfidence, humourOperator: false };
+      void saveRow(next);
       return next;
     }));
   }
 
+  function renameRow(row: ReviewRow) {
+    const nextName = row.proposedFilename || "";
+    if (!nextName) return;
+    const file = filesRef.current.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
+    if (file) {
+      const renamed = new File([file], nextName, { type: file.type });
+      filesRef.current = filesRef.current.map((item) => item === file ? renamed : item);
+      setFiles(filesRef.current);
+    }
+    setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, filename: nextName, proposedFilename: "" } : item));
+  }
+
+  function readyRows(list: ReviewRow[] = rows): ReviewRow[] {
+    return list.filter((row) => {
+      if (!row.selected || row.importStatus === "queued" || row.importStatus === "failed" || row.draftState === "failed") return false;
+      if (row.draftState === "waiting" || row.draftState === "drafting") return false;
+      return !catalogueRowAttention(row, list).some((note) => note.tone === "block");
+    });
+  }
+
+  async function uploadRow(row: ReviewRow, batchId: string): Promise<ReviewRow> {
+    const file = filesRef.current.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
+    if (!file) {
+      if (row.importStatus === "uploaded" || row.contentHash) return row;
+      const failureReason = `${row.filename} is not in the folder.`;
+      return { ...row, importStatus: "failed", failureReason, draftError: failureReason };
+    }
+    const imageBase64 = await fileToDataUrl(file);
+    const send = () => apiFetch("/api/platform/catalogue-studio/candidates/import/file", {
+      method: "POST",
+      body: JSON.stringify({ batchId, filename: file.name, imageBase64 }),
+    });
+    let res = await send();
+    if (res.status === 401) res = await send();
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const failureReason = String(body.error || body.message || `${file.name} was not stored.`);
+      return { ...row, importStatus: "failed", failureReason, draftError: failureReason };
+    }
+    return { ...row, importStatus: "uploaded", contentHash: String(body.hash || row.contentHash || ""), failureReason: "", draftError: "" };
+  }
+
   async function createBatch() {
-    const batchId = crypto.randomUUID();
-    const filenames = files.map((file) => file.name);
-    setBusy(`Uploading 1 of ${rows.length}`);
+    const batchId = batchIdRef.current || crypto.randomUUID();
+    batchIdRef.current = batchId;
+    const chosen = readyRows();
+    setBusy(`Uploading 1 of ${chosen.length}`);
     setError("");
+    setCreated(null);
     try {
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const file = files.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
-        if (!file) throw new Error(`${row.filename} is not in the folder.`);
-        setBusy(`Uploading ${i + 1} of ${rows.length}: ${file.name}`);
-        const imageBase64 = await fileToDataUrl(file);
-        const res = await apiFetch("/api/platform/catalogue-studio/candidates/import/file", {
-          method: "POST",
-          body: JSON.stringify({ batchId, filename: file.name, imageBase64 }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || `${file.name} was not stored.`);
+      const uploaded: ReviewRow[] = [];
+      for (let i = 0; i < chosen.length; i++) {
+        setBusy(`Uploading ${i + 1} of ${chosen.length}: ${chosen[i].filename}`);
+        const stored = await uploadRow(chosen[i], batchId);
+        uploaded.push(stored);
+        setRows((prev) => prev.map((item) => item.filename === stored.filename ? stored : item));
+        void saveRow(stored);
+      }
+      const failedUploads = uploaded.filter((row) => row.importStatus === "failed");
+      const toQueue = uploaded.filter((row) => row.importStatus !== "failed");
+      if (!toQueue.length) {
+        setError(failedUploads.map((row) => row.failureReason || row.filename).join(" ") || "Nothing was stored.");
+        return;
       }
       setBusy("Creating candidates");
       const res = await apiFetch("/api/platform/catalogue-studio/candidates/import/commit", {
         method: "POST",
         body: JSON.stringify({
           batchId,
-          filenames,
-          rows: rows.map((row) => ({
-            rowNumber: row.rowNumber,
-            filename: row.filename,
-            style: row.style,
-            species: row.species,
-            humourOperator: row.humourOperator,
-            truth: row.truth,
-            device: row.device,
-            exactWording: row.exactWording,
-            source: row.source,
-          })),
+          filenames: toQueue.map((row) => row.filename),
+          rows: toQueue.map((row) => rowPayload(row)),
         }),
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok || body.failures?.length) {
-        const messages = Array.isArray(body.failures) && body.failures.length ? body.failures : [body.error || "Nothing was created."];
-        console.error("[catalogue-import] commit failed", messages);
-        setError(messages.join(" "));
+      const messages = Array.isArray(body.failures) ? body.failures.map(String) : [];
+      const queued = (Number(body.created) || 0) + (Number(body.reused) || 0);
+      if (!res.ok || messages.length || queued !== toQueue.length) {
+        const shown = messages.length ? messages : [body.error || "Not every row was queued."];
+        console.error("[catalogue-import] commit failed", shown);
+        setError([...shown, ...failedUploads.map((row) => row.failureReason || "")].filter(Boolean).join(" "));
         setCreated(null);
         return;
       }
-      setCreated({ created: Number(body.created) || 0, studioPath: String(body.studioPath || "") });
+      if (failedUploads.length) {
+        setError(failedUploads.map((row) => row.failureReason || row.filename).join(" "));
+        setCreated(null);
+        return;
+      }
+      const queuedNames = new Set(toQueue.map((row) => row.filename));
+      setRows((prev) => prev.map((item) => queuedNames.has(item.filename) ? { ...item, importStatus: "queued", failureReason: "" } : item));
+      setCreated({ created: queued, studioPath: String(body.studioPath || "") });
     } catch (e: any) {
-      await apiFetch("/api/platform/catalogue-studio/candidates/import/abort", {
-        method: "POST",
-        body: JSON.stringify({ batchId, filenames }),
-      }).catch(() => undefined);
       console.error("[catalogue-import] create failed", e);
       setError(String(e?.message || e));
     } finally {
@@ -494,12 +605,19 @@ export default function CatalogueBulkImportPage() {
     }
   }
 
+  function retryFailed() {
+    enqueueDrafts(catalogueRowsToRetry(rows));
+  }
+
   const draftRows = rows.filter((row) => row.source === "draft");
   const drafted = draftRows.filter((row) => row.draftState === "done" || row.draftState === "failed").length;
   const drafting = draftRows.some((row) => row.draftState === "waiting" || row.draftState === "drafting");
-  const fieldIssues = rows.flatMap((row) => catalogueRowIssues(row));
   const spent = rows.reduce((sum, row) => sum + (typeof row.costUsd === "number" ? row.costUsd : 0), 0);
-  const ready = rows.length > 0 && !failures.length && !fieldIssues.length && !drafting && !rows.some((row) => row.draftState === "failed") && !created;
+  const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows) || a.rowNumber - b.rowNumber);
+  const queueCount = readyRows().length;
+  const failedCount = rows.filter((row) => row.importStatus === "failed" || row.draftState === "failed").length;
+  const attentionCount = rows.filter((row) => row.importStatus !== "failed" && row.draftState !== "failed" && catalogueRowAttention(row, rows).length > 0).length;
+  const ready = queueCount > 0 && !failures.length && !drafting && !created;
 
   return (
     <AdminLayout>
@@ -563,6 +681,9 @@ export default function CatalogueBulkImportPage() {
           </ul>
         ) : null}
         {rows.length ? (
+          <p className="text-xs" data-testid="catalogue-bulk-import-summary">{queueCount} ready, {attentionCount} need attention, {failedCount} failed</p>
+        ) : null}
+        {rows.length ? (
           <div className="max-h-[36rem] overflow-auto">
             <table className="w-full text-left text-xs">
               <thead>
@@ -579,22 +700,34 @@ export default function CatalogueBulkImportPage() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => {
-                  const issues = catalogueRowIssues(row);
+                {ordered.map((row) => {
+                  const notes = catalogueRowAttention(row, rows);
                   const styleUnsure = row.lowConfidence?.style && !row.style;
                   const humourUnsure = row.lowConfidence?.humourOperator && !row.humourOperator;
                   const locked = row.draftState === "waiting" || row.draftState === "drafting";
+                  const stateLabel = row.importStatus === "queued"
+                    ? "Queued"
+                    : row.source === "csv"
+                      ? "From the CSV"
+                      : row.draftState === "drafting" || row.draftState === "waiting"
+                        ? "Drafting"
+                        : row.draftState === "failed" || row.importStatus === "failed"
+                          ? "Draft failed"
+                          : "Drafted";
                   return (
                     <tr key={`${row.rowNumber}-${row.filename}`} className="align-top">
                       <td className="py-2 pr-2">
+                        <input aria-label={`Queue ${row.filename}`} type="checkbox" checked={row.selected} disabled={locked || row.importStatus === "queued"} onChange={(e) => edit(row.filename, { selected: e.target.checked })} />
                         {row.previewUrl ? <img src={row.previewUrl} alt="" className="h-16 w-16 bg-[#808080] object-contain" /> : null}
                         <div>{row.filename}</div>
-                        <div className="text-muted-foreground">{row.source === "csv" ? "From the CSV" : row.draftState === "drafting" || row.draftState === "waiting" ? "Drafting" : row.draftState === "failed" ? "Draft failed" : "Drafted"}</div>
-                        {row.draftError ? <div>{row.draftError}</div> : null}
-                        {row.draftState === "failed" ? (
+                        <div className="text-muted-foreground">{stateLabel}</div>
+                        {row.draftState === "failed" && row.source === "draft" && row.importStatus !== "queued" ? (
                           <button type="button" className="underline" onClick={() => void draftOne(row, generation.current)}>Retry this draft</button>
                         ) : null}
-                        {issues.map((issue) => <div key={issue}>{issue.replace(`${row.filename}: `, "")}</div>)}
+                        {row.proposedFilename ? (
+                          <button type="button" className="underline" onClick={() => renameRow(row)}>Rename to {row.proposedFilename}</button>
+                        ) : null}
+                        {notes.map((note) => <div key={note.message}>{note.message}</div>)}
                       </td>
                       <td className="py-2 pr-2">
                         <select
@@ -653,9 +786,14 @@ export default function CatalogueBulkImportPage() {
         ) : null}
         {error ? <p className="text-xs" data-testid="catalogue-bulk-import-error">{error}</p> : null}
         {rows.length && !created ? (
-          <Button type="button" size="sm" disabled={!!busy || !ready} onClick={() => void createBatch()}>
-            Create {rows.length} pending {rows.length === 1 ? "candidate" : "candidates"}{draftRows.length ? ` · vision ${money(spent)}` : ""}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" disabled={!!busy || !ready} onClick={() => void createBatch()}>
+              Create {queueCount} pending {queueCount === 1 ? "candidate" : "candidates"}{draftRows.length ? ` · vision ${money(spent)}` : ""}
+            </Button>
+            {catalogueRowsToRetry(rows).some((row) => row.source === "draft") ? (
+              <Button type="button" size="sm" variant="outline" disabled={!!busy || drafting} onClick={retryFailed}>Retry failed only</Button>
+            ) : null}
+          </div>
         ) : null}
         {created ? (
           <p className="text-sm" data-testid="catalogue-bulk-import-created">

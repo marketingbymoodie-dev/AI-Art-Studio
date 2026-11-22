@@ -3,15 +3,17 @@
  * Nothing is inserted until the whole batch validates. Storage from a
  * refused batch is removed.
  */
-import { randomUUID } from "crypto";
-import { reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { createHash, randomUUID } from "crypto";
+import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
+import { claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, catalogueRowIssues, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
-import { catalogueCandidateChoices, designCandidates } from "@shared/schema";
+import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
 import { db } from "./db";
 import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
 
 export type CatalogueImportResult = {
   created: number;
+  reused: number;
   firstId: string;
   studioPath: string;
   failures: string[];
@@ -38,7 +40,7 @@ export function decodeCataloguePng(filename: string, imageBase64: string): Buffe
   return buf;
 }
 
-async function assertCatalogueImportShop(shop: string | null | undefined): Promise<string> {
+export async function assertCatalogueImportShop(shop: string | null | undefined): Promise<string> {
   if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
     throw new Error("Catalogue import is staging only.");
   }
@@ -68,16 +70,115 @@ async function removeStaged(batchId: string, filenames: string[]): Promise<void>
   }
 }
 
-export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string, shop?: string | null): Promise<void> {
-  await assertCatalogueImportShop(shop);
+export function cataloguePngHash(buf: Buffer): string {
+  return createHash("sha256").update(buf).digest("hex");
+}
+
+export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string, shop?: string | null): Promise<{ hash: string }> {
+  const domain = await assertCatalogueImportShop(shop);
   const buf = decodeCataloguePng(filename, imageBase64);
   const path = catalogueImportStagePath(batchId, filename);
   await removeLibraryObject(path).catch(() => undefined);
   await writeLibraryObject(path, buf, "image/png");
+  const hash = cataloguePngHash(buf);
+  await ensureCatalogueImportBatch(domain, batchId);
+  await upsertCatalogueImportRow(domain, batchId, { filename, contentHash: hash, importStatus: "uploaded" });
+  return { hash };
 }
 
 export async function abortCatalogueImport(batchId: string, filenames: string[]): Promise<void> {
   await removeStaged(batchId, filenames);
+}
+
+export async function ensureCatalogueImportBatch(shop: string, batchId: string): Promise<void> {
+  if (!batchIdOk(batchId)) throw new Error("That upload is not a catalogue batch.");
+  const now = new Date();
+  await db.insert(catalogueImportBatches).values({ id: batchId, shopDomain: shop, createdAt: now, updatedAt: now }).onConflictDoUpdate({
+    target: catalogueImportBatches.id,
+    set: { updatedAt: now },
+  });
+}
+
+export async function upsertCatalogueImportRow(shop: string, batchId: string, row: Partial<CatalogueImportRow> & { filename: string }): Promise<void> {
+  if (!batchIdOk(batchId)) throw new Error("That upload is not a catalogue batch.");
+  const filename = row.filename;
+  const now = new Date();
+  const [existing] = await db.select().from(catalogueImportRows).where(and(
+    eq(catalogueImportRows.batchId, batchId),
+    eq(catalogueImportRows.filename, filename),
+  )).limit(1);
+  const next = {
+    shopDomain: shop,
+    proposedFilename: row.proposedFilename ?? existing?.proposedFilename ?? null,
+    contentHash: row.contentHash ?? existing?.contentHash ?? null,
+    importStatus: row.importStatus ?? existing?.importStatus ?? "drafted",
+    failureReason: row.failureReason ?? (row.importStatus === "failed" ? existing?.failureReason ?? null : null),
+    style: row.style ?? existing?.style ?? "",
+    species: row.species ?? existing?.species ?? "",
+    humourOperator: row.humourOperator ?? existing?.humourOperator ?? "",
+    truth: row.truth ?? existing?.truth ?? "",
+    device: row.device ?? existing?.device ?? "",
+    exactWording: row.exactWording ?? existing?.exactWording ?? "",
+    source: row.source ?? existing?.source ?? "draft",
+    lowConfidence: row.lowConfidence ?? existing?.lowConfidence ?? { style: false, humourOperator: false },
+    selected: row.selected ?? existing?.selected ?? true,
+    candidateId: row.candidateId ?? existing?.candidateId ?? null,
+    rowNumber: row.rowNumber ?? existing?.rowNumber ?? 0,
+    updatedAt: now,
+  };
+  if (!existing) {
+    await db.insert(catalogueImportRows).values({ id: randomUUID(), batchId, filename, createdAt: now, ...next });
+    return;
+  }
+  await db.update(catalogueImportRows).set(next).where(eq(catalogueImportRows.id, existing.id));
+}
+
+export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: string; rows: CatalogueImportRow[] } | null> {
+  const batches = await db.select().from(catalogueImportBatches).where(eq(catalogueImportBatches.shopDomain, shop)).orderBy(desc(catalogueImportBatches.updatedAt)).limit(10);
+  for (const batch of batches) {
+    const stored = await db.select().from(catalogueImportRows).where(eq(catalogueImportRows.batchId, batch.id)).orderBy(catalogueImportRows.rowNumber);
+    if (!stored.length) continue;
+    if (stored.every((row) => row.importStatus === "queued")) continue;
+    return {
+      batchId: batch.id,
+      rows: stored.map((row) => ({
+        rowNumber: row.rowNumber,
+        filename: row.filename,
+        style: row.style,
+        species: row.species,
+        humourOperator: row.humourOperator,
+        truth: row.truth,
+        device: row.device,
+        exactWording: row.exactWording,
+        source: row.source === "csv" ? "csv" : "draft",
+        lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
+        proposedFilename: row.proposedFilename || undefined,
+        failureReason: row.failureReason || undefined,
+        contentHash: row.contentHash || undefined,
+        importStatus: row.importStatus as CatalogueImportRow["importStatus"],
+        candidateId: row.candidateId || undefined,
+        selected: row.selected,
+      })),
+    };
+  }
+  return null;
+}
+
+async function knownCatalogueHashes(shop: string): Promise<Map<string, string>> {
+  const rows = await db.select({
+    hash: catalogueImportRows.contentHash,
+    candidateId: catalogueImportRows.candidateId,
+  }).from(catalogueImportRows).where(and(
+    eq(catalogueImportRows.shopDomain, shop),
+    isNotNull(catalogueImportRows.contentHash),
+    isNotNull(catalogueImportRows.candidateId),
+    ne(catalogueImportRows.candidateId, ""),
+  ));
+  const known = new Map<string, string>();
+  for (const row of rows) {
+    if (row.hash && row.candidateId) known.set(row.hash, row.candidateId);
+  }
+  return known;
 }
 
 export async function commitCatalogueImport(args: {
@@ -87,84 +188,97 @@ export async function commitCatalogueImport(args: {
   shop?: string | null;
 }): Promise<CatalogueImportResult> {
   const shop = await assertCatalogueImportShop(args.shop);
-  const empty = { created: 0, firstId: "", studioPath: "", failures: [] as string[] };
+  const empty = { created: 0, reused: 0, firstId: "", studioPath: "", failures: [] as string[] };
   if (!batchIdOk(args.batchId)) {
     return { ...empty, failures: ["That upload is not a catalogue batch."] };
   }
-  const review = reviewCatalogueImport({ filenames: args.filenames, rows: args.rows });
-  if (review.failures.length || !args.rows.length) {
-    await removeStaged(args.batchId, args.filenames);
-    return { ...empty, failures: review.failures.length ? review.failures : ["The folder has no PNGs."] };
-  }
-
-  const staged: Array<{ row: CatalogueImportRow; path: string }> = [];
+  if (!args.rows.length) return { ...empty, failures: ["The folder has no PNGs."] };
+  await ensureCatalogueImportBatch(shop, args.batchId);
+    const review = reviewCatalogueImport({ filenames: args.filenames, rows: args.rows });
+    const known = await knownCatalogueHashes(shop);
   const failures: string[] = [];
+  const ids: string[] = [];
+  let created = 0;
+
   for (const row of args.rows) {
+    const issues = catalogueRowIssues(row);
+    const named = review.failures.filter((failure) => failure.toLowerCase().includes(row.filename.toLowerCase()));
+    if (issues.length || named.length || row.proposedFilename) {
+      const reason = named[0] || issues[0] || "This row still needs attention.";
+      failures.push(reason);
+      await upsertCatalogueImportRow(shop, args.batchId, { ...row, importStatus: "failed", failureReason: reason });
+      continue;
+    }
     const path = catalogueImportStagePath(args.batchId, row.filename);
+    let hash = row.contentHash || "";
     try {
       const buf = await readLibraryObject(path);
-      if (!isPng(buf)) failures.push(`${row.filename} is not a PNG.`);
-      else staged.push({ row, path });
-    } catch {
-      failures.push(`${row.filename} is in the CSV and was not uploaded.`);
+      if (!isPng(buf)) throw new Error(`${row.filename} is not a PNG.`);
+      hash = cataloguePngHash(buf);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : `${row.filename} was not uploaded.`;
+      failures.push(reason);
+      await upsertCatalogueImportRow(shop, args.batchId, { ...row, importStatus: "failed", failureReason: reason });
+      continue;
     }
-  }
-  if (staged.length !== args.rows.length) {
-    failures.push("A staged image did not match the review table.");
-  }
-  if (failures.length) {
-    await removeStaged(args.batchId, args.filenames);
-    return { ...empty, failures };
-  }
-
-  const ids: string[] = [];
-  try {
-    const started = Date.now();
-    await db.transaction(async (tx) => {
-      for (let index = 0; index < staged.length; index++) {
-        const item = staged[index];
-        const id = randomUUID();
-        const now = new Date(started + index);
-        ids.push(id);
-        await tx.insert(designCandidates).values({
-          id,
+    try {
+      const claim = claimCatalogueHash(known, hash, () => randomUUID());
+      try {
+      if (claim.created) {
+        const now = new Date();
+        await db.insert(designCandidates).values({
+          id: claim.candidateId,
           shopDomain: shop,
           status: "pending",
           source: "manual",
-          humourOperator: item.row.humourOperator,
+          humourOperator: row.humourOperator,
           darknessLevel: 0,
-          species: item.row.species,
+          species: row.species,
           deviceStructure: "",
-          deviceText: item.row.device,
-          funnyTruth: item.row.truth,
-          punchline: item.row.exactWording,
-          artStyle: item.row.style,
+          deviceText: row.device,
+          funnyTruth: row.truth,
+          punchline: row.exactWording,
+          artStyle: row.style,
           behaviour: "",
           productFamily: "apparel",
           credentialRef: "replicate:shared",
-          artworkPath: item.path,
+          artworkPath: path,
           updatedAt: now,
           createdAt: now,
         });
-        await tx.insert(catalogueCandidateChoices).values({
-          candidateId: id,
-          artworkPath: item.path,
+        await db.insert(catalogueCandidateChoices).values({
+          candidateId: claim.candidateId,
+          artworkPath: path,
           selectedColors: [],
           updatedAt: now,
         });
+        created += 1;
       }
-    });
-  } catch (err) {
-    await removeStaged(args.batchId, args.filenames);
-    throw err;
+      ids.push(claim.candidateId);
+      await upsertCatalogueImportRow(shop, args.batchId, {
+        ...row,
+        contentHash: hash,
+        importStatus: "queued",
+        failureReason: "",
+        candidateId: claim.candidateId,
+      });
+      } catch (err) {
+        if (claim.created) known.delete(hash);
+        throw err;
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : `${row.filename} was not queued.`;
+      failures.push(`${row.filename}: ${reason}`);
+      await upsertCatalogueImportRow(shop, args.batchId, { ...row, contentHash: hash, importStatus: "failed", failureReason: reason }).catch(() => undefined);
+    }
   }
 
-  // Newest row is the head of the studio queue, so this link starts the batch there.
   const firstId = ids[ids.length - 1] || "";
   return {
-    created: ids.length,
+    created,
+    reused: ids.length - created,
     firstId,
     studioPath: firstId ? `/admin/catalogue-studio?candidate=${firstId}` : "",
-    failures: [],
+    failures,
   };
 }

@@ -18,7 +18,7 @@ export const CATALOGUE_IMPORT_COLUMNS = [
   "exact_wording",
 ] as const;
 
-const LIMITS = { species: 80, truth: 400, device: 400, exactWording: 120 } as const;
+const LIMITS = { species: 80, truth: 400, device: 400 } as const;
 
 /** Sonnet 4.6 list price, USD per million tokens. The listing writer uses this model. */
 const SONNET_46 = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 };
@@ -29,6 +29,8 @@ const MODEL_RATES: Record<string, { input: number; output: number; cacheWrite: n
 };
 
 export type CatalogueConfidence = { style: boolean; humourOperator: boolean };
+
+export type CatalogueImportStatus = "drafted" | "uploaded" | "queued" | "failed";
 
 export type CatalogueImportRow = {
   rowNumber: number;
@@ -42,7 +44,17 @@ export type CatalogueImportRow = {
   /** csv rows are not sent to the vision model. */
   source: "csv" | "draft";
   lowConfidence: CatalogueConfidence;
+  /** Safe storage name when the dropped name is not one. Empty when no rename is offered. */
+  proposedFilename?: string;
+  /** Set when an upload, draft, or commit failed. Empty when the row can still proceed. */
+  failureReason?: string;
+  contentHash?: string;
+  importStatus?: CatalogueImportStatus;
+  candidateId?: string;
+  selected?: boolean;
 };
+
+export type CatalogueAttention = { tone: "block" | "warn"; message: string };
 
 export type CatalogueImportPlan = {
   rows: CatalogueImportRow[];
@@ -71,6 +83,34 @@ export function catalogueImportObjectName(filename: string): string | null {
   const stem = base.slice(0, -4);
   if (!stem || stem === "." || stem === "..") return null;
   return base.toLowerCase();
+}
+
+/**
+ * A storage name for a PNG the current rule rejects.
+ * Commas and other rejected characters become hyphens. Null when no safe name exists.
+ * Already-safe names return null so the caller leaves them alone.
+ */
+export function proposeCatalogueFilename(filename: string): string | null {
+  const base = filename.split(/[/\\]/).pop()?.trim() || "";
+  if (catalogueImportObjectName(base)) return null;
+  if (!/\.png$/i.test(base)) return null;
+  const stem = base.slice(0, -4);
+  const cleaned = stem
+    .replace(/,/g, "-")
+    .replace(/[^\w .()-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[\s.-]+|[\s.-]+$/g, "");
+  if (!cleaned) return null;
+  return catalogueImportObjectName(`${cleaned}.png`);
+}
+
+/** One candidate id per PNG hash. The second claim returns the id from the first. */
+export function claimCatalogueHash(known: Map<string, string>, hash: string, mint: () => string): { candidateId: string; created: boolean } {
+  const existing = hash ? known.get(hash) : undefined;
+  if (existing) return { candidateId: existing, created: false };
+  const candidateId = mint();
+  if (hash) known.set(hash, candidateId);
+  return { candidateId, created: true };
 }
 
 export function parseCatalogueCsv(text: string): string[][] {
@@ -139,16 +179,19 @@ export function emptyCatalogueRow(filename: string, rowNumber: number, source: "
   };
 }
 
-function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failures: string[] } {
+function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failures: string[]; proposals: Map<string, string> } {
   const failures: string[] = [];
   const uploaded = new Map<string, string>();
+  const proposals = new Map<string, string>();
   for (const filename of filenames) {
-    const objectName = catalogueImportObjectName(filename);
     const label = filename.split(/[/\\]/).pop()?.trim() || filename;
+    const proposed = proposeCatalogueFilename(label);
+    const objectName = catalogueImportObjectName(label) || proposed;
     if (!objectName) {
       failures.push(`${label} is not a PNG named with letters, numbers, spaces, dots, underscores, or hyphens.`);
       continue;
     }
+    if (proposed) proposals.set(label, proposed);
     const prior = uploaded.get(objectName);
     if (prior) {
       failures.push(`${label} duplicates ${prior}.`);
@@ -156,7 +199,7 @@ function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failur
     }
     uploaded.set(objectName, label);
   }
-  return { uploaded, failures };
+  return { uploaded, failures, proposals };
 }
 
 /**
@@ -185,10 +228,70 @@ export function catalogueRowIssues(row: Pick<CatalogueImportRow, "filename" | "s
   const device = clip(row.device || "", LIMITS.device + 1);
   if (!device) issues.push(`${where}: device is blank.`);
   else if (device.length > LIMITS.device) issues.push(`${where}: device is longer than ${LIMITS.device} characters.`);
-  if (trimEdges(row.exactWording || "").length > LIMITS.exactWording) {
-    issues.push(`${where}: exact_wording is longer than ${LIMITS.exactWording} characters.`);
-  }
   return issues;
+}
+
+/** Warning only. A real punchline of 4–8 words must still queue, and the text is not trimmed. */
+export function catalogueWordingWarning(wording: string): string | null {
+  const text = trimEdges(wording || "");
+  if (!text) return null;
+  const lines = text.split(/\r?\n/).length;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  const reasons: string[] = [];
+  if (words > 6) reasons.push(`${words} words`);
+  if (text.length > 40) reasons.push(`${text.length} characters`);
+  if (lines > 3) reasons.push(`${lines} lines`);
+  if (!reasons.length) return null;
+  return `Exact wording looks long for a shirt (${reasons.join(", ")}). Check it is the punchline.`;
+}
+
+function attentionTextKey(row: Pick<CatalogueImportRow, "truth" | "device" | "exactWording">): string {
+  const part = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
+  const truth = part(row.truth || "");
+  const device = part(row.device || "");
+  const wording = part(row.exactWording || "");
+  if (!truth && !device && !wording) return "";
+  return `${truth}\n${device}\n${wording}`;
+}
+
+export function catalogueRowAttention(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): CatalogueAttention[] {
+  const notes: CatalogueAttention[] = [];
+  if (row.importStatus === "failed" || row.failureReason) {
+    notes.push({ tone: "block", message: row.failureReason || "This row failed." });
+  }
+  if (row.proposedFilename) {
+    notes.push({ tone: "block", message: `Storage name cannot keep this filename. Rename to ${row.proposedFilename}.` });
+  }
+  if (row.lowConfidence?.style) notes.push({ tone: "block", message: "Style is low confidence." });
+  if (row.lowConfidence?.humourOperator) notes.push({ tone: "block", message: "Humour is low confidence." });
+  for (const issue of catalogueRowIssues(row)) {
+    if (row.lowConfidence?.style && issue.endsWith("style is blank.")) continue;
+    if (row.lowConfidence?.humourOperator && issue.endsWith("humour_operator is blank.")) continue;
+    notes.push({ tone: "block", message: issue.replace(`${row.filename}: `, "") });
+  }
+  const wording = catalogueWordingWarning(row.exactWording);
+  if (wording) notes.push({ tone: "warn", message: wording });
+  const hash = row.contentHash || "";
+  const textKey = attentionTextKey(row);
+  const other = peers.find((peer) => {
+    if (peer === row || peer.filename === row.filename) return false;
+    if (hash && peer.contentHash === hash) return true;
+    return !!textKey && attentionTextKey(peer) === textKey;
+  });
+  if (other) notes.push({ tone: "warn", message: `Near duplicate of ${other.filename}.` });
+  return notes;
+}
+
+export function catalogueAttentionRank(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): number {
+  if (row.importStatus === "failed" || row.failureReason) return 0;
+  const notes = catalogueRowAttention(row, peers);
+  if (notes.some((note) => note.tone === "block")) return 1;
+  if (notes.some((note) => note.tone === "warn")) return 2;
+  return 3;
+}
+
+export function catalogueRowsToRetry<T extends { filename: string; importStatus?: CatalogueImportStatus; failureReason?: string; draftState?: string }>(rows: T[]): T[] {
+  return rows.filter((row) => row.importStatus !== "queued" && (row.importStatus === "failed" || !!row.failureReason || row.draftState === "failed"));
 }
 
 /**
@@ -235,12 +338,17 @@ export function catalogueDraftCostUsd(usage: CatalogueDraftUsage, model: string)
  * No CSV: every PNG is a draft row. A CSV row wins and is not drafted.
  * A PNG with no CSV row is a draft row, not a failure.
  */
+function withProposal(row: CatalogueImportRow, proposals: Map<string, string>): CatalogueImportRow {
+  const proposed = proposals.get(row.filename);
+  return proposed ? { ...row, proposedFilename: proposed } : row;
+}
+
 export function planCatalogueImport(input: { csv?: string; filenames: string[] }): CatalogueImportPlan {
-  const { uploaded, failures } = uploadMap(input.filenames);
+  const { uploaded, failures, proposals } = uploadMap(input.filenames);
   const csv = String(input.csv || "");
   if (!csv.trim()) {
     if (!uploaded.size && !failures.length) failures.push("The folder has no PNGs.");
-    const rows = [...uploaded.values()].map((filename, index) => emptyCatalogueRow(filename, index + 1, "draft"));
+    const rows = [...uploaded.values()].map((filename, index) => withProposal(emptyCatalogueRow(filename, index + 1, "draft"), proposals));
     return { rows, failures };
   }
 
@@ -267,7 +375,8 @@ export function planCatalogueImport(input: { csv?: string; filenames: string[] }
     const truthRaw = (cells[4] || "").trim();
     const deviceRaw = (cells[5] || "").trim();
     const wordingRaw = trimEdges(cells[6] || "");
-    const objectName = catalogueImportObjectName(filename);
+    const proposed = proposeCatalogueFilename(filename);
+    const objectName = catalogueImportObjectName(filename) || proposed;
     const style = (PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(styleRaw) ? styleRaw : "";
     const speciesClipped = clip(speciesRaw, LIMITS.species + 1);
     const humourOperator = humourOperatorId(humourRaw) || "";
@@ -294,13 +403,14 @@ export function planCatalogueImport(input: { csv?: string; filenames: string[] }
       exactWording: wordingRaw,
       source: "csv",
       lowConfidence: { style: false, humourOperator: false },
+      ...(proposed ? { proposedFilename: proposed } : {}),
     });
   }
 
   let nextNumber = (rows[rows.length - 1]?.rowNumber || 1) + 1;
   for (const [objectName, label] of uploaded) {
     if (seen.has(objectName)) continue;
-    rows.push(emptyCatalogueRow(label, nextNumber, "draft"));
+    rows.push(withProposal(emptyCatalogueRow(label, nextNumber, "draft"), proposals));
     nextNumber += 1;
   }
   if (!rows.length && !failures.length) failures.push("The folder has no PNGs.");

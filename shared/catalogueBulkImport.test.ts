@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   CATALOGUE_IMPORT_COLUMNS,
+  catalogueAttentionRank,
   catalogueDraftCostUsd,
+  catalogueRowAttention,
   catalogueRowIssues,
+  catalogueRowsToRetry,
+  catalogueWordingWarning,
+  claimCatalogueHash,
   normaliseCatalogueDraft,
   planCatalogueImport,
   reviewCatalogueImport,
+  type CatalogueImportRow,
 } from "./catalogueBulkImport";
 
 const header = CATALOGUE_IMPORT_COLUMNS.join(",");
@@ -127,5 +133,69 @@ describe("catalogue bulk import", () => {
     expect(reviewCatalogueImport({ filenames: ["dog.png"], rows: plan.rows }).failures).toContain("dog.png: style is blank.");
     const filled = { ...plan.rows[0], style: "woodcut", species: "dog", humourOperator: "pp-sleep-warfare", truth: "asleep", device: "on the bed" };
     expect(reviewCatalogueImport({ filenames: ["dog.png"], rows: [filled] }).failures).toEqual([]);
+  });
+
+  it("offers a rename for a comma filename and does not fail the rest of the batch", () => {
+    const plan = planCatalogueImport({
+      filenames: ["ChatGPT Image Oct 9, 2026, 02_15_30 PM.png", "dog.png"],
+    });
+    expect(plan.failures).toEqual([]);
+    const renamed = plan.rows.find((row) => row.filename.includes(","));
+    expect(renamed?.proposedFilename).toBe("chatgpt image oct 9- 2026- 02_15_30 pm.png");
+    expect(catalogueRowAttention(renamed!, plan.rows).some((note) => note.tone === "block" && note.message.includes("Rename to"))).toBe(true);
+    expect(plan.rows.find((row) => row.filename === "dog.png")?.proposedFilename).toBeUndefined();
+  });
+
+  it("warns on long wording and still leaves the row queueable", () => {
+    const row: CatalogueImportRow = {
+      rowNumber: 1,
+      filename: "dog.png",
+      style: "woodcut",
+      species: "dog",
+      humourOperator: "pp-sleep-warfare",
+      truth: "asleep",
+      device: "on the bed",
+      exactWording: "the dog has collected every card today",
+      source: "draft",
+      lowConfidence: { style: false, humourOperator: false },
+    };
+    expect(catalogueWordingWarning(row.exactWording)).toMatch(/7 words/);
+    expect(catalogueWordingWarning("one\ntwo\nthree\nfour")).toMatch(/4 lines/);
+    expect(catalogueWordingWarning("a punchline that is clearly too many characters")).toMatch(/characters/);
+    expect(row.exactWording).toBe("the dog has collected every card today");
+    expect(catalogueRowIssues(row)).toEqual([]);
+    const notes = catalogueRowAttention(row, [row]);
+    expect(notes).toEqual([{ tone: "warn", message: expect.stringMatching(/long for a shirt/) }]);
+    expect(reviewCatalogueImport({ filenames: ["dog.png"], rows: [row] }).failures).toEqual([]);
+  });
+
+  it("sorts near-duplicates above a clean row", () => {
+    const shared = { style: "woodcut", species: "dog", humourOperator: "pp-sleep-warfare", truth: "asleep", device: "on the bed", source: "draft" as const, lowConfidence: { style: false, humourOperator: false } };
+    const rows: CatalogueImportRow[] = [
+      { ...shared, rowNumber: 1, filename: "clean.png", exactWording: "ONE" },
+      { ...shared, rowNumber: 2, filename: "copy-a.png", exactWording: "SAME", contentHash: "hash-1" },
+      { ...shared, rowNumber: 3, filename: "copy-b.png", exactWording: "SAME", contentHash: "hash-1" },
+    ];
+    const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows));
+    expect(ordered.map((row) => row.filename)).toEqual(["copy-a.png", "copy-b.png", "clean.png"]);
+    expect(catalogueRowAttention(rows[1], rows).some((note) => note.message.includes("copy-b.png"))).toBe(true);
+  });
+
+  it("returns the same candidate id when the same file hash is claimed twice", () => {
+    const known = new Map<string, string>();
+    const first = claimCatalogueHash(known, "abc", () => "candidate-1");
+    const second = claimCatalogueHash(known, "abc", () => "candidate-2");
+    const other = claimCatalogueHash(known, "def", () => "candidate-3");
+    expect(first).toEqual({ candidateId: "candidate-1", created: true });
+    expect(second).toEqual({ candidateId: "candidate-1", created: false });
+    expect(other).toEqual({ candidateId: "candidate-3", created: true });
+  });
+
+  it("retries a failed row and leaves a queued row alone", () => {
+    const rows = [
+      { filename: "done.png", importStatus: "queued" as const, source: "draft" as const },
+      { filename: "again.png", importStatus: "failed" as const, failureReason: "The draft failed", source: "draft" as const, draftState: "failed" },
+    ];
+    expect(catalogueRowsToRetry(rows).map((row) => row.filename)).toEqual(["again.png"]);
   });
 });

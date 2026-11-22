@@ -1453,6 +1453,41 @@ export const designCandidates = pgTable("design_candidates", {
   index("design_candidates_shop_status_idx").on(table.shopDomain, table.status),
 ]);
 
+/** One catalogue-import drop. Rows stay here until each design is queued. */
+export const catalogueImportBatches = pgTable("catalogue_import_batches", {
+  id: varchar("id").primaryKey(),
+  shopDomain: text("shop_domain").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const catalogueImportRows = pgTable("catalogue_import_rows", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  batchId: varchar("batch_id").notNull(),
+  shopDomain: text("shop_domain").notNull(),
+  filename: text("filename").notNull(),
+  proposedFilename: text("proposed_filename"),
+  contentHash: text("content_hash"),
+  importStatus: text("import_status").notNull().default("drafted"),
+  failureReason: text("failure_reason"),
+  style: text("style").notNull().default(""),
+  species: text("species").notNull().default(""),
+  humourOperator: text("humour_operator").notNull().default(""),
+  truth: text("truth").notNull().default(""),
+  device: text("device").notNull().default(""),
+  exactWording: text("exact_wording").notNull().default(""),
+  source: text("source").notNull().default("draft"),
+  lowConfidence: jsonb("low_confidence").$type<{ style: boolean; humourOperator: boolean }>(),
+  selected: boolean("selected").notNull().default(true),
+  candidateId: varchar("candidate_id"),
+  rowNumber: integer("row_number").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("catalogue_import_rows_batch_file_uidx").on(table.batchId, table.filename),
+  index("catalogue_import_rows_shop_hash_idx").on(table.shopDomain, table.contentHash),
+]);
+
 /** One photograph: one scene (`panel_id`) and one garment colour. */
 export const mockupPanels = pgTable("mockup_panels", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

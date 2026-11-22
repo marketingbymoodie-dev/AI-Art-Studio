@@ -4,7 +4,7 @@
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { abortCatalogueImport, commitCatalogueImport, decodeCataloguePng, stageCataloguePng } from "../catalogue-bulk-import";
+import { abortCatalogueImport, assertCatalogueImportShop, commitCatalogueImport, decodeCataloguePng, ensureCatalogueImportBatch, readOpenCatalogueImport, stageCataloguePng, upsertCatalogueImportRow } from "../catalogue-bulk-import";
 import {
   catalogueConceptOptions,
   catalogueConceptShopAllowed,
@@ -1291,11 +1291,65 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
   });
 
+  app.post("/api/platform/catalogue-studio/candidates/import/batch", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const shop = await assertCatalogueImportShop(req.shopDomain);
+      await ensureCatalogueImportBatch(shop, String(req.body?.batchId || ""));
+      res.json({ ok: true, batchId: String(req.body?.batchId || "") });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/row", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const shop = await assertCatalogueImportShop(req.shopDomain);
+      const batchId = String(req.body?.batchId || "");
+      const row = req.body?.row || {};
+      await ensureCatalogueImportBatch(shop, batchId);
+      await upsertCatalogueImportRow(shop, batchId, {
+        rowNumber: Number(row.rowNumber) || 0,
+        filename: String(row.filename || ""),
+        style: String(row.style || ""),
+        species: String(row.species || ""),
+        humourOperator: String(row.humourOperator || ""),
+        truth: String(row.truth || ""),
+        device: String(row.device || ""),
+        exactWording: String(row.exactWording || ""),
+        source: row.source === "csv" ? "csv" : "draft",
+        lowConfidence: {
+          style: row.lowConfidence?.style === true,
+          humourOperator: row.lowConfidence?.humourOperator === true,
+        },
+        proposedFilename: row.proposedFilename ? String(row.proposedFilename) : undefined,
+        failureReason: row.failureReason ? String(row.failureReason) : undefined,
+        importStatus: row.importStatus === "failed" ? "failed" : row.importStatus === "queued" ? "queued" : "drafted",
+        selected: row.selected !== false,
+      });
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.get("/api/platform/catalogue-studio/candidates/import/open", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const shop = await assertCatalogueImportShop(req.shopDomain);
+      const open = await readOpenCatalogueImport(shop);
+      res.json({ batch: open });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
   app.post("/api/platform/catalogue-studio/candidates/import/file", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     try {
-      await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""), req.shopDomain);
-      res.json({ ok: true });
+      const stored = await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""), req.shopDomain);
+      res.json({ ok: true, hash: stored.hash });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

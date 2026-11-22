@@ -36,6 +36,10 @@ function freshCachedToken(): string | null {
   return cachedSessionToken.value;
 }
 
+export function clearCachedShopifySessionToken(): void {
+  cachedSessionToken = null;
+}
+
 function rememberToken(token: unknown): string | null {
   if (typeof token !== "string" || !token.trim()) return null;
   cachedSessionToken = { value: token, at: Date.now() };
@@ -220,7 +224,10 @@ export async function apiFetch(
     !openedOutsideShopify() &&
     shopifyIdToken() != null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 400 * (attempt - 1)));
+    if (attempt > 1) {
+      clearCachedShopifySessionToken();
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt - 1)));
+    }
     const token = await getFreshShopifySessionToken();
     // A tokenless request 401s, and App Bridge treats that 401 as a reason to
     // reload the iframe. The reload fires the same request again. Don't send it.
