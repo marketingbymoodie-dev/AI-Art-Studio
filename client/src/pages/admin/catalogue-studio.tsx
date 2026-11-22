@@ -170,14 +170,20 @@ type QueueRow = { id: string; title: string; phase: string; label: string; error
 
 const ACTIVE_JOB = new Set(["queued", "print", "listing", "mockups", "shopify"]);
 
-function refusalMessage(body: { error?: unknown; reasons?: unknown }, fallback: string): string {
-  const reasons = Array.isArray(body?.reasons)
-    ? body.reasons.map((reason) => String(reason || "").trim()).filter(Boolean)
-    : [];
+function refusalLines(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : [value];
+  return list.map((item) => String(item || "").trim()).filter((line) => line && line !== "Publish stopped");
+}
+
+function refusalMessage(body: { error?: unknown; reasons?: unknown; message?: unknown }, status?: number): string {
+  const reasons = refusalLines(body?.reasons);
   if (reasons.length) return reasons.join("\n");
-  if (Array.isArray(body?.error)) return body.error.map((reason) => String(reason || "").trim()).filter(Boolean).join("\n") || fallback;
-  const error = String(body?.error || "").trim();
-  return error || fallback;
+  const error = refusalLines(body?.error);
+  if (error.length) return error.join("\n");
+  const message = refusalLines(body?.message);
+  if (message.length) return message.join("\n");
+  if (status) return `Publish stopped (${status})`;
+  return "Publish stopped";
 }
 
 function ShopProductImport({ productTypeId }: { productTypeId: number }) {
@@ -681,15 +687,13 @@ export default function CatalogueStudioPage() {
     if (!wordingDirty.current || !id || candidate.data?.status !== "pending") return;
     const run = wordingSave.current.catch(() => undefined).then(async () => {
       if (!wordingDirty.current || wordingRef.current !== value) return;
-      const res = await fetch("/api/platform/catalogue-studio/punchline", {
+      const res = await apiFetch("/api/platform/catalogue-studio/punchline", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidateId: id, punchline: value }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setWordingNote(String(body.error || "Not saved"));
+        setWordingNote(String(body.error || body.message || "Not saved"));
         return;
       }
       if (wordingRef.current !== value) return;
@@ -709,10 +713,8 @@ export default function CatalogueStudioPage() {
       await wordingSave.current;
       if (wordingDirty.current) await saveWording();
       const savedWording = wordingRef.current;
-      const res = await fetch("/api/platform/catalogue-studio/publish", {
+      const res = await apiFetch("/api/platform/catalogue-studio/publish", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           candidateId: candidate.data?.id,
           panelId,
@@ -741,12 +743,15 @@ export default function CatalogueStudioPage() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const message = refusalMessage(body, "Publish stopped");
+        const message = refusalMessage(body, res.status);
         console.error("[catalogue-studio] publish failed", message);
         setPublishError(message);
         return;
       }
       await jobs.refetch();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err || "");
+      setPublishError(message || "Publish stopped");
     } finally {
       setPublishBusy(false);
     }
@@ -1516,8 +1521,10 @@ export default function CatalogueStudioPage() {
                   </Button>
                 </>
               ) : null}
-              {publishError || job?.phase === "failed" ? (
-                <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">{publishError || job?.label}</p>
+              {publishError || (job?.phase === "failed" && (job.error || job.label)) ? (
+                <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">
+                  {[publishError, job?.phase === "failed" ? (job.error || job.label) : ""].filter(Boolean).join("\n")}
+                </p>
               ) : null}
               {published.data?.designProductId ? (
                 <div className="space-y-2 border-t pt-3">
