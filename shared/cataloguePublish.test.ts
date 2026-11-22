@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { promoteRefusals } from "./flywheelPromote";
-import { catalogueJobLabel, formatCatalogueSpend, myPetMetafieldValue, publishPreflightMessages, publishWork } from "./cataloguePublish";
+import { catalogueJobLabel, formatCatalogueSpend, myPetMetafieldValue, publishColorTickPatch, publishColourNames, publishPreflightMessages, publishWork, readPublishColorTicks } from "./cataloguePublish";
 
 const ready = {
   printFilePath: "print.png",
@@ -20,6 +20,26 @@ const ready = {
   capMessage: null,
   missingPrices: [] as string[],
 };
+
+describe("publish colour ticks", () => {
+  it("ticks every offered colour until that type has been saved", () => {
+    expect(publishColourNames(undefined, ["Black", "Natural"])).toEqual(["Black", "Natural"]);
+  });
+
+  it("keeps an explicit empty list and drops a colour that is no longer offered", () => {
+    expect(publishColourNames([], ["Black", "Natural"])).toEqual([]);
+    expect(publishColourNames(["Natural", "Navy"], ["Black", "Natural"])).toEqual(["Natural"]);
+  });
+
+  it("stores one type without replacing the other", () => {
+    const patch = publishColorTickPatch(58, ["Black", "black", ""]);
+    expect(patch).toEqual({ "58": ["Black"] });
+    expect(readPublishColorTicks({ "56": ["Natural"], ...patch })).toEqual({
+      "56": ["Natural"],
+      "58": ["Black"],
+    });
+  });
+});
 
 describe("catalogue job labels", () => {
   it("names each queue state, and keeps the failure reason", () => {

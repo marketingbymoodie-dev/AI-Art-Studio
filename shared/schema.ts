@@ -1438,6 +1438,10 @@ export const designCandidates = pgTable("design_candidates", {
   panelId: text("panel_id"),
   /** Colours the operator ticked. Promote publishes these and no others. */
   selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>(),
+  /** Publish-to colour names per product type. Missing key means not saved yet. */
+  publishColorTicks: jsonb("publish_color_ticks").$type<Record<string, string[]>>(),
+  /** My Pet tick for the next publish. Null means still on, the same as an omitted publish. */
+  publishMyPetEnabled: boolean("publish_my_pet_enabled"),
   title: text("title"),
   description: text("description"),
   dropReason: text("drop_reason"),

@@ -210,6 +210,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "design_candidates", column: "panel_id", type: "TEXT" },
   { table: "design_candidates", column: "selected_colors", type: "JSONB" },
   { table: "design_candidates", column: "generation", type: "JSONB" },
+  { table: "design_candidates", column: "publish_color_ticks", type: "JSONB" },
+  { table: "design_candidates", column: "publish_my_pet_enabled", type: "BOOLEAN" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },

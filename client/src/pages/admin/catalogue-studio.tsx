@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { formatCatalogueSpend } from "@shared/cataloguePublish";
+import { formatCatalogueSpend, publishColourNames } from "@shared/cataloguePublish";
 import { publishColourScene, resolvePublishPanelId } from "@shared/colourBlanks";
 import type { CatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { initialTickedColours, sortCatalogueColours } from "@shared/flywheelPromote";
@@ -85,6 +85,7 @@ type PendingCandidate = {
   generation?: CatalogueConceptGeneration | null;
   conceptEnabled?: boolean;
   myPetTestEnabled?: boolean;
+  publishPrefs?: { myPetEnabled: boolean | null; colors: Record<string, string[]> } | null;
 };
 
 type PetTestResult = {
@@ -321,10 +322,13 @@ export default function CatalogueStudioPage() {
   const [dropError, setDropError] = useState("");
   const [publishError, setPublishError] = useState("");
   const [publishBusy, setPublishBusy] = useState(false);
+  const [publishNote, setPublishNote] = useState("");
   const [publishTicks, setPublishTicks] = useState<Record<number, boolean>>({});
   const [publishColours, setPublishColours] = useState<Record<number, string[]>>({});
   const [myPetEnabled, setMyPetEnabled] = useState(true);
   const publishSeed = useRef("");
+  const publishSetupSave = useRef<Promise<void>>(Promise.resolve());
+  const openCandidateRef = useRef("");
   const [spendUsd, setSpendUsd] = useState(0);
   const [spendLines, setSpendLines] = useState<Array<{ label: string; usd: number; estimated: boolean }>>([]);
   const [overrides, setOverrides] = useState<Record<string, Override>>({});
@@ -386,6 +390,13 @@ export default function CatalogueStudioPage() {
     petDraw.current = 1;
   }, [candidate.data?.id, candidate.data?.status]);
 
+  openCandidateRef.current = candidate.data?.id || "";
+
+  function savedPublishColours(type: NonNullable<PendingCandidate["publishTypes"]>[number]): string[] {
+    const offered = type.colors.filter((color) => color.hasProducedBlank).map((color) => color.name);
+    return publishColourNames(candidate.data?.publishPrefs?.colors?.[String(type.id)], offered);
+  }
+
   useEffect(() => {
     const id = candidate.data?.id;
     const types = candidate.data?.publishTypes;
@@ -393,13 +404,14 @@ export default function CatalogueStudioPage() {
     const reset = publishSeed.current !== id;
     if (reset) {
       publishSeed.current = id;
-      setMyPetEnabled(true);
+      setPublishNote("");
+      setMyPetEnabled(candidate.data?.publishPrefs?.myPetEnabled !== false);
       const ticks: Record<number, boolean> = {};
       const colours: Record<number, string[]> = {};
       for (const type of types) {
         if (type.published) continue;
         ticks[type.id] = true;
-        colours[type.id] = type.colors.filter((color) => color.hasProducedBlank).map((color) => color.name);
+        colours[type.id] = savedPublishColours(type);
       }
       setPublishTicks(ticks);
       setPublishColours(colours);
@@ -420,12 +432,12 @@ export default function CatalogueStudioPage() {
       const next = { ...current };
       for (const type of types) {
         if (type.published || next[type.id]) continue;
-        next[type.id] = type.colors.filter((color) => color.hasProducedBlank).map((color) => color.name);
+        next[type.id] = savedPublishColours(type);
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [candidate.data?.id, candidate.data?.publishTypes]);
+  }, [candidate.data?.id, candidate.data?.publishTypes, candidate.data?.publishPrefs]);
 
   const jobPhase = jobs.data?.queue.find((row) => row.id === candidate.data?.id)?.phase || "";
   const seenJobPhase = useRef("");
@@ -705,6 +717,24 @@ export default function CatalogueStudioPage() {
     await run;
   }
 
+  function savePublishSetup(id: string, body: { productTypeId?: number; colorNames?: string[]; myPetEnabled?: boolean }) {
+    if (!id || candidate.data?.status !== "pending" || candidate.data?.id !== id) return;
+    const run = publishSetupSave.current.catch(() => undefined).then(async () => {
+      const res = await apiFetch("/api/platform/catalogue-studio/publish-setup", {
+        method: "POST",
+        body: JSON.stringify({ candidateId: id, ...body }),
+      });
+      const saved = await res.json().catch(() => ({}));
+      if (openCandidateRef.current !== id) return;
+      if (!res.ok) {
+        setPublishNote(String(saved.error || saved.message || "Not saved"));
+        return;
+      }
+      setPublishNote("Saved");
+    });
+    publishSetupSave.current = run;
+  }
+
   async function publishCandidate() {
     setPublishError("");
     setDropError("");
@@ -712,6 +742,7 @@ export default function CatalogueStudioPage() {
     try {
       await wordingSave.current;
       if (wordingDirty.current) await saveWording();
+      await publishSetupSave.current;
       const savedWording = wordingRef.current;
       const res = await apiFetch("/api/platform/catalogue-studio/publish", {
         method: "POST",
@@ -1469,11 +1500,12 @@ export default function CatalogueStudioPage() {
                                     disabled={blocked}
                                     onChange={() => {
                                       if (blocked) return;
-                                      setPublishColours((current) => {
-                                        const list = current[type.id] || [];
-                                        const next = on ? list.filter((name) => name !== color.name) : [...list, color.name];
-                                        return { ...current, [type.id]: next };
-                                      });
+                                      const list = publishColours[type.id] || [];
+                                      const next = on ? list.filter((name) => name !== color.name) : [...list, color.name];
+                                      setPublishColours((current) => ({ ...current, [type.id]: next }));
+                                      setPublishNote("");
+                                      const id = candidate.data?.id;
+                                      if (id) savePublishSetup(id, { productTypeId: type.id, colorNames: next });
                                     }}
                                   />
                                   {color.hex ? (
@@ -1506,10 +1538,17 @@ export default function CatalogueStudioPage() {
                       type="checkbox"
                       className="mr-2"
                       checked={myPetEnabled}
-                      onChange={(event) => setMyPetEnabled(event.target.checked)}
+                      onChange={(event) => {
+                        const next = event.target.checked;
+                        setMyPetEnabled(next);
+                        setPublishNote("");
+                        const id = candidate.data?.id;
+                        if (id) savePublishSetup(id, { myPetEnabled: next });
+                      }}
                     />
                     My Pet enabled
                   </label>
+                  {publishNote ? <p className="text-xs text-muted-foreground" data-testid="catalogue-studio-publish-setup-note">{publishNote}</p> : null}
                   <p className="text-xs text-muted-foreground">Written to every listing in this publish. You can change it later on the Shopify product.</p>
                   <Button
                     type="button"

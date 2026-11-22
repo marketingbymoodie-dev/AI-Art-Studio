@@ -4,6 +4,45 @@
  * listing description, or mockup for that type is not repeated.
  */
 
+/** Colour names to tick for one product type. A missing list is every offered colour. An empty list stays empty. */
+export function publishColourNames(saved: string[] | undefined, offered: string[]): string[] {
+  if (!saved) return [...offered];
+  const byKey = new Map(offered.map((name) => [name.toLowerCase(), name]));
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const name of saved) {
+    const canonical = byKey.get(String(name || "").trim().toLowerCase());
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    names.push(canonical);
+  }
+  return names;
+}
+
+/** One type's saved ticks. Other types stay as they were when this patch is merged. */
+export function publishColorTickPatch(productTypeId: number, names: string[]): Record<string, string[]> {
+  const seen = new Set<string>();
+  const clean: string[] = [];
+  for (const name of names) {
+    const trimmed = String(name || "").trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key) || clean.length >= 60) continue;
+    seen.add(key);
+    clean.push(trimmed);
+  }
+  return { [String(productTypeId)]: clean };
+}
+
+export function readPublishColorTicks(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const ticks: Record<string, string[]> = {};
+  for (const [key, names] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d+$/.test(key) || !Array.isArray(names)) continue;
+    ticks[key] = names.map((name) => String(name || "").trim()).filter(Boolean);
+  }
+  return ticks;
+}
+
 /** Omitted stays on. Only an explicit false writes the My Pet metafield off. */
 export function myPetMetafieldValue(enabled: boolean | null | undefined): "true" | "false" {
   return enabled === false ? "false" : "true";

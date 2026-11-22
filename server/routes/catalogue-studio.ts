@@ -19,7 +19,7 @@ import { redactAnthropicSecrets } from "../concept-engine";
 import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, mockupLibraryColours, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
-import { shopifyAdminProductUrl } from "@shared/cataloguePublish";
+import { publishColorTickPatch, readPublishColorTicks, shopifyAdminProductUrl } from "@shared/cataloguePublish";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames, sortCatalogueColours } from "@shared/flywheelPromote";
@@ -283,6 +283,27 @@ async function studioGarment(raw: unknown, requestShop: string | null | undefine
     .where(eq(productTypes.id, fallbackId))
     .limit(1);
   return { id: row?.id ?? fallbackId, name: row?.name || "" };
+}
+
+/** The type id when this shop owns it. No fallback — a miss must not be stored as another type. */
+async function ownedStudioTypeId(raw: unknown, requestShop: string | null | undefined): Promise<number | null> {
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const profile = operatorCatalogueForShop(requestShop);
+  const { db } = await import("../db");
+  const [row] = await db
+    .select({
+      id: productTypes.id,
+      shop: productTypes.shopifyShopDomain,
+      platformRef: productTypes.isPlatformCatalogRef,
+    })
+    .from(productTypes)
+    .where(eq(productTypes.id, id))
+    .limit(1);
+  if (!row || row.platformRef) return null;
+  const owned = catalogueShopDomain(row.shop) === profile.shop;
+  const stagingFallback = profile.fallbackProductTypeId != null && id === profile.fallbackProductTypeId;
+  return owned || stagingFallback ? row.id : null;
 }
 
 type StudioLibraryColour = {
@@ -586,6 +607,10 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         generation: fixture || !stored ? null : parseCatalogueConceptGeneration(stored.generation),
         conceptEnabled: catalogueConceptShopAllowed(req.shopDomain),
         myPetTestEnabled: catalogueConceptShopAllowed(req.shopDomain),
+        publishPrefs: fixture || !stored ? null : {
+          myPetEnabled: stored.publishMyPetEnabled ?? null,
+          colors: readPublishColorTicks(stored.publishColorTicks),
+        },
       });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -1129,6 +1154,70 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         eq(designCandidates.status, "pending"),
       ));
       res.json({ ok: true, punchline });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  // Saved ticks for the next publish. A job already running keeps the recipe it started with.
+  app.post("/api/platform/catalogue-studio/publish-setup", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
+    if (!id) return;
+    if (id === PENDING_CANDIDATE.id) {
+      res.status(400).json({ error: "That design is not stored." });
+      return;
+    }
+    try {
+      const row = await readCandidateRow(id);
+      if (!row || row.status !== "pending") {
+        res.status(400).json({ error: "Publish choices can be saved while the design is pending." });
+        return;
+      }
+      const hasColours = Array.isArray(req.body?.colorNames);
+      const hasPet = typeof req.body?.myPetEnabled === "boolean";
+      if (!hasColours && !hasPet) {
+        res.status(400).json({ error: "Nothing to save." });
+        return;
+      }
+      let typeId: number | null = null;
+      if (hasColours) {
+        typeId = await ownedStudioTypeId(req.body?.productTypeId, req.shopDomain);
+        if (!typeId) {
+          res.status(400).json({ error: "That product type is not on this shop." });
+          return;
+        }
+      }
+      const { pool } = await import("../db");
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      if (hasColours && typeId) {
+        values.push(JSON.stringify(publishColorTickPatch(typeId, req.body.colorNames)));
+        sets.push(`publish_color_ticks = COALESCE(publish_color_ticks, '{}'::jsonb) || $${values.length}::jsonb`);
+      }
+      if (hasPet) {
+        values.push(req.body.myPetEnabled);
+        sets.push(`publish_my_pet_enabled = $${values.length}`);
+      }
+      values.push(id, row.shopDomain);
+      const updated = await pool.query(
+        `UPDATE design_candidates
+         SET ${sets.join(", ")}, updated_at = now()
+         WHERE id = $${values.length - 1} AND shop_domain = $${values.length} AND status = 'pending'`,
+        values,
+      );
+      if (!updated.rowCount) {
+        res.status(400).json({ error: "Publish choices can be saved while the design is pending." });
+        return;
+      }
+      const saved = await readCandidateRow(id);
+      res.json({
+        ok: true,
+        publishPrefs: {
+          myPetEnabled: saved?.publishMyPetEnabled ?? null,
+          colors: readPublishColorTicks(saved?.publishColorTicks),
+        },
+      });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
