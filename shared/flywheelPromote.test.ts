@@ -5,6 +5,7 @@ import {
   capRefusal,
   catalogueCollectionRules,
   catalogueListingTags,
+  myPetTagForListing,
   catalogueTags,
   catalogueTypeTag,
   catalogueVisibility,
@@ -69,6 +70,21 @@ describe("flywheel promote decisions", () => {
       humourOperator: "pp-owner-vs-pet",
       productTypeId: 56,
     })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-56"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 58,
+      myPetEnabled: true,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-58", "my-pet"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 56,
+      myPetEnabled: false,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-56"]);
+    expect(myPetTagForListing(["aas-studio-product", "aas-type-58"], true)).toEqual(["aas-studio-product", "aas-type-58"]);
     expect(catalogueCollectionRules(58)).toEqual({
       appliedDisjunctively: false,
       rules: [

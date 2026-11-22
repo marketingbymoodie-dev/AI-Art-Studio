@@ -6,6 +6,7 @@
  * checkbox on the product admin page and can be toggled any time after
  * publishing, per design-candidate product, without redeploy.
  */
+import { MY_PET_TAG, myPetTagForListing } from "@shared/flywheelPromote";
 import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
 const SHOPIFY_API = "2025-10";
@@ -40,12 +41,13 @@ function productGid(shopifyProductId: string): string {
   return `gid://shopify/Product/${numeric}`;
 }
 
-/** Writes the product boolean. Does not change the database row. */
+/** Writes the product boolean and the my-pet tag. Does not change the database row. */
 export async function setProductMyPetEnabled(
   shop: string,
   token: string,
   shopifyProductId: string,
   enabled: boolean,
+  options?: { tags?: boolean },
 ): Promise<void> {
   await ensureMyPetMetafieldDefinition(shop, token);
   const data = await adminGql(shop, token, `
@@ -64,6 +66,35 @@ export async function setProductMyPetEnabled(
     }],
   });
   const errors = data?.metafieldsSet?.userErrors || [];
+  if (errors.length) {
+    throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
+  }
+  if (options?.tags !== false) await syncProductMyPetTag(shop, token, shopifyProductId, enabled);
+}
+
+/** Adds my-pet while the switch is on, and takes it off when the switch is off. A studio base never keeps the tag. */
+export async function syncProductMyPetTag(
+  shop: string,
+  token: string,
+  shopifyProductId: string,
+  enabled: boolean,
+): Promise<void> {
+  const data = await adminGql(shop, token, `
+    query($id: ID!) { product(id: $id) { tags } }
+  `, { id: productGid(shopifyProductId) });
+  const current = Array.isArray(data?.product?.tags) ? data.product.tags.map(String) : [];
+  if (!data?.product) throw new Error("Shopify product was not found.");
+  const next = myPetTagForListing(current, enabled);
+  const has = current.includes(MY_PET_TAG);
+  const want = next.includes(MY_PET_TAG);
+  if (has === want) return;
+  const field = want ? "tagsAdd" : "tagsRemove";
+  const updated = await adminGql(shop, token, `
+    mutation($id: ID!, $tags: [String!]!) {
+      ${field}(id: $id, tags: $tags) { userErrors { message } }
+    }
+  `, { id: productGid(shopifyProductId), tags: [MY_PET_TAG] });
+  const errors = updated?.[field]?.userErrors || [];
   if (errors.length) {
     throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; "));
   }
@@ -131,7 +162,7 @@ export async function backfillUnsetMyPetEnabled(): Promise<{ set: number; skippe
         skipped += 1;
         continue;
       }
-      await setProductMyPetEnabled(shop, token, productId, true);
+      await setProductMyPetEnabled(shop, token, productId, true, { tags: false });
       set += 1;
     } catch (err) {
       failed += 1;

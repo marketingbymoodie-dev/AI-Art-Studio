@@ -32,6 +32,16 @@ export function catalogueTags(row: {
 /** Unlisted customizer bases. Catalogue collections exclude this tag. */
 export const CATALOGUE_STUDIO_TAG = "aas-studio-product";
 
+/** Smart collection of designs whose My Pet switch is on. Never applied to a studio base. */
+export const MY_PET_TAG = "my-pet";
+
+/** Add or remove the My Pet tag. A studio base never receives it. */
+export function myPetTagForListing(tags: string[], enabled: boolean): string[] {
+  const without = tags.filter((tag) => tag !== MY_PET_TAG);
+  if (!enabled || without.includes(CATALOGUE_STUDIO_TAG)) return without;
+  return [...without, MY_PET_TAG];
+}
+
 /** Stable tag for one shirt type, e.g. aas-type-56. */
 export function catalogueTypeTag(productTypeId: number | null | undefined): string | null {
   const id = Number(productTypeId);
@@ -45,10 +55,14 @@ export function catalogueListingTags(row: {
   species: string;
   humourOperator: string;
   productTypeId?: number | null;
+  /** Omitted leaves the tag list alone. False removes my-pet. True adds it. */
+  myPetEnabled?: boolean;
 }): string[] {
   const tags = catalogueTags(row);
   const typeTag = catalogueTypeTag(row.productTypeId);
-  return typeTag ? [...tags, typeTag] : tags;
+  const list = typeTag ? [...tags, typeTag] : tags;
+  if (typeof row.myPetEnabled !== "boolean") return list;
+  return myPetTagForListing(list, row.myPetEnabled);
 }
 
 /** Smart-collection rules: this shirt type, and never an unlisted studio product. */

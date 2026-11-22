@@ -769,6 +769,7 @@ export async function promoteCatalogueCandidate(args: {
     species: String(candidate!.species),
     humourOperator: String(candidate!.humourOperator),
     productTypeId: typeRow.id,
+    myPetEnabled: args.myPetEnabled !== false,
   });
   const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
   if (await shopifyHandleTaken(shop, installation!.accessToken, handle)) {
