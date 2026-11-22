@@ -32,6 +32,12 @@ import {
   STAGING_CATALOGUE_SHOP,
 } from "@shared/operatorCatalogue";
 import { CATALOGUE_SHIRT_PROVIDER_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
+import {
+  cataloguePublishAllowedForShop,
+  cataloguePublishBlockMessage,
+  cataloguePublishLocked,
+  CATALOGUE_PUBLISH_LOCKED_MESSAGE,
+} from "@shared/cataloguePublishAccess";
 import { parseCompareAtBySize } from "@shared/compareAtBySize";
 import { coloursStillOffered, filterPricesToSizes, offeredAxes } from "@shared/variantSelection";
 import { filterCatalogByPrintSides } from "@shared/shopifyVariantMatch";
@@ -1232,8 +1238,13 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/publish", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue publish is staging only.", reasons: ["Catalogue publish is staging only."] });
+    if (cataloguePublishLocked()) {
+      res.status(400).json({ error: CATALOGUE_PUBLISH_LOCKED_MESSAGE, reasons: [CATALOGUE_PUBLISH_LOCKED_MESSAGE] });
+      return;
+    }
+    const publishBlock = cataloguePublishBlockMessage(req.shopDomain);
+    if (publishBlock) {
+      res.status(400).json({ error: publishBlock, reasons: [publishBlock] });
       return;
     }
     const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
@@ -1356,6 +1367,16 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/promote", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
+    if (cataloguePublishLocked()) {
+      res.status(400).json({ error: CATALOGUE_PUBLISH_LOCKED_MESSAGE, reasons: [CATALOGUE_PUBLISH_LOCKED_MESSAGE] });
+      return;
+    }
+    const promoteBlock = cataloguePublishBlockMessage(req.shopDomain);
+    if (promoteBlock || !cataloguePublishAllowedForShop(req.shopDomain)) {
+      const message = promoteBlock || "Catalogue publish is not available for this store.";
+      res.status(400).json({ error: message, reasons: [message] });
+      return;
+    }
     try {
       const { promoteCatalogueCandidate } = await import("../flywheel-promote");
       const garment = await studioGarment(req.body?.productTypeId, req.shopDomain);

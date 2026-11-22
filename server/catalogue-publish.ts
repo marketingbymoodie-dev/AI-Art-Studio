@@ -7,7 +7,13 @@ import { and, eq } from "drizzle-orm";
 import { catalogueTruthIsSentence, catalogueListingIsFresh, rememberCatalogueListingSpend, writeCatalogueListing } from "./catalogue-listing";
 import { publishPreflightMessages, shopifyAdminProductUrl, type PublishWorkPhase } from "@shared/cataloguePublish";
 import { comparePublishTiming, listingBody, listingHandle, listingTitle, normaliseDesignName } from "@shared/listingCopy";
-import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
+import {
+  cataloguePublishAllowedForShop,
+  cataloguePublishBlockMessage,
+  cataloguePublishLocked,
+  CATALOGUE_PUBLISH_LOCKED_MESSAGE,
+} from "@shared/cataloguePublishAccess";
+import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, generationEvents, mockupLibraryColours, productTypes } from "@shared/schema";
 import { recipeGaps, requireRecipe, type ApprovalRecipe } from "./catalogue-approval";
 import { db } from "./db";
@@ -26,7 +32,7 @@ import {
 } from "./mockup-library-store";
 
 export function cataloguePublishShopAllowed(shop: string): boolean {
-  return catalogueShopAllowed(shop);
+  return cataloguePublishAllowedForShop(shop);
 }
 
 export class PublishRefusal extends Error {
@@ -171,12 +177,12 @@ export async function publishCatalogueCandidate(args: {
   /** False writes My Pet off. Omitted stays on. */
   myPetEnabled?: boolean;
 }): Promise<CataloguePublishResult> {
-  if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-    throw new PublishRefusal(["Catalogue publish is staging only."]);
-  }
+  if (cataloguePublishLocked()) throw new PublishRefusal([CATALOGUE_PUBLISH_LOCKED_MESSAGE]);
   const recipe = args.recipe;
   const [stored] = await db.select().from(designCandidates).where(eq(designCandidates.id, recipe.candidateId)).limit(1);
-  if (!stored || !cataloguePublishShopAllowed(String(stored.shopDomain || ""))) throw new PublishRefusal(["That candidate is not stored."]);
+  if (!stored) throw new PublishRefusal(["That candidate is not stored."]);
+  const candidateBlock = cataloguePublishBlockMessage(stored.shopDomain);
+  if (candidateBlock) throw new PublishRefusal([candidateBlock]);
   if (stored.status === "dropped") throw new PublishRefusal(["This candidate was dropped."]);
   const requestedType = Number(recipe.productTypeId);
   const garment = Number.isInteger(requestedType) && requestedType > 0
@@ -197,7 +203,8 @@ export async function publishCatalogueCandidate(args: {
     .limit(1);
   if (!typeRow) throw new PublishRefusal(["That product type was not found."]);
   const shop = String(typeRow.shop || "");
-  if (!cataloguePublishShopAllowed(shop)) throw new PublishRefusal(["Publishing this candidate is staging only."]);
+  const typeBlock = cataloguePublishBlockMessage(shop);
+  if (typeBlock) throw new PublishRefusal([typeBlock]);
   const work = args.work || "all";
   const listed = await db
     .select({

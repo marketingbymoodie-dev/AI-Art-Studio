@@ -3,6 +3,7 @@
  * Two jobs at a time. A running job heartbeats. Another process reclaims it
  * only after that heartbeat is stale, then skips steps already stored.
  */
+import { cataloguePublishAllowedShops, CATALOGUE_PUBLISH_LOCKED_MESSAGE } from "@shared/cataloguePublishAccess";
 import { catalogueJobLabel, CATALOGUE_PUBLISH_HEARTBEAT_MS, CATALOGUE_PUBLISH_STALE_MS, type CatalogueJobPhase } from "@shared/cataloguePublish";
 import type { ApprovalRecipe } from "./catalogue-approval";
 import { publishCatalogueTargets, PublishRefusal, type CatalogueBatchResult } from "./catalogue-publish";
@@ -38,7 +39,7 @@ let started = false;
 const localRunning = new Set<string>();
 
 function jobsAllowed(): boolean {
-  return process.env.RAILWAY_ENVIRONMENT_NAME !== "production";
+  return cataloguePublishAllowedShops().length > 0;
 }
 
 async function ensureJobsTable(): Promise<void> {
@@ -119,7 +120,7 @@ export function catalogueJobIsActive(phase: string): boolean {
 
 export async function enqueueCataloguePublish(recipe: ApprovalRecipe): Promise<CatalogueQueueEntry> {
   if (!jobsAllowed()) {
-    throw new PublishRefusal(["Catalogue publish is staging only."]);
+    throw new PublishRefusal([CATALOGUE_PUBLISH_LOCKED_MESSAGE]);
   }
   await ensureJobsTable();
   const existing = await pool.query<JobRow>(

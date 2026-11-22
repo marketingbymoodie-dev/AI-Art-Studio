@@ -505,6 +505,11 @@ export async function promoteCatalogueCandidate(args: {
   if (!typeRow) throw new PromoteRefusal([`Product type ${args.productTypeId} was not found.`]);
 
   const shop = String(typeRow.shopifyShopDomain || candidate?.shopDomain || "");
+  const { cataloguePublishAllowedForShop, cataloguePublishLocked, CATALOGUE_PUBLISH_LOCKED_MESSAGE, CATALOGUE_PUBLISH_SHOP_MESSAGE } = await import("@shared/cataloguePublishAccess");
+  if (cataloguePublishLocked()) throw new PromoteRefusal([CATALOGUE_PUBLISH_LOCKED_MESSAGE]);
+  if (!cataloguePublishAllowedForShop(shop) || !cataloguePublishAllowedForShop(candidate?.shopDomain || shop)) {
+    throw new PromoteRefusal([CATALOGUE_PUBLISH_SHOP_MESSAGE]);
+  }
   const installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
   const { cataloguePrintifyMerchant } = await import("./operatorCatalogue");
   const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, shop);
