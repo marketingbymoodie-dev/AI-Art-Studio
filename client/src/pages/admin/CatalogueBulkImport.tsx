@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
   catalogueAttentionRank,
+  catalogueReviewCounts,
   catalogueRowAttention,
   catalogueRowsToRetry,
+  type CatalogueAttention,
+  type CatalogueField,
   type CatalogueImportRow,
   type CatalogueImportStatus,
 } from "@shared/catalogueBulkImport";
@@ -34,6 +37,27 @@ const STYLES = PETPOSTEROUS_ART_STYLE_LAUNCH.map((id) => {
   return style;
 });
 const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
+const FLAGGED_FIELD = "border-amber-700 bg-amber-50";
+
+function notesFor(notes: CatalogueAttention[], field: CatalogueField): CatalogueAttention[] {
+  return notes.filter((note) => note.field === field);
+}
+
+function fieldClass(base: string, notes: CatalogueAttention[], field: CatalogueField): string {
+  return notesFor(notes, field).length ? `${base} ${FLAGGED_FIELD}` : base;
+}
+
+function FieldReasons({ notes, field }: { notes: CatalogueAttention[]; field: CatalogueField }) {
+  const mine = notesFor(notes, field);
+  if (!mine.length) return null;
+  return (
+    <>
+      {mine.map((note) => (
+        <p key={`${field}-${note.message}`} className="mt-1 whitespace-normal break-words">{note.message}</p>
+      ))}
+    </>
+  );
+}
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
@@ -220,11 +244,19 @@ export default function CatalogueBulkImportPage() {
   const [created, setCreated] = useState<Created | null>(null);
   const filesRef = useRef<File[]>([]);
   const urlsRef = useRef<string[]>([]);
+  const rowsRef = useRef<ReviewRow[]>([]);
+  const saveChain = useRef(new Map<string, Promise<boolean>>());
   const batchIdRef = useRef("");
   const generation = useRef(0);
   const draftQueue = useRef<ReviewRow[]>([]);
   const draftWorkers = useRef(0);
   const addInput = useRef<HTMLInputElement>(null);
+
+  function applyRows(updater: ReviewRow[] | ((prev: ReviewRow[]) => ReviewRow[])) {
+    const next = typeof updater === "function" ? updater(rowsRef.current) : updater;
+    rowsRef.current = next;
+    setRows(next);
+  }
 
   function rowPayload(row: ReviewRow) {
     return {
@@ -245,12 +277,42 @@ export default function CatalogueBulkImportPage() {
     };
   }
 
-  async function saveRow(row: ReviewRow) {
-    if (!batchIdRef.current) return;
-    await apiFetch("/api/platform/catalogue-studio/candidates/import/row", {
-      method: "POST",
-      body: JSON.stringify({ batchId: batchIdRef.current, row: rowPayload(row) }),
-    }).catch(() => undefined);
+  async function saveRow(row: ReviewRow): Promise<boolean> {
+    if (!batchIdRef.current || !row.filename) return false;
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/candidates/import/row", {
+        method: "POST",
+        body: JSON.stringify({ batchId: batchIdRef.current, row: rowPayload(row) }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  function queueSave(row: ReviewRow): Promise<boolean> {
+    const prev = saveChain.current.get(row.filename) || Promise.resolve(true);
+    const next = prev.catch(() => false).then(() => saveRow(row));
+    saveChain.current.set(row.filename, next);
+    return next;
+  }
+
+  function keepUserEdits(snapshot: ReviewRow, current: ReviewRow, incoming: ReviewRow): ReviewRow {
+    const changed = (key: "style" | "species" | "humourOperator" | "truth" | "device" | "exactWording") => current[key] !== snapshot[key];
+    return {
+      ...incoming,
+      style: changed("style") ? current.style : incoming.style,
+      species: changed("species") ? current.species : incoming.species,
+      humourOperator: changed("humourOperator") ? current.humourOperator : incoming.humourOperator,
+      truth: changed("truth") ? current.truth : incoming.truth,
+      device: changed("device") ? current.device : incoming.device,
+      exactWording: changed("exactWording") ? current.exactWording : incoming.exactWording,
+      lowConfidence: {
+        style: changed("style") ? current.lowConfidence.style : incoming.lowConfidence.style,
+        humourOperator: changed("humourOperator") ? current.lowConfidence.humourOperator : incoming.lowConfidence.humourOperator,
+      },
+      selected: current.selected,
+    };
   }
 
   useEffect(() => {
@@ -269,7 +331,7 @@ export default function CatalogueBulkImportPage() {
         costUsd: null,
         lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
       }));
-      setRows(restored);
+      applyRows(restored);
     }).catch(() => undefined);
     return () => {
       cancelled = true;
@@ -288,11 +350,11 @@ export default function CatalogueBulkImportPage() {
       if (generation.current !== gen) return;
       const missing = `${row.filename} is not in the folder.`;
       const failed = { ...row, draftState: "failed" as const, draftError: missing, importStatus: "failed" as const, failureReason: missing };
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
-      void saveRow(failed);
+      applyRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+      void queueSave(failed);
       return;
     }
-    setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "drafting", draftError: "" } : item));
+    applyRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, draftState: "drafting", draftError: "" } : item));
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), DRAFT_TIMEOUT_MS);
     try {
@@ -316,8 +378,8 @@ export default function CatalogueBulkImportPage() {
           failureReason: draftError,
           costUsd: typeof body.costUsd === "number" ? body.costUsd : row.costUsd,
         };
-        setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
-        void saveRow(failed);
+        applyRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+        void queueSave(failed);
         return;
       }
       setError("");
@@ -339,15 +401,16 @@ export default function CatalogueBulkImportPage() {
         },
         costUsd: typeof body.costUsd === "number" ? body.costUsd : null,
       };
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? done : item));
-      void saveRow(done);
+      applyRows((prev) => prev.map((item) => item.filename === row.filename ? keepUserEdits(row, item, done) : item));
+      const merged = rowsRef.current.find((item) => item.filename === row.filename);
+      if (merged) void queueSave(merged);
     } catch (e: any) {
       if (generation.current !== gen) return;
       const timedOut = controller.signal.aborted || e?.name === "AbortError";
       const draftError = timedOut ? "The vision draft timed out." : String(e?.message || e);
       const failed: ReviewRow = { ...row, draftState: "failed", draftError, importStatus: "failed", failureReason: draftError };
-      setRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
-      void saveRow(failed);
+      applyRows((prev) => prev.map((item) => item.filename === row.filename ? failed : item));
+      void queueSave(failed);
     } finally {
       window.clearTimeout(timer);
     }
@@ -374,7 +437,7 @@ export default function CatalogueBulkImportPage() {
   function removeRow(filename: string) {
     const key = filename.toLowerCase();
     draftQueue.current = draftQueue.current.filter((row) => row.filename.toLowerCase() !== key);
-    setRows((prev) => {
+    applyRows((prev) => {
       const row = prev.find((item) => item.filename.toLowerCase() === key);
       if (row?.previewUrl) {
         URL.revokeObjectURL(row.previewUrl);
@@ -399,7 +462,7 @@ export default function CatalogueBulkImportPage() {
     if (mode === "replace") {
       draftQueue.current = [];
       forgetPreviews();
-      setRows([]);
+      applyRows([]);
       setFailures([]);
       setCreated(null);
       filesRef.current = [];
@@ -474,7 +537,7 @@ export default function CatalogueBulkImportPage() {
       urlsRef.current = mode === "replace" ? keptUrls : [...urlsRef.current, ...keptUrls];
       filesRef.current = mode === "replace" ? keptFiles : [...filesRef.current, ...keptFiles];
       setFiles(filesRef.current);
-      setRows((prev) => (mode === "replace" ? next : [...prev, ...next]));
+      applyRows((prev) => (mode === "replace" ? next : [...prev, ...next]));
       if (mode === "replace") {
         setFailures([...planFailures, ...notes]);
       } else {
@@ -496,14 +559,16 @@ export default function CatalogueBulkImportPage() {
 
   function edit(filename: string, patch: Partial<ReviewRow>) {
     setError("");
-    setRows((prev) => prev.map((row) => {
+    let changed: ReviewRow | null = null;
+    applyRows((prev) => prev.map((row) => {
       if (row.filename !== filename) return row;
       const next = { ...row, ...patch };
       if ("style" in patch) next.lowConfidence = { ...next.lowConfidence, style: false };
       if ("humourOperator" in patch) next.lowConfidence = { ...next.lowConfidence, humourOperator: false };
-      void saveRow(next);
+      changed = next;
       return next;
     }));
+    if (changed) void queueSave(changed);
   }
 
   function renameRow(row: ReviewRow) {
@@ -515,14 +580,16 @@ export default function CatalogueBulkImportPage() {
       filesRef.current = filesRef.current.map((item) => item === file ? renamed : item);
       setFiles(filesRef.current);
     }
-    setRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, filename: nextName, proposedFilename: "" } : item));
+    applyRows((prev) => prev.map((item) => item.filename === row.filename ? { ...item, filename: nextName, proposedFilename: "" } : item));
+    const renamed = rowsRef.current.find((item) => item.filename === nextName);
+    if (renamed) void queueSave(renamed);
   }
 
-  function readyRows(list: ReviewRow[] = rows): ReviewRow[] {
+  function readyRows(list: ReviewRow[] = rowsRef.current): ReviewRow[] {
     return list.filter((row) => {
       if (!row.selected || row.importStatus === "queued" || row.importStatus === "failed" || row.draftState === "failed") return false;
       if (row.draftState === "waiting" || row.draftState === "drafting") return false;
-      return !catalogueRowAttention(row, list).some((note) => note.tone === "block");
+      return catalogueRowAttention(row, list).length === 0;
     });
   }
 
@@ -551,18 +618,34 @@ export default function CatalogueBulkImportPage() {
   async function createBatch() {
     const batchId = batchIdRef.current || crypto.randomUUID();
     batchIdRef.current = batchId;
-    const chosen = readyRows();
-    setBusy(`Uploading 1 of ${chosen.length}`);
+    setBusy("Saving edits");
     setError("");
     setCreated(null);
     try {
+      await Promise.all([...saveChain.current.values()]);
+      const chosen = readyRows(rowsRef.current);
+      if (!chosen.length) {
+        setError("Nothing is ready to queue. Fix the flagged rows first.");
+        return;
+      }
+      const saved = await Promise.all(chosen.map((row) => queueSave(rowsRef.current.find((item) => item.filename === row.filename) || row)));
+      if (saved.some((ok) => !ok)) {
+        setError("An edit was not saved. Fix it, then create again.");
+        return;
+      }
+      const fresh = readyRows(rowsRef.current).filter((row) => chosen.some((item) => item.filename === row.filename));
+      if (fresh.length !== chosen.length) {
+        setError("A row was still flagged, so nothing was queued.");
+        return;
+      }
+      setBusy(`Uploading 1 of ${fresh.length}`);
       const uploaded: ReviewRow[] = [];
-      for (let i = 0; i < chosen.length; i++) {
-        setBusy(`Uploading ${i + 1} of ${chosen.length}: ${chosen[i].filename}`);
-        const stored = await uploadRow(chosen[i], batchId);
+      for (let i = 0; i < fresh.length; i++) {
+        setBusy(`Uploading ${i + 1} of ${fresh.length}: ${fresh[i].filename}`);
+        const stored = await uploadRow(fresh[i], batchId);
         uploaded.push(stored);
-        setRows((prev) => prev.map((item) => item.filename === stored.filename ? stored : item));
-        void saveRow(stored);
+        applyRows((prev) => prev.map((item) => item.filename === stored.filename ? stored : item));
+        void queueSave(stored);
       }
       const failedUploads = uploaded.filter((row) => row.importStatus === "failed");
       const toQueue = uploaded.filter((row) => row.importStatus !== "failed");
@@ -595,7 +678,7 @@ export default function CatalogueBulkImportPage() {
         return;
       }
       const queuedNames = new Set(toQueue.map((row) => row.filename));
-      setRows((prev) => prev.map((item) => queuedNames.has(item.filename) ? { ...item, importStatus: "queued", failureReason: "" } : item));
+      applyRows((prev) => prev.map((item) => queuedNames.has(item.filename) ? { ...item, importStatus: "queued", failureReason: "" } : item));
       setCreated({ created: queued, studioPath: String(body.studioPath || "") });
     } catch (e: any) {
       console.error("[catalogue-import] create failed", e);
@@ -614,9 +697,8 @@ export default function CatalogueBulkImportPage() {
   const drafting = draftRows.some((row) => row.draftState === "waiting" || row.draftState === "drafting");
   const spent = rows.reduce((sum, row) => sum + (typeof row.costUsd === "number" ? row.costUsd : 0), 0);
   const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows) || a.rowNumber - b.rowNumber);
-  const queueCount = readyRows().length;
-  const failedCount = rows.filter((row) => row.importStatus === "failed" || row.draftState === "failed").length;
-  const attentionCount = rows.filter((row) => row.importStatus !== "failed" && row.draftState !== "failed" && catalogueRowAttention(row, rows).length > 0).length;
+  const queueCount = readyRows(rows).length;
+  const counts = catalogueReviewCounts(rows);
   const ready = queueCount > 0 && !failures.length && !drafting && !created;
 
   return (
@@ -681,11 +763,14 @@ export default function CatalogueBulkImportPage() {
           </ul>
         ) : null}
         {rows.length ? (
-          <p className="text-xs" data-testid="catalogue-bulk-import-summary">{queueCount} ready, {attentionCount} need attention, {failedCount} failed</p>
+          <p className="text-xs" data-testid="catalogue-bulk-import-summary">
+            {counts.total} {counts.total === 1 ? "row" : "rows"}: {counts.ready} ready, {counts.attention} need attention, {counts.failed} failed
+            {counts.drafting ? `, ${counts.drafting} still drafting` : ""}
+          </p>
         ) : null}
         {rows.length ? (
           <div className="max-h-[36rem] overflow-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-max min-w-full text-left text-xs">
               <thead>
                 <tr>
                   <th>Image</th>
@@ -704,7 +789,7 @@ export default function CatalogueBulkImportPage() {
                   const notes = catalogueRowAttention(row, rows);
                   const styleUnsure = row.lowConfidence?.style && !row.style;
                   const humourUnsure = row.lowConfidence?.humourOperator && !row.humourOperator;
-                  const locked = row.draftState === "waiting" || row.draftState === "drafting";
+                  const locked = !!busy || row.draftState === "waiting" || row.draftState === "drafting";
                   const stateLabel = row.importStatus === "queued"
                     ? "Queued"
                     : row.source === "csv"
@@ -716,7 +801,7 @@ export default function CatalogueBulkImportPage() {
                           : "Drafted";
                   return (
                     <tr key={`${row.rowNumber}-${row.filename}`} className="align-top">
-                      <td className="py-2 pr-2">
+                      <td className="min-w-48 py-2 pr-2">
                         <input aria-label={`Queue ${row.filename}`} type="checkbox" checked={row.selected} disabled={locked || row.importStatus === "queued"} onChange={(e) => edit(row.filename, { selected: e.target.checked })} />
                         {row.previewUrl ? <img src={row.previewUrl} alt="" className="h-16 w-16 bg-[#808080] object-contain" /> : null}
                         <div>{row.filename}</div>
@@ -727,12 +812,12 @@ export default function CatalogueBulkImportPage() {
                         {row.proposedFilename ? (
                           <button type="button" className="underline" onClick={() => renameRow(row)}>Rename to {row.proposedFilename}</button>
                         ) : null}
-                        {notes.map((note) => <div key={note.message}>{note.message}</div>)}
+                        <FieldReasons notes={notes} field="filename" />
                       </td>
-                      <td className="py-2 pr-2">
+                      <td className="min-w-36 py-2 pr-2">
                         <select
                           aria-label={`${row.filename} style`}
-                          className={`h-8 w-full rounded border bg-background px-1 ${styleUnsure ? "border-amber-700 bg-amber-50" : ""}`}
+                          className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "style")}
                           value={STYLES.some((style) => style.id === row.style) ? row.style : ""}
                           disabled={locked}
                           onChange={(e) => edit(row.filename, { style: e.target.value })}
@@ -740,14 +825,16 @@ export default function CatalogueBulkImportPage() {
                           <option value="">{styleUnsure ? "Low confidence" : "Choose"}</option>
                           {STYLES.map((style) => <option key={style.id} value={style.id}>{style.label}</option>)}
                         </select>
+                        <FieldReasons notes={notes} field="style" />
                       </td>
-                      <td className="py-2 pr-2">
-                        <input aria-label={`${row.filename} species`} className="h-8 w-full rounded border bg-background px-1" value={row.species} disabled={locked} onChange={(e) => edit(row.filename, { species: e.target.value })} />
+                      <td className="min-w-36 py-2 pr-2">
+                        <input aria-label={`${row.filename} species`} className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "species")} value={row.species} disabled={locked} onChange={(e) => edit(row.filename, { species: e.target.value })} />
+                        <FieldReasons notes={notes} field="species" />
                       </td>
-                      <td className="py-2 pr-2">
+                      <td className="min-w-36 py-2 pr-2">
                         <select
                           aria-label={`${row.filename} humour`}
-                          className={`h-8 max-w-40 rounded border bg-background px-1 ${humourUnsure ? "border-amber-700 bg-amber-50" : ""}`}
+                          className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "humourOperator")}
                           value={HUMOUR.includes(row.humourOperator) ? row.humourOperator : ""}
                           disabled={locked}
                           onChange={(e) => edit(row.filename, { humourOperator: e.target.value })}
@@ -755,15 +842,19 @@ export default function CatalogueBulkImportPage() {
                           <option value="">{humourUnsure ? "Low confidence" : "Choose"}</option>
                           {HUMOUR.map((id) => <option key={id} value={id}>{id}</option>)}
                         </select>
+                        <FieldReasons notes={notes} field="humourOperator" />
                       </td>
-                      <td className="py-2 pr-2">
-                        <textarea aria-label={`${row.filename} truth`} className="w-full rounded border bg-background px-1" rows={2} value={row.truth} disabled={locked} onChange={(e) => edit(row.filename, { truth: e.target.value })} />
+                      <td className="min-w-48 py-2 pr-2">
+                        <textarea aria-label={`${row.filename} truth`} className={fieldClass("w-full rounded border bg-background px-1", notes, "truth")} rows={2} value={row.truth} disabled={locked} onChange={(e) => edit(row.filename, { truth: e.target.value })} />
+                        <FieldReasons notes={notes} field="truth" />
                       </td>
-                      <td className="py-2 pr-2">
-                        <textarea aria-label={`${row.filename} device`} className="w-full rounded border bg-background px-1" rows={2} value={row.device} disabled={locked} onChange={(e) => edit(row.filename, { device: e.target.value })} />
+                      <td className="min-w-48 py-2 pr-2">
+                        <textarea aria-label={`${row.filename} device`} className={fieldClass("w-full rounded border bg-background px-1", notes, "device")} rows={2} value={row.device} disabled={locked} onChange={(e) => edit(row.filename, { device: e.target.value })} />
+                        <FieldReasons notes={notes} field="device" />
                       </td>
-                      <td className="py-2 pr-2">
-                        <textarea aria-label={`${row.filename} wording`} className="w-full rounded border bg-background px-1" rows={2} value={row.exactWording} disabled={locked} onChange={(e) => edit(row.filename, { exactWording: e.target.value })} />
+                      <td className="min-w-56 py-2 pr-2">
+                        <textarea aria-label={`${row.filename} wording`} className={fieldClass("w-full rounded border bg-background px-1", notes, "exactWording")} rows={2} value={row.exactWording} disabled={locked} onChange={(e) => edit(row.filename, { exactWording: e.target.value })} />
+                        <FieldReasons notes={notes} field="exactWording" />
                       </td>
                       <td className="py-2">{typeof row.costUsd === "number" ? money(row.costUsd) : "—"}</td>
                       <td className="py-2 pl-2 text-right">

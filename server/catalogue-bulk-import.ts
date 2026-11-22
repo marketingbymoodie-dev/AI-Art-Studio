@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from "crypto";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
-import { claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, catalogueRowIssues, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { catalogueRowAttention, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
 import { db } from "./db";
@@ -131,6 +131,14 @@ export async function upsertCatalogueImportRow(shop: string, batchId: string, ro
     return;
   }
   await db.update(catalogueImportRows).set(next).where(eq(catalogueImportRows.id, existing.id));
+  const savedWording = row.exactWording;
+  if (existing.candidateId && typeof savedWording === "string" && savedWording !== existing.exactWording) {
+    await db.update(designCandidates).set({ punchline: savedWording, updatedAt: now }).where(and(
+      eq(designCandidates.id, existing.candidateId),
+      eq(designCandidates.shopDomain, shop),
+      eq(designCandidates.status, "pending"),
+    ));
+  }
 }
 
 export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: string; rows: CatalogueImportRow[] } | null> {
@@ -201,10 +209,10 @@ export async function commitCatalogueImport(args: {
   let created = 0;
 
   for (const row of args.rows) {
-    const issues = catalogueRowIssues(row);
+    const attention = catalogueRowAttention(row, args.rows);
     const named = review.failures.filter((failure) => failure.toLowerCase().includes(row.filename.toLowerCase()));
-    if (issues.length || named.length || row.proposedFilename) {
-      const reason = named[0] || issues[0] || "This row still needs attention.";
+    if (attention.length || named.length) {
+      const reason = named[0] || `${row.filename}: ${attention[0].message}`;
       failures.push(reason);
       await upsertCatalogueImportRow(shop, args.batchId, { ...row, importStatus: "failed", failureReason: reason });
       continue;

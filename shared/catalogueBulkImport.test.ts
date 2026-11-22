@@ -3,9 +3,11 @@ import {
   CATALOGUE_IMPORT_COLUMNS,
   catalogueAttentionRank,
   catalogueDraftCostUsd,
+  catalogueReviewCounts,
   catalogueRowAttention,
   catalogueRowIssues,
   catalogueRowsToRetry,
+  catalogueSignageHint,
   catalogueWordingWarning,
   claimCatalogueHash,
   normaliseCatalogueDraft,
@@ -146,7 +148,7 @@ describe("catalogue bulk import", () => {
     expect(plan.rows.find((row) => row.filename === "dog.png")?.proposedFilename).toBeUndefined();
   });
 
-  it("warns on long wording and still leaves the row queueable", () => {
+  it("warns on long wording without refusing the folder", () => {
     const row: CatalogueImportRow = {
       rowNumber: 1,
       filename: "dog.png",
@@ -165,7 +167,7 @@ describe("catalogue bulk import", () => {
     expect(row.exactWording).toBe("the dog has collected every card today");
     expect(catalogueRowIssues(row)).toEqual([]);
     const notes = catalogueRowAttention(row, [row]);
-    expect(notes).toEqual([{ tone: "warn", message: expect.stringMatching(/long for a shirt/) }]);
+    expect(notes).toEqual([{ tone: "warn", field: "exactWording", message: expect.stringMatching(/long for a shirt/) }]);
     expect(reviewCatalogueImport({ filenames: ["dog.png"], rows: [row] }).failures).toEqual([]);
   });
 
@@ -197,5 +199,52 @@ describe("catalogue bulk import", () => {
       { filename: "again.png", importStatus: "failed" as const, failureReason: "The draft failed", source: "draft" as const, draftState: "failed" },
     ];
     expect(catalogueRowsToRetry(rows).map((row) => row.filename)).toEqual(["again.png"]);
+  });
+
+  it("flags the same wording even when truth and device differ", () => {
+    const base = { style: "woodcut", species: "cat", humourOperator: "pp-sleep-warfare", source: "draft" as const, lowConfidence: { style: false, humourOperator: false }, exactWording: "Bottoms Up" };
+    const rows: CatalogueImportRow[] = [
+      { ...base, rowNumber: 1, filename: "a.png", truth: "one cat", device: "a toilet" },
+      { ...base, rowNumber: 2, filename: "b.png", truth: "another cat", device: "a different toilet" },
+      { ...base, rowNumber: 3, filename: "c.png", truth: "a third cat", device: "the bowl" },
+    ];
+    for (const row of rows) {
+      const note = catalogueRowAttention(row, rows).find((item) => item.field === "exactWording" && item.message === "possible duplicate — check");
+      expect(note?.tone).toBe("warn");
+    }
+  });
+
+  it("hints when wording includes signage and clears the hint when that text is removed", () => {
+    const withSign = "I'm Hiring If You're Interested? BUS STOP";
+    const withoutSign = "I'm Hiring If You're Interested?";
+    expect(catalogueSignageHint(withSign)).toBe("contains text that may be background signage");
+    expect(catalogueWordingWarning(withSign)).toMatch(/long for a shirt/);
+    expect(catalogueSignageHint(withoutSign)).toBeNull();
+    expect(catalogueWordingWarning(withoutSign)).toBeNull();
+    const row: CatalogueImportRow = {
+      rowNumber: 1,
+      filename: "penguin.png",
+      style: "woodcut",
+      species: "penguin",
+      humourOperator: "pp-sleep-warfare",
+      truth: "the penguin is hiring",
+      device: "a penguin with a sign",
+      exactWording: withoutSign,
+      source: "draft",
+      lowConfidence: { style: false, humourOperator: false },
+    };
+    expect(catalogueRowAttention(row, [row])).toEqual([]);
+    expect(catalogueReviewCounts([row])).toEqual({ ready: 1, attention: 0, failed: 0, drafting: 0, total: 1 });
+  });
+
+  it("splits every row into exactly one of ready, attention, or failed", () => {
+    const clean: CatalogueImportRow = {
+      rowNumber: 1, filename: "clean.png", style: "woodcut", species: "dog", humourOperator: "pp-sleep-warfare", truth: "asleep", device: "on the bed", exactWording: "Nap", source: "draft", lowConfidence: { style: false, humourOperator: false },
+    };
+    const warned: CatalogueImportRow = { ...clean, rowNumber: 2, filename: "long.png", exactWording: "the dog has collected every card today" };
+    const blocked: CatalogueImportRow = { ...clean, rowNumber: 3, filename: "blank.png", style: "", exactWording: "Sit", lowConfidence: { style: true, humourOperator: false } };
+    const counts = catalogueReviewCounts([clean, warned, blocked]);
+    expect(counts).toEqual({ ready: 1, attention: 2, failed: 0, drafting: 0, total: 3 });
+    expect(counts.ready + counts.attention + counts.failed + counts.drafting).toBe(counts.total);
   });
 });

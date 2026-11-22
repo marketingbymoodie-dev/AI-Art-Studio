@@ -54,7 +54,9 @@ export type CatalogueImportRow = {
   selected?: boolean;
 };
 
-export type CatalogueAttention = { tone: "block" | "warn"; message: string };
+export type CatalogueField = "filename" | "style" | "species" | "humourOperator" | "truth" | "device" | "exactWording";
+
+export type CatalogueAttention = { tone: "block" | "warn"; field: CatalogueField; message: string };
 
 export type CatalogueImportPlan = {
   rows: CatalogueImportRow[];
@@ -245,6 +247,35 @@ export function catalogueWordingWarning(wording: string): string | null {
   return `Exact wording looks long for a shirt (${reasons.join(", ")}). Check it is the punchline.`;
 }
 
+/** Two all-caps words in a row, such as BUS STOP on a sign. Warning only. */
+export function catalogueSignageHint(wording: string): string | null {
+  const text = trimEdges(wording || "");
+  if (!text) return null;
+  let run = 0;
+  for (const token of text.split(/\s+/)) {
+    const letters = token.replace(/[^A-Za-z]/g, "");
+    const caps = letters.length >= 2 && letters === letters.toUpperCase() && /[A-Z]/.test(letters);
+    run = caps ? run + 1 : 0;
+    if (run >= 2) return "contains text that may be background signage";
+  }
+  return null;
+}
+
+function wordingKey(wording: string): string {
+  return trimEdges(wording || "").replace(/\s+/g, " ").toLowerCase();
+}
+
+function fieldForIssue(message: string): CatalogueField {
+  const text = message.toLowerCase();
+  if (text.startsWith("style")) return "style";
+  if (text.startsWith("species")) return "species";
+  if (text.startsWith("humour")) return "humourOperator";
+  if (text.startsWith("truth")) return "truth";
+  if (text.startsWith("device")) return "device";
+  if (text.startsWith("exact")) return "exactWording";
+  return "filename";
+}
+
 function attentionTextKey(row: Pick<CatalogueImportRow, "truth" | "device" | "exactWording">): string {
   const part = (value: string) => value.replace(/\s+/g, " ").trim().toLowerCase();
   const truth = part(row.truth || "");
@@ -257,29 +288,56 @@ function attentionTextKey(row: Pick<CatalogueImportRow, "truth" | "device" | "ex
 export function catalogueRowAttention(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): CatalogueAttention[] {
   const notes: CatalogueAttention[] = [];
   if (row.importStatus === "failed" || row.failureReason) {
-    notes.push({ tone: "block", message: row.failureReason || "This row failed." });
+    notes.push({ tone: "block", field: "filename", message: row.failureReason || "This row failed." });
   }
   if (row.proposedFilename) {
-    notes.push({ tone: "block", message: `Storage name cannot keep this filename. Rename to ${row.proposedFilename}.` });
+    notes.push({ tone: "block", field: "filename", message: `Storage name cannot keep this filename. Rename to ${row.proposedFilename}.` });
   }
-  if (row.lowConfidence?.style) notes.push({ tone: "block", message: "Style is low confidence." });
-  if (row.lowConfidence?.humourOperator) notes.push({ tone: "block", message: "Humour is low confidence." });
+  if (row.lowConfidence?.style) notes.push({ tone: "block", field: "style", message: "Style is low confidence." });
+  if (row.lowConfidence?.humourOperator) notes.push({ tone: "block", field: "humourOperator", message: "Humour is low confidence." });
   for (const issue of catalogueRowIssues(row)) {
     if (row.lowConfidence?.style && issue.endsWith("style is blank.")) continue;
     if (row.lowConfidence?.humourOperator && issue.endsWith("humour_operator is blank.")) continue;
-    notes.push({ tone: "block", message: issue.replace(`${row.filename}: `, "") });
+    const message = issue.replace(`${row.filename}: `, "");
+    notes.push({ tone: "block", field: fieldForIssue(message), message });
   }
   const wording = catalogueWordingWarning(row.exactWording);
-  if (wording) notes.push({ tone: "warn", message: wording });
+  if (wording) notes.push({ tone: "warn", field: "exactWording", message: wording });
+  const signage = catalogueSignageHint(row.exactWording);
+  if (signage) notes.push({ tone: "warn", field: "exactWording", message: signage });
   const hash = row.contentHash || "";
   const textKey = attentionTextKey(row);
-  const other = peers.find((peer) => {
+  const samePicture = peers.find((peer) => {
     if (peer === row || peer.filename === row.filename) return false;
     if (hash && peer.contentHash === hash) return true;
     return !!textKey && attentionTextKey(peer) === textKey;
   });
-  if (other) notes.push({ tone: "warn", message: `Near duplicate of ${other.filename}.` });
+  if (samePicture) notes.push({ tone: "warn", field: "filename", message: `possible duplicate — check (${samePicture.filename})` });
+  const punchline = wordingKey(row.exactWording);
+  const sameWording = punchline ? peers.find((peer) => peer !== row && peer.filename !== row.filename && wordingKey(peer.exactWording) === punchline) : undefined;
+  if (sameWording) notes.push({ tone: "warn", field: "exactWording", message: "possible duplicate — check" });
   return notes;
+}
+
+/** One bucket per row, so ready + need attention + failed + still drafting equals the table. */
+export function catalogueReviewCounts<T extends CatalogueImportRow & { draftState?: string }>(rows: T[]): { ready: number; attention: number; failed: number; drafting: number; total: number } {
+  let ready = 0;
+  let attention = 0;
+  let failed = 0;
+  let drafting = 0;
+  for (const row of rows) {
+    if (row.importStatus === "failed" || row.draftState === "failed" || row.failureReason) {
+      failed += 1;
+      continue;
+    }
+    if (row.draftState === "waiting" || row.draftState === "drafting") {
+      drafting += 1;
+      continue;
+    }
+    if (catalogueRowAttention(row, rows).length) attention += 1;
+    else ready += 1;
+  }
+  return { ready, attention, failed, drafting, total: rows.length };
 }
 
 export function catalogueAttentionRank(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): number {

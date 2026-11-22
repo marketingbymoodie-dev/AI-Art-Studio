@@ -5,7 +5,7 @@ import path from "path";
 import sharp from "sharp";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const calls: { url: string; body: { filenames?: string[]; filename?: string; rows?: { filename: string }[] } }[] = [];
+const calls: { url: string; body: { filenames?: string[]; filename?: string; rows?: { filename: string; exactWording?: string }[]; row?: { filename?: string; exactWording?: string } } }[] = [];
 const commitFailures = vi.hoisted(() => ({ current: [] as string[] }));
 const draftFailure = vi.hoisted(() => ({ current: "" }));
 const draftFailuresFor = vi.hoisted(() => ({ current: [] as string[] }));
@@ -63,7 +63,7 @@ vi.mock("@/lib/queryClient", () => ({
           humourOperator: "pp-sleep-warfare",
           truth: "The dog is asleep.",
           device: "The dog is drawn flat.",
-          exactWording: draftWording.current,
+          exactWording: draftWording.current || `Nap ${body.filename}`,
           lowConfidence: { style: false, humourOperator: false },
           costUsd: 0.01,
         }),
@@ -180,16 +180,44 @@ describe("catalogue import file inputs", () => {
     expect((screen.getByRole("button", { name: /Create 1 pending candidate/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("keeps a long punchline editable and still lets that row queue", async () => {
+  it("keeps a flagged punchline out of the queue until the edit is saved", async () => {
     draftWording.current = "the dog has collected every card today";
     render(<CatalogueBulkImportPage />);
     const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
     choose(folderInput, [png("boxer-a.png")]);
     expect(await screen.findByText(/long for a shirt/)).toBeTruthy();
-    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
-    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
     const wording = screen.getByLabelText("boxer-a.png wording") as HTMLTextAreaElement;
-    expect(wording.value).toBe("the dog has collected every card today");
+    expect(wording.className).toContain("border-amber-700");
+    expect(screen.getByTestId("catalogue-bulk-import-summary").textContent).toBe("1 row: 0 ready, 1 need attention, 0 failed");
+    const blocked = screen.getByRole("button", { name: /Create 0 pending candidates/ }) as HTMLButtonElement;
+    expect(blocked.disabled).toBe(true);
+
+    fireEvent.change(wording, { target: { value: "Nap" } });
+    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
+    await waitFor(() => expect(create.disabled).toBe(false));
+    fireEvent.click(create);
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/commit"))).toBe(true));
+    const rowSaves = calls.filter((call) => call.url.endsWith("/row") && call.body.row?.exactWording === "Nap");
+    const commit = calls.filter((call) => call.url.endsWith("/commit")).at(-1);
+    expect(rowSaves.length).toBeGreaterThan(0);
+    expect(calls.findIndex((call) => call.url.endsWith("/row") && call.body.row?.exactWording === "Nap")).toBeLessThan(calls.findIndex((call) => call.url.endsWith("/commit")));
+    expect(commit?.body.rows?.map((row) => row.exactWording)).toEqual(["Nap"]);
+  });
+
+  it("flags the same wording and signage on the wording field", async () => {
+    draftWording.current = "I'm Hiring If You're Interested? BUS STOP";
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png"), png("boxer-b.png")]);
+    await waitFor(() => expect(screen.getAllByText("contains text that may be background signage")).toHaveLength(2));
+    expect(screen.getAllByText("possible duplicate — check")).toHaveLength(2);
+    expect(screen.getByTestId("catalogue-bulk-import-summary").textContent).toBe("2 rows: 0 ready, 2 need attention, 0 failed");
+    expect((screen.getByRole("button", { name: /Create 0 pending candidates/ }) as HTMLButtonElement).disabled).toBe(true);
+    const wording = screen.getByLabelText("boxer-a.png wording") as HTMLTextAreaElement;
+    expect(wording.className).toContain("border-amber-700");
+    fireEvent.change(wording, { target: { value: "I'm Hiring If You're Interested?" } });
+    expect(screen.queryByText("contains text that may be background signage")).toBeTruthy();
+    expect(screen.getAllByText("contains text that may be background signage")).toHaveLength(1);
   });
 
   it("retries a 401 on one file and still commits the next", async () => {
