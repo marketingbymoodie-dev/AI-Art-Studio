@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   assertCopyTargets,
   isRoundOneDesign,
+  chunks,
+  formatProgress,
   jsonParameter,
   remapIdKeys,
   remapTagCondition,
@@ -32,6 +34,12 @@ describe("petposterous copy guards", () => {
     expect(isRoundOneDesign({ shopify_product_id: "16470702325841", title: "ROUND ONE" })).toBe(true);
     expect(isRoundOneDesign({ shopify_product_id: "1", title: "Round One tee" })).toBe(true);
     expect(isRoundOneDesign({ shopify_product_id: "16484623319121", title: "Love What You've Done With The Place" })).toBe(false);
+  });
+
+  it("prints progress with elapsed time and splits rows into batches", () => {
+    expect(formatProgress("variant_shipping", 200, 386, 0, 65_000)).toBe("variant_shipping 200/386 1m05s");
+    expect(formatProgress("products", 8, 8, 0, 4_000)).toBe("products 8/8 4s");
+    expect(chunks([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
   });
 
   it("sends JSON columns as JSON text, including arrays", () => {
