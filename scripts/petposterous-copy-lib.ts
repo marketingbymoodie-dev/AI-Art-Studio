@@ -98,6 +98,30 @@ export function remapTagCondition(condition: string, idMap: Record<string, numbe
   return mapped ? `aas-type-${mapped}` : condition;
 }
 
+export function formatElapsed(startedAt: number, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes > 0 ? `${minutes}m${String(rest).padStart(2, "0")}s` : `${rest}s`;
+}
+
+export function formatProgress(label: string, done: number, total: number, startedAt: number, now = Date.now()): string {
+  return `${label} ${done}/${total} ${formatElapsed(startedAt, now)}`;
+}
+
+export function chunks<T>(rows: T[], size: number): T[][] {
+  if (size < 1) throw new Error("Batch size must be at least 1.");
+  const out: T[][] = [];
+  for (let index = 0; index < rows.length; index += size) out.push(rows.slice(index, index + size));
+  return out;
+}
+
+/** JSON text for a parameter. node-pg would otherwise send arrays as Postgres array literals. */
+export function jsonParameter(value: unknown): unknown {
+  if (value == null) return null;
+  return JSON.stringify(value);
+}
+
 export function withoutSecrets(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {

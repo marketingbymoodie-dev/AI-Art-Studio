@@ -23,10 +23,16 @@ import {
   PRINTIFY_SHOP_ID,
   assertCopyTargets,
   isRoundOneDesign,
+  chunks,
+  formatElapsed,
+  formatProgress,
+  jsonParameter,
   remapIdKeys,
 } from "./petposterous-copy-lib";
 
 const { Client } = pg;
+const INSERT_BATCH = 100;
+let writeStartedAt = Date.now();
 
 type Sql = { query: (text: string, params?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }> };
 type Row = Record<string, unknown>;
@@ -69,13 +75,59 @@ async function writableColumns(source: Sql, dest: Sql, table: string): Promise<s
   return [...from].filter((column) => to.has(column) && !(SERIAL_TABLES.has(table) && column === "id"));
 }
 
+const jsonColumnCache = new Map<string, Set<string>>();
+
+async function jsonColumns(db: Sql, table: string): Promise<Set<string>> {
+  const cached = jsonColumnCache.get(table);
+  if (cached) return cached;
+  const result = await db.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND udt_name IN ('json', 'jsonb')`,
+    [table],
+  );
+  const names = new Set(result.rows.map((row) => String(row.column_name)));
+  jsonColumnCache.set(table, names);
+  return names;
+}
+
+function note(label: string, done: number, total = done): void {
+  console.log(formatProgress(label, done, total, writeStartedAt));
+}
+
+async function insertMany(db: Sql, table: string, rows: Row[], columns: string[]): Promise<Row[]> {
+  if (!rows.length) {
+    note(table, 0, 0);
+    return [];
+  }
+  const json = await jsonColumns(db, table);
+  const inserted: Row[] = [];
+  let done = 0;
+  for (const batch of chunks(rows, INSERT_BATCH)) {
+    const values: unknown[] = [];
+    const groups = batch.map((row) => {
+      const placeholders = columns.map((column) => {
+        const raw = Object.prototype.hasOwnProperty.call(row, column) ? row[column] : null;
+        values.push(json.has(column) ? jsonParameter(raw) : raw ?? null);
+        return `$${values.length}`;
+      });
+      return `(${placeholders.join(", ")})`;
+    });
+    const sql = `INSERT INTO ${ident(table)} (${columns.map(ident).join(", ")})
+      VALUES ${groups.join(", ")} RETURNING *`;
+    const result = await db.query(sql, values);
+    if (result.rows.length !== batch.length) {
+      throw new Error(`${table} insert returned ${result.rows.length} of ${batch.length} rows.`);
+    }
+    inserted.push(...result.rows);
+    done += batch.length;
+    note(table, done, rows.length);
+  }
+  return inserted;
+}
+
 async function insertRow(db: Sql, table: string, row: Row, columns: string[]): Promise<Row> {
-  const names = columns.filter((column) => Object.prototype.hasOwnProperty.call(row, column));
-  const values = names.map((column) => row[column]);
-  const sql = `INSERT INTO ${ident(table)} (${names.map(ident).join(", ")})
-    VALUES (${names.map((_, index) => `$${index + 1}`).join(", ")}) RETURNING *`;
-  const result = await db.query(sql, values);
-  return result.rows[0];
+  const [created] = await insertMany(db, table, [row], columns);
+  return created;
 }
 
 function shopClause(column: string): string {
@@ -83,6 +135,7 @@ function shopClause(column: string): string {
 }
 
 async function main(): Promise<void> {
+  writeStartedAt = Date.now();
   const writing = process.argv.includes("--write");
   const sourceUrl = process.env.SOURCE_DATABASE_URL || "";
   const destUrl = process.env.DEST_DATABASE_URL || "";
@@ -111,6 +164,7 @@ async function main(): Promise<void> {
       return;
     }
     if (!dest) throw new Error("DEST_DATABASE_URL is required to write.");
+    note("write", 0, 1);
     await dest.query("BEGIN");
     try {
       const idMap = await writePlan(source, dest, plan);
@@ -119,6 +173,7 @@ async function main(): Promise<void> {
       await mkdir(path.dirname(file), { recursive: true });
       const body = Object.fromEntries([...idMap.entries()].map(([oldId, newId]) => [String(oldId), newId]));
       await writeFile(file, `${JSON.stringify(body, null, 2)}\n`);
+      console.log(`committed ${formatElapsed(writeStartedAt)}`);
       console.log(`Wrote id map ${file}`);
       for (const [oldId, newId] of idMap) console.log(`product type ${oldId} -> ${newId}`);
     } catch (err) {
@@ -174,8 +229,11 @@ async function readPlan(source: Sql) {
     [PETPOSTEROUS_SHOP],
   );
   const variantShipping = await byTypes(source, "variant_shipping", typeIds);
+  note("read variant_shipping", variantShipping.rows.length);
   const coverage = await byTypes(source, "shipping_coverage", typeIds);
+  note("read shipping_coverage", coverage.rows.length);
   const costs = await byTypes(source, "catalog_variant_costs", typeIds);
+  note("read catalog_variant_costs", costs.rows.length);
   const installs = await source.query(
     `SELECT * FROM shopify_installations WHERE ${shopClause("shop_domain")}`,
     [PETPOSTEROUS_SHOP],
@@ -205,6 +263,7 @@ async function readPlan(source: Sql) {
   const membership = profileId
     ? await source.query(`SELECT * FROM shipping_store_variants WHERE store_profile_id = $1`, [profileId])
     : { rows: [] as Row[], rowCount: 0 };
+  note("read shipping_store_variants", membership.rows.length);
   const classIds = uniqueNumbers([
     ...variantShipping.rows.map((row) => Number(row.shipping_class_id)),
     ...coverage.rows.map((row) => Number(row.shipping_class_id)),
@@ -341,14 +400,12 @@ async function writePlan(source: Sql, dest: Sql, plan: Awaited<ReturnType<typeof
 
   const typeColumns = await writableColumns(source, dest, "product_types");
   const idMap = new Map<number, number>();
-  for (const row of plan.types) {
-    const created = await insertRow(dest, "product_types", {
-      ...row,
-      merchant_id: row.merchant_id ? merchantId : row.merchant_id,
-      blank_source_product_type_id: null,
-    }, typeColumns);
-    idMap.set(Number(row.id), Number(created.id));
-  }
+  const createdTypes = await insertMany(dest, "product_types", plan.types.map((row) => ({
+    ...row,
+    merchant_id: row.merchant_id ? merchantId : row.merchant_id,
+    blank_source_product_type_id: null,
+  })), typeColumns);
+  plan.types.forEach((row, index) => idMap.set(Number(row.id), Number(createdTypes[index]?.id)));
   for (const row of plan.types) {
     const oldSource = Number(row.blank_source_product_type_id);
     const mapped = idMap.get(oldSource);
@@ -368,26 +425,20 @@ async function writePlan(source: Sql, dest: Sql, plan: Awaited<ReturnType<typeof
   await insertMapped(source, dest, "variant_shipping", plan.variantShipping, idMap, classMap);
 
   const candidateColumns = await writableColumns(source, dest, "design_candidates");
-  for (const row of plan.candidates) {
-    await insertRow(dest, "design_candidates", {
-      ...row,
-      publish_color_ticks: remapIdKeys(row.publish_color_ticks, idMap),
-    }, candidateColumns);
-  }
+  await insertMany(dest, "design_candidates", plan.candidates.map((row) => ({
+    ...row,
+    publish_color_ticks: remapIdKeys(row.publish_color_ticks, idMap),
+  })), candidateColumns);
   await insertMapped(source, dest, "catalogue_candidate_choices", plan.choices, idMap, classMap);
   await insertMapped(source, dest, "catalogue_import_batches", plan.batches, idMap, classMap);
   await insertMapped(source, dest, "catalogue_import_rows", plan.importRows, idMap, classMap);
 
   const productColumns = await writableColumns(source, dest, "design_products");
-  for (const row of plan.products) {
+  await insertMany(dest, "design_products", plan.products.map((row) => {
     const typeId = idMap.get(Number(row.product_type_id));
     if (!typeId) throw new Error(`Design product ${row.id} has no copied product type.`);
-    await insertRow(dest, "design_products", {
-      ...row,
-      merchant_id: merchantId,
-      product_type_id: typeId,
-    }, productColumns);
-  }
+    return { ...row, merchant_id: merchantId, product_type_id: typeId };
+  }), productColumns);
 
   if (plan.settings) {
     const present = await dest.query(
@@ -433,17 +484,21 @@ async function ensureClasses(source: Sql, dest: Sql, classes: Row[], rates: Row[
     const created = await insertRow(dest, "shipping_classes", row, classColumns);
     const newId = Number(created.id);
     map.set(Number(row.id), newId);
-    for (const rate of rates.filter((item) => Number(item.shipping_class_id) === Number(row.id))) {
-      await insertRow(dest, "shipping_rates", { ...rate, shipping_class_id: newId }, rateColumns);
-    }
+    const classRates = rates
+      .filter((item) => Number(item.shipping_class_id) === Number(row.id))
+      .map((item) => ({ ...item, shipping_class_id: newId }));
+    if (classRates.length) await insertMany(dest, "shipping_rates", classRates, rateColumns);
   }
   return map;
 }
 
 async function insertMapped(source: Sql, dest: Sql, table: string, rows: Row[], idMap: Map<number, number>, classMap: Map<number, number>): Promise<void> {
-  if (!rows.length) return;
+  if (!rows.length) {
+    note(table, 0, 0);
+    return;
+  }
   const columns = await writableColumns(source, dest, table);
-  for (const row of rows) {
+  const prepared = rows.map((row) => {
     const next = { ...row };
     if ("product_type_id" in next) {
       const mapped = idMap.get(Number(next.product_type_id));
@@ -455,8 +510,9 @@ async function insertMapped(source: Sql, dest: Sql, table: string, rows: Row[], 
       if (!mapped) throw new Error(`${table} row points at a shipping class that was not copied.`);
       next.shipping_class_id = mapped;
     }
-    await insertRow(dest, table, next, columns);
-  }
+    return next;
+  });
+  await insertMany(dest, table, prepared, columns);
 }
 
 async function insertProfile(source: Sql, dest: Sql, plan: Awaited<ReturnType<typeof readPlan>>, classMap: Map<number, number>): Promise<void> {
@@ -470,21 +526,28 @@ async function insertProfile(source: Sql, dest: Sql, plan: Awaited<ReturnType<ty
   }, profileColumns);
   const profileId = Number(created.id);
   const zoneColumns = await writableColumns(source, dest, "shipping_store_zones");
+  const insertedZones = await insertMany(
+    dest,
+    "shipping_store_zones",
+    plan.zones.map((zone) => ({ ...zone, store_profile_id: profileId })),
+    zoneColumns,
+  );
   const zoneMap = new Map<number, number>();
-  for (const zone of plan.zones) {
-    const inserted = await insertRow(dest, "shipping_store_zones", { ...zone, store_profile_id: profileId }, zoneColumns);
-    zoneMap.set(Number(zone.id), Number(inserted.id));
-  }
+  plan.zones.forEach((zone, index) => zoneMap.set(Number(zone.id), Number(insertedZones[index]?.id)));
   const rateColumns = await writableColumns(source, dest, "shipping_store_rates");
-  for (const rate of plan.rates) {
+  const preparedRates = plan.rates.map((rate) => {
     const zoneId = zoneMap.get(Number(rate.store_zone_id));
     if (!zoneId) throw new Error("A profile rate lost its zone.");
-    await insertRow(dest, "shipping_store_rates", { ...rate, store_zone_id: zoneId }, rateColumns);
-  }
+    return { ...rate, store_zone_id: zoneId };
+  });
+  await insertMany(dest, "shipping_store_rates", preparedRates, rateColumns);
   const memberColumns = await writableColumns(source, dest, "shipping_store_variants");
-  for (const member of plan.membership) {
-    await insertRow(dest, "shipping_store_variants", { ...member, store_profile_id: profileId }, memberColumns);
-  }
+  await insertMany(
+    dest,
+    "shipping_store_variants",
+    plan.membership.map((member) => ({ ...member, store_profile_id: profileId })),
+    memberColumns,
+  );
 }
 
 const entry = process.argv[1] || "";

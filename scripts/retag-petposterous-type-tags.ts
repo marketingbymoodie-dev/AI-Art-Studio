@@ -9,7 +9,9 @@
  * Do not run that until the switchover checklist says go.
  */
 import { readFile } from "node:fs/promises";
-import { PETPOSTEROUS_SHOP, remapTagCondition, retagCatalogueTypeTags } from "./petposterous-copy-lib";
+import { chunks, formatElapsed, formatProgress, PETPOSTEROUS_SHOP, remapTagCondition, retagCatalogueTypeTags } from "./petposterous-copy-lib";
+
+const WRITE_BATCH = 10;
 
 const API = "2025-10";
 const RETAG_CONFIRM = "retag-petposterous";
@@ -20,6 +22,7 @@ type Rule = { column: string; relation: string; condition: string };
 type CollectionNode = { id: string; title: string; handle: string; ruleSet: { appliedDisjunctively: boolean; rules: Rule[] } | null };
 
 async function main(): Promise<void> {
+  const startedAt = Date.now();
   const writing = process.argv.includes("--write");
   const token = process.env.PETPOSTEROUS_ADMIN_TOKEN || "";
   if (!token) throw new Error("PETPOSTEROUS_ADMIN_TOKEN is required. It is not printed.");
@@ -28,8 +31,8 @@ async function main(): Promise<void> {
     throw new Error(`Refusing to write. Set CONFIRM_PETPOSTEROUS_RETAG=${RETAG_CONFIRM} and pass --write.`);
   }
 
-  const products = await listProducts(token);
-  const collections = (await listCollections(token)).filter((collection) => usesOldTag(collection));
+  const products = await listProducts(token, startedAt);
+  const collections = (await listCollections(token, startedAt)).filter((collection) => usesOldTag(collection));
   console.log(`shop: ${PETPOSTEROUS_SHOP}`);
   console.log(`products with old type tags: ${products.length}`);
   for (const product of products) {
@@ -51,24 +54,39 @@ async function main(): Promise<void> {
     return;
   }
   if (!Object.keys(idMap).length) throw new Error("The id map is empty.");
-  for (const product of products) {
-    const tags = retagCatalogueTypeTags(product.tags, idMap);
-    await admin(token, `mutation($product: ProductUpdateInput!) {
-      productUpdate(product: $product) { userErrors { message } }
-    }`, { product: { id: product.id, tags } });
-    console.log(`updated ${product.handle}`);
+  let done = 0;
+  for (const batch of chunks(products, WRITE_BATCH)) {
+    const declarations = batch.map((_, index) => `$p${index}: ProductUpdateInput!`).join(", ");
+    const fields = batch.map((_, index) => `p${index}: productUpdate(product: $p${index}) { userErrors { message } }`).join("\n");
+    const variables: Record<string, unknown> = {};
+    batch.forEach((product, index) => {
+      variables[`p${index}`] = { id: product.id, tags: retagCatalogueTypeTags(product.tags, idMap) };
+    });
+    await admin(token, `mutation(${declarations}) { ${fields} }`, variables);
+    done += batch.length;
+    console.log(formatProgress("products", done, products.length, startedAt));
   }
-  for (const collection of collections) {
-    const rules = (collection.ruleSet?.rules || []).map((rule) => ({
-      column: rule.column,
-      relation: rule.relation,
-      condition: remapTagCondition(rule.condition, idMap),
-    }));
-    await admin(token, `mutation($input: CollectionInput!) {
-      collectionUpdate(input: $input) { userErrors { message } }
-    }`, { input: { id: collection.id, ruleSet: { appliedDisjunctively: collection.ruleSet?.appliedDisjunctively === true, rules } } });
-    console.log(`updated collection ${collection.handle}`);
+  done = 0;
+  for (const batch of chunks(collections, WRITE_BATCH)) {
+    const declarations = batch.map((_, index) => `$c${index}: CollectionInput!`).join(", ");
+    const fields = batch.map((_, index) => `c${index}: collectionUpdate(input: $c${index}) { userErrors { message } }`).join("\n");
+    const variables: Record<string, unknown> = {};
+    batch.forEach((collection, index) => {
+      const rules = (collection.ruleSet?.rules || []).map((rule) => ({
+        column: rule.column,
+        relation: rule.relation,
+        condition: remapTagCondition(rule.condition, idMap),
+      }));
+      variables[`c${index}`] = {
+        id: collection.id,
+        ruleSet: { appliedDisjunctively: collection.ruleSet?.appliedDisjunctively === true, rules },
+      };
+    });
+    await admin(token, `mutation(${declarations}) { ${fields} }`, variables);
+    done += batch.length;
+    console.log(formatProgress("collections", done, collections.length, startedAt));
   }
+  console.log(`committed ${formatElapsed(startedAt)}`);
 }
 
 async function readIdMap(file: string, writing: boolean): Promise<Record<string, number>> {
@@ -91,7 +109,7 @@ function usesOldTag(collection: CollectionNode): boolean {
   return (collection.ruleSet?.rules || []).some((rule) => OLD_TAGS.includes(rule.condition));
 }
 
-async function listProducts(token: string): Promise<ProductNode[]> {
+async function listProducts(token: string, startedAt: number): Promise<ProductNode[]> {
   const query = `tag:${OLD_TAGS.join(" OR tag:")}`;
   const out: ProductNode[] = [];
   let cursor: string | null = null;
@@ -103,12 +121,13 @@ async function listProducts(token: string): Promise<ProductNode[]> {
       }
     }`, { cursor, query });
     out.push(...data.products.nodes);
+    console.log(formatProgress("products listed", out.length, out.length, startedAt));
     if (!data.products.pageInfo.hasNextPage) return out;
     cursor = data.products.pageInfo.endCursor;
   }
 }
 
-async function listCollections(token: string): Promise<CollectionNode[]> {
+async function listCollections(token: string, startedAt: number): Promise<CollectionNode[]> {
   const out: CollectionNode[] = [];
   let cursor: string | null = null;
   for (;;) {
@@ -119,6 +138,7 @@ async function listCollections(token: string): Promise<CollectionNode[]> {
       }
     }`, { cursor });
     out.push(...data.collections.nodes);
+    console.log(formatProgress("collections listed", out.length, out.length, startedAt));
     if (!data.collections.pageInfo.hasNextPage) return out;
     cursor = data.collections.pageInfo.endCursor;
   }
