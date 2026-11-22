@@ -14,6 +14,7 @@ import {
   type GarmentMeasurements,
   type GarmentShape,
 } from "@shared/findMySize";
+import { catalogueShopAllowed } from "@shared/operatorCatalogue";
 import { designProducts, productTypes, shopifyInstallations } from "@shared/schema";
 import { db } from "./db";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
@@ -102,6 +103,7 @@ export async function backfillFindMySize(): Promise<{ charts: number; guarantee:
     .where(isNull(productTypes.garmentMeasurements));
   let charts = 0;
   for (const row of rows) {
+    if (!catalogueShopAllowed(row.shop)) continue;
     const measurements = await copyChart(row);
     if (!measurements) continue;
     const shape = shapeOf(row);
@@ -112,7 +114,11 @@ export async function backfillFindMySize(): Promise<{ charts: number; guarantee:
         garmentShape: row.garmentShape || shape,
         garmentFitEase: row.garmentFitEase || defaultEaseForShape(shape),
       })
-      .where(and(eq(productTypes.id, row.id), isNull(productTypes.garmentMeasurements)))
+      .where(and(
+        eq(productTypes.id, row.id),
+        eq(productTypes.shopifyShopDomain, row.shop),
+        isNull(productTypes.garmentMeasurements),
+      ))
       .returning({ id: productTypes.id });
     charts += written.length;
   }

@@ -4,22 +4,28 @@
  * "center" puts it in the middle of that area. Both stay horizontally centred.
  * Scale 1 is contain: the art grows until it touches the print area's limiting side.
  *
- * Only types 56 and 58 use the chest placement. Every other type, including
- * the staging demo (54), keeps the centred 85% mockup.
+ * Types 56 and 58 use the chest placement only on the staging demo shop and
+ * Petposterous. The same ids on any other shop keep the centred 85% mockup.
  */
+import { catalogueShopAllowed } from "./operatorCatalogue";
+
 export type VerticalPrintAnchor = "top" | "center";
 
 const CHEST_PLACEMENT_TYPE_IDS = new Set([56, 58]);
+
+export function chestPlacementForShop(productTypeId: number, shop: string | null | undefined): boolean {
+  return CHEST_PLACEMENT_TYPE_IDS.has(Number(productTypeId)) && catalogueShopAllowed(shop);
+}
 
 export function verticalPrintAnchorOf(raw: unknown): VerticalPrintAnchor {
   return raw === "top" ? "top" : "center";
 }
 
-export function placementForProductType(productTypeId: number): {
+export function placementForProductType(productTypeId: number, shop?: string | null): {
   anchor: VerticalPrintAnchor;
   mockupScale: number;
 } {
-  if (CHEST_PLACEMENT_TYPE_IDS.has(productTypeId)) return { anchor: "top", mockupScale: 1 };
+  if (chestPlacementForShop(productTypeId, shop)) return { anchor: "top", mockupScale: 1 };
   return { anchor: "center", mockupScale: 0.85 };
 }
 
@@ -52,16 +58,24 @@ export const CHEST_ZONES: Record<number, ChestPrintZone> = {
   58: { maxWidthIn: 14, maxHeightIn: 14 },
 };
 
-/** Stored inches win. Empty values fall back to the approved zone for that type. */
+/**
+ * Stored inches win on a catalogue shop. Types 56 and 58 outside the staging
+ * demo shop and Petposterous have no chest zone, even when inches are stored.
+ */
 export function chestZoneForProductType(
   productTypeId: number,
   storedWidth?: unknown,
   storedHeight?: unknown,
+  shop?: string | null,
 ): ChestPrintZone | null {
   const width = Number(storedWidth);
   const height = Number(storedHeight);
-  if (width > 0 && height > 0) return { maxWidthIn: width, maxHeightIn: height };
-  return CHEST_ZONES[productTypeId] ?? null;
+  const stored = width > 0 && height > 0 ? { maxWidthIn: width, maxHeightIn: height } : null;
+  if (CHEST_PLACEMENT_TYPE_IDS.has(Number(productTypeId))) {
+    if (!chestPlacementForShop(productTypeId, shop)) return null;
+    return stored ?? CHEST_ZONES[productTypeId] ?? null;
+  }
+  return stored;
 }
 
 /** Top of the print area, horizontally centred, never larger than the print area. */

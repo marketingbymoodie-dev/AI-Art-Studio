@@ -1561,6 +1561,7 @@ export async function submitFlatOrderToPrintify(
           editedArtworkPath: resolved.design.editedArtworkPath,
           artStyle: resolved.design.artStyle,
           productTypeId: productType.id,
+          shop: productType.shopifyShopDomain,
           productTypePlaceholderPositions: productType.placeholderPositions,
           productTypeName: productType.name,
         });

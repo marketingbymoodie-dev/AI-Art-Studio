@@ -24,6 +24,7 @@ export async function buildMyPetPrintArea(args: {
   editedArtworkPath: string;
   artStyle: string;
   productTypeId?: number;
+  shop?: string | null;
   productTypePlaceholderPositions: unknown;
   productTypeName: string;
 }): Promise<{ url: string; path: string }> {
@@ -31,7 +32,7 @@ export async function buildMyPetPrintArea(args: {
   if (!(await libraryObjectExists(path))) {
     const source = await readLibraryObject(args.editedArtworkPath);
     const canvas = printCanvasFromStoredPlaceholders(args.productTypePlaceholderPositions, args.productTypeName);
-    const placement = placementForProductType(args.productTypeId ?? 0);
+    const placement = placementForProductType(args.productTypeId ?? 0, args.shop);
     const chest = args.productTypeId ? await chestFitForProductType(args.productTypeId) : null;
     const { buffer } = await buildFlywheelPrintFile(args.artStyle, source, canvas, placement.anchor, chest ?? undefined);
     await writeLibraryObject(path, buffer, "image/png");

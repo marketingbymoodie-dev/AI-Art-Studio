@@ -249,6 +249,7 @@ export async function chestFitForProductType(productTypeId: number): Promise<
   const [row] = await db
     .select({
       name: productTypes.name,
+      shop: productTypes.shopifyShopDomain,
       positions: productTypes.placeholderPositions,
       width: productTypes.printChestWidthIn,
       height: productTypes.printChestHeightIn,
@@ -256,7 +257,7 @@ export async function chestFitForProductType(productTypeId: number): Promise<
     .from(productTypes)
     .where(eq(productTypes.id, productTypeId))
     .limit(1);
-  const zone = chestZoneForProductType(productTypeId, row?.width, row?.height);
+  const zone = chestZoneForProductType(productTypeId, row?.width, row?.height, row?.shop);
   if (!zone) return null;
   const canvas = printCanvasFromStoredPlaceholders(row?.positions, row?.name || `type ${productTypeId}`);
   return {

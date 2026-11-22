@@ -91,7 +91,7 @@ export async function approveCatalogueCandidate(recipe: ApprovalRecipe): Promise
     checked.artStyle,
     source,
     canvas,
-    placementForProductType(typeRow.id).anchor,
+    placementForProductType(typeRow.id, shop).anchor,
     await chestFitForProductType(typeRow.id),
   );
 

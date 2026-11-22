@@ -748,6 +748,15 @@ export async function reviewStoredScene(productTypeId: number, panelId: string):
   return cells;
 }
 
+async function placementForStoredType(productTypeId: number) {
+  const [row] = await db
+    .select({ shop: productTypes.shopifyShopDomain })
+    .from(productTypes)
+    .where(eq(productTypes.id, productTypeId))
+    .limit(1);
+  return placementForProductType(productTypeId, row?.shop);
+}
+
 export async function renderCandidateOnPanel(args: {
   productTypeId: number;
   typeName: string;
@@ -774,12 +783,12 @@ export async function renderCandidateOnPanel(args: {
   forceRecolour?: boolean;
   /** Publish path. Uses an uploaded photograph and never recolours the white master. */
   uploadedOnly?: boolean;
-  /** Omit to use this type's placement. Types 56 and 58 are full-size and top-anchored. */
+  /** Omit to use this type's placement. Types 56 and 58 are full-size and top-anchored on the catalogue shops. */
   scale?: number;
   anchor?: "top" | "center";
 }): Promise<{ png: Buffer; source: "produced" | "recolour" }> {
   const loaded = await loadCandidatePanel(args);
-  const placement = placementForProductType(args.productTypeId);
+  const placement = await placementForStoredType(args.productTypeId);
   const { chestFitForProductType } = await import("./colour-blanks");
   const chest = await chestFitForProductType(args.productTypeId);
   const png = await renderArtworkOnPanel({
@@ -909,7 +918,7 @@ export async function measureCandidateInk(args: {
   artworkPath: string | null;
 }) {
   const loaded = await loadCandidatePanel(args);
-  const placement = placementForProductType(args.productTypeId);
+  const placement = await placementForStoredType(args.productTypeId);
   const { chestFitForProductType } = await import("./colour-blanks");
   const chest = await chestFitForProductType(args.productTypeId);
   return measurePlacedInk({
@@ -934,7 +943,7 @@ export async function candidatePrintifyArtwork(args: {
   artworkPath: string | null;
 }) {
   const loaded = await loadCandidatePanel(args);
-  const placement = placementForProductType(args.productTypeId);
+  const placement = await placementForStoredType(args.productTypeId);
   const { chestFitForProductType } = await import("./colour-blanks");
   const chest = await chestFitForProductType(args.productTypeId);
   const preview = await artworkForPrintifyPreview({

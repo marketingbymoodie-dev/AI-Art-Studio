@@ -291,18 +291,23 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types
    SET print_chest_width_in = 11, print_chest_height_in = 14
    WHERE id = 56
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com')
      AND print_chest_width_in IS NULL
      AND print_chest_height_in IS NULL`,
   `UPDATE product_types
    SET print_chest_width_in = 14, print_chest_height_in = 14
    WHERE id = 58
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com')
      AND print_chest_width_in IS NULL
      AND print_chest_height_in IS NULL`,
-  // Type 54 used to read a hardcoded Softstyle compare-at table. Copy it once.
-  // Types 56 and 58 stay null so their listings are not given a crossed-out price.
+  // Type 54 used to read a hardcoded Softstyle compare-at table. Copy it once,
+  // and only when that id belongs to a catalogue shop. Types 56 and 58 stay
+  // null so their listings are not given a crossed-out price.
   `UPDATE product_types
    SET compare_at_by_size = '${TYPE_54_COMPARE_AT_JSON}'
-   WHERE id = 54 AND compare_at_by_size IS NULL`,
+   WHERE id = 54
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com')
+     AND compare_at_by_size IS NULL`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)

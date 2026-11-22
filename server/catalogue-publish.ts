@@ -295,7 +295,7 @@ export async function publishCatalogueCandidate(args: {
         checked.artStyle,
         source,
         canvas,
-        placementForProductType(garment.id).anchor,
+        placementForProductType(garment.id, shop).anchor,
         (await chestFitForProductType(garment.id)) ?? undefined,
       );
       printFilePath = typePrintPath;

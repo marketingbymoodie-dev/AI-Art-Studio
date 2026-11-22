@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
 import { chestZoneForProductType, chestZoneRect, inkOrigin, placementForProductType, verticalPrintAnchorOf } from "./printPlacement";
 
 describe("print placement", () => {
@@ -15,18 +16,21 @@ describe("print placement", () => {
     expect(inkOrigin({ ...area, anchor: "center" })).toEqual({ left: 120, top: 360 });
   });
 
-  it("applies the chest placement only to types 56 and 58", () => {
-    expect(placementForProductType(56)).toEqual({ anchor: "top", mockupScale: 1 });
-    expect(placementForProductType(58)).toEqual({ anchor: "top", mockupScale: 1 });
-    expect(placementForProductType(54)).toEqual({ anchor: "center", mockupScale: 0.85 });
+  it("applies the chest placement only to types 56 and 58 on the catalogue shops", () => {
+    expect(placementForProductType(56, PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ anchor: "top", mockupScale: 1 });
+    expect(placementForProductType(58, STAGING_CATALOGUE_SHOP)).toEqual({ anchor: "top", mockupScale: 1 });
+    expect(placementForProductType(54, STAGING_CATALOGUE_SHOP)).toEqual({ anchor: "center", mockupScale: 0.85 });
+    expect(placementForProductType(56, "other-merchant.myshopify.com")).toEqual({ anchor: "center", mockupScale: 0.85 });
+    expect(placementForProductType(58)).toEqual({ anchor: "center", mockupScale: 0.85 });
     expect(placementForProductType(12)).toEqual({ anchor: "center", mockupScale: 0.85 });
   });
 
-  it("keeps the approved chest zone on types 56 and 58 only", () => {
-    expect(chestZoneForProductType(58)).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
-    expect(chestZoneForProductType(56)).toEqual({ maxWidthIn: 11, maxHeightIn: 14 });
-    expect(chestZoneForProductType(54)).toBeNull();
-    expect(chestZoneForProductType(58, "14.00", "14.00")).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
+  it("keeps the approved chest zone on types 56 and 58 only on the catalogue shops", () => {
+    expect(chestZoneForProductType(58, undefined, undefined, PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
+    expect(chestZoneForProductType(56, undefined, undefined, STAGING_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 11, maxHeightIn: 14 });
+    expect(chestZoneForProductType(54, undefined, undefined, STAGING_CATALOGUE_SHOP)).toBeNull();
+    expect(chestZoneForProductType(58, "14.00", "14.00", PETPOSTEROUS_CATALOGUE_SHOP)).toEqual({ maxWidthIn: 14, maxHeightIn: 14 });
+    expect(chestZoneForProductType(58, "14.00", "14.00", "other-merchant.myshopify.com")).toBeNull();
     expect(chestZoneForProductType(54, null, null)).toBeNull();
     const zone = chestZoneRect({
       areaLeft: 0,

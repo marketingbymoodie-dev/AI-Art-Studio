@@ -124,6 +124,7 @@ export async function readProductMyPetEnabled(
  * admin false is left alone on later boots.
  */
 export async function backfillUnsetMyPetEnabled(): Promise<{ set: number; skipped: number; failed: number }> {
+  const { catalogueShopAllowed } = await import("@shared/operatorCatalogue");
   const { and, isNotNull, ne } = await import("drizzle-orm");
   const { designProducts } = await import("@shared/schema");
   const { db } = await import("./db");
@@ -143,7 +144,7 @@ export async function backfillUnsetMyPetEnabled(): Promise<{ set: number; skippe
   for (const row of rows) {
     const productId = String(row.shopifyProductId || "");
     const shop = normalizeMyshopifyShopDomain(row.shop);
-    if (!productId || !shop) {
+    if (!productId || !shop || !catalogueShopAllowed(shop)) {
       skipped += 1;
       continue;
     }
