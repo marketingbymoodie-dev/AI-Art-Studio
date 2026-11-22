@@ -203,6 +203,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   // unlimited (owner/demo/internal); positive int = explicit per-shop cap.
   // Platform-operator-only writes. See getEffectiveDesignProductLimit.
   { table: "shopify_installations", column: "design_product_limit_override", type: "INTEGER" },
+  { table: "shopify_installations", column: "credit_reimbursement_mode", type: "TEXT NOT NULL DEFAULT 'appai_discount'" },
+  { table: "shopify_installations", column: "enabled_credit_pack_ids", type: "TEXT NOT NULL DEFAULT '[\"5\"]'" },
   { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
   { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
   { table: "design_candidates", column: "print_file_path", type: "TEXT" },
