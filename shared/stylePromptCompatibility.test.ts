@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { REUSE_REGENERATE_PREFIX } from "./reuseArtworkPrompt";
 import {
   detectStylePromptMismatch,
   resolveSuggestedStylePresets,
@@ -41,7 +42,7 @@ describe("stylePromptCompatibility", () => {
   it("does not treat regenerate recreate text as a pattern request", () => {
     expect(
       detectStylePromptMismatch(
-        "Recreate this artwork as closely as possible for the new product aspect ratio. Original idea: angry bird",
+        `${REUSE_REGENERATE_PREFIX} Original idea: angry bird`,
         "Create an illustrated motif of",
         "Illustrated Motif",
       ),

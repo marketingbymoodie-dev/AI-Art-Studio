@@ -335,12 +335,14 @@ async function seedPlatformDefaultStylesIfEmpty(opts?: {
     const row = await storage.createStylePreset({
       merchantId,
       name: style.name,
+      catalogSlug: style.id === "none" ? null : style.id,
       promptPrefix: style.promptPrefix || "",
       category: style.category || "all",
       isActive: true,
       sortOrder: i,
       creatorScope: "global",
       promptPlaceholder: (style as any).promptPlaceholder || null,
+      generationQuality: (style as any).generationQuality || null,
       descriptionOptional: !!(style as any).descriptionOptional,
       baseImageUrl: (style as any).baseImageUrl || null,
     } as any);

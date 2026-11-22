@@ -1,7 +1,7 @@
 ;(function () {
   'use strict';
   // Bump VER on every ship so a stale cached copy cannot block the new installer.
-  var CART_IMG_VERSION = '3.2';
+  var CART_IMG_VERSION = '3.12';
   if (window.__APPAI_CART_IMG_REPLACER_VER__ === CART_IMG_VERSION) return;
   window.__APPAI_CART_IMG_REPLACER_VER__ = CART_IMG_VERSION;
   window.__APPAI_CART_IMG_REPLACER_V2__ = true;
@@ -9,6 +9,13 @@
 
   var LOG = '[AppAI cart-images]';
   var hushMutations = false;
+  /** Whole applyMockups pass — observer/schedule no-op so our childList writes cannot re-GET. */
+  var isApplying = false;
+  var pendingRerun = false;
+  var cartDirty = true;
+  var cartPromise = null;
+  var lastCartJson = null;
+  var lastCartFingerprint = null;
   var lastCartMediaGestureAt = 0;
 
   /** Customizer/AppAI cart lines — image + title must not open native/shadow PDPs. */
@@ -80,11 +87,50 @@
   }
   ensureNoFlash();
 
-  function getCart() {
-    return fetch('/cart.js', { credentials: 'same-origin' }).then(function (r) {
-      if (!r.ok) throw new Error('cart.js ' + r.status);
-      return r.json();
+  function cartFingerprint(cart, headerUpdatedAt) {
+    if (headerUpdatedAt) return 'hdr:' + headerUpdatedAt;
+    if (!cart) return '';
+    var items = cart.items || [];
+    var parts = [String(cart.token || ''), String(cart.item_count || items.length)];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i] || {};
+      parts.push(
+        String(it.key || '') +
+          ':' +
+          String(it.quantity || 0) +
+          ':' +
+          String(it.variant_id || '') +
+          ':' +
+          (mockupUrlFromLineProperties(it.properties) || ''),
+      );
+    }
+    return parts.join('|');
+  }
+
+  function readCartResponse(r) {
+    if (!r.ok) throw new Error('cart.js ' + r.status);
+    var headerUpdatedAt =
+      r.headers.get('x-cartjs-updatedat') || r.headers.get('X-Cartjs-Updatedat') || '';
+    return r.json().then(function (cart) {
+      cartDirty = false;
+      lastCartFingerprint = cartFingerprint(cart, headerUpdatedAt);
+      lastCartJson = cart;
+      return cart;
     });
+  }
+
+  function getCart(needFetch, fresh) {
+    if (fresh) {
+      return fetch('/cart.js', { credentials: 'same-origin', cache: 'no-store' }).then(readCartResponse);
+    }
+    if (cartPromise) return cartPromise;
+    if (!needFetch && lastCartJson) return Promise.resolve(lastCartJson);
+    cartPromise = fetch('/cart.js', { credentials: 'same-origin' })
+      .then(readCartResponse)
+      .finally(function () {
+        cartPromise = null;
+      });
+    return cartPromise;
   }
 
   function mockupUrlFromLineProperties(props) {
@@ -101,9 +147,49 @@
       }
       return null;
     }
-    var u = props._mockup_url || props.mockup_url;
-    if (u && String(u).indexOf('https://') === 0) return String(u);
+    var keys = Object.keys(props);
+    for (var k = 0; k < keys.length; k++) {
+      var name = String(keys[k] || '').trim();
+      if (name !== '_mockup_url' && name !== 'mockup_url') continue;
+      var val = props[keys[k]];
+      if (val && String(val).indexOf('https://') === 0) return String(val);
+    }
     return null;
+  }
+
+  function propertyKeys(props) {
+    if (!props) return [];
+    if (Array.isArray(props)) {
+      var names = [];
+      for (var i = 0; i < props.length; i++) {
+        if (!props[i]) continue;
+        names.push(String(props[i].name || props[i].key || ''));
+      }
+      return names;
+    }
+    return Object.keys(props);
+  }
+
+  function logLineProps(it) {
+    var has = !!mockupUrlFromLineProperties(it && it.properties);
+    rememberThumbLine(
+      '[My Pet] cart thumb props line=' + ((it && it.key) || '') +
+      ' keys=' + propertyKeys(it && it.properties).join(',') +
+      ' mockup=' + (has ? 'yes' : 'no'),
+    );
+  }
+
+  function cachedMockupForVariant(variantId) {
+    var id = String(variantId || '').replace(/\D/g, '');
+    if (!id) return '';
+    var live = window.AppAI && window.AppAI.myPetMockupByVariant;
+    if (live && live[id] && String(live[id]).indexOf('https://') === 0) return String(live[id]);
+    try {
+      var raw = sessionStorage.getItem('appai:mockupByVariant');
+      var bag = raw ? JSON.parse(raw) : null;
+      if (bag && bag[id] && String(bag[id]).indexOf('https://') === 0) return String(bag[id]);
+    } catch (e) {}
+    return '';
   }
 
   function propEntries(props) {
@@ -117,6 +203,7 @@
   function lineIsCustomizer(it) {
     if (!it) return false;
     if (mockupUrlFromLineProperties(it.properties)) return true;
+    if (cachedMockupForVariant(it.variant_id)) return true;
     var entries = propEntries(it.properties);
     for (var i = 0; i < entries.length; i++) {
       var e = entries[i];
@@ -190,13 +277,308 @@
     return true;
   }
 
+  function sameImageFile(img, url) {
+    if (!img || !url) return false;
+    return fileKey(img.getAttribute('src') || img.currentSrc || '') === fileKey(url) && !!fileKey(url);
+  }
+
   function setImg(img, url) {
-    img.src = url;
-    img.removeAttribute('srcset');
-    img.removeAttribute('data-src');
-    img.removeAttribute('data-srcset');
-    img.removeAttribute('data-lazy-src');
-    img.setAttribute('data-appai-mockup', 'true');
+    if (!img || !url) return false;
+    var wrote = false;
+    if (!sameImageFile(img, url)) {
+      img.src = url;
+      wrote = true;
+    }
+    if (img.hasAttribute('srcset')) { img.removeAttribute('srcset'); wrote = true; }
+    if (img.hasAttribute('data-src')) { img.removeAttribute('data-src'); wrote = true; }
+    if (img.hasAttribute('data-srcset')) { img.removeAttribute('data-srcset'); wrote = true; }
+    if (img.hasAttribute('data-lazy-src')) { img.removeAttribute('data-lazy-src'); wrote = true; }
+    if (img.getAttribute('data-appai-mockup') !== 'true') {
+      img.setAttribute('data-appai-mockup', 'true');
+      wrote = true;
+    }
+    return wrote;
+  }
+
+  function shopifyCdnSrc(src) {
+    var s = String(src || '');
+    return s.indexOf('cdn.shopify.com') !== -1 || s.indexOf('/cdn/shop/') !== -1;
+  }
+
+  function cartSizedUrl(src) {
+    var abs = String(src || '');
+    if (abs.indexOf('//') === 0) abs = 'https:' + abs;
+    if (abs.indexOf('/') === 0) abs = location.origin + abs;
+    if (abs.indexOf('/cdn/shop/') !== -1) return abs;
+    var file = abs.match(/\/files\/([^/?#]+\.(?:jpe?g|png|webp|gif))/i);
+    if (!file) return abs;
+    return location.origin + '/cdn/shop/files/' + file[1] + '?width=250';
+  }
+
+  function awaitingBag() {
+    window.AppAI = window.AppAI || {};
+    if (!window.AppAI.variantsAwaitingImage) window.AppAI.variantsAwaitingImage = {};
+    return window.AppAI.variantsAwaitingImage;
+  }
+
+  function noteAwaiting(variantId, waiting) {
+    var id = String(variantId || '').replace(/\D/g, '');
+    if (!id) return;
+    var bag = awaitingBag();
+    if (waiting) {
+      bag[id] = Date.now();
+      armImageWatch(20000);
+    } else delete bag[id];
+  }
+
+  function lineImgs(container) {
+    return [].slice.call(deepQueryAll(container, 'img')).filter(function (img) {
+      if (!elInCartUi(img)) return false;
+      var w = Number(img.getAttribute('width') || img.naturalWidth || 0);
+      var h = Number(img.getAttribute('height') || img.naturalHeight || 0);
+      if ((w && w <= 40) || (h && h <= 40)) return false;
+      return true;
+    });
+  }
+
+  function mediaHost(container) {
+    var hosts = deepQueryAll(
+      container,
+      '.cart-items__media, .cart-item__media, td.cart-items__media, .cart-items__media-container',
+    );
+    return hosts[0] || container;
+  }
+
+  function fileKey(url) {
+    return String(url || '').split('?')[0].split('#')[0].split('/').pop().toLowerCase();
+  }
+
+  function catalogFiles() {
+    var set = {};
+    function add(url) {
+      var key = fileKey(url);
+      if (key) set[key] = true;
+    }
+    var stamped = [];
+    try {
+      stamped = document.querySelectorAll('[data-appai-my-pet-slide-original-src], [data-appai-my-pet-original-src]');
+    } catch (e) {}
+    for (var i = 0; i < stamped.length; i++) {
+      add(stamped[i].getAttribute('data-appai-my-pet-slide-original-src'));
+      add(stamped[i].getAttribute('data-appai-my-pet-original-src'));
+    }
+    var root = document.getElementById('appai-root');
+    if (root) {
+      try {
+        var variants = JSON.parse(root.getAttribute('data-variants') || '[]');
+        for (var v = 0; v < variants.length; v++) {
+          var media = variants[v] && variants[v].featured_media;
+          if (!media) continue;
+          if (media.preview_image && media.preview_image.src) add(media.preview_image.src);
+          if (media.src) add(media.src);
+        }
+      } catch (e2) {}
+    }
+    return set;
+  }
+
+  function rememberThumbLine(line) {
+    try {
+      window.__APPAI_CART_THUMB_LOGS__ = window.__APPAI_CART_THUMB_LOGS__ || [];
+      window.__APPAI_CART_THUMB_LOGS__.push(line);
+      if (window.__APPAI_CART_THUMB_LOGS__.length > 40) window.__APPAI_CART_THUMB_LOGS__.shift();
+    } catch (e) {}
+    try { console.log(line); } catch (e2) {}
+  }
+
+  function logPass(trigger, n) {
+    rememberThumbLine('[My Pet] cart thumb pass trigger=' + (trigger || 'unknown') + ' lines=' + n);
+  }
+
+  function logAddPass(trigger, lines, replaced) {
+    rememberThumbLine(
+      '[My Pet] cart thumb pass trigger=' + trigger +
+      ' lines=' + lines +
+      ' replaced=' + replaced,
+    );
+  }
+
+  function logMissingMockup(lineKey) {
+    rememberThumbLine('[My Pet] cart thumb missing-mockup line=' + (lineKey || ''));
+  }
+
+  function isAddPass(trigger) {
+    return trigger === 'add+500' || trigger === 'add+1500' || trigger === 'add+4000';
+  }
+
+  function logThumb(source, lineKey, reason) {
+    rememberThumbLine(
+      '[My Pet] cart thumb applied source=' + source +
+      ' line=' + (lineKey || '') +
+      ' reason=' + (reason || ''),
+    );
+  }
+
+  function imgSrc(img) {
+    return img ? (img.currentSrc || img.getAttribute('src') || '') : '';
+  }
+
+  function srcIsPlaceholder(src) {
+    return !src || /no-image|placeholder|blank\.svg|\.svg(\?|$)/i.test(src);
+  }
+
+  // Horizon's cart row with no variant image is an empty td.cart-items__media.
+  // Some builds put a placeholder <svg> there instead of an <img>.
+  function mediaIsPlaceholder(cell, img) {
+    if (img && srcIsPlaceholder(imgSrc(img))) return true;
+    if (img) return false;
+    if (!cell) return false;
+    return deepQueryAll(cell, 'svg').length > 0;
+  }
+
+  function classifyThumb(img, cell, mockupUrl, catalog) {
+    var placeholder = mediaIsPlaceholder(cell, img);
+    if (!mockupUrl) {
+      if (!img || placeholder) return { source: 'none', reason: placeholder ? 'placeholder' : 'img-missing' };
+      return { source: 'none', reason: 'ok' };
+    }
+    if (!img || placeholder) {
+      return { source: 'mockup_url', reason: placeholder ? 'placeholder' : 'img-missing' };
+    }
+    if (img.getAttribute('data-appai-mockup') === 'true') return { source: 'mockup_url', reason: 'ok' };
+    var src = imgSrc(img);
+    var key = fileKey(src);
+    if (key && catalog && catalog[key]) return { source: 'mockup_url', reason: 'catalog' };
+    if (shopifyCdnSrc(src) && img.getAttribute('data-appai-awaiting') !== '1') return { source: 'variant', reason: 'ok' };
+    return { source: 'mockup_url', reason: 'img-missing' };
+  }
+
+  function clearPlaceholderGraphics(cell) {
+    var svgs = deepQueryAll(cell, 'svg');
+    for (var i = 0; i < svgs.length; i++) {
+      if (svgs[i].parentNode) svgs[i].parentNode.removeChild(svgs[i]);
+    }
+  }
+
+  // Horizon sizes the thumb from .cart-items__media-container { aspect-ratio: var(--ratio) }
+  // and .cart-items__media-image { width:100%; object-fit:cover }.
+  function ensureLineImage(cell, url) {
+    var imgs = lineImgs(cell);
+    var img = imgs[0] || null;
+    if (img && srcIsPlaceholder(imgSrc(img))) img = null;
+    if (!img) {
+      clearPlaceholderGraphics(cell);
+      var frame = null;
+      try {
+        frame = cell.querySelector('.cart-items__media-container, a.cart-items__media-container');
+      } catch (e) {}
+      if (!frame) {
+        frame = document.createElement('span');
+        frame.className = 'cart-items__media-container';
+        frame.style.setProperty('--ratio', '1');
+        frame.setAttribute('data-appai-media', '1');
+        cell.appendChild(frame);
+      }
+      img = document.createElement('img');
+      img.className = 'cart-items__media-image border-style';
+      img.alt = '';
+      img.setAttribute('width', '250');
+      img.setAttribute('height', '250');
+      img.style.width = '100%';
+      img.style.height = 'auto';
+      img.style.objectFit = 'cover';
+      img.style.aspectRatio = 'inherit';
+      frame.appendChild(img);
+    }
+    var wrote = setImg(img, url);
+    if (img.getAttribute('data-appai-awaiting') !== '1') {
+      img.setAttribute('data-appai-awaiting', '1');
+      wrote = true;
+    }
+    img.__appaiWrote = wrote;
+    return img;
+  }
+
+  // Missing image, placeholder, or the catalog photo becomes the line's _mockup_url.
+  // A real shadow variant image is left alone (source=variant, reason=ok).
+  function paintLine(container, url, variantId, catalog) {
+    if (!container || container === document || container === document.documentElement || container === document.body) {
+      return { source: 'none', reason: 'img-missing' };
+    }
+    var cell = mediaHost(container);
+    var imgs = lineImgs(cell);
+    var img = imgs[0] || null;
+    var verdict = classifyThumb(img, cell, url, catalog);
+    if (verdict.reason === 'ok') {
+      if (verdict.source === 'variant') noteAwaiting(variantId, false);
+      return verdict;
+    }
+    if (verdict.source !== 'mockup_url' || !url) return verdict;
+    var hostClass = typeof cell.className === 'string' ? cell.className : '';
+    if (cell === container && hostClass.indexOf('media') === -1 && !container.querySelector) {
+      return { source: 'none', reason: verdict.reason };
+    }
+    var paintedImg = ensureLineImage(cell, url);
+    if (paintedImg && variantId) {
+      paintedImg.setAttribute('data-appai-variant', String(variantId).replace(/\D/g, ''));
+    }
+    noteAwaiting(variantId, true);
+    verdict.wrote = !!(paintedImg && paintedImg.__appaiWrote);
+    return verdict;
+  }
+
+  var imagePoll = null;
+  var imagePollUntil = 0;
+  function ensureImagePoll() {
+    if (imagePoll) return;
+    imagePoll = setInterval(pollVariantImages, 800);
+  }
+  // Stays up past the add+1500 pass. A variant image can publish after that.
+  function armImageWatch(ms) {
+    imagePollUntil = Math.max(imagePollUntil, Date.now() + (ms || 20000));
+    ensureImagePoll();
+  }
+
+  function pollVariantImages() {
+    var bag = awaitingBag();
+    var ids = Object.keys(bag);
+    if (!ids.length) {
+      if (Date.now() < imagePollUntil) return;
+      clearInterval(imagePoll);
+      imagePoll = null;
+      return;
+    }
+    for (var i = 0; i < ids.length; i++) {
+      (function (id) {
+        fetch('/variants/' + id + '.js', { credentials: 'same-origin' })
+          .then(function (res) { return res.ok ? res.json() : null; })
+          .then(function (data) {
+            if (!data || !awaitingBag()[id]) return;
+            var featured = data.featured_image;
+            var src = featured && typeof featured === 'object' ? featured.src : featured;
+            if (!src) return;
+            var sized = cartSizedUrl(src);
+            var wrote = 0;
+            var nodes = deepQueryAll(document.documentElement, 'img[data-appai-awaiting="1"]');
+            for (var n = 0; n < nodes.length; n++) {
+              if (nodes[n].getAttribute('data-appai-variant') !== id) continue;
+              setImg(nodes[n], sized);
+              nodes[n].removeAttribute('data-appai-awaiting');
+              wrote++;
+            }
+            var hosts = deepQueryAll(document.documentElement, '[data-appai-await-variant="' + id + '"]');
+            for (var h = 0; h < hosts.length; h++) {
+              ensureLineImage(mediaHost(hosts[h]), sized);
+              hosts[h].removeAttribute('data-appai-await-variant');
+              wrote++;
+            }
+            if (!wrote) return;
+            noteAwaiting(id, false);
+            try { console.info(LOG + ' variant image ready ' + id); } catch (_) {}
+          })
+          .catch(function () {});
+      })(ids[i]);
+    }
   }
 
   function lineIdxFromEl(el) {
@@ -351,7 +733,7 @@
 
   /** Primary kill path: demote wrapping <a> around cart thumbs. */
   function stripCartMediaHrefs() {
-    if (hushMutations) return;
+    if (hushMutations && !isApplying) return;
     hushMutations = true;
     var demoted = 0;
     try {
@@ -387,13 +769,13 @@
         } catch (_) {}
       }
     } finally {
-      hushMutations = false;
+      if (!isApplying) hushMutations = false;
     }
   }
 
   function lockCustomizerRows() {
     if (!customizerState.keys.size && !customizerState.handles.size) return;
-    if (hushMutations) return;
+    if (hushMutations && !isApplying) return;
     hushMutations = true;
     try {
       customizerState.keys.forEach(function (key) {
@@ -444,7 +826,7 @@
         demoteAnchor(a);
       }
     } finally {
-      hushMutations = false;
+      if (!isApplying) hushMutations = false;
     }
   }
 
@@ -572,163 +954,395 @@
     return roots;
   }
 
-  function applyMockups() {
-    if (hushMutations) return;
-    ensureStyles();
-    stripCartMediaHrefs();
-    getCart()
+  function finishApply(ok, wrote) {
+    try {
+      if (ok && wrote) {
+        if (window.AppAI && typeof window.AppAI.hideInternalCartProperties === 'function') {
+          window.AppAI.hideInternalCartProperties();
+        }
+        stripCartMediaHrefs();
+        lockCustomizerRows();
+      }
+    } finally {
+      isApplying = false;
+      hushMutations = false;
+      resumeObservers();
+      document.documentElement.classList.remove('appai-cart-loading');
+      if (pendingRerun) {
+        pendingRerun = false;
+        var rerunFresh = pendingFresh;
+        var rerunTrigger = pendingTrigger;
+        pendingFresh = false;
+        if (rerunFresh) {
+          setTimeout(function () { applyMockups(rerunTrigger); }, 0);
+        } else {
+          schedule({ cartChanged: cartDirty, trigger: rerunTrigger });
+        }
+      }
+    }
+  }
+
+  function thumbFingerprint() {
+    var nodes = deepQueryAll(document.documentElement, '[data-key], [id^="CartItem-"]');
+    var parts = [];
+    var seen = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || !elInCartUi(el)) continue;
+      var key = (el.getAttribute && el.getAttribute('data-key')) || el.id || '';
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+      var img = lineImgs(el)[0];
+      parts.push(key + '=' + fileKey(imgSrc(img)));
+    }
+    parts.sort();
+    return parts.join('|');
+  }
+
+  function rowForKey(key) {
+    if (!key) return null;
+    var want = String(key);
+    var nodes = deepQueryAll(document.documentElement, '[data-key], [id^="CartItem-"]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || !el.getAttribute) continue;
+      if (el.getAttribute('data-key') === want) return el;
+      if ((el.id || '') === 'CartItem-' + want) return el;
+    }
+    var inps = deepQueryAll(document.documentElement, "input[name^='updates[']");
+    for (var u = 0; u < inps.length; u++) {
+      var m = /^updates\[(.+)\]$/.exec(inps[u].getAttribute('name') || '');
+      if (!m || m[1] !== want) continue;
+      return (
+        inps[u].closest('[data-key]') ||
+        inps[u].closest("[id*='CartItem']") ||
+        inps[u].closest('tr') ||
+        inps[u].closest('li') ||
+        inps[u].closest('.cart-item') ||
+        null
+      );
+    }
+    return null;
+  }
+
+  function soleCartRow() {
+    var nodes = deepQueryAll(document.documentElement, 'tr.cart-items__table-row, [id^="CartItem-"]');
+    var rows = [];
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el || !elInCartUi(el)) continue;
+      var nested = false;
+      for (var p = 0; p < nodes.length; p++) {
+        if (p !== i && nodes[p] && nodes[p].contains && nodes[p].contains(el)) nested = true;
+      }
+      if (!nested) rows.push(el);
+    }
+    return rows.length === 1 ? rows[0] : null;
+  }
+
+  var lastThumbFp = '';
+  var lastPassSig = '';
+  var pendingFresh = false;
+  function passSignature(cart) {
+    var items = (cart && cart.items) || [];
+    var parts = [];
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var row = rowForKey(it.key);
+      var img = row ? lineImgs(mediaHost(row))[0] : null;
+      parts.push(
+        String(it.key || '') +
+        '=' + fileKey(imgSrc(img)) +
+        '|' + (mockupUrlFromLineProperties(it.properties) || ''),
+      );
+    }
+    parts.sort();
+    return parts.join('||');
+  }
+  function applyMockups(trigger) {
+    var addPass = isAddPass(trigger);
+    if (isApplying) {
+      pendingRerun = true;
+      pendingFresh = pendingFresh || addPass;
+      if (trigger) pendingTrigger = trigger;
+      return;
+    }
+    // Idle mutations compare the DOM only. An add pass never takes this skip:
+    // the new line is often absent from the pre-add DOM and from cached /cart.js.
+    if (!addPass) {
+      var fp = thumbFingerprint();
+      if (fp && fp === lastThumbFp && trigger !== 'load') return;
+      if (trigger === 'mutation') cartDirty = true;
+    }
+    isApplying = true;
+    hushMutations = true;
+    pauseObservers();
+    var needFetch = addPass || cartDirty || !lastCartJson;
+    try { ensureStyles(); } catch (_) {}
+    getCart(needFetch, addPass)
       .then(function (cart) {
+        var sig = passSignature(cart);
+        if (!addPass && sig && sig === lastPassSig && trigger !== 'load') {
+          lastThumbFp = thumbFingerprint();
+          finishApply(true, false);
+          return;
+        }
         var items = cart.items || [];
-        var keyMap = new Map(),
-          varMap = new Map(),
-          indexed = [];
+        var catalog = catalogFiles();
+        var replaced = 0;
 
         customizerState.keys = new Set();
         customizerState.handles = new Set();
         customizerState.urlPaths = new Set();
         customizerState.variants = new Set();
 
-        for (var i = 0; i < items.length; i++) {
-          var it = items[i];
-          if (lineIsCustomizer(it)) rememberCustomizerItem(it);
-          var url = mockupUrlFromLineProperties(it && it.properties);
-          if (!url) continue;
-          rememberCustomizerItem(it);
-          keyMap.set(it.key, url);
-          varMap.set(String(it.variant_id), url);
-          indexed.push({
-            index: i + 1,
-            variantId: String(it.variant_id),
-            mockupUrl: url,
-            key: it.key,
-          });
-        }
-
-        var replaced = 0;
-        hushMutations = true;
         try {
-          if (keyMap.size > 0) {
-            var inps = deepQueryAll(document.documentElement, "input[name^='updates[']");
-            for (var ii = 0; ii < inps.length; ii++) {
-              var m = /^updates\[(.+)\]$/.exec(inps[ii].getAttribute('name') || '');
-              if (!m) continue;
-              var u = keyMap.get(m[1]);
-              if (!u) continue;
-              var c =
-                inps[ii].closest('[data-cart-item]') ||
-                inps[ii].closest("[id*='CartItem']") ||
-                inps[ii].closest('tr') ||
-                inps[ii].closest('li') ||
-                inps[ii].closest('.cart-item') ||
-                inps[ii].closest("[class*='cart']") ||
-                inps[ii].closest('form') ||
-                document;
-              var imgs = [].slice.call(deepQueryAll(c, 'img')).filter(isLikelyProductImg);
-              if (imgs.length) {
-                setImg(imgs[0], u);
-                replaced++;
-              }
+          for (var i = 0; i < items.length; i++) {
+            var it = items[i];
+            if (addPass) logLineProps(it);
+            var cachedUrl = cachedMockupForVariant(it.variant_id);
+            if (!lineIsCustomizer(it) && !cachedUrl) continue;
+            rememberCustomizerItem(it);
+            var url = mockupUrlFromLineProperties(it && it.properties) || cachedUrl;
+            var row = rowForKey(it.key);
+            if (!row && items.length === 1) row = soleCartRow();
+            var img = row ? lineImgs(mediaHost(row))[0] : null;
+            var variantImage = !!(img && !srcIsPlaceholder(imgSrc(img)) && shopifyCdnSrc(imgSrc(img)));
+            if (!url && !variantImage) {
+              logMissingMockup(it.key);
+              var awaitId = String(it.variant_id || '').replace(/\D/g, '');
+              if (row && awaitId) row.setAttribute('data-appai-await-variant', awaitId);
+              if (awaitId) noteAwaiting(it.variant_id, true);
+              continue;
             }
-
-            if (replaced === 0 && indexed.length > 0) {
-              var sels = [
-                '.cart-items__table-row',
-                '.cart-item',
-                "[class*='cart-item']",
-                "[id*='CartItem']",
-                'cart-items > *',
-                'cart-drawer-items > *',
-                'cart-items-component tr',
-                "form[action*='/cart'] li",
-                "form[action*='/cart'] tr",
-              ];
-              for (var s = 0; s < sels.length; s++) {
-                var nodes = deepQueryAll(document.documentElement, sels[s]);
-                if (!nodes.length) continue;
-                for (var n = 0; n < nodes.length; n++) {
-                  var node = nodes[n];
-                  var img = [].slice.call(deepQueryAll(node, 'img')).find(isLikelyProductImg);
-                  if (!img) continue;
-                  var mu = null;
-                  var li = lineIdxFromEl(node);
-                  if (li !== null)
-                    for (var k = 0; k < indexed.length; k++) {
-                      if (indexed[k].index === li) {
-                        mu = indexed[k].mockupUrl;
-                        break;
-                      }
-                    }
-                  if (!mu) {
-                    var va =
-                      node.getAttribute('data-variant-id') || node.getAttribute('data-variant');
-                    if (!va) {
-                      var vel = node.querySelector('[data-variant-id]');
-                      if (vel) va = vel.getAttribute('data-variant-id');
-                    }
-                    if (va) mu = varMap.get(String(va)) || null;
-                  }
-                  if (!mu && indexed.length === 1) mu = indexed[0].mockupUrl;
-                  if (mu) {
-                    setImg(img, mu);
-                    replaced++;
-                  }
-                }
-              }
+            if (!row) {
+              if (addPass) logThumb('none', it.key, 'img-missing');
+              if (it.variant_id) noteAwaiting(it.variant_id, true);
+              continue;
             }
-
-            if (replaced === 0 && indexed.length === 1) {
-              var cs = cartUiRoots();
-              for (var ci = 0; ci < cs.length; ci++) {
-                if (!cs[ci]) continue;
-                var fi = [].slice.call(deepQueryAll(cs[ci], 'img')).find(isLikelyProductImg);
-                if (fi) {
-                  setImg(fi, indexed[0].mockupUrl);
-                  replaced++;
-                  break;
-                }
-              }
+            var painted = paintLine(row, url, String(it.variant_id || ''), catalog);
+            if (painted && painted.wrote) {
+              replaced++;
+              logThumb(painted.source, it.key, painted.reason);
             }
           }
-        } finally {
-          hushMutations = false;
-          document.documentElement.classList.remove('appai-cart-loading');
-        }
-
-        if (window.AppAI && typeof window.AppAI.hideInternalCartProperties === 'function') {
-          window.AppAI.hideInternalCartProperties();
-        }
-        stripCartMediaHrefs();
-        lockCustomizerRows();
+        } catch (_) {}
+        if (addPass) logAddPass(trigger, items.length, replaced);
+        else if (replaced) logPass(trigger || 'load', replaced);
+        lastPassSig = passSignature(cart);
+        lastThumbFp = thumbFingerprint();
+        finishApply(true, replaced > 0);
       })
       .catch(function () {
-        hushMutations = false;
-        document.documentElement.classList.remove('appai-cart-loading');
+        if (addPass) logAddPass(trigger, 0, 0);
+        finishApply(false, false);
       });
   }
 
-  var t = null;
-  function schedule() {
-    if (hushMutations) return;
-    clearTimeout(t);
-    t = setTimeout(applyMockups, 250);
+  function lineImageCache() {
+    try {
+      var raw = sessionStorage.getItem('appai:lineImages');
+      var parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
   }
-  window.aiArtFastReplace = applyMockups;
-  window.__applyCartMockups = applyMockups;
 
-  applyMockups();
-  schedule();
+  // First paint, before the 250ms cart.js pass. Only a URL stored for this line key.
+  function paintCached(root) {
+    if (!root || root.nodeType !== 1) return;
+    var images = lineImageCache();
+    var inputs;
+    try {
+      inputs = deepQueryAll(root, "input[name^='updates[']");
+    } catch (_) {
+      return;
+    }
+    for (var i = 0; i < inputs.length; i++) {
+      var m = /^updates\[(.+)\]$/.exec(inputs[i].getAttribute('name') || '');
+      if (!m || !images[m[1]] || String(images[m[1]]).indexOf('https://') !== 0) continue;
+      var c =
+        inputs[i].closest('[data-cart-item]') ||
+        inputs[i].closest("[id*='CartItem']") ||
+        inputs[i].closest('tr') ||
+        inputs[i].closest('li') ||
+        inputs[i].closest('.cart-item') ||
+        inputs[i].closest("[class*='cart']") ||
+        inputs[i].closest('form') ||
+        document;
+      var cachedSource = paintLine(c, images[m[1]], '', catalogFiles());
+      if (cachedSource && cachedSource.reason && cachedSource.reason !== 'ok') {
+        logThumb(cachedSource.source, m[1], cachedSource.reason);
+      }
+    }
+  }
+
+  window.AppAI = window.AppAI || {};
+  window.AppAI.paintCartFromCache = function () {
+    paintCached(document.documentElement);
+  };
+
+  var t = null;
+  var pendingTrigger = 'load';
+  function schedule(opts) {
+    if (opts && opts.trigger) pendingTrigger = opts.trigger;
+    var delay = pendingTrigger === 'mutation' ? 150 : 250;
+    if (isApplying || hushMutations) {
+      if (opts && opts.cartChanged) cartDirty = true;
+      pendingRerun = true;
+      return;
+    }
+    if (opts && opts.cartChanged) cartDirty = true;
+    if (opts && opts.immediate) delay = 0;
+    clearTimeout(t);
+    t = setTimeout(function () {
+      applyMockups(pendingTrigger || 'mutation');
+    }, delay);
+  }
+
+  function requestCartRefresh(trigger) {
+    paintCached(document.documentElement);
+    schedule({ cartChanged: true, trigger: typeof trigger === 'string' ? trigger : 'cart' });
+  }
+
+  // Horizon re-renders the drawer inside an open shadow root. A document-level
+  // observer never sees that. Watch the drawer and its shadow root directly.
+  var watched = typeof WeakSet === 'function' ? new WeakSet() : null;
+  var observerRecords = [];
+  function pauseObservers() {
+    for (var i = 0; i < observerRecords.length; i++) {
+      try { observerRecords[i].ob.disconnect(); } catch (e) {}
+    }
+  }
+  function resumeObservers() {
+    for (var i = 0; i < observerRecords.length; i++) {
+      var rec = observerRecords[i];
+      try { rec.ob.observe(rec.node, { childList: true, subtree: true }); } catch (e) {}
+    }
+  }
+  function watchRoot(root, trigger) {
+    if (!root || typeof root.nodeType !== 'number') return;
+    if (watched) {
+      if (watched.has(root)) return;
+      watched.add(root);
+    }
+    try {
+      var ob = new MutationObserver(function () {
+        if (isApplying || hushMutations) return;
+        schedule({ trigger: trigger });
+      });
+      observerRecords.push({ ob: ob, node: root });
+      ob.observe(root, { childList: true, subtree: true });
+    } catch (_) {}
+    if (root.shadowRoot) watchRoot(root.shadowRoot, trigger);
+  }
+
+  function watchDrawers() {
+    var nodes = cartUiRoots();
+    for (var i = 0; i < nodes.length; i++) {
+      watchRoot(nodes[i], 'mutation');
+      if (cartEvents) {
+        bindCartEvents(nodes[i]);
+        if (nodes[i].shadowRoot) bindCartEvents(nodes[i].shadowRoot);
+      }
+    }
+  }
+
+  function onCartEvent(name) {
+    return function () {
+      watchDrawers();
+      requestCartRefresh(name);
+    };
+  }
+
+  window.aiArtFastReplace = function () { requestCartRefresh('fast'); };
+  window.__applyCartMockups = function () { requestCartRefresh('apply'); };
+
+  applyMockups('load');
+  watchDrawers();
+  function mutationTouchesCart(mutations) {
+    for (var i = 0; i < mutations.length; i++) {
+      var target = mutations[i].target;
+      var el = target && target.nodeType === 1 ? target : target && target.parentElement;
+      if (el && elInCartUi(el)) return true;
+      var added = mutations[i].addedNodes;
+      for (var n = 0; n < added.length; n++) {
+        if (added[n].nodeType === 1 && elInCartUi(added[n])) return true;
+      }
+    }
+    return false;
+  }
+
   try {
-    var ob = new MutationObserver(function () {
-      if (hushMutations) return;
-      schedule();
+    var ob = new MutationObserver(function (mutations) {
+      watchDrawers();
+      if (isApplying || hushMutations) return;
+      if (!mutationTouchesCart(mutations)) return;
+      for (var i = 0; i < mutations.length; i++) {
+        var added = mutations[i].addedNodes;
+        for (var n = 0; n < added.length; n++) {
+          if (added[n].nodeType === 1) paintCached(added[n]);
+        }
+      }
+      schedule({ trigger: 'mutation' });
     });
+    observerRecords.push({ ob: ob, node: document.documentElement });
     ob.observe(document.documentElement, { childList: true, subtree: true });
   } catch (_) {}
-  window.addEventListener('appai:cart-updated', schedule);
-  document.addEventListener('cart:updated', schedule);
-  document.addEventListener('cart:refresh', schedule);
-  document.addEventListener('cart:update', schedule);
-  document.addEventListener('shopify:section:load', schedule);
-  window.addEventListener('pageshow', schedule);
-  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (demote cart media + customizer titles)');
+  // Horizon cart-drawer-component listens for StandardEvents.cartLinesUpdate,
+  // theme-drawer:open, and cart-section:restored. Names vary by theme build,
+  // so the drawer observer above is the fallback when none of these fire.
+  var cartEvents = [
+    'cart:update',
+    'cart:updated',
+    'cart:refresh',
+    'cart:lines-update',
+    'cart:lines:update',
+    'cart-section:restored',
+    'theme-drawer:open',
+    'drawer:open',
+  ];
+  var boundEvents = typeof WeakSet === 'function' ? new WeakSet() : null;
+  function bindCartEvents(target) {
+    if (!target || !target.addEventListener) return;
+    if (boundEvents) {
+      if (boundEvents.has(target)) return;
+      boundEvents.add(target);
+    }
+    for (var b = 0; b < cartEvents.length; b++) {
+      target.addEventListener(cartEvents[b], onCartEvent(cartEvents[b]));
+    }
+  }
+  for (var ev = 0; ev < cartEvents.length; ev++) {
+    document.addEventListener(cartEvents[ev], onCartEvent(cartEvents[ev]));
+    window.addEventListener(cartEvents[ev], onCartEvent(cartEvents[ev]));
+  }
+  var drawerNodes = cartUiRoots();
+  for (var d = 0; d < drawerNodes.length; d++) {
+    bindCartEvents(drawerNodes[d]);
+    if (drawerNodes[d].shadowRoot) bindCartEvents(drawerNodes[d].shadowRoot);
+  }
+  document.addEventListener('shopify:section:load', function (e) {
+    var id = '';
+    try { id = String((e && e.detail && (e.detail.sectionId || e.detail.section_id)) || ''); } catch (_) {}
+    watchDrawers();
+    requestCartRefresh(id.indexOf('cart') !== -1 ? 'section:' + id : 'shopify:section:load');
+  });
+  window.addEventListener('pageshow', function () { requestCartRefresh('pageshow'); });
+  window.addEventListener('appai:cart-updated', function () { requestCartRefresh('appai:cart-updated'); });
+  var addPassArmed = 0;
+  function passAfterCustomAdd() {
+    var now = Date.now();
+    if (now - addPassArmed < 2000) return;
+    addPassArmed = now;
+    armImageWatch(30000);
+    setTimeout(function () { applyMockups('add+500'); }, 500);
+    setTimeout(function () { applyMockups('add+1500'); }, 1500);
+    setTimeout(function () { applyMockups('add+4000'); }, 4000);
+  }
+  window.__appaiCartThumbAfterAdd = passAfterCustomAdd;
+  window.addEventListener('appai:my-pet-added', passAfterCustomAdd);
+  console.log('[My Pet] cart thumb install');
+  console.log(LOG + ' installed ' + CART_IMG_VERSION + ' (cache paint before the cart fetch)');
 })();

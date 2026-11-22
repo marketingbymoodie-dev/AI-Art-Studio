@@ -1,0 +1,349 @@
+/**
+ * Print file for a flywheel catalogue design. Runs at approval only.
+ * Four styles vectorize. Two upscale. The 1024 render is never stored as the print file.
+ * Customizer bake and toLosslessPrintMaster are not used here.
+ */
+import sharp from "sharp";
+import { chestZoneRect, inkOrigin, type ChestPrintZone, type VerticalPrintAnchor } from "@shared/printPlacement";
+import { VECTORIZE_COST_PER_GEN_USD } from "@shared/planEstimator";
+import { cleanupFlatGraphicAlpha, EXPANDED_CHROMA_TOLERANCE, removeChromaKeyBackground } from "./apparel-matting";
+import { readPlatformReplicateToken } from "./generation-providers";
+import { countNearKeySvgFills, dropNearKeySvgShapes, lastRecraftCallBilling, punchEnclosedCounters, vectorizeWithRecraft } from "./replicate-vectorizer";
+
+/** Replicate list price when a Real-ESRGAN prediction does not include a billed amount. */
+export const REAL_ESRGAN_LIST_USD = 0.0023;
+
+export type PrintFileBilling = { costUsd: number; estimated: boolean };
+
+let lastPrintBilling: PrintFileBilling | null = null;
+
+/** Cost of the print file just built in this process. Null when that build did not call a model. */
+export function lastPrintFileBilling(): PrintFileBilling | null {
+  return lastPrintBilling;
+}
+
+export type PrintCanvas = { width: number; height: number };
+
+/**
+ * Front print area stored on the product type at import
+ * (`placeholder_positions` from the blueprint harvest). No pixel size is
+ * assumed here.
+ */
+export function printCanvasFromStoredPlaceholders(raw: unknown, productTypeName: string): PrintCanvas {
+  const name = String(productTypeName || "").trim();
+  if (!name) throw new Error("Reading the front print area needs the product type name");
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      list = null;
+    }
+  }
+  const rows = Array.isArray(list) ? list : [];
+  const front = rows.find((row) => String((row as { position?: string })?.position || "").toLowerCase() === "front");
+  const width = Math.round(Number((front as { width?: number })?.width));
+  const height = Math.round(Number((front as { height?: number })?.height));
+  if (!(width > 0) || !(height > 0)) {
+    throw new Error(`${name} has no stored front print area`);
+  }
+  return { width, height };
+}
+
+const PRINT_PATHS = {
+  woodcut: "vectorize",
+  "folk-graphic": "vectorize",
+  "bold-type": "vectorize",
+  "pen-ink": "vectorize",
+  "vintage-engraving": "upscale",
+  "retro-character": "upscale",
+} as const;
+
+export type FlywheelPrintPath = (typeof PRINT_PATHS)[keyof typeof PRINT_PATHS];
+
+const ESRGAN_MODEL = "nightmareai/real-esrgan";
+
+export function printFilePathForStyle(styleId: string): FlywheelPrintPath {
+  const path = PRINT_PATHS[styleId as keyof typeof PRINT_PATHS];
+  if (!path) throw new Error(`${styleId || "(none)"} has no print path`);
+  return path;
+}
+
+/** One scale for both axes. The result is never stretched to the print canvas. */
+export function fittedPrintPixels(
+  srcWidth: number,
+  srcHeight: number,
+  target: PrintCanvas,
+): { width: number; height: number } {
+  if (!(srcWidth > 0) || !(srcHeight > 0)) throw new Error("Print source has no pixels");
+  const scale = Math.min(target.width / srcWidth, target.height / srcHeight);
+  return {
+    width: Math.max(1, Math.round(srcWidth * scale)),
+    height: Math.max(1, Math.round(srcHeight * scale)),
+  };
+}
+
+const PRINT_DPI = 300;
+
+/** Drop a transparent margin so a chest zone fits the ink, matching the mockup trim. Opaque art is left alone. */
+async function trimTransparentMargins(file: Buffer): Promise<Buffer> {
+  const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const step = Math.max(info.channels, 4) * 8;
+  let transparent = false;
+  for (let i = 3; i < data.length; i += step) {
+    if (data[i] < 250) {
+      transparent = true;
+      break;
+    }
+  }
+  if (!transparent) return file;
+  try {
+    const trimmed = await sharp(file).trim({ threshold: 10 }).png().toBuffer();
+    const meta = await sharp(trimmed).metadata();
+    if ((meta.width || 0) < 2 || (meta.height || 0) < 2) return file;
+    return trimmed;
+  } catch {
+    return file;
+  }
+}
+
+/** Lanczos onto the print canvas. Artwork keeps its aspect. Default stays centred. Catalogue shirts pass "top". */
+export async function placeOnPrintCanvas(
+  image: Buffer,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor = "center",
+  chest?: ChestPrintZone,
+): Promise<Buffer> {
+  if (!(canvas.width > 0) || !(canvas.height > 0)) {
+    throw new Error("This product type has no stored front print area");
+  }
+  const source = chest ? await trimTransparentMargins(image) : image;
+  const zone = chest
+    ? chestZoneRect({
+      areaLeft: 0,
+      areaTop: 0,
+      areaWidth: canvas.width,
+      areaHeight: canvas.height,
+      printWidthIn: canvas.width / PRINT_DPI,
+      printHeightIn: canvas.height / PRINT_DPI,
+      zone: chest,
+    })
+    : { left: 0, top: 0, width: canvas.width, height: canvas.height };
+  const meta = await sharp(source).metadata();
+  const fitted = fittedPrintPixels(meta.width || 0, meta.height || 0, { width: zone.width, height: zone.height });
+  const resized = await sharp(source)
+    .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3", withoutEnlargement: false })
+    .png()
+    .toBuffer();
+  const placed = await sharp(resized).metadata();
+  const origin = inkOrigin({
+    areaLeft: zone.left,
+    areaTop: zone.top,
+    areaWidth: zone.width,
+    areaHeight: zone.height,
+    inkWidth: placed.width || fitted.width,
+    inkHeight: placed.height || fitted.height,
+    anchor,
+  });
+  const left = origin.left;
+  const top = origin.top;
+  return sharp({
+    create: {
+      width: canvas.width,
+      height: canvas.height,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([{ input: resized, left, top }])
+    .png()
+    .toBuffer();
+}
+
+/** Opaque bounds of the artwork after it has been placed. The canvas size is separate. */
+export async function placedArtworkBounds(image: Buffer): Promise<{ width: number; height: number }> {
+  const { data, info } = await sharp(image).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const alpha = data[(y * info.width + x) * info.channels + 3];
+      if (alpha < 10) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return { width: 0, height: 0 };
+  return { width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+async function rasterizeSvgToFit(svg: Buffer, srcWidth: number, srcHeight: number, canvas: PrintCanvas): Promise<Buffer> {
+  const fitted = fittedPrintPixels(srcWidth, srcHeight, canvas);
+  // Sharp rasterizes the SVG at `density` before the resize. A fixed 300 on a
+  // large viewBox allocates the full bitmap first and stalls the machine.
+  // Pick a density that lands on the fitted size, and never above 300.
+  const probe = await sharp(svg, { density: 72 }).metadata();
+  const probeWidth = probe.width || fitted.width;
+  const density = Math.max(72, Math.min(300, Math.round((72 * fitted.width) / probeWidth)));
+  return sharp(svg, { density })
+    .resize(fitted.width, fitted.height, { fit: "inside", kernel: "lanczos3", withoutEnlargement: false })
+    .png()
+    .toBuffer();
+}
+
+type ReplicatePrediction = {
+  status: string;
+  error?: unknown;
+  output?: unknown;
+  urls?: { get?: string };
+  metrics?: Record<string, unknown>;
+};
+
+async function replicateJson(url: string, token: string, init: RequestInit = {}): Promise<ReplicatePrediction> {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  headers.set("Content-Type", "application/json");
+  const response = await fetch(url, { ...init, headers });
+  const text = await response.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error(`Replicate HTTP ${response.status}`);
+  return json as ReplicatePrediction;
+}
+
+/** Real-ESRGAN x4plus, face enhancement off, then Lanczos to the print canvas. */
+async function upscaleForPrint(
+  source: Buffer,
+  styleId: string,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor,
+  chest?: ChestPrintZone,
+): Promise<Buffer> {
+  const token = readPlatformReplicateToken();
+  const prediction = await replicateJson("https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions", token, {
+    method: "POST",
+    body: JSON.stringify({
+      input: {
+        image: `data:image/png;base64,${source.toString("base64")}`,
+        scale: 4,
+        face_enhance: false,
+      },
+    }),
+  });
+  const getUrl = prediction.urls?.get;
+  if (!getUrl) throw new Error(`${styleId} print file failed: upscaler returned no prediction`);
+  let latest = prediction;
+  const started = Date.now();
+  while (latest.status === "starting" || latest.status === "processing") {
+    if (Date.now() - started > 180_000) throw new Error(`${styleId} print file failed: upscaler timed out`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    latest = await replicateJson(getUrl, token);
+  }
+  if (latest.status !== "succeeded") throw new Error(`${styleId} print file failed: upscaler ${latest.status}`);
+  const billed = dollarsFromPrediction(latest);
+  lastPrintBilling = billed == null
+    ? { costUsd: REAL_ESRGAN_LIST_USD, estimated: true }
+    : { costUsd: billed, estimated: false };
+  const output = latest.output;
+  const url = typeof output === "string" ? output : Array.isArray(output) ? String(output[0] || "") : "";
+  if (!url) throw new Error(`${styleId} print file failed: upscaler returned no image`);
+  const image = await fetch(url);
+  if (!image.ok) throw new Error(`${styleId} print file failed: upscaler download HTTP ${image.status}`);
+  return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas, anchor, chest);
+}
+
+/**
+ * Build the print file. A missing path throws with the style id and does not
+ * return the source image.
+ */
+function dollarsFromPrediction(prediction: ReplicatePrediction): number | null {
+  const raw = prediction as ReplicatePrediction & Record<string, unknown>;
+  for (const key of ["cost", "billed_amount", "total_cost"]) {
+    const amount = Number(raw[key]);
+    if (Number.isFinite(amount) && amount >= 0) return amount;
+  }
+  const metrics = prediction.metrics;
+  if (!metrics) return null;
+  for (const [key, value] of Object.entries(metrics)) {
+    if (!/cost|price|billed/i.test(key)) continue;
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount >= 0) return amount;
+  }
+  return null;
+}
+
+/**
+ * Key a magenta canvas and harden soft edges before Recraft sees the image.
+ * prepareOpaquePlateForVectorize composites whatever it is given onto #FF00FF.
+ * A semi-transparent edge blends with that plate and the tracer keeps the blend
+ * as a purple shape. Upscale styles do not call this.
+ */
+export async function prepareVectorPrintSource(source: Buffer): Promise<Buffer> {
+  let keyed = await removeChromaKeyBackground(source, {
+    allowWhiteKey: false,
+    borderFloodFill: false,
+    chromaFloodFill: true,
+  });
+  if (keyed.cornerIsMagentaCanvas && keyed.chromaRemovedPct < 20) {
+    keyed = await removeChromaKeyBackground(source, {
+      allowWhiteKey: false,
+      tolerance: EXPANDED_CHROMA_TOLERANCE,
+      borderFloodFill: false,
+      chromaFloodFill: true,
+    });
+  }
+  return cleanupFlatGraphicAlpha(keyed.buffer, { erodeAfterCleanup: false, preserveEnclosedHoles: true });
+}
+
+export async function buildFlywheelPrintFile(
+  styleId: string,
+  source: Buffer,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor = "center",
+  chest?: ChestPrintZone,
+): Promise<{
+  path: FlywheelPrintPath;
+  buffer: Buffer;
+  svg: Buffer | null;
+  nearKeyPathsBefore: number | null;
+  nearKeyPathsAfter: number | null;
+}> {
+  lastPrintBilling = null;
+  const path = printFilePathForStyle(styleId);
+  if (!(canvas?.width > 0) || !(canvas?.height > 0)) {
+    throw new Error("This product type has no stored front print area");
+  }
+  const meta = await sharp(source).metadata();
+  const srcWidth = meta.width || 0;
+  const srcHeight = meta.height || 0;
+  if (path === "vectorize") {
+    let svg: Buffer;
+    let nearKeyPathsBefore = 0;
+    try {
+      const keyed = await prepareVectorPrintSource(source);
+      svg = await vectorizeWithRecraft({ imageBuffer: keyed });
+      nearKeyPathsBefore = countNearKeySvgFills(svg);
+      svg = await punchEnclosedCounters(svg, keyed);
+      svg = dropNearKeySvgShapes(svg);
+    } catch (err) {
+      throw new Error(`${styleId} print file failed: ${(err as Error).message}`);
+    }
+    const raster = await rasterizeSvgToFit(svg, srcWidth, srcHeight, canvas);
+    const billing = lastRecraftCallBilling();
+    lastPrintBilling = {
+      costUsd: billing?.costUsd ?? VECTORIZE_COST_PER_GEN_USD,
+      estimated: billing?.costSource !== "replicate",
+    };
+    return {
+      path,
+      buffer: await placeOnPrintCanvas(raster, canvas, anchor, chest),
+      svg,
+      nearKeyPathsBefore,
+      nearKeyPathsAfter: countNearKeySvgFills(svg),
+    };
+  }
+  return { path, buffer: await upscaleForPrint(source, styleId, canvas, anchor, chest), svg: null, nearKeyPathsBefore: null, nearKeyPathsAfter: null };
+}

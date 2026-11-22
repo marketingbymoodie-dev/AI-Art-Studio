@@ -57,18 +57,21 @@ import {
   BOMBER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
   BOMBER_PATTERN_FRONT_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
   bomberPatternPrintTileScaleForPanel,
   drawMockupImageInCanvas,
   findGroupForPanel,
+  isBeanieBlueprint,
   isBodyPillowBlueprint,
   isBomberJacketBlueprint,
-  isPulloverHoodieBlueprint,
   isSweatshirtBlueprint,
   migrateFrontPocketOutOfTrimGroup,
-  PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE,
-  PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE,
   resolveFrontBodyPanelBias,
+  resolvePrintFrontBodyPanelBias,
   hoodiePanelKeyToPrintifyPosition,
+  applyPulloverNeckSeamBleedToBbox,
+  PULLOVER_HOOD_SEAM_ALLOWANCE,
+  isKangarooPocketPanelKey,
   isPillowWrapBlueprint,
   isPillowWrapTemplate,
   resolvePrintFileLayout,
@@ -80,7 +83,17 @@ import {
   mockupDrawRect,
   SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
-import { shouldExportPulloverPocketAsPrintifyPanel } from "@shared/pulloverPocketPrintMerge";
+import {
+  shouldExportPulloverPocketAsPrintifyPanel,
+  applyPulloverPocketSampleWindow,
+} from "@shared/pulloverPocketPrintMerge";
+import {
+  printSafeDestRect,
+  printSafeInsetsForPanel,
+  printTrueAspectAnchor,
+  sliceAtDestAspect,
+  type PrintSafeInsets,
+} from "@shared/hoodiePrintSafeInsets";
 import {
   BODY_PRINT_BLEED_PANEL_KEYS,
   computeTilePxOnFlatCanvas,
@@ -532,9 +545,9 @@ function panelFabricFillColor(
 ): string | null {
   if (backgroundColor) return backgroundColor;
   if (
-    skipArtwork &&
     layer.panelKey &&
-    OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey)
+    OVERLAY_OCCLUDER_PANEL_KEYS.has(layer.panelKey) &&
+    (skipArtwork || isKangarooPocketPanelKey(layer.panelKey))
   ) {
     return DEFAULT_GARMENT_BACKGROUND;
   }
@@ -1026,15 +1039,95 @@ function samplingBboxForLayer(
   template: HoodieTemplate,
   panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
 ): Aabb {
+  return samplingBboxAndSeamForLayer(
+    bb,
+    layer,
+    layerRect,
+    template,
+    panelBiasOverrides,
+  ).bb;
+}
+
+/**
+ * As samplingBboxForLayer, but also returns the pocket-only seam override
+ * (undefined for every non-pocket panel) so the caller can thread the SAME
+ * resolved display bias into artworkSourceRectForPanel without resolving a
+ * second time. samplingBboxForLayer stays the thin bbox-only wrapper so its
+ * existing callers are unchanged.
+ */
+function samplingBboxAndSeamForLayer(
+  bb: Aabb,
+  layer: MaskLayer,
+  layerRect: DesignRectInfo,
+  template: HoodieTemplate,
+  panelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>,
+): { bb: Aabb; seamCal: PocketSeamCal | undefined } {
   const group = findGroupForPanel(template.designGroups, layer.panelKey);
-  if (!group) return bb;
+  if (!group) return { bb, seamCal: undefined };
   const bias = resolveFrontBodyPanelBias(
     group,
     layer.panelKey,
     panelBiasOverrides?.[group.id],
   );
-  return applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+  let sample = applyPanelPlacementBiasToBbox(bb, layerRect, bias);
+  if (isKangarooPocketPanelKey(layer.panelKey)) {
+    sample = applyPulloverPocketSampleWindow(
+      sample,
+      layerRect.union.height,
+      layer.panelKey,
+      layerRect.effective,
+      bias,
+      template.blueprintId,
+    );
+  }
+  return {
+    bb: applyPulloverNeckSeamBleedToBbox(sample, layer.panelKey, template.blueprintId),
+    seamCal: pocketSeamCal(bias, layer.panelKey),
+  };
 }
+
+/**
+ * Skip the draw when only a last-row sliver of the mural lands in the
+ * window (warp would stretch it across the panel top). Height coverage
+ * is relative to the slice, so it holds at any mural size / Place scale.
+ */
+export const ARTWORK_SLICE_MIN_COVERAGE = 0.15;
+
+export function artworkSliceMuralCoverage(
+  slice: { x: number; y: number; width: number; height: number },
+  aw: number,
+  ah: number,
+): number {
+  if (!(slice.width > 0) || !(slice.height > 0) || !(aw > 0) || !(ah > 0)) {
+    return 0;
+  }
+  const left = Math.max(slice.x, 0);
+  const top = Math.max(slice.y, 0);
+  const right = Math.min(slice.x + slice.width, aw);
+  const bottom = Math.min(slice.y + slice.height, ah);
+  const overlapW = right - left;
+  const overlapH = bottom - top;
+  if (overlapW <= 0 || overlapH <= 0) return 0;
+  return overlapH / slice.height;
+}
+
+/** True when the slice has enough mural to draw (not a last-row smear). */
+export function artworkSliceSamplesMural(
+  slice: { x: number; y: number; width: number; height: number },
+  aw: number,
+  ah: number,
+): boolean {
+  return artworkSliceMuralCoverage(slice, aw, ah) >= ARTWORK_SLICE_MIN_COVERAGE;
+}
+
+/**
+ * A pocket seam override travels with the scale it was calibrated at. A seam
+ * that diverges from the group seam drifts with artwork scale, and the
+ * correction for that drift is meaningless without knowing where the seam was
+ * measured — so the two are one value, not two arguments a call site could
+ * supply half of.
+ */
+export type PocketSeamCal = { seam: number; calibrationScale?: number };
 
 function synthesiseSeamAwareSourceRect(
   bb: Aabb,
@@ -1042,6 +1135,7 @@ function synthesiseSeamAwareSourceRect(
   aw: number,
   ah: number,
   side: "left" | "right" | "none",
+  seamCal?: PocketSeamCal | null,
 ): Aabb {
   const eff = rect.effective;
   if (eff.width <= 0 || eff.height <= 0) {
@@ -1057,9 +1151,49 @@ function synthesiseSeamAwareSourceRect(
   // half" guard silently ignored seam allowance for any group with
   // a non-zero offsetX — even an accidental 4 px offset on Front
   // body — because the rel coords then sat just below/above 0.5.
-  const seam = rect.hasSeamPair ? rect.seamAllowance : 0;
-  const relLeft = (bb.x - eff.x) / eff.width;
-  const relRight = (bb.x + bb.width - eff.x) / eff.width;
+  const seam = rect.hasSeamPair
+    ? (seamCal?.seam != null ? seamCal.seam : rect.seamAllowance)
+    : 0;
+  // Seam-divergence drift correction. A pocket seam differing from the group
+  // seam displaces pocket art relative to body art by
+  //     (x_c - eff.x) * dSeam / (1 - seamGroup)
+  // and `eff.x = anchor.x - base.width * s / 2`, so that displacement is
+  // LINEAR in the group placement scale `s`: the two halves drift
+  // equal-and-opposite, so the pocket-to-pocket spread drifts at twice that.
+  // Cancel it relative to the scale the seam was calibrated at, so one
+  // calibration holds at every artwork scale instead of only the one it was
+  // measured at. `eff.width === base.width * s` exactly (computeGroupRects:
+  // rotation/aspect are baked into `base` BEFORE the scale, and placement
+  // offsets move `eff.x` only), so this recovers the same `s` that caused the
+  // drift. Closed form matches measured k to 0.8% on the left half; linear to
+  // 0.08 px rms over s = 1.57 / 2.35 / 3.13, on both display and print.
+  //
+  // MEASURED RESIDUAL, DELIBERATELY UNCORRECTED: the halves' k sum to
+  // -0.20 px per unit s rather than 0, reproducibly and on both surfaces, so
+  // this symmetric model is slightly wrong in a consistent way. Over a 2x
+  // scale range that is ~0.3 px, below the +/-0.7 px measurement error bar.
+  // Do not "fix" it without a metric that can actually resolve it.
+  const seamGroup = rect.seamAllowance;
+  const calScale = seamCal?.calibrationScale;
+  let relAdj = 0;
+  if (
+    rect.hasSeamPair &&
+    (side === "left" || side === "right") &&
+    seamCal?.seam != null &&
+    calScale != null &&
+    rect.base.width > 0 &&
+    seamGroup < 1
+  ) {
+    const dSeam = seamCal.seam - seamGroup;
+    if (dSeam !== 0) {
+      const sNow = eff.width / rect.base.width;
+      const driftLeft =
+        ((rect.base.width / 2) * (sNow - calScale) * dSeam) / (1 - seamGroup);
+      relAdj = (side === "left" ? driftLeft : -driftLeft) / eff.width;
+    }
+  }
+  const relLeft = (bb.x - eff.x) / eff.width + relAdj;
+  const relRight = (bb.x + bb.width - eff.x) / eff.width + relAdj;
   let uLeft: number;
   let uRight: number;
   if (side === "left" && seam > 0) {
@@ -1159,7 +1293,79 @@ export function synthesiseLeggingsMirroredSourceRect(
   return synthesiseSeamAwareSourceRect(panelBb, perPanelRect, aw, ah, "none");
 }
 
-function artworkSourceRectForPanel(
+/**
+ * Hood / zip mask AABBs overlap the centre seam. Print stretches that
+ * whole box onto the Safe rect, which is how both nostrils landed on
+ * each hood.
+ *
+ * Trim only the *overhang* past the seam on the minority side of this
+ * AABB. Do not keep "image-left vs image-right" by anatomical side —
+ * on a front pullover, `right_hood` (wearer's right) sits on the left
+ * of the photo. Forcing that panel to x > mid deleted it (blank hood).
+ * Inset is a fraction of the *union* (garment px), not Place `effective`
+ * width, so scale cannot eat the smaller half.
+ */
+export function clipSampleBbToSeamHalf(
+  bb: Aabb,
+  rect: DesignRectInfo,
+  side: "left" | "right" | "none",
+  panelKey?: HoodiePanelKey | null,
+  seamCal?: PocketSeamCal | null,
+): Aabb {
+  if (side !== "left" && side !== "right") return bb;
+  const union = rect.union;
+  const mid = rect.hasSeamPair ? rect.anchor.x : union.x + union.width / 2;
+  const crossesMid = bb.x < mid && bb.x + bb.width > mid;
+  const unionIsPair = union.width > bb.width * 1.05;
+  const isHood = panelKey === "left_hood" || panelKey === "right_hood";
+  if (!crossesMid) return bb;
+  if (!rect.hasSeamPair && !(isHood && unionIsPair)) return bb;
+
+  // Pocket-specific seam override (fraction) wins over the shared group
+  // value when supplied; everything else inherits rect.seamAllowance
+  // exactly as before, so non-pocket callers are byte-for-byte unchanged.
+  const baseSeam = seamCal?.seam != null ? seamCal.seam : rect.seamAllowance;
+  const seam = Math.max(
+    0,
+    baseSeam > 0
+      ? baseSeam
+      : isHood
+        ? PULLOVER_HOOD_SEAM_ALLOWANCE
+        : 0,
+  );
+  const inset = (seam * Math.max(1e-6, union.width)) / 2;
+  const leftSpan = Math.max(0, mid - bb.x);
+  const rightSpan = Math.max(0, bb.x + bb.width - mid);
+  const minKeep = bb.width * 0.4;
+  if (leftSpan >= rightSpan) {
+    const right = Math.max(bb.x + minKeep, Math.min(bb.x + bb.width, mid - inset));
+    return { x: bb.x, y: bb.y, width: right - bb.x, height: bb.height };
+  }
+  const left = Math.min(bb.x + bb.width - minKeep, Math.max(bb.x, mid + inset));
+  return {
+    x: left,
+    y: bb.y,
+    width: bb.x + bb.width - left,
+    height: bb.height,
+  };
+}
+
+/**
+ * Pocket-only seam override for the source-rect helpers: returns the bias's
+ * seamAllowance ONLY for pocket panel keys, else undefined (→ helpers inherit
+ * rect.seamAllowance, unchanged). Chest/hood/sleeve always pass undefined, so
+ * their geometry is byte-for-byte identical to pre-change.
+ */
+function pocketSeamCal(
+  bias: PanelPlacementBiasPercent | null | undefined,
+  panelKey: HoodiePanelKey | null | undefined,
+): PocketSeamCal | undefined {
+  if (bias?.seamAllowance == null) return undefined;
+  if (!isKangarooPocketPanelKey(panelKey)) return undefined;
+  return { seam: bias.seamAllowance, calibrationScale: bias.seamCalibrationScale };
+}
+
+export function artworkSourceRectForPanel(
   panelBb: Aabb,
   panelKey: HoodiePanelKey | null | undefined,
   groupRect: DesignRectInfo,
@@ -1167,27 +1373,210 @@ function artworkSourceRectForPanel(
   ah: number,
   seamSide: "left" | "right" | "none",
   _legsMirrored?: boolean,
+  seamCal?: PocketSeamCal | null,
 ): Aabb {
   // Leggings always use full-panel place (Sync/Mirror only change transforms/flip).
   if (isLeggingsSidePanelKey(panelKey)) {
     return synthesiseLeggingsMirroredSourceRect(panelBb, groupRect, aw, ah);
   }
-  return synthesiseSeamAwareSourceRect(panelBb, groupRect, aw, ah, seamSide);
+  const sample = clipSampleBbToSeamHalf(
+    panelBb,
+    groupRect,
+    seamSide,
+    panelKey,
+    seamCal,
+  );
+  // Front pullover hoods are mirrored in photo space (wearer's right is
+  // image-left). Anatomical L/R UV remap would shift the right hood onto
+  // the wrong mural half — clip already trimmed the seam in mockup px.
+  const synthSide =
+    panelKey === "left_hood" || panelKey === "right_hood" ? "none" : seamSide;
+  return synthesiseSeamAwareSourceRect(
+    sample,
+    groupRect,
+    aw,
+    ah,
+    synthSide,
+    seamCal,
+  );
+}
+
+/**
+ * Artwork-pixel-space sample rectangle for a panel — the crop window read
+ * from the customer's raw uploaded design, before any mesh warp onto a
+ * mockup or print target shape. Verbatim duplication of renderHoodFlatPanel's
+ * own slice-computation sequence (same primitives, same order) so pocket vs
+ * front-body continuity can be inspected upstream of either blank's
+ * geometry, without touching renderHoodFlatPanel itself. Used by the AOP
+ * Panel Mapper's pocketPrint calibration overlay only — never called from
+ * the render/export paths.
+ */
+export function computeArtworkSampleRectForPanel(
+  layer: MaskLayer,
+  artwork: HTMLImageElement,
+  groupRect: DesignRectInfo,
+  options?: {
+    panelPlacementBias?: PanelPlacementBiasPercent | null;
+    blueprintId?: number | null;
+  },
+): Aabb | null {
+  const anchors = svgPathToAnchors(layer.maskPath);
+  const bb = aabbOf(anchors);
+  if (!bb) return null;
+  const aw = artwork.naturalWidth || artwork.width;
+  const ah = artwork.naturalHeight || artwork.height;
+  const side: "left" | "right" | "none" = isLeggingsSidePanelKey(layer.panelKey)
+    ? "none"
+    : layer.panelKey
+      ? SEAM_PAIR_PANELS.left.includes(layer.panelKey)
+        ? "left"
+        : SEAM_PAIR_PANELS.right.includes(layer.panelKey)
+          ? "right"
+          : "none"
+      : "none";
+  let sampleBb = applyPanelPlacementBiasToBbox(bb, groupRect, options?.panelPlacementBias);
+  if (isKangarooPocketPanelKey(layer.panelKey)) {
+    sampleBb = applyPulloverPocketSampleWindow(
+      sampleBb,
+      groupRect.union.height,
+      layer.panelKey,
+      groupRect.effective,
+      options?.panelPlacementBias,
+      options?.blueprintId,
+    );
+  }
+  sampleBb = applyPulloverNeckSeamBleedToBbox(sampleBb, layer.panelKey, options?.blueprintId);
+  const rotForSlice = groupRect.rotationDeg ?? 0;
+  const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
+  return artworkSourceRectForPanel(
+    sampleBb,
+    layer.panelKey,
+    groupRect,
+    bakedForSlice.width,
+    bakedForSlice.height,
+    side,
+    undefined,
+    pocketSeamCal(options?.panelPlacementBias, layer.panelKey),
+  );
 }
 
 /** Uniform flat UV grid matching the mesh cell topology (cols × rows). */
-export function buildFlatMeshTargetPoints(mesh: MeshGrid, flatW: number, flatH: number): Pt[] {
+export function buildFlatMeshTargetPoints(
+  mesh: MeshGrid,
+  flatW: number,
+  flatH: number,
+  dest?: { x: number; y: number; width: number; height: number } | null,
+): Pt[] {
   const { cols, rows } = mesh;
+  const ox = dest?.x ?? 0;
+  const oy = dest?.y ?? 0;
+  const dw = dest?.width ?? flatW;
+  const dh = dest?.height ?? flatH;
   const points: Pt[] = [];
   for (let r = 0; r < rows; r += 1) {
     for (let c = 0; c < cols; c += 1) {
       points.push({
-        x: (c / (cols - 1)) * flatW,
-        y: (r / (rows - 1)) * flatH,
+        x: ox + (c / (cols - 1)) * dw,
+        y: oy + (r / (rows - 1)) * dh,
       });
     }
   }
   return points;
+}
+
+/**
+ * Fill Print-minus-Safe (grey) by dest-space edge-extend after the Safe warp.
+ * Not a source restretch and not new bleed — v<0 / v>1 / side rims
+ * continue the Safe-edge pixels. Placeholder canvas size is unchanged.
+ */
+export function fillPrintGreyByEdgeExtend(
+  canvas: HTMLCanvasElement,
+  insets: PrintSafeInsets,
+): HTMLCanvasElement {
+  const w = canvas.width;
+  const h = canvas.height;
+  const dest = printSafeDestRect(w, h, insets);
+  if (dest.x <= 0 && dest.y <= 0 && dest.x + dest.width >= w && dest.y + dest.height >= h) {
+    return canvas;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+  const snap = document.createElement("canvas");
+  snap.width = dest.width;
+  snap.height = dest.height;
+  const sctx = snap.getContext("2d");
+  if (!sctx) return canvas;
+  sctx.drawImage(
+    canvas,
+    dest.x,
+    dest.y,
+    dest.width,
+    dest.height,
+    0,
+    0,
+    dest.width,
+    dest.height,
+  );
+  const prevSmooth = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  const botH = h - dest.y - dest.height;
+  const rightW = w - dest.x - dest.width;
+  if (dest.y > 0) {
+    ctx.drawImage(snap, 0, 0, dest.width, 1, dest.x, 0, dest.width, dest.y);
+  }
+  if (botH > 0) {
+    ctx.drawImage(
+      snap,
+      0,
+      dest.height - 1,
+      dest.width,
+      1,
+      dest.x,
+      dest.y + dest.height,
+      dest.width,
+      botH,
+    );
+  }
+  if (dest.x > 0) {
+    ctx.drawImage(snap, 0, 0, 1, dest.height, 0, dest.y, dest.x, dest.height);
+  }
+  if (rightW > 0) {
+    ctx.drawImage(
+      snap,
+      dest.width - 1,
+      0,
+      1,
+      dest.height,
+      dest.x + dest.width,
+      dest.y,
+      rightW,
+      dest.height,
+    );
+  }
+  if (dest.y > 0 && dest.x > 0) {
+    ctx.drawImage(snap, 0, 0, 1, 1, 0, 0, dest.x, dest.y);
+  }
+  if (dest.y > 0 && rightW > 0) {
+    ctx.drawImage(snap, dest.width - 1, 0, 1, 1, dest.x + dest.width, 0, rightW, dest.y);
+  }
+  if (botH > 0 && dest.x > 0) {
+    ctx.drawImage(snap, 0, dest.height - 1, 1, 1, 0, dest.y + dest.height, dest.x, botH);
+  }
+  if (botH > 0 && rightW > 0) {
+    ctx.drawImage(
+      snap,
+      dest.width - 1,
+      dest.height - 1,
+      1,
+      1,
+      dest.x + dest.width,
+      dest.y + dest.height,
+      rightW,
+      botH,
+    );
+  }
+  ctx.imageSmoothingEnabled = prevSmooth;
+  return canvas;
 }
 
 /**
@@ -1241,6 +1630,21 @@ export function renderHoodFlatPanel(
     sleevesMirrored?: boolean;
     /** Mirror left leg relative to right (leggings). */
     legsMirrored?: boolean;
+    /** Pullover neck sample expansion (print + preview callers pass this). */
+    blueprintId?: number | null;
+    /**
+     * Print export only. Map UV 0–1 onto this panel's Safe rect and
+     * edge-extend grey. Preview bridge must leave this unset — back-view
+     * meshes are calibrated to the full placeholder.
+     */
+    mapDestToSafe?: boolean;
+    /**
+     * When set, Print-minus-Safe stays transparent so the caller can
+     * composite this fill. Edge-extend of the Safe top row was showing
+     * up as a smeared strip on the pullover pocket (and stale-looking
+     * hood rims). Dest-stretch / Safe rect are unchanged.
+     */
+    backgroundColor?: string | null;
   },
 ): HTMLCanvasElement | null {
   if (!frontLayer.mesh) return null;
@@ -1295,10 +1699,25 @@ export function renderHoodFlatPanel(
             ? "right"
             : "none"
         : "none";
-    const sampleBb = applyPanelPlacementBiasToBbox(
+    let sampleBb = applyPanelPlacementBiasToBbox(
       bb,
       frontRect,
       options?.panelPlacementBias,
+    );
+    if (isKangarooPocketPanelKey(frontLayer.panelKey)) {
+      sampleBb = applyPulloverPocketSampleWindow(
+        sampleBb,
+        frontRect.union.height,
+        frontLayer.panelKey,
+        frontRect.effective,
+        options?.panelPlacementBias,
+        options?.blueprintId,
+      );
+    }
+    sampleBb = applyPulloverNeckSeamBleedToBbox(
+      sampleBb,
+      frontLayer.panelKey,
+      options?.blueprintId,
     );
     const rotForSlice = frontRect.rotationDeg ?? 0;
     const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
@@ -1310,6 +1729,7 @@ export function renderHoodFlatPanel(
       bakedForSlice.height,
       side,
       options?.legsMirrored,
+      pocketSeamCal(options?.panelPlacementBias, frontLayer.panelKey),
     );
   }
   if (slice.width <= 0 || slice.height <= 0) return null;
@@ -1317,17 +1737,33 @@ export function renderHoodFlatPanel(
   const aw = artwork.naturalWidth || artwork.width;
   const ah = artwork.naturalHeight || artwork.height;
   const rotDeg = frontRect.rotationDeg ?? 0;
-  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
   const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
-  const bakedSlice = slice;
-  // Bake through the same mesh topology the live preview uses, but with
-  // targetPoints on a uniform flat grid so the entire Printify placeholder
-  // is filled. UV 0..1 maps across `slice` (synthSrc); mapping the slice
-  // into a fractional dest rect left most of the canvas white on Printify.
-  // Customer Place rotation is pre-baked into `artSource` (not mesh UV).
+  if (!artworkSliceSamplesMural(slice, bakedSize.width, bakedSize.height)) {
+    return canvas;
+  }
+  const artSource = bakeArtworkPlacementRotation(artwork, aw, ah, rotDeg);
+  const insets = options?.mapDestToSafe
+    ? printSafeInsetsForPanel(frontLayer.panelKey, options.blueprintId)
+    : null;
+  const dest = insets ? printSafeDestRect(flatW, flatH, insets) : null;
+  // Print, pullover + zip body and pockets: one uniform slice→dest scale
+  // instead of filling the placeholder per axis (see printTrueAspectAnchor).
+  const trueAspectAnchor = options?.mapDestToSafe
+    ? printTrueAspectAnchor(frontLayer.panelKey, options.blueprintId)
+    : null;
+  const bakedSlice = trueAspectAnchor
+    ? sliceAtDestAspect(
+        slice,
+        (dest?.width ?? flatW) / (dest?.height ?? flatH),
+        trueAspectAnchor,
+      )
+    : slice;
+  // Print: UV 0–1 → Safe rect (preview uses sewn mesh dest). Preview
+  // bridge leaves dest null so the full placeholder still feeds the
+  // back-view warp. Customer Place rotation is pre-baked into artSource.
   drawMeshWarp(ctx, artSource, bakedSize.width, bakedSize.height, {
     ...frontLayer.mesh,
-    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH),
+    targetPoints: buildFlatMeshTargetPoints(frontLayer.mesh, flatW, flatH, dest),
     sourceRect: bakedSlice,
     sourceFlipX: meshSourceFlipXForPanel(
       frontLayer.panelKey,
@@ -1335,7 +1771,10 @@ export function renderHoodFlatPanel(
       options?.sleevesMirrored,
       options?.legsMirrored,
     ),
-  });
+  }, { seamInflateScale: outputScale });
+  if (insets && !options?.backgroundColor) {
+    fillPrintGreyByEdgeExtend(canvas, insets);
+  }
   return canvas;
 }
 
@@ -1682,16 +2121,11 @@ function applyFrontBodyPreviewPlacementScale(
   rects: Map<string, DesignRectInfo>,
   opts?: { includeBomberSleeves?: boolean },
 ): void {
-  if (
-    isPulloverHoodieBlueprint(template.blueprintId) ||
-    template.hoodieType === "pullover-hoodie-aop"
-  ) {
-    const fb = rects.get("front-body");
-    if (fb) {
-      rects.set(
-        "front-body",
-        scaleDesignRectEffective(fb, PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE),
-      );
+  // 576 live editor is FlatProductPlacer; this branch is 576-only belt-and-suspenders
+  // if a mapper template is ever attached. Bake / renderFlatPrintPanels never call us.
+  if (isBeanieBlueprint(template.blueprintId)) {
+    for (const [id, info] of Array.from(rects.entries())) {
+      rects.set(id, scaleDesignRectEffective(info, BEANIE_PREVIEW_PLACEMENT_SCALE));
     }
     return;
   }
@@ -2428,6 +2862,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
           fallbackSize,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          blueprintId: template.blueprintId,
         });
         if (flat) {
           // Like hood: warp the FULL flat through the back mesh. Mesh UVs
@@ -2558,13 +2993,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       ) {
         const bb = layerBb;
         if (bb) {
-          const sampleBb = samplingBboxForLayer(
+          const sampled = samplingBboxAndSeamForLayer(
             bb,
             layer,
             layerRect,
             template,
             params.groupPanelBiasOverrides,
           );
+          const sampleBb = sampled.bb;
           const rotForSlice = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotForSlice);
           synthSrc = artworkSourceRectForPanel(
@@ -2575,6 +3011,7 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
+            sampled.seamCal,
           );
         }
       } else {
@@ -2585,21 +3022,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
       }
       if (synthSrc) {
         const rotDeg = layerRect?.rotationDeg ?? 0;
-        const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
         const bakedSize = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
-        drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
-          ...layer.mesh,
-          sourceRect: synthSrc,
-          // Keep calibration UV rotation only — Place rotation is baked
-          // into artSource so linked legs share one upright bitmap.
-          sourceRotation: layer.mesh.sourceRotation ?? 0,
-          sourceFlipX: meshSourceFlipXForPanel(
-            layer.panelKey,
-            layer.mesh.sourceFlipX,
-            params.sleevesMirrored,
-            params.legsMirrored,
-          ),
-        });
+        if (artworkSliceSamplesMural(synthSrc, bakedSize.width, bakedSize.height)) {
+          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+          drawMeshWarp(pctx, artSource, bakedSize.width, bakedSize.height, {
+            ...layer.mesh,
+            sourceRect: synthSrc,
+            // Keep calibration UV rotation only — Place rotation is baked
+            // into artSource so linked legs share one upright bitmap.
+            sourceRotation: layer.mesh.sourceRotation ?? 0,
+            sourceFlipX: meshSourceFlipXForPanel(
+              layer.panelKey,
+              layer.mesh.sourceFlipX,
+              params.sleevesMirrored,
+              params.legsMirrored,
+            ),
+          });
+        }
       }
     } else if (artwork) {
       // No mesh on this layer — fall back to a flat stretched draw.
@@ -2613,13 +3052,14 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
         if (bb) {
           const aw = artwork.naturalWidth || artwork.width;
           const ah = artwork.naturalHeight || artwork.height;
-          const sampleBb = samplingBboxForLayer(
+          const sampled = samplingBboxAndSeamForLayer(
             bb,
             layer,
             layerRect,
             template,
             params.groupPanelBiasOverrides,
           );
+          const sampleBb = sampled.bb;
           const rotDeg = layerRect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
@@ -2630,20 +3070,23 @@ export function renderAopPreview(ctx: CanvasRenderingContext2D, params: AopPrevi
             bakedForSlice.height,
             seamSideForLayer(layer),
             params.legsMirrored,
+            sampled.seamCal,
           );
-          const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
-          const bakedSlice = slice;
-          pctx.drawImage(
-            artSource,
-            bakedSlice.x,
-            bakedSlice.y,
-            bakedSlice.width,
-            bakedSlice.height,
-            bb.x,
-            bb.y,
-            bb.width,
-            bb.height,
-          );
+          if (artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)) {
+            const artSource = rotatedArtworkFor(artwork, aw, ah, rotDeg);
+            const bakedSlice = slice;
+            pctx.drawImage(
+              artSource,
+              bakedSlice.x,
+              bakedSlice.y,
+              bakedSlice.width,
+              bakedSlice.height,
+              bb.x,
+              bb.y,
+              bb.width,
+              bb.height,
+            );
+          }
         }
       } else {
         const bb = layerBb;
@@ -3057,10 +3500,10 @@ function solidPanelCanvas(
 }
 
 /**
- * Pullover kangaroo pocket — mirror zip hoodie: keep `front_pocket` as its own
- * Printify panel upload. Live bp 450 placeholders include a pocket slot; when
- * we omit it the mockup server fills that slot with solid bgColor (blank pocket).
- * When pockets are off, drop the panel so the fill stays garment colour.
+ * Pullover kangaroo pocket — keep `front_pocket` as its own Printify upload.
+ * Print uses the same mesh bake as Preview Studio (front-body placement +
+ * pocket sample-window). Do not replace that canvas with a mockup-AABB crop
+ * of the front print — that ignored pocket X/Y/Scale and shrank the art.
  */
 export function finalizePulloverPrintPanelsForPrintify(
   panels: FlatPrintPanelExport[],
@@ -3078,7 +3521,6 @@ export function finalizePulloverPrintPanelsForPrintify(
   ) {
     return panels.filter((p) => p.panelKey !== "front_pocket");
   }
-  // Ensure position string matches Printify (and server aliases).
   return panels.map((p) =>
     p.panelKey === "front_pocket"
       ? { ...p, position: hoodiePanelKeyToPrintifyPosition("front_pocket") }
@@ -3582,17 +4024,6 @@ export function renderFlatPrintPanels(
     let rect = group
       ? rects.get(group.id) ?? null
       : rects.get("__legacy__") ?? rects.get("__ungrouped__") ?? null;
-    // Place-on-item: pullover chest print files read a bit large vs pocket on
-    // Printify — shrink only the main front panel export (not preview/pocket).
-    if (
-      mode === "single-sheet" &&
-      panelKey === "front" &&
-      rect &&
-      (isPulloverHoodieBlueprint(template.blueprintId) ||
-        template.hoodieType === "pullover-hoodie-aop")
-    ) {
-      rect = scaleDesignRectEffective(rect, PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE);
-    }
     // Mirror renderAopPreview's skipArtwork semantics exactly so the print
     // file matches the preview: single-sheet honours the group rect's
     // enabled flag; tile mode has no group rects (group toggles don't mute
@@ -3712,8 +4143,11 @@ export function renderFlatPrintPanels(
         panelTargetLongEdge,
       );
       if (bakeLayer.mesh) {
+        // Print export: prefer the print-specific bias (falls back to
+        // display's `pocket` when unset) — this is the surface that ships
+        // to Printify, so it must never read the display-only value.
         const panelBias = group
-          ? resolveFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
+          ? resolvePrintFrontBodyPanelBias(group, panelKey, groupPanelBiasOverrides?.[group.id])
           : null;
         artCanvas = renderHoodFlatPanel(bakeLayer, artwork, bakeRect, {
           fallbackSize: dims,
@@ -3721,6 +4155,9 @@ export function renderFlatPrintPanels(
           panelPlacementBias: panelBias,
           sleevesMirrored: params.sleevesMirrored,
           legsMirrored: params.legsMirrored,
+          blueprintId: template.blueprintId,
+          mapDestToSafe: true,
+          backgroundColor: bg,
         });
       } else {
         // No mesh — draw the seam-aware artwork slice straight into the
@@ -3738,7 +4175,7 @@ export function renderFlatPrintPanels(
                 : "none";
           const sampleBb = rect
             ? samplingBboxForLayer(bb, layer, rect, template, groupPanelBiasOverrides)
-            : bb;
+            : applyPulloverNeckSeamBleedToBbox(bb, panelKey, template.blueprintId);
           const rotDeg = rect.rotationDeg ?? 0;
           const bakedForSlice = artworkSizeAfterPlacementRotation(aw, ah, rotDeg);
           const slice = artworkSourceRectForPanel(
@@ -3750,7 +4187,11 @@ export function renderFlatPrintPanels(
             side,
             params.legsMirrored,
           );
-          if (slice.width > 0 && slice.height > 0) {
+          if (
+            slice.width > 0 &&
+            slice.height > 0 &&
+            artworkSliceSamplesMural(slice, bakedForSlice.width, bakedForSlice.height)
+          ) {
             const c = document.createElement("canvas");
             c.width = Math.max(1, Math.round(dims.width * outputScale));
             c.height = Math.max(1, Math.round(dims.height * outputScale));

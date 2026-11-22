@@ -1,0 +1,1122 @@
+/**
+ * Promote an approved catalogue candidate.
+ *
+ * Creates a published catalogue product. This is not createShopifyProductForType
+ * (that helper makes an unlisted customizer base) and it is not a shadow SKU
+ * (those are hidden and swept). A draft is the only held state, and only when
+ * the operator unchecks Publish now.
+ *
+ * Printify is created first. If Shopify fails, the Printify product is deleted.
+ */
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  PRINTIFY_FULL_BLEED,
+  capRefusal,
+  catalogueListingTags,
+  catalogueTags,
+  catalogueVisibility,
+  compareColourThenSize,
+  sortApparelSizeNames,
+  sortCatalogueColours,
+  mockupAlt,
+  mockupFileName,
+  variantMediaAssignments,
+  colorPatternMetaobjectFields,
+  METAOBJECT_SCOPE_REFUSAL,
+  missingShopifyBaseColourMessage,
+  normaliseShopifyBaseColor,
+  promoteRefusals,
+  swatchBaseColorName,
+  type CapOccupant,
+} from "@shared/flywheelPromote";
+import { myPetMetafieldValue } from "@shared/cataloguePublish";
+import { forgetCatalogueExternalIds, readCatalogueExternalIds, rememberCatalogueExternalId } from "./catalogue-publish-ids";
+import { activeColorNames, cleanGarmentAccordion, garmentAccordionMetafields, accordionLines } from "@shared/garmentAccordion";
+import { requireProductVisibility, shopifyStatusForVisibility } from "@shared/productVisibility";
+import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, productTypes, shippingStoreVariants } from "@shared/schema";
+import { printifyColorIdForMockup } from "@shared/mockupBundle";
+import { slugPrintifyColorId } from "@shared/printifyColorSlug";
+import { normalizeVariantKeyLoose, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { coloursStillOffered, offeredAxes } from "@shared/variantSelection";
+import { getEffectiveDesignProductLimit } from "./customizer-plans";
+import { db } from "./db";
+import { uploadPrintFileToPrintify } from "./flat-print-file";
+import { readChoice, readLibraryObject, signedLibraryUrl } from "./mockup-library-store";
+import { assertProductTypeReadyToPromote } from "./promote-shipping";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
+import { attachVariantToShipping } from "./shipping-reconciler";
+import { ensureMyPetMetafieldDefinition } from "./my-pet-metafields";
+import { ensureGarmentAccordionDefinitions } from "./garment-accordion-metafields";
+import {
+  buildProductSetInput,
+  deleteProductRestCompat,
+} from "./shopify-product-graphql";
+import { storage } from "./storage";
+import { paceVendor, shopifyGraphqlErrors, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
+
+const PRINTIFY_API = "https://api.printify.com/v1";
+const SHOPIFY_API = "2025-10";
+
+export class PromoteRefusal extends Error {
+  readonly status = 409;
+  readonly reasons: string[];
+  constructor(reasons: string[]) {
+    const list = reasons.map((reason) => String(reason || "").trim()).filter(Boolean);
+    super(list.join("\n"));
+    this.name = "PromoteRefusal";
+    this.reasons = list;
+  }
+}
+
+type SizeRow = { id: string; name: string };
+
+function parseFrameColors(raw: unknown): Array<{ id: string; name: string }> {
+  const list = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((row) => ({ id: String(row?.id || "").trim(), name: String(row?.name || "").trim() }))
+    .filter((row) => row.id && row.name);
+}
+
+function catalogColorIds(variantMap: VariantMap): Set<string> {
+  const ids = new Set<string>();
+  for (const [key, entry] of Object.entries(variantMap)) {
+    if (entry?.printifyVariantId == null || entry.printifyVariantId === "") continue;
+    const colorId = key.slice(key.indexOf(":") + 1);
+    if (colorId) ids.add(colorId);
+  }
+  return ids;
+}
+
+/** Mockup hex wins. A display name is only used when the hex is not one of the eight. */
+function resolvePromotedColorId(
+  color: { name: string; hex: string },
+  frameColors: Array<{ id: string; name: string }>,
+  catalogIds: Set<string>,
+): { colorId: string; title: string } | null {
+  const fromHex = printifyColorIdForMockup(color.hex);
+  const title = fromHex?.title || color.name;
+  const slug = fromHex?.colorId || slugPrintifyColorId(color.name);
+  if (catalogIds.has(slug)) return { colorId: slug, title };
+  const named = frameColors.find((row) =>
+    row.id === slug
+    || slugPrintifyColorId(row.id) === slug
+    || slugPrintifyColorId(row.name) === slug
+    || row.name.toLowerCase() === title.toLowerCase(),
+  );
+  if (named && catalogIds.has(named.id)) return { colorId: named.id, title: named.name };
+  return fromHex ? { colorId: "", title: fromHex.title } : null;
+}
+
+function parseSizes(raw: unknown): SizeRow[] {
+  const list = typeof raw === "string" ? JSON.parse(raw || "[]") : raw;
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((row) => ({ id: String(row?.id || "").trim(), name: String(row?.name || "").trim() }))
+    .filter((row) => row.id && row.name);
+}
+
+function slug(value: string): string {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+type ListedVariant = { id: number; option1: string | null; option2: string | null };
+
+/** Empty when the handle is free. The product id when it belongs to this candidate. */
+async function shopifyProductForCandidate(
+  shop: string,
+  token: string,
+  handle: string,
+  candidateId: string,
+): Promise<string | "taken"> {
+  const data = await adminGql(shop, token, `query($q: String!) {
+    products(first: 5, query: $q) {
+      nodes { id handle metafield(namespace: "ai_art_studio", key: "design_candidate_id") { value } }
+    }
+  }`, { q: `handle:${handle}` });
+  const node = (data?.products?.nodes || []).find((row: { handle?: string }) => String(row.handle || "") === handle);
+  if (!node) return "";
+  const owner = String(node.metafield?.value || "");
+  if (candidateId && owner === candidateId) return String(node.id || "").replace(/\D/g, "");
+  return "taken";
+}
+
+async function readListedVariants(shop: string, token: string, productId: string): Promise<ListedVariant[]> {
+  const gid = productId.startsWith("gid://") ? productId : `gid://shopify/Product/${productId.replace(/\D/g, "")}`;
+  const read = await adminGql(shop, token, `query($id: ID!) {
+    product(id: $id) { variants(first: 100) { nodes { id selectedOptions { name value } } } }
+  }`, { id: gid });
+  return (read?.product?.variants?.nodes || []).map((node: { id: string; selectedOptions: Array<{ name: string; value: string }> }) => ({
+    id: Number(String(node.id).replace(/\D/g, "")),
+    option1: node.selectedOptions.find((option) => option.name === "Size")?.value ?? null,
+    option2: node.selectedOptions.find((option) => option.name === "Color")?.value ?? null,
+  }));
+}
+
+async function adminGql(shop: string, token: string, query: string, variables: Record<string, unknown> = {}) {
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor("shopify");
+    const res = await fetch(`https://${shop}/admin/api/${SHOPIFY_API}/graphql.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": token },
+      body: JSON.stringify({ query, variables }),
+    });
+    const json = await res.json().catch(() => ({}));
+    const throttled = shopifyThrottled(json);
+    const delay = vendorRetryDelayMs(throttled ? 429 : res.status, res.headers.get("retry-after"), attempt, throttled);
+    if (delay != null) {
+      console.warn(`[flywheel-promote] Shopify ${res.status} — retry in ${delay}ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      continue;
+    }
+    const graphqlErrors = shopifyGraphqlErrors(json);
+    if (!res.ok || graphqlErrors.length) {
+      const message = graphqlErrors.map((err) => err.message).filter(Boolean).join("; ");
+      throw new Error(message || `Shopify HTTP ${res.status}`);
+    }
+    return json.data;
+  }
+}
+
+async function printifyRequest(token: string, path: string, init: RequestInit, lane: "printify" | "printify-product"): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    await paceVendor(lane);
+    const res = await fetch(`${PRINTIFY_API}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+    });
+    const delay = vendorRetryDelayMs(res.status, res.headers.get("retry-after"), attempt);
+    if (delay == null) return res;
+    await res.arrayBuffer().catch(() => undefined);
+    console.warn(`[flywheel-promote] Printify ${res.status} ${path} — retry in ${delay}ms`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+}
+
+export async function deletePrintifyProduct(shopId: string, productId: string, token: string): Promise<void> {
+  const res = await printifyRequest(token, `/shops/${shopId}/products/${productId}.json`, { method: "DELETE" }, "printify");
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Printify product ${productId} was left behind. Delete returned HTTP ${res.status}.`);
+  }
+}
+
+type SwatchTaxonomy = { colors: Map<string, string>; solidId: string };
+
+async function loadSwatchTaxonomy(shop: string, token: string): Promise<SwatchTaxonomy> {
+  const data = await adminGql(
+    shop,
+    token,
+    `query {
+      taxonomy {
+        categories(first: 10, search: "T-Shirts") {
+          nodes {
+            id
+            attributes(first: 10) {
+              nodes {
+                ... on TaxonomyChoiceListAttribute {
+                  name
+                  values(first: 250) { nodes { id name } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`,
+  );
+  const category = (data?.taxonomy?.categories?.nodes || []).find(
+    (node: { id?: string }) => node.id === "gid://shopify/TaxonomyCategory/aa-1-13-8",
+  );
+  const attributes = category?.attributes?.nodes || [];
+  const colors = new Map<string, string>();
+  for (const value of attributes.find((row: { name?: string }) => row.name === "Color")?.values?.nodes || []) {
+    colors.set(String(value.name).toLowerCase(), String(value.id));
+  }
+  const solidId = (attributes.find((row: { name?: string }) => row.name === "Pattern")?.values?.nodes || [])
+    .find((value: { name?: string }) => value.name === "Solid")?.id;
+  if (!colors.size || !solidId) {
+    throw new Error("Shopify did not return the T-shirt colour and Solid pattern taxonomy.");
+  }
+  return { colors, solidId: String(solidId) };
+}
+
+async function colorMetaobjectId(
+  shop: string,
+  token: string,
+  name: string,
+  hex: string,
+  taxonomy: SwatchTaxonomy,
+  baseColor?: string | null,
+): Promise<string> {
+  const found = await adminGql(
+    shop,
+    token,
+    `query($q: String!) {
+      metaobjects(type: "shopify--color-pattern", first: 10, query: $q) { nodes { id displayName } }
+    }`,
+    { q: `display_name:${name}` },
+  );
+  const existing = (found?.metaobjects?.nodes || []).find(
+    (node: { displayName?: string }) => String(node.displayName || "").toLowerCase() === name.toLowerCase(),
+  );
+  if (existing?.id) return String(existing.id);
+  const baseName = baseColor === undefined ? swatchBaseColorName(name) : normaliseShopifyBaseColor(baseColor);
+  const baseColorId = baseName ? taxonomy.colors.get(baseName.toLowerCase()) : undefined;
+  if (!baseColorId) throw new Error(`No Shopify base colour for ${name}.`);
+  const created = await adminGql(
+    shop,
+    token,
+    `mutation($metaobject: MetaobjectCreateInput!) {
+      metaobjectCreate(metaobject: $metaobject) { metaobject { id } userErrors { message } }
+    }`,
+    {
+      metaobject: {
+        type: "shopify--color-pattern",
+        fields: colorPatternMetaobjectFields({
+          label: name,
+          hex,
+          baseColorId,
+          solidPatternId: taxonomy.solidId,
+        }),
+      },
+    },
+  );
+  const errors = created?.metaobjectCreate?.userErrors || [];
+  if (errors.length || !created?.metaobjectCreate?.metaobject?.id) {
+    throw new Error(errors.map((err: { message?: string }) => err.message).join("; ") || `No swatch for ${name}`);
+  }
+  return String(created.metaobjectCreate.metaobject.id);
+}
+
+/** Shopify colour-pattern entry for a swatch. Reused when a colour is added to a linked option. */
+export async function colourPatternMetaobjectId(
+  shop: string,
+  token: string,
+  name: string,
+  hex: string,
+  baseColor?: string | null,
+): Promise<string> {
+  const taxonomy = await loadSwatchTaxonomy(shop, token);
+  return colorMetaobjectId(shop, token, name, hex, taxonomy, baseColor);
+}
+
+async function linkColourSwatches(
+  shop: string,
+  token: string,
+  productGid: string,
+  colours: Array<{ name: string; metaobjectId: string }>,
+): Promise<void> {
+  const product = await adminGql(
+    shop,
+    token,
+    `query($id: ID!) { product(id: $id) { options { id name optionValues { id name } } } }`,
+    { id: productGid },
+  );
+  const option = (product?.product?.options || []).find(
+    (row: { name?: string }) => String(row.name || "").toLowerCase() === "color" || String(row.name || "").toLowerCase() === "colour",
+  );
+  if (!option?.id) throw new Error("The product has no colour option to link to a swatch.");
+  const updates = colours.map((colour) => {
+    const value = (option.optionValues || []).find(
+      (row: { name?: string }) => String(row.name || "").toLowerCase() === colour.name.toLowerCase(),
+    );
+    if (!value?.id) throw new Error(`No colour option value for ${colour.name}.`);
+    return { id: value.id, linkedMetafieldValue: colour.metaobjectId };
+  });
+  const linked = await adminGql(
+    shop,
+    token,
+    `mutation($productId: ID!, $option: OptionUpdateInput!, $values: [OptionValueUpdateInput!]!) {
+      productOptionUpdate(productId: $productId, option: $option, optionValuesToUpdate: $values) {
+        userErrors { message }
+      }
+    }`,
+    {
+      productId: productGid,
+      option: { id: option.id, linkedMetafield: { namespace: "shopify", key: "color-pattern" } },
+      values: updates,
+    },
+  );
+  const errors = linked?.productOptionUpdate?.userErrors || [];
+  if (errors.length) throw new Error(errors.map((err: { message?: string }) => err.message).join("; "));
+}
+
+/** Link swatches on a product that already exists. Does not create or delete anything. */
+export async function linkCatalogueProductSwatches(args: {
+  shop: string;
+  token: string;
+  shopifyProductId: string;
+  colours: Array<{ name: string; hex: string; baseColor?: string | null }>;
+}): Promise<void> {
+  const productGid = args.shopifyProductId.startsWith("gid://")
+    ? args.shopifyProductId
+    : `gid://shopify/Product/${args.shopifyProductId.replace(/\D/g, "")}`;
+  const taxonomy = await loadSwatchTaxonomy(args.shop, args.token);
+  const swatches = [];
+  for (const color of args.colours) {
+    swatches.push({
+      name: color.name,
+      metaobjectId: await colorMetaobjectId(args.shop, args.token, color.name, color.hex, taxonomy, color.baseColor),
+    });
+  }
+  await linkColourSwatches(args.shop, args.token, productGid, swatches);
+}
+
+function productGidOf(id: string): string {
+  return id.startsWith("gid://") ? id : `gid://shopify/Product/${id.replace(/\D/g, "")}`;
+}
+
+function fileNameFromMediaUrl(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Point each variant at the mockup for its colour. The gallery swaps only
+ * when the variant carries that media. Product media alone does not.
+ */
+export async function linkCatalogueVariantMockups(args: {
+  shop: string;
+  token: string;
+  shopifyProductId: string;
+}): Promise<{ colours: number; variants: number }> {
+  const productGid = productGidOf(args.shopifyProductId);
+  const query = `query($id: ID!) {
+    product(id: $id) {
+      title
+      handle
+      media(first: 50) {
+        nodes {
+          id
+          alt
+          ... on MediaImage { image { url } }
+        }
+      }
+      variants(first: 100) {
+        nodes {
+          id
+          selectedOptions { name value }
+          media(first: 1) { nodes { id } }
+        }
+      }
+    }
+  }`;
+  let assigned: { updates: Array<{ id: string; mediaId: string }>; missing: string[] } = { updates: [], missing: [] };
+  let seenMedia = "";
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const data = await adminGql(args.shop, args.token, query, { id: productGid });
+    const product = data?.product;
+    if (!product) throw new Error("Shopify returned no product to attach mockups to.");
+    const media = (product.media?.nodes || []).map((node: { id?: string; alt?: string | null; image?: { url?: string | null } | null }) => ({
+      id: String(node.id || ""),
+      alt: String(node.alt || ""),
+      filename: fileNameFromMediaUrl(String(node.image?.url || "")),
+    })).filter((item: { id: string }) => item.id);
+    const variants = (product.variants?.nodes || []).map((node: { id?: string; selectedOptions?: Array<{ name?: string; value?: string }> }) => ({
+      id: String(node.id || ""),
+      colour: String(node.selectedOptions?.find((option) => /^colou?r$/i.test(String(option.name || "")))?.value || ""),
+    })).filter((variant: { id: string; colour: string }) => variant.id && variant.colour);
+    assigned = variantMediaAssignments({
+      title: String(product.title || ""),
+      handle: String(product.handle || ""),
+      variants,
+      media,
+    });
+    seenMedia = media.map((item: { alt: string; filename: string }) => `${item.alt || "(no alt)"} | ${item.filename || "(no file)"}`).join("; ");
+    const colourCount = new Set(variants.map((variant: { colour: string }) => variant.colour.toLowerCase())).size;
+    if (!assigned.missing.length && assigned.updates.length) break;
+    if (media.length >= colourCount) break;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (assigned.missing.length || !assigned.updates.length) {
+    throw new Error(`No mockup media for ${assigned.missing.join(", ") || "the ticked colours"}. Media on the product: ${seenMedia || "none"}.`);
+  }
+  for (let i = 0; i < assigned.updates.length; i += 50) {
+    const chunk = assigned.updates.slice(i, i + 50);
+    const updated = await adminGql(
+      args.shop,
+      args.token,
+      `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants { id media(first: 1) { nodes { id } } }
+          userErrors { field message }
+        }
+      }`,
+      { productId: productGid, variants: chunk.map((row) => ({ id: row.id, mediaId: row.mediaId })) },
+    );
+    const errors = updated?.productVariantsBulkUpdate?.userErrors || [];
+    if (errors.length) {
+      throw new Error(errors.map((err: { message?: string }) => err.message).filter(Boolean).join("; ") || "Variant media update failed");
+    }
+    const written = new Map<string, string>(
+      (updated?.productVariantsBulkUpdate?.productVariants || []).map((node: { id?: string; media?: { nodes?: Array<{ id?: string }> } }) => [
+        String(node.id || ""),
+        String(node.media?.nodes?.[0]?.id || ""),
+      ]),
+    );
+    for (const row of chunk) {
+      if (written.get(row.id) !== row.mediaId) {
+        throw new Error(`Variant ${row.id} did not keep mockup ${row.mediaId}.`);
+      }
+    }
+  }
+  return {
+    colours: new Set(assigned.updates.map((row) => row.mediaId)).size,
+    variants: assigned.updates.length,
+  };
+}
+
+export async function promoteCatalogueCandidate(args: {
+  candidateId: string;
+  publishNow: boolean;
+  productTypeId: number;
+  pricesBySize: Record<string, string>;
+  compareAtBySize?: Record<string, string>;
+  /** Stop once the refusals are known. Nothing is created. */
+  checkOnly?: boolean;
+  /** Print file, listing, and mockups are about to be built by the publish button. */
+  deferApprovalArtifacts?: boolean;
+  /** Colours ticked in the dialog. Falls back to the candidate's saved list. */
+  selectedColors?: Array<{ name: string; hex: string }>;
+  panelId?: string;
+  /** Mockups just rendered for this publish. Falls back to the saved choice. */
+  mockupImages?: Array<{ name: string; hex: string; path: string }>;
+  /** Listing copy for this type. The candidate title stays the design name. */
+  listingTitle?: string;
+  listingHandle?: string;
+  listingDescription?: string;
+  /** False writes the My Pet metafield off. Omitted stays on. */
+  myPetEnabled?: boolean;
+  /** Type-specific print file. Falls back to the candidate column. */
+  printFilePath?: string;
+}): Promise<{ shopifyProductId: string; printifyProductId: string; status: "active" | "draft" }> {
+  const choice = await readChoice(args.candidateId);
+  const panelId = String(args.panelId || choice.panelId || "");
+  const mockupImages = args.mockupImages?.length ? args.mockupImages : choice.mockupImages;
+  const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
+  const [typeRow] = await db.select().from(productTypes).where(eq(productTypes.id, args.productTypeId)).limit(1);
+  if (!typeRow) throw new PromoteRefusal([`Product type ${args.productTypeId} was not found.`]);
+
+  const shop = String(typeRow.shopifyShopDomain || candidate?.shopDomain || "");
+  const { cataloguePublishAllowedForShop, cataloguePublishLocked, CATALOGUE_PUBLISH_LOCKED_MESSAGE, CATALOGUE_PUBLISH_SHOP_MESSAGE } = await import("@shared/cataloguePublishAccess");
+  if (cataloguePublishLocked()) throw new PromoteRefusal([CATALOGUE_PUBLISH_LOCKED_MESSAGE]);
+  if (!cataloguePublishAllowedForShop(shop) || !cataloguePublishAllowedForShop(candidate?.shopDomain || shop)) {
+    throw new PromoteRefusal([CATALOGUE_PUBLISH_SHOP_MESSAGE]);
+  }
+  const installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
+  const { cataloguePrintifyMerchant } = await import("./operatorCatalogue");
+  const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, shop);
+
+  const sizes = parseSizes(typeRow.sizes);
+  const selectedIds: string[] = (() => {
+    try {
+      const raw = JSON.parse(typeRow.selectedSizeIds || "[]");
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch {
+      return [];
+    }
+  })();
+  const offered = offeredAxes(sizes, selectedIds);
+  const selectedColorIds: string[] = (() => {
+    try {
+      const raw = JSON.parse(typeRow.selectedColorIds || "[]");
+      return Array.isArray(raw) ? raw.map(String) : [];
+    } catch {
+      return [];
+    }
+  })();
+  const selectedColors = coloursStillOffered(
+    args.selectedColors?.length ? args.selectedColors : choice.selectedColors,
+    parseFrameColors(typeRow.frameColors),
+    selectedColorIds,
+  );
+  const { resolvedShopifyBaseColor, shopifyBaseColorsByName } = await import("./colour-blanks");
+  const storedBases = await shopifyBaseColorsByName(args.productTypeId);
+  const missingBaseColours = selectedColors
+    .map((color) => color.name)
+    .filter((name, index, names) => names.findIndex((row) => row.toLowerCase() === name.toLowerCase()) === index)
+    .filter((name) => !resolvedShopifyBaseColor(name, storedBases));
+  if (missingBaseColours.length) {
+    throw new PromoteRefusal([missingShopifyBaseColourMessage(missingBaseColours) || "A ticked colour has no Shopify base colour."]);
+  }
+  const missingPrices = offered.filter((size) => !args.pricesBySize[size.name]).map((size) => size.name);
+
+  const ticked = selectedColors.map((color) => color.name);
+  const panelColours: string[] = [];
+  if (panelId) {
+    const { blankLibraryTypeId } = await import("./colour-blanks");
+    const { blankNameKey } = await import("@shared/colourBlanks");
+    const { blankScenesForLibrary, photographPanel } = await import("./mockup-library-store");
+    const { mockupLibraryColours } = await import("@shared/schema");
+    const libraryId = await blankLibraryTypeId(args.productTypeId);
+    const [scenes, links] = await Promise.all([
+      blankScenesForLibrary(libraryId),
+      db.select({ name: mockupLibraryColours.name, linkStoredName: mockupLibraryColours.linkStoredName })
+        .from(mockupLibraryColours)
+        .where(eq(mockupLibraryColours.productTypeId, libraryId)),
+    ]);
+    for (const color of selectedColors) {
+      const link = links.find((row) => blankNameKey(row.name) === blankNameKey(color.name))?.linkStoredName || "";
+      if (photographPanel(scenes, panelId, color.name, link)) panelColours.push(color.name);
+    }
+  }
+
+  let shippingRefusal: string | null = null;
+  if (shop) {
+    try {
+      await assertProductTypeReadyToPromote({
+        shop,
+        productTypeName: typeRow.name,
+        variantIdMaps: [typeRow.shopifyVariantIds, typeRow.shopifyVariantIdsBoth],
+      });
+    } catch (err) {
+      shippingRefusal = err instanceof Error ? err.message : String(err);
+    }
+  } else {
+    shippingRefusal = `${typeRow.name} has no shop, so its variants cannot be placed on a delivery profile.`;
+  }
+
+  let capMessage: string | null = null;
+  if (args.publishNow && installation) {
+    // Honour per-shop override + owner-shop bypass — see
+    // getEffectiveDesignProductLimit in customizer-plans.ts. Owner / demo
+    // shops and shops with design_product_limit_override = -1 return
+    // Infinity here, which makes capRefusal return null (unlimited slots).
+    const limit = getEffectiveDesignProductLimit(installation as any, shop);
+    const occupants = await db
+      .select({ title: designProducts.title, promotedAt: designProducts.createdAt })
+      .from(designProducts)
+      .where(and(eq(designProducts.shop, shop), eq(designProducts.status, "active")));
+    const listed: CapOccupant[] = occupants.map((row) => ({
+      title: row.title,
+      promotedAt: row.promotedAt ? row.promotedAt.toISOString().slice(0, 10) : "unknown date",
+    }));
+    capMessage = capRefusal(limit, listed);
+  }
+
+  let categoryId: string | null = null;
+  if (installation?.accessToken && shop) {
+    const [page] = await db
+      .select({ baseProductId: customizerPages.baseProductId })
+      .from(customizerPages)
+      .where(and(eq(customizerPages.productTypeId, typeRow.id), eq(customizerPages.shop, shop), eq(customizerPages.status, "active")))
+      .limit(1);
+    if (page?.baseProductId) {
+      try {
+        const data = await adminGql(
+          shop,
+          installation.accessToken,
+          `query($id: ID!) { product(id: $id) { category { id } } }`,
+          { id: `gid://shopify/Product/${page.baseProductId}` },
+        );
+        categoryId = data?.product?.category?.id ?? null;
+      } catch (err) {
+        throw new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+      }
+    }
+  }
+
+  const reasons = promoteRefusals({
+    printFilePath: candidate?.printFilePath ?? null,
+    panelId: panelId,
+    productTypeName: typeRow.name,
+    tickedColours: ticked,
+    panelColours: [...panelColours],
+    storedMockupColours: mockupImages.map((image) => image.name),
+    title: candidate?.title ?? null,
+    description: candidate?.description ?? null,
+    artStyle: candidate?.artStyle ?? null,
+    species: candidate?.species ?? null,
+    humourOperator: candidate?.humourOperator ?? null,
+    shippingRefusal,
+    metaobjectRefusal: null,
+    publishNow: args.publishNow,
+    capMessage,
+    missingPrices,
+    missingBaseColours,
+    deferApprovalArtifacts: args.deferApprovalArtifacts === true,
+  });
+  if (!categoryId) reasons.push("This product type has no product category on its studio product.");
+  if (!merchant?.printifyApiToken || !merchant.printifyShopId) reasons.push("Printify is not connected on this product type.");
+  if (!installation?.accessToken) reasons.push("Shopify is not connected for this shop.");
+  if (!typeRow.printifyBlueprintId || !typeRow.printifyProviderId) reasons.push("This product type has no Printify blueprint.");
+  if (installation?.accessToken && shop) {
+    try {
+      await adminGql(
+        shop,
+        installation.accessToken,
+        `query { metaobjects(type: "shopify--color-pattern", first: 1) { nodes { id } } }`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reasons.push(/metaobject|Access denied/i.test(message) ? METAOBJECT_SCOPE_REFUSAL : message);
+    }
+  }
+  const { inactiveColourKeys } = await import("./colour-blanks");
+  const { colourMatchKeys } = await import("@shared/colourBlanks");
+  const hiddenColours = await inactiveColourKeys(args.productTypeId);
+  const inactiveTicked = ticked.filter((name) => colourMatchKeys(name).some((key) => hiddenColours.has(key)));
+  if (inactiveTicked.length) {
+    reasons.push(`${inactiveTicked.join(", ")} ${inactiveTicked.length === 1 ? "is not an active colour" : "are not active colours"} for ${typeRow.name}.`);
+  }
+  if (reasons.length) throw new PromoteRefusal(reasons);
+
+  const variantMap: VariantMap = JSON.parse(typeRow.variantMap || "{}");
+  const printifyVariants: Array<{ id: number; price: number; is_enabled: boolean }> = [];
+  const shopifyVariants: Array<{ option1: string; option2: string; price: string; compare_at_price?: string; sku: string; inventory_management: null; inventory_policy: string }> = [];
+  const variantMeta: Array<{ sizeId: string; colorId: string; colorName: string; printifyVariantId: number; studioVariantId: string }> = [];
+  const studioIds = typeof typeRow.shopifyVariantIds === "string"
+    ? JSON.parse(typeRow.shopifyVariantIds || "{}")
+    : (typeRow.shopifyVariantIds || {});
+  const studioByLoose = new Map<string, string>();
+  for (const [key, value] of Object.entries(studioIds as Record<string, unknown>)) {
+    const id = String(value || "").replace(/\D/g, "");
+    if (id) studioByLoose.set(normalizeVariantKeyLoose(key), id);
+  }
+  const studioIdList = [...new Set(studioByLoose.values())];
+  let sharedProfile = false;
+  if (shop && studioIdList.length) {
+    const profileRows = await db
+      .select({ profile: shippingStoreVariants.storeProfileId })
+      .from(shippingStoreVariants)
+      .where(and(
+        eq(shippingStoreVariants.shopDomain, normalizeMyshopifyShopDomain(shop)),
+        eq(shippingStoreVariants.source, "base"),
+        inArray(shippingStoreVariants.shopifyVariantId, studioIdList),
+      ));
+    const profiles = new Set(profileRows.map((row) => row.profile));
+    sharedProfile = profiles.size === 1 && profileRows.length === studioIdList.length;
+  }
+  const frameColors = parseFrameColors(typeRow.frameColors);
+  const catalogIds = catalogColorIds(variantMap);
+  const colorRefusals: string[] = [];
+  for (const color of selectedColors) {
+    const resolvedColor = resolvePromotedColorId(color, frameColors, catalogIds);
+    if (!resolvedColor?.colorId) {
+      const title = resolvedColor?.title || printifyColorIdForMockup(color.hex)?.title;
+      colorRefusals.push(
+        title
+          ? `${color.name} (${color.hex}) is ${title}, and ${typeRow.name} has no ${title} variant.`
+          : `${color.name} has no Printify colour on ${typeRow.name}.`,
+      );
+      continue;
+    }
+    const colorId = resolvedColor.colorId;
+    let included = 0;
+    for (const size of offered) {
+      const resolved = resolveVariantFromMap(variantMap, size.id, colorId, { allowSizeFallbackForColor: false });
+      if (!resolved?.entry.printifyVariantId) continue;
+      const sizeToken = normalizeVariantKeyLoose(`${size.id}:default`).split(":")[0];
+      let studioVariantId = studioByLoose.get(normalizeVariantKeyLoose(`${size.id}:${colorId}`))
+        || studioByLoose.get(normalizeVariantKeyLoose(resolved.key))
+        || "";
+      if (!studioVariantId && sharedProfile) {
+        for (const [key, id] of studioByLoose) {
+          if (key.startsWith(`${sizeToken}:`)) {
+            studioVariantId = id;
+            break;
+          }
+        }
+      }
+      if (!studioVariantId) {
+        colorRefusals.push(`${color.name} ${size.name} has a Printify variant but no studio variant to copy a delivery profile from.`);
+        continue;
+      }
+      const price = args.pricesBySize[size.name];
+      const compareAt = args.compareAtBySize?.[size.name];
+      const printifyVariantId = Number(resolved.entry.printifyVariantId);
+      printifyVariants.push({ id: printifyVariantId, price: Math.round(parseFloat(price) * 100), is_enabled: true });
+      shopifyVariants.push({
+        option1: size.name,
+        option2: color.name,
+        price,
+        ...(compareAt ? { compare_at_price: compareAt } : {}),
+        sku: `FW-${typeRow.id}-${size.id}-${colorId}`,
+        inventory_management: null,
+        inventory_policy: "continue",
+      });
+      variantMeta.push({ sizeId: size.id, colorId, colorName: color.name, printifyVariantId, studioVariantId });
+      included += 1;
+    }
+    if (!included) {
+      colorRefusals.push(`${color.name} has no Printify variant on ${typeRow.name} in the sizes this product offers.`);
+    }
+  }
+  if (colorRefusals.length) throw new PromoteRefusal(colorRefusals);
+  const orderedColours = sortCatalogueColours(selectedColors).filter((color, index, list) =>
+    list.findIndex((row) => row.name.toLowerCase() === color.name.toLowerCase()) === index,
+  );
+  const colourOrder = orderedColours.map((color) => color.name);
+  const variantOrder = shopifyVariants
+    .map((_, index) => index)
+    .sort((left, right) => compareColourThenSize(
+      { colour: shopifyVariants[left].option2, size: shopifyVariants[left].option1 },
+      { colour: shopifyVariants[right].option2, size: shopifyVariants[right].option1 },
+      colourOrder,
+    ));
+  const orderedShopifyVariants = variantOrder.map((index) => shopifyVariants[index]);
+  const orderedPrintifyVariants = variantOrder.map((index) => printifyVariants[index]);
+  const orderedVariantMeta = variantOrder.map((index) => variantMeta[index]);
+  if (orderedShopifyVariants.length > 100) {
+    throw new PromoteRefusal([`Too many variants (${shopifyVariants.length}). Shopify allows 100 on this create.`]);
+  }
+  // Belt-and-braces guard: refuse when the (colours × sizes × variantMap)
+  // intersection produced zero sellable variants. Without this,
+  // buildProductSetInput silently substitutes a single "Default Title /
+  // Default Title" placeholder when `variants` is empty (see its fallback at
+  // `restVariants = p.variants?.length > 0 ? p.variants : [{price:"0.00"}]`),
+  // and Shopify happily creates a one-variant "product" with no size/colour
+  // matrix. That product then gets a designProducts row inserted below with
+  // an empty variantMap, HOLDING a cap slot despite being unsellable — which
+  // is exactly how "Love what you've done with the place" ended up as a
+  // placeholder-only listing holding the Petposterous demo's cap slot.
+  // Upstream refusals (empty tickedColours, every colour hits colorRefusals)
+  // should also catch this, but a defence-in-depth check here means no
+  // future refactor can slip through and silently mint an empty listing.
+  if (!orderedShopifyVariants.length) {
+    throw new PromoteRefusal([
+      `${typeRow.name} produced no sellable variants from the ticked colours and offered sizes. Nothing was created.`,
+    ]);
+  }
+  if (args.checkOnly) {
+    return { shopifyProductId: "", printifyProductId: "", status: catalogueVisibility(args.publishNow) };
+  }
+
+  const title = String(args.listingTitle || candidate!.title);
+  const description = String(args.listingDescription || candidate!.description);
+  const tags = catalogueTags({
+    artStyle: String(candidate!.artStyle),
+    species: String(candidate!.species),
+    humourOperator: String(candidate!.humourOperator),
+  });
+  const shopifyTags = catalogueListingTags({
+    artStyle: String(candidate!.artStyle),
+    species: String(candidate!.species),
+    humourOperator: String(candidate!.humourOperator),
+    productTypeId: typeRow.id,
+    myPetEnabled: args.myPetEnabled !== false,
+  });
+  const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
+  const visibility = requireProductVisibility("published");
+  const shopifyStatus = shopifyStatusForVisibility(visibility, args.publishNow ? "publish" : "draft");
+  const status = catalogueVisibility(args.publishNow);
+  const [existingProduct] = await db
+    .select({
+      id: designProducts.id,
+      shopifyProductId: designProducts.shopifyProductId,
+      printifyProductId: designProducts.printifyProductId,
+    })
+    .from(designProducts)
+    .where(and(
+      eq(designProducts.jobId, args.candidateId),
+      eq(designProducts.productTypeId, typeRow.id),
+      eq(designProducts.shop, shop),
+    ))
+    .limit(1);
+  const savedIds = await readCatalogueExternalIds(args.candidateId, typeRow.id);
+  let printifyProductId = savedIds.printifyProductId || String(existingProduct?.printifyProductId || "");
+  let shopifyProductId = savedIds.shopifyProductId || String(existingProduct?.shopifyProductId || "");
+  let createdPrintify = false;
+  let createdShopify = false;
+  const remember = async (patch: { printifyProductId?: string; shopifyProductId?: string }) => {
+    await rememberCatalogueExternalId(args.candidateId, typeRow.id, patch);
+  };
+  if (!shopifyProductId) {
+    const adopted = await shopifyProductForCandidate(shop, installation!.accessToken, handle, args.candidateId);
+    if (adopted === "taken") {
+      throw new PromoteRefusal(["That handle is already used. Change the handle suffix."]);
+    }
+    if (adopted) {
+      shopifyProductId = adopted;
+      await remember({ shopifyProductId });
+    }
+  }
+  if (!printifyProductId) {
+    const printBuffer = await readLibraryObject(String(args.printFilePath || candidate!.printFilePath));
+    const imageId = await uploadPrintFileToPrintify(merchant!.printifyApiToken!, `${handle}-front.png`, printBuffer);
+    try {
+      const created = await printifyRequest(merchant!.printifyApiToken!, `/shops/${merchant!.printifyShopId}/products.json`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.slice(0, 250),
+          description,
+          blueprint_id: Number(typeRow.printifyBlueprintId),
+          print_provider_id: Number(typeRow.printifyProviderId),
+          variants: orderedPrintifyVariants,
+          print_areas: [{
+            variant_ids: orderedPrintifyVariants.map((variant) => variant.id),
+            placeholders: [{
+              position: "front",
+              images: [{ id: imageId, ...PRINTIFY_FULL_BLEED, angle: 0 }],
+            }],
+          }],
+          tags,
+        }),
+      }, "printify-product");
+      const text = await created.text();
+      const body = text ? JSON.parse(text) : {};
+      if (!created.ok || !body?.id) {
+        throw new Error(`Printify rejected the product (${created.status}): ${text.slice(0, 200)}`);
+      }
+      printifyProductId = String(body.id);
+      createdPrintify = true;
+      await remember({ printifyProductId });
+    } catch (err) {
+      if (createdPrintify && printifyProductId) {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!).catch(() => undefined);
+      }
+      throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+    }
+  }
+
+  const images: Array<{ src: string; alt: string; filename: string }> = [];
+  try {
+    for (const color of orderedColours) {
+      const stored = mockupImages.find((image) => image.name === color.name);
+      if (!stored) throw new PromoteRefusal([`No stored mockup for ${color.name}.`]);
+      images.push({
+        src: shopifyProductId ? "" : await signedLibraryUrl(stored.path),
+        alt: mockupAlt(title, color.name),
+        filename: mockupFileName(handle, color.name),
+      });
+    }
+  } catch (err) {
+    if (createdPrintify && printifyProductId) {
+      try {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+        await forgetCatalogueExternalIds(args.candidateId, typeRow.id, { printifyProductId: true }).catch(() => undefined);
+      } catch { /* keep the saved id when the product is still on Printify */ }
+    }
+    throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+  }
+
+  // Idempotent — ensures the admin checkbox exists. Best-effort; a missing pinned
+  // definition only affects the admin UI, not the metafield write below.
+  await ensureMyPetMetafieldDefinition(shop, installation!.accessToken);
+  await ensureGarmentAccordionDefinitions(shop, installation!.accessToken);
+  const accordionCopy = typeRow.garmentComfortCopy != null || typeRow.garmentDurabilityCopy != null
+    ? { comfort: accordionLines(typeRow.garmentComfortCopy), durability: accordionLines(typeRow.garmentDurabilityCopy) }
+    : cleanGarmentAccordion(
+      typeRow.description,
+      activeColorNames(parseFrameColors(typeRow.frameColors), selectedColorIds),
+    );
+
+  const input = buildProductSetInput({
+    title,
+    body_html: description,
+    vendor: merchant!.storeName || "Petposterous",
+    product_type: typeRow.name,
+    status: shopifyStatus,
+    tags: shopifyTags,
+    options: [
+      { name: "Size", values: sortApparelSizeNames(orderedShopifyVariants.map((variant) => variant.option1)) },
+      { name: "Color", values: colourOrder },
+    ],
+    variants: orderedShopifyVariants,
+    metafields: [
+      {
+        namespace: "ai_art_studio",
+        key: "design_candidate_id",
+        type: "single_line_text_field",
+        value: args.candidateId,
+      },
+      // Per-product on/off switch for the storefront "My Pet" button.
+      // The pinned definition makes this a checkbox in admin, so it can be
+      // changed on the product after publishing.
+      {
+        namespace: "ai_art_studio",
+        key: "my_pet_enabled",
+        type: "boolean",
+        value: myPetMetafieldValue(args.myPetEnabled),
+      },
+      ...garmentAccordionMetafields(accordionCopy),
+    ],
+  }) as Record<string, unknown>;
+  input.handle = handle;
+  input.category = categoryId;
+  input.files = images.map((image) => ({
+    originalSource: image.src,
+    alt: image.alt,
+    filename: image.filename,
+    contentType: "IMAGE",
+  }));
+
+  let createdVariants: ListedVariant[] = [];
+  const discardCreated = async () => {
+    let droppedShopify = false;
+    let droppedPrintify = false;
+    if (createdShopify && shopifyProductId) {
+      try {
+        await deleteProductRestCompat(shop, installation!.accessToken, shopifyProductId);
+        droppedShopify = true;
+      } catch { /* keep the saved id so a rerun can attach the product that is still there */ }
+    }
+    if (createdPrintify && printifyProductId) {
+      try {
+        await deletePrintifyProduct(String(merchant!.printifyShopId), printifyProductId, merchant!.printifyApiToken!);
+        droppedPrintify = true;
+      } catch { /* keep the saved id so a rerun can attach the product that is still there */ }
+    }
+    await forgetCatalogueExternalIds(args.candidateId, typeRow.id, {
+      printifyProductId: droppedPrintify,
+      shopifyProductId: droppedShopify,
+    }).catch(() => undefined);
+  };
+  try {
+    if (!shopifyProductId) {
+      const data = await adminGql(
+        shop,
+        installation!.accessToken,
+        `mutation($input: ProductSetInput!) {
+          productSet(synchronous: true, input: $input) {
+            product { id handle }
+            userErrors { message }
+          }
+        }`,
+        { input },
+      );
+      const errors = data?.productSet?.userErrors || [];
+      if (errors.length || !data?.productSet?.product?.id) {
+        throw new Error(errors.map((err: { message?: string }) => err.message).join("; ") || "Shopify returned no product");
+      }
+      shopifyProductId = String(data.productSet.product.id).replace(/\D/g, "");
+      createdShopify = true;
+      await remember({ shopifyProductId });
+      const returnedHandle = String(data.productSet.product.handle || "");
+      if (returnedHandle && returnedHandle !== handle) {
+        throw new Error("Shopify changed the handle. Change the handle suffix and publish again.");
+      }
+    }
+    createdVariants = await readListedVariants(shop, installation!.accessToken, shopifyProductId);
+    const productGid = `gid://shopify/Product/${shopifyProductId.replace(/\D/g, "")}`;
+    await linkCatalogueVariantMockups({
+      shop,
+      token: installation!.accessToken,
+      shopifyProductId: productGid,
+    });
+    await linkCatalogueProductSwatches({
+      shop,
+      token: installation!.accessToken,
+      shopifyProductId: productGid,
+      colours: orderedColours.map((color) => ({
+        ...color,
+        baseColor: resolvedShopifyBaseColor(color.name, storedBases),
+      })),
+    });
+  } catch (err) {
+    await discardCreated();
+    throw new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+  }
+
+  const variantMapOut: Record<string, { sizeId: string; colorId: string; printifyVariantId: number }> = {};
+  const matched: Array<{ createdId: string; studioVariantId: string }> = [];
+  for (const meta of orderedVariantMeta) {
+    const sizeName = offered.find((size) => size.id === meta.sizeId)?.name;
+    const colourName = meta.colorName;
+    const created = createdVariants.find((variant) => variant.option1 === sizeName && variant.option2 === colourName);
+    if (!created || !meta.studioVariantId) {
+      await discardCreated();
+      throw new PromoteRefusal([`Could not match a Shopify variant for ${meta.sizeId} ${meta.colorId} onto the studio shipping profile.`]);
+    }
+    variantMapOut[String(created.id)] = { sizeId: meta.sizeId, colorId: meta.colorId, printifyVariantId: meta.printifyVariantId };
+    matched.push({ createdId: String(created.id), studioVariantId: meta.studioVariantId });
+  }
+
+  const listingRow = {
+    shopifyProductId,
+    printifyProductId,
+    handle,
+    title,
+    status: status === "active" ? "active" : "inactive",
+    myPetEnabled: args.myPetEnabled !== false,
+    variantMap: variantMapOut,
+    mockupUrls: images.map((image) => image.filename),
+    updatedAt: new Date(),
+  };
+  let designProductId = existingProduct?.id || "";
+  let insertedListing = false;
+  if (designProductId) {
+    await db.update(designProducts).set(listingRow).where(eq(designProducts.id, designProductId));
+  } else {
+    const [designProduct] = await db.insert(designProducts).values({
+      merchantId: String(typeRow.merchantId),
+      shop,
+      jobId: args.candidateId,
+      productTypeId: typeRow.id,
+      defaultSizeBackfilled: true,
+      sizeOrderRestored: true,
+      ...listingRow,
+    }).returning({ id: designProducts.id });
+    designProductId = designProduct?.id || "";
+    insertedListing = true;
+  }
+
+  const rollback = async () => {
+    if (insertedListing && designProductId) {
+      await db.delete(designProducts).where(eq(designProducts.id, designProductId));
+    }
+    await discardCreated();
+  };
+
+  try {
+    const shopDomain = normalizeMyshopifyShopDomain(shop);
+    for (const row of matched) {
+      try {
+        await attachVariantToShipping({
+          shop,
+          shopifyVariantId: row.createdId,
+          sourceVariantId: row.studioVariantId,
+          source: "shadow",
+        });
+      } catch (err) {
+        const [alreadyMember] = await db
+          .select({ shopifyVariantId: shippingStoreVariants.shopifyVariantId })
+          .from(shippingStoreVariants)
+          .where(and(eq(shippingStoreVariants.shopDomain, shopDomain), eq(shippingStoreVariants.shopifyVariantId, row.createdId)))
+          .limit(1);
+        if (!alreadyMember) throw err;
+      }
+      const [member] = await db
+        .select({ shopifyVariantId: shippingStoreVariants.shopifyVariantId })
+        .from(shippingStoreVariants)
+        .where(and(eq(shippingStoreVariants.shopDomain, shopDomain), eq(shippingStoreVariants.shopifyVariantId, row.createdId)))
+        .limit(1);
+      if (!member) {
+        throw new Error(`Variant ${row.createdId} was left on the General delivery profile.`);
+      }
+    }
+    if (args.publishNow) {
+      const { publishCatalogueProductToOnlineStore } = await import("./shopify-publications");
+      await publishCatalogueProductToOnlineStore(shop, installation!.accessToken, shopifyProductId);
+    }
+    const now = new Date();
+    const candidateShop = normalizeMyshopifyShopDomain(String(candidate?.shopDomain || ""));
+    const sameShop = !candidateShop || candidateShop === shopDomain;
+    if (sameShop) {
+      await db.update(designCandidates).set({
+        status: status === "active" ? "promoted" : "draft",
+        shopifyProductId,
+        printifyProductId,
+        designProductId: designProductId || null,
+        updatedAt: now,
+      }).where(eq(designCandidates.id, args.candidateId));
+      await db.update(catalogueCandidateChoices).set({
+        shopifyProductId,
+        printifyProductId,
+        updatedAt: now,
+      }).where(eq(catalogueCandidateChoices.candidateId, args.candidateId));
+    }
+  } catch (err) {
+    await rollback();
+    throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+  }
+
+  return { shopifyProductId, printifyProductId, status };
+}

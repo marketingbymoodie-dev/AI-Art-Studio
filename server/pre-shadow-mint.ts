@@ -1,0 +1,388 @@
+/**
+ * Shared PreShadow mint + per-key in-flight join.
+ * Key is shop::job::catalogVariant::cfgHash (the persist designId).
+ * A 16x16 in-flight mint never satisfies a 20x20 ATC.
+ */
+import { buildShadowProductTitle } from "@shared/planEstimator";
+import {
+  hasPrintConfigSuffix,
+  shadowLookupKeys,
+  shadowMatchesBaseVariant,
+} from "@shared/shadowDesignId";
+import { storage } from "./storage";
+import { ensureShadowVariantPurchasable } from "./shadow-variant-purchasable";
+import { ShadowStorefrontNotReadyError, assertAjaxVariantVisible } from "./shadow-storefront-visible";
+import { decideShadowShopPrice, syncShadowVariantPrice } from "./shadow-variant-price";
+import type { PrintConfigFingerprintInput } from "@shared/printConfigFingerprint";
+import { PRE_SHADOW_AWAIT_MS } from "@shared/atcStorefrontRetry";
+import { SHADOW_CREATE_FETCH_TIMEOUT_MS, shadowFetch } from "./shadow-admin-fetch";
+
+export { PRE_SHADOW_AWAIT_MS };
+
+type FlightValue = { shopifyProductId: string; shopifyVariantId: string } | void;
+const preShadowInFlight = new Map<string, Promise<FlightValue>>();
+
+export function preShadowFlightKey(shop: string, designId: string): string {
+  return `${shop}::${designId}`;
+}
+
+export function getPreShadowInFlight(key: string): Promise<FlightValue> | undefined {
+  return preShadowInFlight.get(key);
+}
+
+/**
+ * A mint that never settles must not block every later resolve for its key.
+ * Above the slowest real mint (Admin create + purchasable + Ajax poll).
+ */
+export const PRE_SHADOW_FLIGHT_MAX_AGE_MS = 90_000;
+
+function trackFlight(key: string, run: Promise<FlightValue>): void {
+  preShadowInFlight.set(key, run);
+  const evict = setTimeout(() => {
+    if (preShadowInFlight.get(key) === run) {
+      console.warn(`[PreShadow] evicting in-flight ${key} unsettled after ${PRE_SHADOW_FLIGHT_MAX_AGE_MS}ms`);
+      preShadowInFlight.delete(key);
+    }
+  }, PRE_SHADOW_FLIGHT_MAX_AGE_MS);
+  evict.unref?.();
+  void run.finally(() => {
+    clearTimeout(evict);
+    if (preShadowInFlight.get(key) === run) preShadowInFlight.delete(key);
+  });
+}
+
+/** Register ATC resolve's create so a trailing debounce cannot mint a second product. */
+export function registerPreShadowInFlight(
+  key: string,
+  run: Promise<FlightValue>,
+): boolean {
+  if (preShadowInFlight.has(key)) return false;
+  trackFlight(key, run);
+  return true;
+}
+
+export async function awaitExistingFlight(
+  key: string,
+  timeoutMs = PRE_SHADOW_AWAIT_MS,
+): Promise<"none" | "joined" | "timeout"> {
+  const existing = preShadowInFlight.get(key);
+  if (!existing) return "none";
+  console.log(`[PreShadow] ATC joining in-flight ${key}`);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      existing.then(() => "joined" as const),
+      new Promise<"timeout">((resolve) => {
+        timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+export async function awaitInFlightOrGenerate(
+  key: string,
+  generate: () => Promise<FlightValue>,
+  timeoutMs = PRE_SHADOW_AWAIT_MS,
+): Promise<{ status: "ok"; value: FlightValue } | { status: "timeout" }> {
+  const existing = preShadowInFlight.get(key);
+  const run = existing ?? generate();
+  if (!existing) {
+    trackFlight(key, run);
+  } else {
+    console.log(`[PreShadow] already in flight — joining ${key}`);
+  }
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run.then((value) => ({ status: "ok" as const, value })),
+      new Promise<{ status: "timeout" }>((resolve) => {
+        timeoutId = setTimeout(() => resolve({ status: "timeout" }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function printSidesFromConfig(cfg: PrintConfigFingerprintInput | null | undefined): "both" | "front" {
+  if (cfg?.flat?.enabled?.back) return "both";
+  if (cfg?.tote?.printBack) return "both";
+  return "front";
+}
+
+export async function runPreShadowMint(args: {
+  shop: string;
+  token: string;
+  jobId: string;
+  baseProductId: string;
+  baseVariantId: string;
+  primaryMockupUrl: string;
+  designId: string;
+  cfgSnapshot: PrintConfigFingerprintInput;
+  priceOverride: string | null;
+  /** exact = this key only. legacy = also try pooled/URL-hash/bare-job rows. */
+  lookup?: "exact" | "legacy";
+}): Promise<FlightValue> {
+  const {
+    shop,
+    token,
+    jobId,
+    baseProductId,
+    baseVariantId,
+    primaryMockupUrl,
+    designId,
+    cfgSnapshot,
+    priceOverride,
+  } = args;
+  const apiBase = `https://${shop}/admin/api/2025-10`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Shopify-Access-Token": token,
+  };
+  const catalogVid = String(baseVariantId ?? "").replace(/\D/g, "");
+
+  const writeJobShadow = async (patch: {
+    shadowProductId: string | null;
+    shadowVariantId: string | null;
+    shadowExpiresAt: Date | null;
+  }) => {
+    if (!cfgSnapshot || !designId || !catalogVid) return;
+    const fresh = await storage.getGenerationJob(jobId);
+    const prevDs =
+      fresh?.designState && typeof fresh.designState === "object" && !Array.isArray(fresh.designState)
+        ? (fresh.designState as Record<string, unknown>)
+        : {};
+    const prevMap =
+      prevDs.preShadowByVariant &&
+      typeof prevDs.preShadowByVariant === "object" &&
+      !Array.isArray(prevDs.preShadowByVariant)
+        ? { ...(prevDs.preShadowByVariant as Record<string, unknown>) }
+        : {};
+    prevMap[catalogVid] = {
+      designId,
+      snapshot: cfgSnapshot,
+      shadowProductId: patch.shadowProductId,
+      shadowVariantId: patch.shadowVariantId,
+      shadowExpiresAt: patch.shadowExpiresAt,
+    };
+    await storage.updateGenerationJob(jobId, {
+      ...patch,
+      designState: {
+        ...prevDs,
+        preShadowByVariant: prevMap,
+        preShadowDesignId: designId,
+        printConfigSnapshot: cfgSnapshot,
+      },
+    } as any);
+  };
+
+  const refreshShadowImage = async (productId: string, variantId: string) => {
+    try {
+      const imgRes = await shadowFetch(
+        `${apiBase}/products/${productId}/images.json`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            image: { src: primaryMockupUrl, variant_ids: [Number(variantId)] },
+          }),
+        },
+        SHADOW_CREATE_FETCH_TIMEOUT_MS,
+      );
+      if (!imgRes.ok) {
+        const t = await imgRes.text();
+        console.warn(`[PreShadow] Failed to refresh shadow image:`, imgRes.status, t.substring(0, 200));
+      }
+    } catch (imgErr: any) {
+      console.warn(`[PreShadow] Failed to refresh shadow image:`, imgErr?.message || imgErr);
+    }
+  };
+
+  // Exact-key reuse first. Never mint a second product for the same persist id
+  // (tap-during-debounce: ATC may have just created this row).
+  let existing = await storage.getPublishedProduct(shop, designId);
+  if ((!existing || existing.status !== "active") && args.lookup !== "exact" && !hasPrintConfigSuffix(designId)) {
+    for (const key of shadowLookupKeys(jobId, primaryMockupUrl, baseVariantId)) {
+      const row = await storage.getPublishedProduct(shop, key);
+      if (row?.status !== "active") continue;
+      if (!shadowMatchesBaseVariant(row.baseVariantId, baseVariantId)) continue;
+      existing = row;
+      break;
+    }
+  }
+  if (
+    existing &&
+    existing.status === "active" &&
+    shadowMatchesBaseVariant(existing.baseVariantId, baseVariantId)
+  ) {
+    console.log(
+      `[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId} (key=${designId})`,
+    );
+    await ensureShadowVariantPurchasable({
+      shop,
+      token,
+      variantId: existing.shopifyVariantId,
+      baseVariantId,
+    });
+    try {
+      await assertAjaxVariantVisible({ shop, variantId: existing.shopifyVariantId, adminLive: true });
+    } catch (e: any) {
+      if (!(e instanceof ShadowStorefrontNotReadyError)) throw e;
+      console.warn(
+        `[PreShadow] jobId=${jobId} reused Admin live but Ajax not visible yet variant=${existing.shopifyVariantId} probe=${e.probe}`,
+      );
+    }
+    await writeJobShadow({
+      shadowProductId: existing.shopifyProductId,
+      shadowVariantId: existing.shopifyVariantId,
+      shadowExpiresAt: existing.expiresAt,
+    });
+    if (existing.shopifyProductId && existing.shopifyVariantId) {
+      await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
+      await syncShadowVariantPrice({
+        shop,
+        token,
+        shadowVariantId: existing.shopifyVariantId,
+        baseVariantId,
+        printSides: printSidesFromConfig(cfgSnapshot),
+        productTypeId: (await storage.getGenerationJob(jobId))?.productTypeId,
+        clientPrice: priceOverride,
+      });
+    }
+    return {
+      shopifyProductId: String(existing.shopifyProductId),
+      shopifyVariantId: String(existing.shopifyVariantId),
+    };
+  }
+
+  // Variant read is not capped at 100 like the product read's embedded variants.
+  const [productRes, variantRes] = await Promise.all([
+    shadowFetch(`${apiBase}/products/${baseProductId}.json?fields=id,title`, { headers }),
+    shadowFetch(`${apiBase}/variants/${baseVariantId}.json`, { headers }),
+  ]);
+  if (!productRes.ok) {
+    console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
+    return;
+  }
+  const { product: baseProduct } = await productRes.json();
+  const baseVariant = variantRes.ok ? (await variantRes.json())?.variant : null;
+  if (!baseVariant || String(baseVariant.product_id) !== String(baseProductId)) {
+    console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId} (${variantRes.status})`);
+    return;
+  }
+
+  const jobForPrice = await storage.getGenerationJob(jobId);
+  const decidedPrice = await decideShadowShopPrice({
+    shop,
+    token,
+    baseVariantId,
+    catalogueVariant: baseVariant,
+    printSides: printSidesFromConfig(cfgSnapshot),
+    productTypeId: jobForPrice?.productTypeId,
+    clientPrice: priceOverride,
+  });
+  if (!decidedPrice.written) {
+    console.warn(`[PreShadow] Base variant ${baseVariantId} has no shop-currency price`);
+    return;
+  }
+  const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
+    .filter((o: any) => o && o !== "Default Title" && o !== "base")
+    .join(" / ");
+  const shadowTitle = buildShadowProductTitle(baseProduct.title, variantOptionParts);
+  const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
+  const createRes = await shadowFetch(
+    `${apiBase}/products.json`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        product: {
+          title: shadowTitle,
+          status: "unlisted",
+          tags: "appai-shadow",
+          variants: [
+            {
+              price: decidedPrice.written,
+              compare_at_price: baseVariant.compare_at_price || null,
+              taxable: baseVariant.taxable,
+              requires_shipping: baseVariant.requires_shipping,
+              weight: baseVariant.weight,
+              weight_unit: baseVariant.weight_unit,
+              inventory_management: null,
+              inventory_policy: "continue",
+              fulfillment_service: "manual",
+            },
+          ],
+          images: [{ src: primaryMockupUrl }],
+        },
+      }),
+    },
+    SHADOW_CREATE_FETCH_TIMEOUT_MS,
+  );
+  if (!createRes.ok) {
+    const errText = await createRes.text();
+    console.error(`[PreShadow] Failed to create shadow product: ${createRes.status}`, errText.substring(0, 200));
+    return;
+  }
+  const { product: shadowProduct } = await createRes.json();
+  const shadowVariant = shadowProduct.variants[0];
+  console.log(
+    `[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId} derived=${designId} status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
+  );
+  // Persist before the purchasable writes: if the shipping attach runs past
+  // its cap, ATC resolve reuses (and re-asserts) this product instead of minting another.
+  await storage.createPublishedProduct({
+    shop,
+    designId,
+    customerKey: null,
+    shopifyProductId: String(shadowProduct.id),
+    shopifyVariantId: String(shadowVariant.id),
+    shopifyProductHandle: shadowProduct.handle || null,
+    baseVariantId: String(baseVariantId),
+    status: "active",
+    expiresAt: oneHourFromNow,
+    cartAddedAt: null,
+  } as any);
+
+  await ensureShadowVariantPurchasable({
+    shop,
+    token,
+    variantId: shadowVariant.id,
+    baseVariantId,
+  });
+
+  if (shadowProduct.images?.length > 0) {
+    const imgId = shadowProduct.images[0].id;
+    await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
+    }).catch(() => {});
+  }
+
+  await writeJobShadow({
+    shadowProductId: String(shadowProduct.id),
+    shadowVariantId: String(shadowVariant.id),
+    shadowExpiresAt: oneHourFromNow,
+  });
+
+  try {
+    await assertAjaxVariantVisible({ shop, variantId: shadowVariant.id, adminLive: true });
+  } catch (e: any) {
+    if (e instanceof ShadowStorefrontNotReadyError) {
+      console.warn(
+        `[PreShadow] jobId=${jobId} Admin live but Ajax not visible yet variant=${shadowVariant.id} probe=${e.probe}`,
+      );
+    } else {
+      throw e;
+    }
+  }
+
+  console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
+  return {
+    shopifyProductId: String(shadowProduct.id),
+    shopifyVariantId: String(shadowVariant.id),
+  };
+}

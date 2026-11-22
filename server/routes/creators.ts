@@ -78,7 +78,10 @@ import {
   isCreatorStorefrontConfigured,
   removeCreatorCartLines,
   updateCreatorCartLine,
+  updateCreatorCartLineAttributes,
 } from "../shopify-storefront";
+import { LINE_AOP_PANELS_KEY, LINE_AOP_PENDING_KEY } from "@shared/linePlacementSnapshot";
+import { attachAopPanelSnapshotToLineAttributes } from "../aop-line-snapshot";
 import { enrichCreatorCartPrintFiles } from "../creatorCartPrintFiles";
 import { repairCreatorCartShadowVariants } from "../repairCreatorCartShadows";
 import { submitCreatorCartTestOrder } from "../flat-order-fulfillment";
@@ -904,6 +907,8 @@ export function registerCreatorMarketplaceRoutes(
       if (links.length === 0) {
         return res.json({
           platformShopDomain: getCreatorPlatformShopDomain(),
+          shipCountry: (req as { shipCountry?: string }).shipCountry || "US",
+          shipCountrySource: (req as { shipCountrySource?: string }).shipCountrySource || "default",
           pages: [],
         });
       }
@@ -935,6 +940,11 @@ export function registerCreatorMarketplaceRoutes(
         types.map((t) => [t.id, primaryMockupUrl(t.baseMockupImages)]),
       );
 
+      const shipCountry =
+        (req as { shipCountry?: string }).shipCountry || "US";
+      const shipCountrySource =
+        (req as { shipCountrySource?: string }).shipCountrySource || "default";
+
       const out = links
         .map((link) => {
           const page = byId.get(link.customizerPageId);
@@ -956,9 +966,27 @@ export function registerCreatorMarketplaceRoutes(
         })
         .filter(Boolean);
 
+      const listedTypeIds = [
+        ...new Set(
+          (out as Array<{ productTypeId: number | null }>)
+            .map((p) => p.productTypeId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      ];
+      let hidden = new Set<number>();
+      if (listedTypeIds.length > 0) {
+        const { productTypeIdsHiddenForCountry } = await import("../shipping-size-coverage");
+        hidden = await productTypeIdsHiddenForCountry(shipCountry, listedTypeIds);
+      }
+      const visiblePages = (out as Array<{ productTypeId: number | null }>).filter(
+        (p) => p.productTypeId == null || !hidden.has(p.productTypeId),
+      );
+
       res.json({
         platformShopDomain: getCreatorPlatformShopDomain(),
-        pages: out,
+        shipCountry,
+        shipCountrySource,
+        pages: visiblePages,
       });
     } catch (e: any) {
       console.error("[creators] storefront pages failed:", e);
@@ -966,12 +994,24 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  /**
+   * Visitor identity for creator artwork: the browser's own creator session id
+   * (possession) plus — only when proven by the shared storefront identity rule —
+   * the customer's designs. A claimed customerId alone never lists or unlinks.
+   */
+  async function creatorVisitorIdentity(req: any, claimedCustomerId: string) {
+    const { resolveCreatorVisitorCustomer } = await import("../storefront-identity");
+    return resolveCreatorVisitorCustomer(req, getCreatorPlatformShopDomain(), claimedCustomerId);
+  }
+
   /** Recent completed artwork for this visitor — optional reuse on any product. */
   app.get("/api/creators/storefront/:username/recent-designs", async (req, res) => {
     if (!marketplaceGate(res)) return;
     try {
       const sessionId = String(req.query.sessionId || "").trim();
-      const customerId = String(req.query.customerId || "").trim();
+      const visitor = await creatorVisitorIdentity(req, String(req.query.customerId || "").trim());
+      if (!visitor.ok) return res.status(visitor.status).json({ error: visitor.error });
+      const customerId = visitor.customerId ?? "";
       if (!sessionId && !customerId) {
         return res.json({ designs: [], count: 0, limit: CREATOR_ARTWORK_LIMIT });
       }
@@ -1010,7 +1050,12 @@ export function registerCreatorMarketplaceRoutes(
     }
     try {
       const sessionId = String(req.query.sessionId || req.body?.sessionId || "").trim();
-      const customerId = String(req.query.customerId || req.body?.customerId || "").trim();
+      const visitor = await creatorVisitorIdentity(
+        req,
+        String(req.query.customerId || req.body?.customerId || "").trim(),
+      );
+      if (!visitor.ok) return res.status(visitor.status).json({ error: visitor.error });
+      const customerId = visitor.customerId ?? "";
       if (!sessionId && !customerId) {
         return res.status(400).json({ error: "sessionId or customerId is required." });
       }
@@ -1424,6 +1469,54 @@ export function registerCreatorMarketplaceRoutes(
     }
   });
 
+  app.post("/api/creators/cart/stamp-aop-pl", async (req, res) => {
+    if (!marketplaceGate(res)) return;
+    try {
+      if (!isCreatorStorefrontConfigured()) {
+        return res.status(503).json({ error: "CREATOR_STOREFRONT_NOT_CONFIGURED" });
+      }
+      const username = normalizeCreatorUsername(String(req.body?.creatorUsername || ""));
+      const cartId = String(req.body?.cartId || "").trim();
+      const jobId = String(req.body?.jobId || "").trim();
+      const snapshot = String(req.body?.snapshot || "").trim();
+      if (!username || !cartId || !jobId || !snapshot) {
+        return res.status(400).json({ error: "creatorUsername, cartId, jobId, and snapshot are required." });
+      }
+      const { assertPublicCreatorApiContext } = await import("../creator-host");
+      const asserted = await assertPublicCreatorApiContext({
+        shop: getCreatorPlatformShopDomain(),
+        creatorUsername: username,
+        requirePlatformShop: true,
+      });
+      if (!asserted.ok) {
+        return res.status(asserted.status).json({ error: asserted.error });
+      }
+      const cart = await getCreatorCart(cartId);
+      if (!cart) return res.status(404).json({ error: "Cart not found" });
+      const line = cart.lines.find((l) => String(l.jobId || "") === jobId);
+      if (!line) return res.status(404).json({ error: "Cart line not found for job" });
+      const nextAttrs = [
+        ...line.attributes.filter(
+          (a) => a.key !== LINE_AOP_PENDING_KEY && a.key !== LINE_AOP_PANELS_KEY,
+        ),
+        { key: LINE_AOP_PANELS_KEY, value: snapshot },
+      ];
+      const updated = await updateCreatorCartLineAttributes({
+        cartId,
+        lines: [{ lineId: line.id, attributes: nextAttrs }],
+      });
+      res.json({
+        success: true,
+        cartId: updated.cartId,
+        itemCount: updated.itemCount,
+        lines: updated.lines,
+      });
+    } catch (e: any) {
+      console.error("[creators] stamp-aop-pl failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to stamp print files" });
+    }
+  });
+
   app.get("/api/creators/cart", async (req, res) => {
     if (!marketplaceGate(res)) return;
     try {
@@ -1511,6 +1604,51 @@ export function registerCreatorMarketplaceRoutes(
           })) || cart;
       }
       cart = await hideBuyerFacingCreatorCartProperties(cart);
+      const pendingLines = cart.lines.filter((line) => {
+        const pending = line.attributes.some(
+          (a) => a.key === LINE_AOP_PENDING_KEY && String(a.value || "").trim(),
+        );
+        const stamped = line.attributes.some(
+          (a) => a.key === LINE_AOP_PANELS_KEY && String(a.value || "").trim(),
+        );
+        return pending && !stamped;
+      });
+      if (pendingLines.length > 0) {
+        const stamped = [];
+        for (const line of pendingLines) {
+          const nextAttrs = await attachAopPanelSnapshotToLineAttributes(line.attributes);
+          const ready = nextAttrs.some(
+            (a) => a.key === LINE_AOP_PANELS_KEY && String(a.value || "").trim(),
+          );
+          if (ready) {
+            stamped.push({
+              lineId: line.id,
+              attributes: nextAttrs.filter((a) => a.key !== LINE_AOP_PENDING_KEY),
+            });
+          }
+        }
+        if (stamped.length > 0) {
+          cart = await updateCreatorCartLineAttributes({
+            cartId,
+            lines: stamped,
+          });
+        }
+        const stillPending = cart.lines.some((line) => {
+          const pending = line.attributes.some(
+            (a) => a.key === LINE_AOP_PENDING_KEY && String(a.value || "").trim(),
+          );
+          const hasSnap = line.attributes.some(
+            (a) => a.key === LINE_AOP_PANELS_KEY && String(a.value || "").trim(),
+          );
+          return pending && !hasSnap;
+        });
+        if (stillPending) {
+          return res.status(409).json({
+            error: "PRINT_FILES_PENDING",
+            message: "Print files are still finalising. Checkout unlocks when they are ready.",
+          });
+        }
+      }
       const enriched = await enrichCreatorCartPrintFiles(cart);
       res.json({
         success: true,
@@ -2344,7 +2482,21 @@ export function registerCreatorMarketplaceRoutes(
           promptPlaceholder,
           descriptionOptional,
           options,
+          generationModel,
+          generationQuality,
+          vectorizeEnabled,
+          userSlotSchema,
+          backgroundSelectorEnabled,
+          defaultBackgroundColor,
+          backgroundRequired,
         } = req.body || {};
+        const { persistGenerationModel, persistGenerationQuality, persistVectorizeEnabled } = await import("@shared/styleGeneration");
+        const { persistUserSlotSchema } = await import("@shared/promptLayers");
+        const {
+          persistBackgroundRequired,
+          persistBackgroundSelectorEnabled,
+          persistDefaultBackgroundColor,
+        } = await import("@shared/styleBackgroundConfig");
         const style = await updatePlatformStyle(id, {
           ...(name !== undefined ? { name } : {}),
           ...(promptPrefix !== undefined ? { promptPrefix } : {}),
@@ -2355,7 +2507,59 @@ export function registerCreatorMarketplaceRoutes(
           ...(descriptionOptional !== undefined ? { descriptionOptional: !!descriptionOptional } : {}),
           ...(options !== undefined ? { options: options || null } : {}),
           ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+          ...(generationModel !== undefined
+            ? { generationModel: persistGenerationModel(generationModel) ?? null }
+            : {}),
+          ...(generationQuality !== undefined
+            ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }
+            : {}),
+          ...(vectorizeEnabled !== undefined
+            ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
+            : {}),
+          ...(userSlotSchema !== undefined
+            ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
+            : {}),
+          ...(backgroundSelectorEnabled !== undefined
+            ? {
+                backgroundSelectorEnabled:
+                  persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null,
+              }
+            : {}),
+          ...(defaultBackgroundColor !== undefined
+            ? {
+                defaultBackgroundColor:
+                  persistDefaultBackgroundColor(defaultBackgroundColor) ?? null,
+              }
+            : {}),
+          ...(backgroundRequired !== undefined
+            ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+            : {}),
         } as any);
+        const bgFanOut =
+          backgroundSelectorEnabled !== undefined ||
+          defaultBackgroundColor !== undefined ||
+          backgroundRequired !== undefined;
+        const { resolveCatalogSlug } = await import("@shared/styleCatalog");
+        const catalogSlug = resolveCatalogSlug(style);
+        if (bgFanOut && catalogSlug) {
+          await storage.updateStyleBackgroundByCatalogSlug(catalogSlug, {
+            ...(backgroundSelectorEnabled !== undefined
+              ? {
+                  backgroundSelectorEnabled:
+                    persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null,
+                }
+              : {}),
+            ...(defaultBackgroundColor !== undefined
+              ? {
+                  defaultBackgroundColor:
+                    persistDefaultBackgroundColor(defaultBackgroundColor) ?? null,
+                }
+              : {}),
+            ...(backgroundRequired !== undefined
+              ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+              : {}),
+          });
+        }
         res.json(style);
       } catch (e: any) {
         console.error("[creators] update platform style failed:", e);

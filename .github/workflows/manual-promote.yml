@@ -6,6 +6,10 @@ on:
       confirm:
         description: 'Type "promote" to confirm'
         required: true
+      extensions_pending:
+        description: 'If extensions/ changed since production, type "listed" to record those app deploys as pending. Leave blank to fail until they are deployed.'
+        required: false
+        default: ''
 
 jobs:
   promote:
@@ -17,6 +21,45 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extension deploys since production
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/production:refs/remotes/origin/production \
+            --prune
+          CHANGED="$(git diff --name-only origin/production...origin/main -- extensions || true)"
+          if [ -z "$CHANGED" ]; then
+            echo "No files under extensions/ differ from origin/production." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Extension deploys still needed"
+            echo ""
+            echo "These files changed under \`extensions/\` since origin/production:"
+            echo ""
+            echo '```'
+            echo "$CHANGED"
+            echo '```'
+            echo ""
+            echo "Deploy every app config before this promotion is complete:"
+            echo ""
+            echo '- `npx shopify app deploy --config staging --allow-updates`'
+            echo '- `npx shopify app deploy --allow-updates`'
+            echo '- `npx shopify app deploy --config production --allow-updates`'
+            echo '- `npx shopify app deploy --config petposterous --allow-updates`'
+            echo '- `npx shopify app deploy --config creators --allow-updates`'
+            echo ""
+            echo "While Petposterous runs on the staging backend, a staging push reaches the Petposterous store immediately."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event.inputs.extensions_pending }}" = "listed" ]; then
+            echo "::warning title=Extension deploys pending::extensions/ changed since production. The app deploys above are listed as pending, including Petposterous."
+            exit 0
+          fi
+          echo "::error title=Extension deploys still needed::extensions/ changed since production. Deploy staging, production, Petposterous, and creators, or re-run with extensions_pending=listed."
+          exit 1
 
       - name: Promote main to production
         run: |

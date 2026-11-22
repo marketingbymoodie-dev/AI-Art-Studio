@@ -24,6 +24,7 @@ import {
   resolveAdminSlugCandidatesForPublicName,
 } from "@shared/aopTemplateNaming";
 import { normalizeHoodieTemplate } from "@shared/hoodieTemplate";
+import { isMapperMockupSrc } from "./aopMapperFilename";
 import {
   isSupabaseHoodieTemplatesConfigured,
   listHoodieTemplatesBucketFiles,
@@ -99,6 +100,18 @@ function resolveLocalAdminCandidates(publicName: string): string[] {
  * admin-only fields (`productionPanelSrc`, `referenceOverlay`) so the
  * customer renderer never sees URLs the storefront can't reach in production.
  */
+/** If a published JSON still has admin mapper <img> srcs, point them at public CDN. */
+function rewriteLeftoverMapperMockupSrcs(template: any, publicName: string): void {
+  if (!template?.views || typeof template.views !== "object") return;
+  for (const view of ["front", "back"] as const) {
+    const mockup = template.views[view]?.mockup;
+    if (!mockup || typeof mockup !== "object") continue;
+    if (!isMapperMockupSrc(mockup.src)) continue;
+    const url = publicHoodieTemplateUrl(`mockups/${publicName}-${view}.png`);
+    if (url) mockup.src = url;
+  }
+}
+
 function sanitiseAdminTemplate(t: any, publicName: string): any {
   const clone = JSON.parse(JSON.stringify(t));
   clone.name = publicName;
@@ -212,12 +225,14 @@ export async function getPublishedHoodieTemplate(
       clearTimeout(timer);
     }
 
+    rewriteLeftoverMapperMockupSrcs(template, name);
+    const normalized = normalizeHoodieTemplate(template);
     const value: PublishedHoodieTemplate = {
       name,
-      template: normalizeHoodieTemplate(template),
+      template: normalized,
       mockups: {
-        front: template?.views?.front?.mockup?.src ?? null,
-        back: template?.views?.back?.mockup?.src ?? null,
+        front: normalized?.views?.front?.mockup?.src ?? null,
+        back: normalized?.views?.back?.mockup?.src ?? null,
       },
       cachedAt: now,
     };

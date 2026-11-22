@@ -1,9 +1,18 @@
 import { API_BASE } from "@/lib/urlBase";
 import {
   printFileDimsForAspectRatio,
-  visibleRectForCatalogSizeAspect,
+  probeSilhouetteRectFromRgba,
+  shouldApplyCatalogBlankShading,
+  shouldProbeCatalogBlankGuide,
+  visibleRectForCatalogSizeBlank,
+  type NormRect,
 } from "@shared/catalogSizeBlanks";
-import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
+import { featherMaskAlphaFromRgba, maskAlphaLooksBinary } from "@shared/maskFeather";
+import {
+  canonicalDecorSizeId,
+  extractDimensionalKey,
+  swapDecorSizeDimensionId,
+} from "@shared/productVariantOptions";
 import type { FlatCalibrationManifest, FlatViewCalibration } from "@/pages/embed-design";
 import type { CalibratorLayerAdjust, FlatRenderInput } from "./flatRender";
 
@@ -75,6 +84,13 @@ export function findGeometryBlankKey(
   if (blankHit && geo[blankHit]) return blankHit;
   if (blankHit) return blankHit;
 
+  // `36-x-24` (import slug) and `36x24` (harvest key) are the same size.
+  const canon = canonicalDecorSizeId(id);
+  if (canon && canon !== id) {
+    const viaCanon = findGeometryBlankKey(manifest, canon, { allowDimensionSwap: false });
+    if (viaCanon) return viaCanon;
+  }
+
   const norm = normalizeFlatColorKey(id);
   // Prefer an exact size:color geometry key whose size prefix matches.
   const geoKeys = Object.keys(geo);
@@ -100,6 +116,32 @@ export function findGeometryBlankKey(
     if (swapped && swapped !== id) {
       return findGeometryBlankKey(manifest, swapped, { allowDimensionSwap: false });
     }
+  }
+  return null;
+}
+
+/**
+ * 241 droop mask: exact `catalogSizeKey` on geometryByBlank only.
+ * Never axis-swap, never views.front / findGeometryBlankKey (those ghost).
+ */
+export function catalogSizeExactMaskUrl(
+  manifest: FlatCalibrationManifest,
+  catalogSizeKey: string | null | undefined,
+  view: FlatViewName,
+): string | null {
+  if (!catalogSizeKey) return null;
+  const geo = (manifest as FlatCalibrationManifestWithGeometry).geometryByBlank;
+  if (!geo) return null;
+  const keys = [catalogSizeKey];
+  const dim =
+    extractDimensionalKey(catalogSizeKey) ||
+    (catalogSizeKey.match(/^(\d+)-(\d+)$/)
+      ? `${catalogSizeKey.split("-")[0]}x${catalogSizeKey.split("-")[1]}`
+      : null);
+  if (dim && dim !== catalogSizeKey) keys.push(dim);
+  for (const key of keys) {
+    const url = geo[key]?.[view]?.maskUrl;
+    if (typeof url === "string" && url.trim()) return url.trim();
   }
   return null;
 }
@@ -180,7 +222,7 @@ export function resolveCalibratorLayerAdjust(
  * Falls back to shared `manifest.views[view]` when no override exists.
  *
  * `refitCatalogSizeGuide` + `sizeAspectRatio`: when the blank is a square
- * catalog size PNG (wall decals) but harvest only stored one shared 2:3 guide,
+ * catalog size PNG (wall decals / tapestry) but harvest only stored one shared 2:3 guide,
  * synthesize the dashed print rect for the selected size AR (3:4 / 4:3 / …).
  */
 export function resolveFlatViewCalibration(
@@ -191,6 +233,8 @@ export function resolveFlatViewCalibration(
     landscapeOrientation?: boolean;
     sizeAspectRatio?: string | null;
     refitCatalogSizeGuide?: boolean;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
   },
 ): FlatViewCalibration | undefined {
   const base = manifest.views[view];
@@ -224,13 +268,26 @@ export function resolveFlatViewCalibration(
     };
   }
 
-  // Square catalog blanks (wall decals): harvest often only stored one shared
+  // Square catalog blanks (wall decals / tapestry): harvest often only stored one shared
   // 2:3 guide. When the blank PNG is size-specific, rebuild the dashed rect
   // from the selected size AR so 18×24 / 24×18 aren't stuck on 2:3 / 3:2.
-  if (opts?.refitCatalogSizeGuide && opts.sizeAspectRatio) {
-    const rect = visibleRectForCatalogSizeAspect(opts.sizeAspectRatio);
-    const dims = printFileDimsForAspectRatio(opts.sizeAspectRatio);
+  if (opts?.refitCatalogSizeGuide && (opts.sizeAspectRatio || opts.catalogSizeKey)) {
+    const rect = visibleRectForCatalogSizeBlank(
+      opts.catalogBlueprintId,
+      opts.catalogSizeKey,
+      opts.sizeAspectRatio,
+    );
+    const dims = printFileDimsForAspectRatio(
+      opts.sizeAspectRatio ||
+        (opts.catalogSizeKey
+          ? String(opts.catalogSizeKey).replace(/(\d+)x(\d+)/i, "$1:$2")
+          : null),
+    );
     if (rect) {
+      const probePrint = shouldProbeCatalogBlankGuide(opts.catalogBlueprintId);
+      const exactMask = probePrint
+        ? catalogSizeExactMaskUrl(manifest, opts.catalogSizeKey, view)
+        : null;
       return {
         ...merged,
         visibleRectNormalized: rect,
@@ -241,6 +298,8 @@ export function resolveFlatViewCalibration(
           merged.mockupDims.width === merged.mockupDims.height
             ? merged.mockupDims
             : { width: 1024, height: 1024 },
+        // 241 / 759: size-only print mask. Never keep shared / axis-swapped maskUrl.
+        ...(probePrint ? { maskUrl: exactMask, shadingUrl: null } : {}),
       };
     }
   }
@@ -250,6 +309,43 @@ export function resolveFlatViewCalibration(
   if (!pf?.width || !pf?.height || pf.width >= pf.height) return merged;
   return orientFlatViewCalibrationLandscape(merged);
 }
+
+/** Overlay the live-probed fabric rect onto a catalog-size calibration. */
+export function applyProbedCatalogGuide(
+  calib: FlatViewCalibration,
+  probed: NormRect | null | undefined,
+): FlatViewCalibration {
+  if (!probed || !(probed.width > 0) || !(probed.height > 0)) return calib;
+  return {
+    ...calib,
+    visibleRectNormalized: probed,
+    printBoundsNormalized: probed,
+  };
+}
+
+/** Read fabric/shadow AABB from a loaded catalog blank (white studio backdrop). */
+export function probeCatalogBlankSilhouette(
+  img: HTMLImageElement | null,
+): NormRect | null {
+  if (!img) return null;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+  if (!(w > 0) || !(h > 0)) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(img, 0, 0, w, h);
+    const { data } = ctx.getImageData(0, 0, w, h);
+    return probeSilhouetteRectFromRgba(data, w, h);
+  } catch {
+    return null;
+  }
+}
+
+export { shouldApplyCatalogBlankShading, shouldProbeCatalogBlankGuide };
 
 export function resolveFlatBlank(
   manifest: FlatCalibrationManifest,
@@ -344,6 +440,41 @@ export async function loadFlatImageRelaxed(url: string): Promise<HTMLImageElemen
   return loadFlatImage(url, { cors: false });
 }
 
+/**
+ * 241 only: anti-alias a hard magenta mask so the droop edge is not jagged.
+ * Skips already-soft masks (re-harvested). Hood / poster never call this.
+ */
+export async function featherCatalogGuideMask(
+  mask: HTMLImageElement | null,
+): Promise<HTMLImageElement | null> {
+  if (!mask) return null;
+  const w = mask.naturalWidth || mask.width;
+  const h = mask.naturalHeight || mask.height;
+  if (!(w > 0) || !(h > 0)) return mask;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return mask;
+  try {
+    ctx.drawImage(mask, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
+    if (!maskAlphaLooksBinary(img.data, w, h)) return mask;
+    const feathered = featherMaskAlphaFromRgba(img.data, w, h);
+    img.data.set(feathered);
+    ctx.putImageData(img, 0, 0);
+  } catch {
+    return mask;
+  }
+  const dataUrl = canvas.toDataURL("image/png");
+  return new Promise((resolve) => {
+    const out = new Image();
+    out.onload = () => resolve(out);
+    out.onerror = () => resolve(mask);
+    out.src = dataUrl;
+  });
+}
+
 function imagePixelSize(img: HTMLImageElement): { w: number; h: number } {
   return { w: img.naturalWidth || img.width, h: img.naturalHeight || img.height };
 }
@@ -418,6 +549,8 @@ export async function loadFlatViewAssets(
     blankUrlOverride?: string | null;
     sizeAspectRatio?: string | null;
     refitCatalogSizeGuide?: boolean;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
   },
 ): Promise<FlatLoadedViewAssets | null> {
   const blank = resolveFlatBlank(manifest, colorId);
@@ -430,10 +563,13 @@ export async function loadFlatViewAssets(
     landscapeOrientation,
     sizeAspectRatio: opts?.sizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
   if (!blankUrl || !calib) return null;
 
   const shouldLoadShading =
+    !refitCatalogSizeGuide &&
     !!calib.shadingUrl &&
     (!!manifest.edgeWrap ||
       calib.shadingMode === "map" ||
@@ -446,11 +582,13 @@ export async function loadFlatViewAssets(
     view === "front" && opts?.blankUrlOverride
       ? blankUrl
       : withFlatAssetVersion(blankUrl, assetVersion);
+  const loadCatalogPrintMask =
+    shouldProbeCatalogBlankGuide(opts?.catalogBlueprintId) && refitCatalogSizeGuide;
   const [b, m, s] = await Promise.all([
     loadFlatImage(versionedBlankUrl),
-    // Shared harvest masks are 2:3-shaped — drop them when the guide was
-    // rebuilt for the catalog size AR or they clip the wrong silhouette.
-    !refitCatalogSizeGuide && calib.maskUrl
+    // 241: load the size-keyed droop mask (calib.maskUrl is exact-key only).
+    // Other catalog-size-blank products still skip shared harvest masks.
+    (loadCatalogPrintMask || !refitCatalogSizeGuide) && calib.maskUrl
       ? loadFlatImage(withFlatAssetVersion(calib.maskUrl, assetVersion))
       : Promise.resolve(null),
     shouldLoadShading
@@ -459,12 +597,14 @@ export async function loadFlatViewAssets(
   ]);
   if (!b) return null;
   // Catalog-blank refit already has the correct AR — don't rotate harvest masks.
+  const mask =
+    loadCatalogPrintMask && m ? await featherCatalogGuideMask(m) : m;
   if (
     !refitCatalogSizeGuide &&
     flatCalibrationSwappedToLandscape(manifest, colorId, view, landscapeOrientation)
   ) {
-    const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+    const oriented = await orientFlatHarvestPixelsForLandscape(mask, s);
     return { blank: b, mask: oriented.mask, shading: oriented.shading };
   }
-  return { blank: b, mask: m, shading: s };
+  return { blank: b, mask, shading: s };
 }

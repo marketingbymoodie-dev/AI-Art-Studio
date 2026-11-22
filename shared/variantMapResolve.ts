@@ -21,12 +21,15 @@ function normalizeSizeId(id: string | undefined | null): string {
  * Catalogue activation slugs pillows as `14-x-14`; the Create Page wizard
  * extracts `14x14`; older rows use `14-14`. All three must match.
  * Apparel ids like `xl` / `2xl` are left intact (digits must sit on both
- * sides of the x).
+ * sides of the x). Colour slugs differ the same way (`caribbean_blue` from the
+ * Printify import vs `caribbean-blue` from catalogue activation).
  */
 export function normalizeSelectionId(id: string | undefined | null): string {
   if (!id) return "";
   if (id === "default") return "default";
-  return normalizeApparelSizeId(String(id)).replace(/(\d+)[_-]*[x×][_-]*(\d+)/g, "$1-$2");
+  return normalizeApparelSizeId(String(id))
+    .replace(/[_\s]+/g, "-")
+    .replace(/(\d+)-*[x×]-*(\d+)/g, "$1-$2");
 }
 
 /** Canonical apparel size slug — keeps variantMap keys consistent across import paths. */
@@ -179,7 +182,34 @@ export function resolveVariantForSizeOnly(
   return null;
 }
 
-export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 100;
+/**
+ * Loose canonical form for matching keys across the two parallel maps on a
+ * product type: `variantMap` uses id-style keys (`s:heather_grey`,
+ * `14-x-14:default`, legacy `14-14:default`) while `shopifyVariantIds` uses
+ * display labels (`S:Black`, `14" × 14":default`). Lowercase, alias apparel
+ * sizes, map × → x, strip everything non-alphanumeric, then drop an `x`
+ * sitting between digit groups so all dimension spellings collapse to one
+ * token (`14x14`, `14-x-14`, `14-14`, `14" × 14"` → `1414`). Safe because the
+ * two maps on a product type are parallel key sets in a single size format.
+ */
+export function normalizeVariantKeyLoose(key: string): string {
+  const idx = key.indexOf(":");
+  const rawSize = idx >= 0 ? key.slice(0, idx) : key;
+  const rawColor = idx >= 0 ? key.slice(idx + 1) : "default";
+  const part = (raw: string, isSize: boolean): string => {
+    let s = String(raw || "default").trim().toLowerCase().replace(/×/g, "x");
+    if (isSize) s = normalizeApparelSizeId(s);
+    s = s.replace(/[^a-z0-9]+/g, "");
+    if (isSize) s = s.replace(/(\d)x(?=\d)/g, "$1");
+    return s || "default";
+  };
+  return `${part(rawSize, true)}:${part(rawColor, false)}`;
+}
+
+/** Shopify's per-product variant limit via the GraphQL product APIs (base products). */
+export const SHOPIFY_MAX_VARIANTS_PER_PRODUCT = 2048;
+/** REST product create is still capped at 100 (design products are created via REST). */
+export const SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT = 100;
 
 /** Count variantMap entries that match the merchant's selected size/color filters. */
 export function countActiveVariantMapKeys(
@@ -206,7 +236,7 @@ export function countActiveVariantMapKeys(
 
 /**
  * Trim size/color picks so the active variantMap count stays within Shopify's
- * 100-variant product limit. Prefers keeping all sizes and dropping colors from
+ * per-product variant limit. Prefers keeping all sizes and dropping colors from
  * the end of the list; if still over, trims sizes from the end too.
  * Used by Setup → Activate (no variant picker UI).
  */

@@ -12,6 +12,7 @@
 import type { ShopifyInstallation } from "@shared/schema";
 import { storage } from "./storage";
 import {
+  credentialsForAppLabel,
   hasShopifyAppCredentials,
   listShopifyAppCredentials,
   type ShopifyAppCredentials,
@@ -93,13 +94,21 @@ async function postTokenForm(
 async function postWithEachApp(
   shop: string,
   bodyWithoutClient: Record<string, string>,
+  onlyLabel?: string | null,
 ): Promise<
   | { ok: true; data: ShopifyOfflineTokenPayload; credentials: ShopifyAppCredentials }
   | { ok: false; status: number; error: string }
 > {
-  const apps = listShopifyAppCredentials();
+  const bound = onlyLabel ? credentialsForAppLabel(onlyLabel) : null;
+  const apps = onlyLabel ? (bound ? [bound] : []) : listShopifyAppCredentials();
   if (apps.length === 0) {
-    return { ok: false, status: 500, error: "Shopify API credentials not configured" };
+    return {
+      ok: false,
+      status: 500,
+      error: onlyLabel
+        ? `Shopify app "${onlyLabel}" is not configured`
+        : "Shopify API credentials not configured",
+    };
   }
   let last: { ok: false; status: number; error: string } | null = null;
   for (const credentials of apps) {
@@ -117,11 +126,12 @@ async function postWithEachApp(
 export async function exchangeAuthorizationCode(
   shop: string,
   code: string,
+  onlyLabel?: string | null,
 ): Promise<
   | { ok: true; fields: OfflineTokenPersist; credentials: ShopifyAppCredentials }
   | { ok: false; status: number; error: string }
 > {
-  const result = await postWithEachApp(shop, { code, expiring: "1" });
+  const result = await postWithEachApp(shop, { code, expiring: "1" }, onlyLabel);
   if (!result.ok) return result;
   return { ok: true, fields: offlineTokenFieldsFromPayload(result.data), credentials: result.credentials };
 }
@@ -129,45 +139,69 @@ export async function exchangeAuthorizationCode(
 async function refreshOfflineToken(
   shop: string,
   refreshToken: string,
-): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postWithEachApp(shop, {
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
+  onlyLabel?: string | null,
+): Promise<
+  | { ok: true; fields: OfflineTokenPersist; credentials: ShopifyAppCredentials }
+  | { ok: false; status: number; error: string }
+> {
+  const result = await postWithEachApp(
+    shop,
+    {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    },
+    onlyLabel,
+  );
   if (!result.ok) return result;
-  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data) };
+  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data), credentials: result.credentials };
 }
 
 /** One-way migrate non-expiring offline token → expiring (revokes the old token). */
 async function migrateToExpiringOfflineToken(
   shop: string,
   nonExpiringAccessToken: string,
-): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postWithEachApp(shop, {
-    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
-    subject_token: nonExpiringAccessToken,
-    subject_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
-    requested_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
-    expiring: "1",
-  });
+  onlyLabel?: string | null,
+): Promise<
+  | { ok: true; fields: OfflineTokenPersist; credentials: ShopifyAppCredentials }
+  | { ok: false; status: number; error: string }
+> {
+  const result = await postWithEachApp(
+    shop,
+    {
+      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+      subject_token: nonExpiringAccessToken,
+      subject_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
+      requested_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
+      expiring: "1",
+    },
+    onlyLabel,
+  );
   if (!result.ok) return result;
-  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data) };
+  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data), credentials: result.credentials };
 }
 
 /** Exchange App Bridge session token (id_token) for a fresh expiring offline token. */
 export async function exchangeSessionTokenForOffline(
   shop: string,
   sessionToken: string,
-): Promise<{ ok: true; fields: OfflineTokenPersist } | { ok: false; status: number; error: string }> {
-  const result = await postWithEachApp(shop, {
-    grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
-    subject_token: sessionToken,
-    subject_token_type: "urn:ietf:params:oauth:token-type:id_token",
-    requested_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
-    expiring: "1",
-  });
+  onlyLabel?: string | null,
+): Promise<
+  | { ok: true; fields: OfflineTokenPersist; credentials: ShopifyAppCredentials }
+  | { ok: false; status: number; error: string }
+> {
+  const result = await postWithEachApp(
+    shop,
+    {
+      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+      subject_token: sessionToken,
+      subject_token_type: "urn:ietf:params:oauth:token-type:id_token",
+      requested_token_type: "urn:shopify:params:oauth:token-type:offline-access-token",
+      expiring: "1",
+    },
+    onlyLabel,
+  );
   if (!result.ok) return result;
-  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data) };
+  return { ok: true, fields: offlineTokenFieldsFromPayload(result.data), credentials: result.credentials };
 }
 
 function coerceExpiryDate(value: Date | string | null | undefined): Date | null {
@@ -194,6 +228,7 @@ function isInvalidSubjectTokenError(error: string): boolean {
 async function persistOfflineToken(
   installationId: number,
   fields: OfflineTokenPersist,
+  appLabel?: string | null,
 ): Promise<ShopifyInstallation | undefined> {
   return storage.updateShopifyInstallation(installationId, {
     accessToken: fields.accessToken,
@@ -201,8 +236,15 @@ async function persistOfflineToken(
     accessTokenExpiresAt: fields.accessTokenExpiresAt,
     refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
     ...(fields.scope != null ? { scope: fields.scope } : {}),
+    ...(appLabel ? { shopifyApp: appLabel } : {}),
     status: "active",
   });
+}
+
+/** Keep an existing binding. Record one only when the shop has none yet. */
+function appLabelToStore(current: string | null | undefined, matched: string): string | null {
+  if (current) return null;
+  return matched;
 }
 
 export type EnsureOfflineTokenResult =
@@ -229,6 +271,17 @@ export async function ensureValidOfflineAccessToken(
   const sessionToken = options.sessionToken?.trim() || null;
 
   if (!hasShopifyAppCredentials()) {
+    // A still-valid offline token does not need the client secret. Refresh and
+    // session exchange below still require it.
+    if (
+      !options.forceRefresh &&
+      installation.accessToken &&
+      installation.accessToken !== "NEEDS_RECONNECT" &&
+      hasRefreshToken(installation) &&
+      !needsAccessRefresh(installation)
+    ) {
+      return { ok: true, accessToken: installation.accessToken, installation };
+    }
     return { ok: false, needsReinstall: false, error: "Shopify API credentials not configured" };
   }
 
@@ -240,9 +293,13 @@ export async function ensureValidOfflineAccessToken(
   // Legacy non-expiring install (no refresh token) → migrate in place.
   if (!missingOffline && !hasRefreshToken(current)) {
     console.log(`[shopify-token] Migrating ${shop} to expiring offline token`);
-    const migrated = await migrateToExpiringOfflineToken(shop, current.accessToken);
+    const migrated = await migrateToExpiringOfflineToken(shop, current.accessToken, current.shopifyApp);
     if (migrated.ok) {
-      const updated = await persistOfflineToken(current.id, migrated.fields);
+      const updated = await persistOfflineToken(
+        current.id,
+        migrated.fields,
+        appLabelToStore(current.shopifyApp, migrated.credentials.label),
+      );
       if (!updated) {
         return { ok: false, needsReinstall: false, error: "Failed to persist migrated token" };
       }
@@ -264,9 +321,13 @@ export async function ensureValidOfflineAccessToken(
   let refreshedThisCall = false;
   if ((forceRefresh || needsAccessRefresh(current)) && hasRefreshToken(current)) {
     console.log(`[shopify-token] Refreshing offline token for ${shop}${forceRefresh ? " (forced)" : ""}`);
-    const refreshed = await refreshOfflineToken(shop, current.refreshToken!);
+    const refreshed = await refreshOfflineToken(shop, current.refreshToken!, current.shopifyApp);
     if (refreshed.ok) {
-      const updated = await persistOfflineToken(current.id, refreshed.fields);
+      const updated = await persistOfflineToken(
+        current.id,
+        refreshed.fields,
+        appLabelToStore(current.shopifyApp, refreshed.credentials.label),
+      );
       if (!updated) {
         return { ok: false, needsReinstall: false, error: "Failed to persist refreshed token" };
       }
@@ -295,7 +356,7 @@ export async function ensureValidOfflineAccessToken(
   // Recover from dead offline token using the live embedded session token.
   if (sessionToken) {
     console.log(`[shopify-token] Exchanging session token for expiring offline token (${shop})`);
-    const exchanged = await exchangeSessionTokenForOffline(shop, sessionToken);
+    const exchanged = await exchangeSessionTokenForOffline(shop, sessionToken, current.shopifyApp);
     if (!exchanged.ok) {
       console.error(`[shopify-token] Session exchange failed for ${shop}:`, exchanged.status, exchanged.error);
       return {
@@ -304,7 +365,11 @@ export async function ensureValidOfflineAccessToken(
         error: `Failed to obtain offline token from session (${exchanged.status}): ${exchanged.error}`,
       };
     }
-    const updated = await persistOfflineToken(current.id, exchanged.fields);
+    const updated = await persistOfflineToken(
+      current.id,
+      exchanged.fields,
+      appLabelToStore(current.shopifyApp, exchanged.credentials.label),
+    );
     if (!updated) {
       return { ok: false, needsReinstall: false, error: "Failed to persist session-exchanged token" };
     }
@@ -372,10 +437,14 @@ export async function recoverOrCreateInstallationFromSession(
       accessTokenExpiresAt: exchanged.fields.accessTokenExpiresAt,
       refreshTokenExpiresAt: exchanged.fields.refreshTokenExpiresAt,
       scope: exchanged.fields.scope || "",
+      shopifyApp: exchanged.credentials.label,
       status: "active",
       installedAt: new Date(),
     });
     console.log(`[shopify-token] Created installation via session exchange for ${shop}`);
+    void import("./garment-accordion-metafields").then(({ ensureGarmentAccordionDefinitions }) =>
+      ensureGarmentAccordionDefinitions(shop, created.accessToken),
+    ).catch((err) => console.warn("[garment-accordion] install:", err instanceof Error ? err.message : err));
     return { ok: true, accessToken: created.accessToken, installation: created };
   } catch (err: any) {
     if (err?.code === "23505") {

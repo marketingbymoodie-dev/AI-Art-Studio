@@ -3,6 +3,8 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
 import { isShopifyEmbedded, getShopifyParams } from "@/lib/shopify";
+import { openedOutsideShopify } from "@/lib/shopifyContext";
+import { stagingCatalogueStudioUrl } from "@shared/themeEditorUrl";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +48,10 @@ import {
   BookOpen,
   Scale,
   Mail,
+  Truck,
+  KeyRound,
+  Upload,
+  Camera,
 } from "lucide-react";
 import type { Merchant, CustomizerPage } from "@shared/schema";
 import PrintifyNagModal from "@/components/admin/PrintifyNagModal";
@@ -74,6 +80,13 @@ const platformMenuItems = [
   { title: "Operator Catalog", url: "/admin/platform/operator-catalog", icon: Package },
   { title: "Platform Catalog", url: "/admin/platform/catalog", icon: Globe },
   { title: "Product Intelligence", url: "/admin/platform/product-intelligence", icon: Activity },
+  { title: "Shipping Coverage", url: "/admin/platform/shipping", icon: Truck },
+  { title: "Design Studio", url: "/admin/catalogue-studio", icon: Shirt },
+  { title: "Colour blanks", url: "/admin/catalogue-studio/colour-blanks", icon: Palette },
+  { title: "Catalogue import", url: "/admin/catalogue-import", icon: Upload },
+  // Operator-only today (gated server-side by isMyPetSettingsShop, independently
+  // of platform-admin access, so it can open to a merchant later on its own).
+  { title: "My Pet Settings", url: "/admin/my-pet-settings", icon: Camera },
   { title: "Pricing Modeller", url: "/admin/platform/pricing-modeller", icon: CreditCard },
   { title: "Creator Marketplace", url: "/admin/platform/creators", icon: Users },
   { title: "Landing page", url: "/admin/platform/landing", icon: Megaphone },
@@ -82,6 +95,7 @@ const platformMenuItems = [
   { title: "How To library", url: "/admin/platform/how-to", icon: BookOpen },
   { title: "Newsletter", url: "/admin/platform/newsletter", icon: Mail },
   { title: "Generation Health", url: "/admin/platform/generation-health", icon: BarChart3 },
+  { title: "Provider API Keys", url: "/admin/platform/api-keys", icon: KeyRound },
   { title: "AOP Panel Mapper", url: "/admin/hoodie-template-mapper", icon: Shirt },
 ];
 
@@ -94,6 +108,7 @@ const customerLinks = [
 const WIDE_CONTENT_PREFIXES = [
   "/admin/create-product",
   "/admin/design-studio",
+  "/admin/catalogue-studio/colour-blanks",
   "/designs",
   "/my-designs",
 ] as const;
@@ -109,6 +124,8 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
   const { isAuthenticated, isLoading: authLoading, user, logout } = useAuth();
   const [location] = useLocation();
   const embedded = isShopifyEmbedded();
+  const [outsideShopify] = useState(openedOutsideShopify);
+  const catalogueStudioUrl = stagingCatalogueStudioUrl();
   const wideContent = prefersCollapsedSidebar(location);
   const [sidebarOpen, setSidebarOpen] = useState(() => !prefersCollapsedSidebar(location));
 
@@ -124,7 +141,7 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     enabled: isAuthenticated || embedded,
   });
 
-  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean }>({
+  const { data: platformStatus } = useQuery<{ isPlatformAdmin: boolean; stagingBackend?: boolean }>({
     queryKey: ["/api/platform/admin/status"],
     enabled: isAuthenticated || embedded,
   });
@@ -135,6 +152,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     staleTime: 30_000,
   });
 
+  if (outsideShopify) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6" data-testid="admin-open-from-shopify">
+        <div className="max-w-lg space-y-3">
+          <h1 className="text-xl font-semibold">Open this page from Shopify Admin</h1>
+          <p className="text-sm text-muted-foreground">
+            This tab has no shop session, so the studio cannot sign you in. Bookmark this admin link. It opens the staging store on the catalogue studio.
+          </p>
+          <a className="block text-sm break-all underline" href={catalogueStudioUrl}>
+            {catalogueStudioUrl}
+          </a>
+        </div>
+      </div>
+    );
+  }
+
   // Show skeleton while auth or (in embedded mode) merchant data is loading
   if (authLoading || (embedded && merchantLoading)) {
     return (
@@ -144,7 +177,9 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
     );
   }
 
-  // Non-embedded: redirect to landing if not logged in via app auth
+  // Redirect only after /api/auth/user has settled. An unresolved session
+  // stays on the skeleton above. A fast 401 from before App Bridge mints
+  // its token is not a logout.
   if (!isAuthenticated && !embedded) {
     window.location.href = "/";
     return null;
@@ -301,6 +336,14 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
         </SidebarFooter>
       </Sidebar>
       <SidebarInset className="overflow-hidden">
+        {platformStatus?.isPlatformAdmin && platformStatus.stagingBackend ? (
+          <div
+            className="bg-amber-400 px-4 py-2 text-center text-sm font-semibold text-amber-950"
+            data-testid="staging-backend-banner"
+          >
+            Running on STAGING backend
+          </div>
+        ) : null}
         <header className="flex items-center gap-4 border-b px-4 py-3 bg-background shrink-0">
           <SidebarTrigger
             data-testid="button-sidebar-toggle"

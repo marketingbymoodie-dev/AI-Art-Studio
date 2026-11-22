@@ -51,7 +51,7 @@
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
     }
-    ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt', 'loadDesignId', 'loadMockup'].forEach(function (key) {
+    ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt', 'loadDesignId', 'loadMockup', 'debugoverlay'].forEach(function (key) {
       var val = urlParams.get(key);
       if (val) params.set(key, val);
     });

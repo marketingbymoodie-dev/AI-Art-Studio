@@ -115,7 +115,8 @@ old build or migrations failed — redeploy Staging and check startup logs.
 
 Usually **keep the same** on staging (platform tooling):
 
-- `PRINTIFY_API_TOKEN` / `PRINTIFY_SHOP_ID` (catalog / platform flows)
+- `PRINTIFY_API_TOKEN` — platform catalogue token only (`/v2/catalog/...`: blueprints, print areas, catalogue shipping). Shop-scoped calls (product create, orders, costs, mockups) do not use it.
+- `PRINTIFY_SHOP_ID` — **not set** on the Railway staging service, and catalogue calls do not read it. Canonical harvest uses the env account only when **both** this and `PRINTIFY_API_TOKEN` are set. With the shop id absent, harvest uses the owner or listing merchant token even if the env token is present.
 - `REPLICATE_API_TOKEN` and related AI keys
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, bucket names (see Supabase)
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (if set as Railway build vars)

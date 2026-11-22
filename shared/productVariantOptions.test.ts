@@ -12,6 +12,8 @@ import {
   sizesHaveMixedCanvasOrientation,
   looksLikePhoneModelName,
   sizeIdLooksLandscape,
+  canonicalDecorSizeId,
+  decorSizeIdCandidates,
   swapDecorSizeDimensionId,
   productLooksLikeFramedDecor,
   sizesLookLikePhoneModels,
@@ -33,6 +35,13 @@ describe("productVariantOptions", () => {
     expect(sizeIdLooksLandscape('20" x 16"')).toBe(true);
     expect(sizeIdLooksLandscape("16x20")).toBe(false);
     expect(sizeIdLooksLandscape("m")).toBe(false);
+  });
+
+  it("canonicalDecorSizeId maps hyphen slug ids onto harvest keys", () => {
+    expect(canonicalDecorSizeId("36-x-24")).toBe("36x24");
+    expect(canonicalDecorSizeId("36-x-24:black")).toBe("36x24:black");
+    expect(canonicalDecorSizeId("36x24")).toBe("36x24");
+    expect(decorSizeIdCandidates("36-x-24")).toEqual(["36-x-24", "36x24", "24x36"]);
   });
 
   it("swapDecorSizeDimensionId flips WxH and keeps colour suffix", () => {

@@ -1,3 +1,5 @@
+import { shouldProbeCatalogBlankGuide } from "./catalogSizeBlanks";
+
 /**
  * Shared types for the Hoodie Template Mapper (admin remapping engine).
  *
@@ -31,16 +33,58 @@ export type HoodieView = "front" | "back";
  */
 /** Printify blueprint 450 (pullover) — front/back/sleeves + kangaroo pocket panel. */
 export const PULOVER_HOODIE_BLUEPRINT_ID = 450;
-/** Preview-only: pullover front chest placement renders ~5% larger to match Printify. */
-export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1.05;
 /**
- * Place-on-item print export only: shrink pullover main `front` artwork so the
- * chest print file isn't clipped at the neck / hood seam on Printify.
- * (0.93 × 0.95 ≈ another 5% after the first merchant trim.)
+ * Must stay 1 — pullover preview == print (zip WYSIWYG). The old 1.05
+ * preview bump vs 0.8835 print shrink is what made Printify sit higher
+ * than the customizer.
  */
-export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 0.8835;
+export const PULOVER_FRONT_BODY_PREVIEW_PLACEMENT_SCALE = 1;
+export const PULOVER_FRONT_BODY_PRINT_ARTWORK_SCALE = 1;
+/**
+ * Pullover Place scales are independent contain-fit zooms (one per group).
+ * History: 1.05 / 1.49 (quotient 0.7047) was a zip-seed copy, not a
+ * physical front:hood lock — never derive one from the other at runtime.
+ * Current values compose those seeds with operator Printify scales
+ * (front ×1.1527, hood ×0.8079). N1 keeps hood scale (80.79%) and
+ * moves hood offsetY only so the neck stitch abuts (front unchanged).
+ */
+export const PULLOVER_HOOD_PLACE_SCALE = 2.1574;
+export const PULLOVER_FRONT_BODY_PLACE_SCALE = 1.4519;
+/** Preview Studio operator defaults (Save as defaults, 2026-09-08). */
+export const PULLOVER_HOOD_PLACE_OFFSET_X = -0.8055;
+export const PULLOVER_HOOD_PLACE_OFFSET_Y = 168.6471;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_X = -0.8055;
+export const PULLOVER_FRONT_BODY_PLACE_OFFSET_Y = -170.8296;
+/** Centre-seam trim so L/R hoods do not share the same mural strip. */
+export const PULLOVER_HOOD_SEAM_ALLOWANCE = 0.08;
+export const PULLOVER_POCKET_SAMPLE_OFFSET_X = 3;
+export const PULLOVER_POCKET_SAMPLE_OFFSET_Y = 10;
+export const PULLOVER_POCKET_SAMPLE_SCALE = 1.01;
+/**
+ * Printify hood-bottom / front-top grey (Safe−Print) as a fraction of
+ * that panel's mask height. Sample expansion only — not a dest clip.
+ */
+export const PULLOVER_HOOD_NECK_GREY_BLEED_FRAC = 0.0525;
+export const PULLOVER_FRONT_NECK_GREY_BLEED_FRAC = 0.0311;
+/**
+ * Zip + pullover back sleeve meshes were calibrated to this sheet.
+ * Pullover front sleeve meshes shipped with `sourceRect: null`, so
+ * `renderHoodFlatPanel` sized the bake from Printify placeholder / artwork
+ * dims and produced a wrong-UV flat (back mockup + sleeve print).
+ */
+export const PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT: SourceRect = {
+  x: 0,
+  y: 0,
+  width: 1024,
+  height: 1002,
+};
 /** Printify blueprint 451 (zip) — split front_left / front_right placeholders. */
 export const ZIP_HOODIE_BLUEPRINT_ID = 451;
+/**
+ * Zip front-body L/R + pocket halves: centre strip consumed by the zipper
+ * (fraction of the union design-rect width). Same value on chest and pockets.
+ */
+export const ZIP_FRONT_SEAM_ALLOWANCE = 0.03;
 /**
  * Printify blueprint 433 (men's bomber jacket AOP).
  * Catalog placeholders are a single `front` (+ back + sleeves) — not zip
@@ -122,6 +166,14 @@ export const LEGGINGS_BLUEPRINT_IDS: readonly number[] = [
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
 ];
+
+/** Printify blueprint 576 (Baby Beanie AOP) — flat harvest, not a mapper template. */
+export const BEANIE_BLUEPRINT_ID = 576;
+/**
+ * Preview-only: beanie Place-on-item art renders 15% larger so the app mockup
+ * matches Printify's printed size. Bake / `renderFlatPrintPanels` stay at 1.0.
+ */
+export const BEANIE_PREVIEW_PLACEMENT_SCALE = 1.15;
 
 /** Printify blueprint 449 (unisex sweatshirt AOP) — collar + cuffs, no hood. */
 export const SWEATSHIRT_BLUEPRINT_ID = 449;
@@ -261,10 +313,21 @@ export type MeshSourceRotation = number;
  *
  * Length invariant: `targetPoints.length === cols * rows`.
  */
-/** Max mesh columns (mapper slider + engine clamp). Wide panels e.g. collar strips. */
-export const MAX_MESH_COLS = 24;
-/** Max mesh rows (mapper slider + engine clamp). */
-export const MAX_MESH_ROWS = 16;
+/**
+ * Max mesh columns — mapper slider clamp (authoring only). Enforced solely by
+ * `createDefaultMesh` / `resizeMesh`, i.e. only when an operator initialises,
+ * resets, or resizes a mesh in the mapper UI. There is NO engine clamp: the
+ * renderer (`drawMeshWarp`), the print path (`buildFlatMeshTargetPoints`),
+ * `normalizeHoodieTemplate`, and template save/publish all accept any
+ * `cols`/`rows` that satisfy `targetPoints.length === cols * rows`. Raising
+ * this value cannot alter how an already-stored mesh renders.
+ *
+ * Headroom sized for high-curvature AOP panels (skirts, dresses) and wide thin
+ * panels (collar strips) that need dense sampling.
+ */
+export const MAX_MESH_COLS = 40;
+/** Max mesh rows — mapper slider clamp (authoring only). See MAX_MESH_COLS. */
+export const MAX_MESH_ROWS = 40;
 
 export type MeshGrid = {
   /** 2..{@link MAX_MESH_COLS} — number of columns in the control grid. */
@@ -480,6 +543,51 @@ export const DEFAULT_GROUP_PLACEMENT: GroupPlacement = {
 export type PanelPlacementBiasPercent = {
   offsetXPercent: number;
   offsetYPercent: number;
+  /** Pullover pocket sample-window (mockup px), applied AFTER finished inset. */
+  offsetX?: number;
+  offsetY?: number;
+  /** Pullover pocket sample-window scale, applied AFTER finished inset. */
+  scale?: number;
+  /**
+   * Pocket sample-window WIDTH-only scale, applied after `scale` and before
+   * the offsets, about the window centre. Same direction as `scale` (> 1 =
+   * wider art on the garment). Exists because Printify's pullover mockup
+   * squeezes the pocket horizontally more than the body, so pocket/body
+   * continuity needs a horizontal correction that uniform `scale` would also
+   * apply vertically. Set on `pocketPrint` only (print); absent = no-op.
+   */
+  scaleX?: number;
+  /**
+   * Pocket-only seam-allowance override (fraction, same units/range as
+   * DesignGroup.seamAllowance, 0..0.15). When present on a POCKET panel's
+   * resolved bias, replaces the shared group seam in BOTH seam mechanisms
+   * (clipSampleBbToSeamHalf inset + synthesiseSeamAwareSourceRect UV
+   * compression) for that panel only. Absent = inherit group seam (no-op).
+   */
+  seamAllowance?: number;
+  /**
+   * Group placement scale at which `seamAllowance` above was calibrated.
+   *
+   * A pocket seam that DIFFERS from the group seam displaces pocket art
+   * relative to body art by `(x_c - eff.x) * dSeam / (1 - seamGroup)`, and
+   * `eff.x = anchor.x - base.width * s / 2` — so the displacement is LINEAR
+   * in the group placement scale `s`. Measured on real renders: the two
+   * pocket halves drift equal-and-opposite at ~2.9 px per unit `s` each, so
+   * the pocket-to-pocket spread drifts ~5.9 px per unit `s`; confirmed linear
+   * to 0.08 px rms over s = 1.57 / 2.35 / 3.13 on both display and print.
+   *
+   * `synthesiseSeamAwareSourceRect` cancels that drift relative to THIS
+   * scale, so the calibration holds at every artwork scale instead of only
+   * the one it was measured at. Storing it beside the seam (rather than
+   * assuming 1.0) keeps the correction exactly zero where the calibration
+   * was actually verified, and keeps it correct if the seam is later
+   * recalibrated at a different scale.
+   *
+   * Absent = no drift correction (seam behaves as it did before this field
+   * existed). Meaningless without `seamAllowance`; ignored when the pocket
+   * seam equals the group seam, since there is then no divergence to drift.
+   */
+  seamCalibrationScale?: number;
 };
 
 export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
@@ -491,6 +599,15 @@ export const ZERO_PANEL_PLACEMENT_BIAS: PanelPlacementBiasPercent = {
 export type FrontBodyPanelPlacementBias = {
   chest?: PanelPlacementBiasPercent;
   pocket?: PanelPlacementBiasPercent;
+  /**
+   * PRINT-only override for pocket panels; falls back to `pocket` when
+   * absent. Exists because the customer-facing display mockup blank and
+   * Printify's manufacturing blank have different pocket geometry, so one
+   * shared bias value can't correctly align both — see
+   * `resolvePrintFrontBodyPanelBias`. Template-level, admin-calibrated,
+   * never customer-facing.
+   */
+  pocketPrint?: PanelPlacementBiasPercent;
 };
 
 export const FRONT_CHEST_PANEL_KEYS: HoodiePanelKey[] = ["front_left", "front_right"];
@@ -556,9 +673,22 @@ export function mergePanelPlacementBiasPercent(
   base?: Partial<PanelPlacementBiasPercent> | null,
   override?: Partial<PanelPlacementBiasPercent> | null,
 ): PanelPlacementBiasPercent {
+  const offsetX = override?.offsetX ?? base?.offsetX;
+  const offsetY = override?.offsetY ?? base?.offsetY;
+  const scale = override?.scale ?? base?.scale;
+  const scaleX = override?.scaleX ?? base?.scaleX;
+  const seamAllowance = override?.seamAllowance ?? base?.seamAllowance;
+  const seamCalibrationScale =
+    override?.seamCalibrationScale ?? base?.seamCalibrationScale;
   return {
     offsetXPercent: override?.offsetXPercent ?? base?.offsetXPercent ?? 0,
     offsetYPercent: override?.offsetYPercent ?? base?.offsetYPercent ?? 0,
+    ...(offsetX != null ? { offsetX } : {}),
+    ...(offsetY != null ? { offsetY } : {}),
+    ...(scale != null ? { scale } : {}),
+    ...(scaleX != null ? { scaleX } : {}),
+    ...(seamAllowance != null ? { seamAllowance } : {}),
+    ...(seamCalibrationScale != null ? { seamCalibrationScale } : {}),
   };
 }
 
@@ -566,9 +696,19 @@ export function mergeFrontBodyPanelPlacementBias(
   stored?: FrontBodyPanelPlacementBias | null,
   override?: FrontBodyPanelPlacementBias | null,
 ): FrontBodyPanelPlacementBias {
+  // pocketPrint is intentionally NOT merged via mergePanelPlacementBiasPercent
+  // like chest/pocket — that helper always materializes a full object (never
+  // undefined), which would make `merged.pocketPrint ?? merged.pocket` never
+  // fall through to `pocket` even when no print override was ever set. Only
+  // include the key when either side actually has one, so "unset" stays
+  // truly absent and resolvePrintFrontBodyPanelBias's fallback works.
+  const hasPocketPrint = stored?.pocketPrint != null || override?.pocketPrint != null;
   return {
     chest: mergePanelPlacementBiasPercent(stored?.chest, override?.chest),
     pocket: mergePanelPlacementBiasPercent(stored?.pocket, override?.pocket),
+    ...(hasPocketPrint
+      ? { pocketPrint: mergePanelPlacementBiasPercent(stored?.pocketPrint, override?.pocketPrint) }
+      : {}),
   };
 }
 
@@ -582,6 +722,26 @@ export function resolveFrontBodyPanelBias(
   const merged = mergeFrontBodyPanelPlacementBias(group.panelPlacementBias, override);
   if (FRONT_CHEST_PANEL_KEYS.includes(panelKey)) return merged.chest ?? ZERO_PANEL_PLACEMENT_BIAS;
   if (FRONT_POCKET_PANEL_KEYS.includes(panelKey)) return merged.pocket ?? ZERO_PANEL_PLACEMENT_BIAS;
+  return null;
+}
+
+/**
+ * Same as `resolveFrontBodyPanelBias`, but pocket panels prefer `pocketPrint`
+ * when present, falling back to `pocket` (chest is identical to display).
+ * Use this ONLY at print/export call sites — on-screen preview must keep
+ * calling `resolveFrontBodyPanelBias` so display bias is unaffected.
+ */
+export function resolvePrintFrontBodyPanelBias(
+  group: Pick<DesignGroup, "panelPlacementBias">,
+  panelKey: HoodiePanelKey | null | undefined,
+  override?: FrontBodyPanelPlacementBias | null,
+): PanelPlacementBiasPercent | null {
+  if (!panelKey) return null;
+  const merged = mergeFrontBodyPanelPlacementBias(group.panelPlacementBias, override);
+  if (FRONT_CHEST_PANEL_KEYS.includes(panelKey)) return merged.chest ?? ZERO_PANEL_PLACEMENT_BIAS;
+  if (FRONT_POCKET_PANEL_KEYS.includes(panelKey)) {
+    return merged.pocketPrint ?? merged.pocket ?? ZERO_PANEL_PLACEMENT_BIAS;
+  }
   return null;
 }
 
@@ -637,7 +797,29 @@ export type DesignGroup = {
    * design rect width/height.
    */
   panelPlacementBias?: FrontBodyPanelPlacementBias;
+  /**
+   * Operator Save-as-defaults in Preview Studio. When true,
+   * `restorePulloverFrontHoodZipFraming` must not overwrite this group's
+   * placement or pocket bias.
+   */
+  placementAuthored?: boolean;
 };
+
+/** Keep operator-authored fields when normalize rebuilds a group object. */
+export function copyPreservedDesignGroupFields(
+  dest: DesignGroup,
+  prev: DesignGroup,
+): DesignGroup {
+  return {
+    ...dest,
+    placement: prev.placement,
+    seamAllowance: prev.seamAllowance,
+    lockedRatio: prev.lockedRatio,
+    enabled: prev.enabled,
+    panelPlacementBias: prev.panelPlacementBias,
+    placementAuthored: prev.placementAuthored,
+  };
+}
 
 /**
  * Repeating-tile mode settings — when the AOP mode is `tile`, the
@@ -775,7 +957,7 @@ export function defaultDesignGroups(): DesignGroup[] {
       // the same zip-seam allowance.
       panelKeys: ["front_left", "front_right", "pocket_left", "pocket_right"],
       placement: { front: { ...blank }, back: { ...blank } },
-      seamAllowance: 0,
+      seamAllowance: ZIP_FRONT_SEAM_ALLOWANCE,
       lockedRatio: null,
       enabled: true,
     },
@@ -839,8 +1021,16 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       id: "hood",
       name: "Hood",
       panelKeys: ["left_hood", "right_hood"],
-      placement: { front: { ...blank }, back: { ...blank } },
-      seamAllowance: 0,
+      placement: {
+        front: {
+          ...blank,
+          scale: PULLOVER_HOOD_PLACE_SCALE,
+          offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
+          offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+        },
+        back: { ...blank },
+      },
+      seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE,
       lockedRatio: null,
       enabled: true,
     },
@@ -852,7 +1042,24 @@ export function defaultPulloverDesignGroups(): DesignGroup[] {
       // `trim` is always force-disabled at render time (waistband/cuffs
       // must stay solid), so a pocket left there could never show artwork.
       panelKeys: ["front", "front_pocket"],
-      placement: { front: { ...blank }, back: { ...blank } },
+      placement: {
+        front: {
+          ...blank,
+          scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+          offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+          offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+        },
+        back: { ...blank },
+      },
+      panelPlacementBias: {
+        pocket: {
+          offsetXPercent: 0,
+          offsetYPercent: 0,
+          offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+          offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+          scale: PULLOVER_POCKET_SAMPLE_SCALE,
+        },
+      },
       seamAllowance: 0,
       lockedRatio: null,
       enabled: true,
@@ -1000,18 +1207,38 @@ export function migrateSweatshirtDesignGroups(groups: DesignGroup[]): DesignGrou
   return defaults.map((def) => {
     const prev = byId.get(def.id);
     if (!prev) return def;
-    return {
-      ...def,
-      placement: prev.placement,
-      seamAllowance: prev.seamAllowance,
-      lockedRatio: prev.lockedRatio,
-      enabled: prev.enabled,
-    };
+    return copyPreservedDesignGroupFields(def, prev);
   });
 }
 
 export function isPulloverHoodieBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === PULOVER_HOODIE_BLUEPRINT_ID;
+}
+
+type SampleBbox = { x: number; y: number; width: number; height: number };
+
+/**
+ * Expand the pullover hood-bottom / front-top sample AABB into the
+ * Printify grey so mural survives the fold and meets at the stitch.
+ * Does not clip dest. Zip and non-join panels are unchanged.
+ */
+export function applyPulloverNeckSeamBleedToBbox<T extends SampleBbox>(
+  bb: T,
+  panelKey: HoodiePanelKey | null | undefined,
+  blueprintId?: number | null,
+): T {
+  if (!isPulloverHoodieBlueprint(blueprintId)) return bb;
+  if (panelKey === "left_hood" || panelKey === "right_hood") {
+    const dy = bb.height * PULLOVER_HOOD_NECK_GREY_BLEED_FRAC;
+    if (!(dy > 0)) return bb;
+    return { ...bb, height: bb.height + dy };
+  }
+  if (panelKey === "front") {
+    const dy = bb.height * PULLOVER_FRONT_NECK_GREY_BLEED_FRAC;
+    if (!(dy > 0)) return bb;
+    return { ...bb, y: bb.y - dy, height: bb.height + dy };
+  }
+  return bb;
 }
 
 export function isZipHoodieBlueprint(blueprintId: number | null | undefined): boolean {
@@ -1035,6 +1262,22 @@ export function isBomberJacketBlueprint(blueprintId: number | null | undefined):
 
 export function isSweatshirtBlueprint(blueprintId: number | null | undefined): boolean {
   return blueprintId === SWEATSHIRT_BLUEPRINT_ID;
+}
+
+export function isBeanieBlueprint(blueprintId: number | null | undefined): boolean {
+  return Number(blueprintId) === BEANIE_BLUEPRINT_ID;
+}
+
+/** Placement draw baseline. 576 and 241 contain-fit; other flats cover. */
+export type FlatArtFit = "cover" | "contain";
+
+export function flatArtFitForBlueprint(
+  blueprintId: number | null | undefined,
+): FlatArtFit {
+  if (isBeanieBlueprint(blueprintId) || shouldProbeCatalogBlankGuide(blueprintId)) {
+    return "contain";
+  }
+  return "cover";
 }
 
 export function isPillowWrapBlueprint(blueprintId: number | null | undefined): boolean {
@@ -1332,13 +1575,7 @@ export function mergeDesignGroupsForBlueprintSwitch(
   return defaults.map((def) => {
     const prev = existing.find((g) => g.id === def.id);
     if (!prev) return def;
-    return {
-      ...def,
-      placement: prev.placement,
-      seamAllowance: prev.seamAllowance,
-      lockedRatio: prev.lockedRatio,
-      enabled: prev.enabled,
-    };
+    return copyPreservedDesignGroupFields(def, prev);
   });
 }
 
@@ -1438,6 +1675,202 @@ export const SEAM_PAIR_PANELS: Record<"left" | "right", HoodiePanelKey[]> = {
  * pass the result straight into the store. Existing values are
  * preserved — defaults only fill genuinely-undefined fields.
  */
+function sleeveSourceRectIsCalibrated(
+  rect: SourceRect | null | undefined,
+): boolean {
+  return Boolean(rect && rect.width > 0 && rect.height > 0);
+}
+
+function pulloverFrontPlacementIsSeed(
+  front: { scale: number; offsetX: number; offsetY: number; rotationDeg?: number } | undefined,
+  seed: { scale: number; offsetX: number; offsetY: number },
+): boolean {
+  if (!front) return false;
+  return (
+    Math.abs(front.scale - seed.scale) < 1e-6 &&
+    Math.abs(front.offsetX - seed.offsetX) < 1e-6 &&
+    Math.abs(front.offsetY - seed.offsetY) < 1e-6 &&
+    (front.rotationDeg ?? 0) === 0
+  );
+}
+
+function withPulloverHoodSeam(group: DesignGroup): DesignGroup {
+  if ((group.seamAllowance ?? 0) > 1e-9) return group;
+  return { ...group, seamAllowance: PULLOVER_HOOD_SEAM_ALLOWANCE };
+}
+
+function withZipFrontSeam(group: DesignGroup): DesignGroup {
+  if (Math.abs((group.seamAllowance ?? 0) - ZIP_FRONT_SEAM_ALLOWANCE) < 1e-9) {
+    return group;
+  }
+  return { ...group, seamAllowance: ZIP_FRONT_SEAM_ALLOWANCE };
+}
+
+/**
+ * Zip bp 451: stamp the current zipper strip onto chest + pocket halves.
+ * Overwrites stale 0 / 0.06 so retunes land without a template republish.
+ */
+export function restoreZipFrontSeamAllowance(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isZipHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "zip-hoodie-aop"
+  ) {
+    return template;
+  }
+  const groups = template.designGroups;
+  if (!groups?.length) return template;
+  let changed = false;
+  const nextGroups = groups.map((g) => {
+    if (g.id !== "front-body") return g;
+    const next = withZipFrontSeam(g);
+    if (next !== g) changed = true;
+    return next;
+  });
+  if (!changed) return template;
+  return { ...template, designGroups: nextGroups };
+}
+
+/**
+ * Pullover bp 450 only: stamp the current Preview Studio operator
+ * defaults onto hood / front / pocket on every load. Published
+ * Supabase JSON and leftover `placementAuthored` sessions were winning
+ * (e.g. hood Y 91 / scale 1.25), so a hard refresh never showed the
+ * pinned seeds. Zip templates are untouched.
+ */
+export function restorePulloverFrontHoodZipFraming(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isPulloverHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "pullover-hoodie-aop"
+  ) {
+    return template;
+  }
+  const groups = template.designGroups;
+  if (!groups?.length) return template;
+  let changed = false;
+  const nextGroups = groups.map((g) => {
+    if (g.id === "front-body") {
+      const front = g.placement?.front;
+      // Pocket bias is NOT enforced here — see the panelPlacementBias note
+      // below. Only the placement seed decides whether this group is rewritten.
+      if (
+        pulloverFrontPlacementIsSeed(front, {
+          scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+          offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+          offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+        })
+      ) {
+        return g;
+      }
+      changed = true;
+      return {
+        ...g,
+        // panelPlacementBias is carried through UNTOUCHED. This function seeds
+        // the pullover's front/hood PLACEMENT (the two-zip-ratio framing that
+        // `6e5902df` introduced and that nothing derives at runtime). It used
+        // to also reset `pocket` to the pinned seed on every load, which made
+        // display pocket calibration impossible — any measured value was
+        // reverted before it could render. `pocketPrint` was already exempt
+        // (preserved by the spread), so print was calibratable and display was
+        // not; this removes that split. Fresh templates still start at the
+        // seed via `defaultPulloverDesignGroups`.
+        placement: {
+          ...g.placement,
+          front: {
+            ...(front ?? DEFAULT_GROUP_PLACEMENT),
+            scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+            offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+            offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+            rotationDeg: 0,
+          },
+          back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+        },
+      };
+    }
+    if (g.id === "hood") {
+      const front = g.placement?.front;
+      const atSeed = pulloverFrontPlacementIsSeed(front, {
+        scale: PULLOVER_HOOD_PLACE_SCALE,
+        offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
+        offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+      });
+      let next = g;
+      if (!atSeed) {
+        next = {
+          ...g,
+          placement: {
+            ...g.placement,
+            front: {
+              ...(front ?? DEFAULT_GROUP_PLACEMENT),
+              scale: PULLOVER_HOOD_PLACE_SCALE,
+              offsetX: PULLOVER_HOOD_PLACE_OFFSET_X,
+              offsetY: PULLOVER_HOOD_PLACE_OFFSET_Y,
+              rotationDeg: 0,
+            },
+            back: g.placement?.back ?? { ...DEFAULT_GROUP_PLACEMENT },
+          },
+        };
+      }
+      const withSeam = withPulloverHoodSeam(next);
+      if (withSeam !== g) changed = true;
+      return withSeam;
+    }
+    return g;
+  });
+  if (!changed) return template;
+  return { ...template, designGroups: nextGroups };
+}
+
+/**
+ * Pullover bp 450 only: fill missing front left/right sleeve sourceRects
+ * so the front→back sleeve bake uses the 1024×1002 sheet zip uses.
+ * Does not remesh targetPoints or touch back-view sleeve meshes.
+ */
+export function restorePulloverFrontSleeveSourceRects(
+  template: HoodieTemplate,
+): HoodieTemplate {
+  if (
+    !isPulloverHoodieBlueprint(template.blueprintId) &&
+    template.hoodieType !== "pullover-hoodie-aop"
+  ) {
+    return template;
+  }
+  const layers = template.views.front?.layers;
+  if (!layers?.length) return template;
+  let changed = false;
+  const nextLayers = layers.map((layer) => {
+    if (
+      (layer.panelKey !== "left_sleeve" && layer.panelKey !== "right_sleeve") ||
+      !layer.mesh
+    ) {
+      return layer;
+    }
+    if (sleeveSourceRectIsCalibrated(layer.mesh.sourceRect)) return layer;
+    changed = true;
+    return {
+      ...layer,
+      mesh: {
+        ...layer.mesh,
+        sourceRect: { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT },
+      },
+    };
+  });
+  if (!changed) return template;
+  return {
+    ...template,
+    views: {
+      ...template.views,
+      front: {
+        ...template.views.front,
+        layers: nextLayers,
+      },
+    },
+  };
+}
+
 export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplate {
   let designGroups =
     template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
@@ -1516,16 +1949,20 @@ export function normalizeHoodieTemplate(template: HoodieTemplate): HoodieTemplat
     ...template,
     placerEditor: resolvedPlacer,
   });
-  return {
-    ...template,
-    placerEditor: resolvedPlacer,
-    printFileLayout,
-    garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
-    designGroups,
-    tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
-    realWorldCalibration:
-      template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
-  };
+  return restoreZipFrontSeamAllowance(
+    restorePulloverFrontHoodZipFraming(
+      restorePulloverFrontSleeveSourceRects({
+        ...template,
+        placerEditor: resolvedPlacer,
+        printFileLayout,
+        garmentLayout: resolvedPlacer === "front-back-face" ? undefined : garmentLayout,
+        designGroups,
+        tileSettings: template.tileSettings ?? { ...DEFAULT_TILE_SETTINGS },
+        realWorldCalibration:
+          template.realWorldCalibration ?? { ...DEFAULT_REAL_WORLD_CALIBRATION },
+      }),
+    ),
+  );
 }
 
 /** Matches `SAFE_NAME_RE` in `server/routes/hoodie-template-mapper.ts`. */

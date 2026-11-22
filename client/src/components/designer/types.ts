@@ -25,6 +25,7 @@ export interface StylePresetOption {
 
 export interface StylePreset {
   id: string;
+  catalogSlug?: string | null;
   name: string;
   promptSuffix: string;
   thumbnailUrl?: string;
@@ -33,6 +34,20 @@ export interface StylePreset {
   baseImageUrl?: string;
   baseImageUrls?: string[];
   descriptionOptional?: boolean;
+  generationModel?: string | null;
+  outputMode?: string | null;
+  backgroundSelectorEnabled?: boolean | null;
+  defaultBackgroundColor?: string | null;
+  backgroundRequired?: boolean | null;
+  userSlotSchema?: {
+    slots: Array<{
+      id: string;
+      kind: "literal" | "thematic";
+      maxWords?: number;
+      maxChars?: number;
+      placeholder?: string;
+    }>;
+  } | null;
   options?: {
     label: string;
     required: boolean;
@@ -135,6 +150,7 @@ export interface ProductDesignerConfig {
   hasPrintifyMockups: boolean;
   sizes: PrintSize[];
   frameColors: FrameColor[];
+  shopifyVariantIds?: unknown;
   canvasConfig: CanvasConfig;
   doubleSidedPrint?: boolean;
   isAllOverPrint?: boolean;

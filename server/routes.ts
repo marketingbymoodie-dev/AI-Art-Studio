@@ -1,14 +1,55 @@
+import { frameColourHidden, overlayBlankSwatches, type ColourBlankSwatch } from "@shared/colourBlanks";
+import { shopifyStatusForVisibility } from "@shared/productVisibility";
+import { compareAtForSize, matchedSizeName, normaliseCompareAtBySize, parseCompareAtBySize } from "@shared/compareAtBySize";
+import { catalogueVariantGate } from "./catalogue-variant-fulfillment";
 import { generateImageBase64 } from "./replit_integrations/image/client";
+import {
+  applyRendererOverride,
+  planKeepsSourceResolution,
+  resolveGenerationPlan,
+  styleGenForPlan,
+} from "./generation-providers";
+import { storagePathFor } from "./apparel-storage-path";
+import { toLosslessPrintMaster } from "./print-master";
+import { openAIEndUserId } from "./openai-image-client";
+import { customerSafeGenerationError, recordGenerationEvent, withGenerationEvent } from "./generation-events";
 import { generatePattern, type PatternType } from "./replicate-bg-remover";
 import {
   processApparelMotif,
+  maybeVectorizeFlatGraphic,
   trimTransparentBounds,
-  resolveApparelDarkTierPrefix,
   resolveIsApparelGeneration,
-  resolveMotifStylePrefix,
-  APPAREL_CHROMA_STYLE_BY_NAME,
   processApparelMotifToDataUrl,
 } from "./apparel-matting";
+import {
+  persistGenerationModel,
+  persistGenerationModelDecor,
+  persistGenerationQuality,
+  persistVectorizeEnabled,
+  resolveStyleGeneration,
+} from "@shared/styleGeneration";
+import {
+  apparelChromaStyleLayerForCatalogSlug,
+  composeLayeredPrompt,
+  effectiveStoredUserSlotSchema,
+  parseUserSlotSchema,
+  persistUserSlotSchema,
+  resolveStyleLayerRaw,
+  resolveSubStyleFragment,
+  wrapLayeredArtworkPrompt,
+} from "@shared/promptLayers";
+import {
+  isDecorFloatingNativeFillPath,
+  resolveStyleGenerationForProduct,
+} from "@shared/decorBackgroundFill";
+import { classifyGenerationFailure } from "@shared/generationFailure";
+import { normalizeAtcMode } from "@shared/atcMode";
+import {
+  createProductRestCompat,
+  deleteProductRestCompat,
+  getProductRestCompat,
+  updateProductDescriptionRestCompat,
+} from "./shopify-product-graphql";
 import { tileImage, type TileMode } from "./sharp-tiler";
 import pg from "pg";
 import express, { type Express, Request, Response, NextFunction } from "express";
@@ -20,10 +61,58 @@ import path from "path";
 import sharp from "sharp";
 import jwt from "jsonwebtoken";
 import { storage } from "./storage";
-import { hmacBase64MatchesAnySecret, verifyAppProxySignature } from "./shopify-app-credentials";
+import { protectShadowsOnPaidOrder } from "./shadow-reaper-guard";
+import { runDesignSkuCleanup, runShadowProductCleanup } from "./scheduled-shadow-cleanup";
+import {
+  hasPrintConfigSuffix,
+  reusableShadowDesignId,
+  shadowJobPrefix,
+  shadowLookupKeys,
+  shadowMatchesBaseVariant,
+} from "@shared/shadowDesignId";
+import {
+  atomicPreShadowVariantEntry,
+  sanitizePrintConfigInput,
+} from "@shared/printConfigFingerprint";
+import {
+  isHostedHttpUrl,
+  isPersistablePreviewUrl,
+  normalizePreviewUrl,
+  unwrapMangledPreviewUrl,
+} from "@shared/previewUrl";
+import { selectVisibleGalleryJobs } from "@shared/galleryVisibleDesigns";
+import {
+  ShadowVariantNotPurchasableError,
+  completeShadowVariantPurchasable,
+  confirmShadowInventoryContinue,
+  ensureShadowVariantPurchasable,
+} from "./shadow-variant-purchasable";
+import { decideShadowShopPrice, syncShadowVariantPrice } from "./shadow-variant-price";
+import {
+  awaitExistingFlight,
+  preShadowFlightKey,
+  registerPreShadowInFlight,
+} from "./pre-shadow-mint";
+import {
+  ATC_SHADOW_STILL_PREPARING,
+  RESOLVE_DESIGN_VARIANT_DEADLINE_MS,
+  RESOLVE_FLIGHT_JOIN_MS,
+} from "@shared/atcStorefrontRetry";
+import {
+  SHADOW_CREATE_FETCH_TIMEOUT_MS,
+  isFetchTimeoutError,
+  shadowFetch,
+} from "./shadow-admin-fetch";
+import {
+  ShadowStorefrontNotReadyError,
+  assertAjaxVariantVisible,
+} from "./shadow-storefront-visible";
+import { verifyAppProxySignature } from "./shopify-app-credentials";
+import { acceptShopifyWebhook } from "./shopify-webhook-auth";
+import { flatFulfillmentDecision } from "./flat-fulfillment-gate";
 import { handleRememberCreatorProxy } from "./remember-creator-proxy";
 import { pool, db } from "./db";
-import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, creators, creatorCustomizerPages } from "@shared/schema";
+import { customizerDesigns, customizerPages, generationJobs, productTypes, publishedProducts, cachedPanelImages, designProducts, designProductEvents, designCandidates, creators, creatorCustomizerPages } from "@shared/schema";
 import { eq, and, desc, inArray, sql, or } from "drizzle-orm";
 import { resolvePrintifyColorHex } from "@shared/printifyColorResolver";
 import { slugPrintifyColorId } from "@shared/printifyColorSlug";
@@ -40,8 +129,25 @@ import {
   countActiveVariantMapKeys,
   capVariantSelectionForShopifyLimit,
   SHOPIFY_MAX_VARIANTS_PER_PRODUCT,
+  SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT,
   type VariantMap,
 } from "@shared/variantMapResolve";
+import { filterCatalogByPrintSides, filterFrameColorsToMintedShopify } from "@shared/shopifyVariantMatch";
+import {
+  PRINT_SIDES_BOTH,
+  PRINT_SIDES_FRONT,
+  isPrintSidesValue,
+  printSidesOfVariant,
+  printSidesTierCounts,
+  splitShopifyVariantIdsBySides,
+} from "@shared/printSides";
+import {
+  applyPrintSidesToRestProduct,
+  bothTierPriceUpdates,
+  printSidesActiveForProductType,
+  printSidesFactorForProductType,
+  printSidesOptionLive,
+} from "./print-sides";
 import {
   aspectRatioFromFlatCalibration,
   computeAspectRatioFromPixelDims,
@@ -55,7 +161,8 @@ import {
   isBodyPillowBlueprint,
   isLeggingsBlueprint,
 } from "@shared/hoodieTemplate";
-import { buildCostsByNormalizedLabel } from "@shared/printifyCostLabels";
+import { evaluateAopSnapshotFreeze } from "@shared/aopPanelCaptureSignature";
+import { buildCostsByNormalizedLabel, buildVariantKeyCosts } from "@shared/printifyCostLabels";
 import {
   cacheCoversVariantIds,
   extractCostsFromCatalogVariants,
@@ -64,7 +171,8 @@ import {
   parsePrintifyCostsCache,
   serializePrintifyCostsCache,
 } from "@shared/printifyProductionCosts";
-import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth } from "@shared/variantPricesBoth";
+import { expandVariantPricesBothMap, resolveDesignerVariantPricesBoth, synthesizeBothRetailMapFromCosts } from "@shared/variantPricesBoth";
+import { buildShadowProductTitle, stripProviderSuffix } from "@shared/planEstimator";
 import { allShopifyVariantsHavePositiveRetail, buildPrintifyToShopifyVariantIdMap, displayRetailPrice, hasPositiveRetailPrice, lookupWizardRetailPrice, minPositiveRetailPrice, parseShopifyVariantPrice, pickLowestPricedShopifyVariant, resolveShopifyVariantIdFromPriceKey } from "@shared/shopifyVariantPriceSync";
 import { setupAuth, isAuthenticated, registerAuthRoutes } from "./replit_integrations/auth";
 import { getGoogleOAuthClientId, verifyGoogleIdToken } from "./storefront-google-auth";
@@ -75,13 +183,31 @@ import {
   STOREFRONT_FREE_GENERATION_MIN,
   clampStorefrontFreeGens,
   pickStorefrontGenerationSpend,
+  storefrontPaidSpendable,
   storefrontArtworksRemaining,
 } from "@shared/storefront-credits";
 import {
   creatorContextFromRequest,
   resolveStorefrontWalletView,
+  walletJson,
 } from "./storefront-wallet-view";
-import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { PRINT_SIZES, FRAME_COLORS, STYLE_PRESETS, APPAREL_DARK_TIER_PROMPTS, mergeCatalogStyleOptions, type InsertDesign, getColorTier, type ColorTier } from "@shared/schema";
+import { catalogRowFieldsFromPreset, isVerbatimShortcutCatalogSlug } from "@shared/catalogArtStyles";
+import {
+  persistBackgroundRequired,
+  persistBackgroundSelectorEnabled,
+  persistDefaultBackgroundColor,
+  styleBackgroundApiFields,
+} from "@shared/styleBackgroundConfig";
+import { findCatalogPreset, isLiteralTextCatalogSlug, resolveCatalogSlug } from "@shared/styleCatalog";
+import { isReuseRegeneratePrompt } from "@shared/reuseArtworkPrompt";
+import { stripLetterboxBars, stripLetterboxFromImageSource } from "./stripLetterboxBars";
+import {
+  isQuotesCatalogSlug,
+  migrateQuotesInventFragment,
+  quotesImageComposeOverrides,
+} from "@shared/quotesStyle";
+import { generateQuoteOptions, stagingQuoteErrorPayload } from "./quote-options";
 import { detectPrintifyAllOverPrint } from "./printify-aop-detection";
 import {
   resolveFulfillmentLayout,
@@ -104,20 +230,22 @@ import {
 import { resolveSizeAspectRatio, sortDimensionalSizesAscending } from "@shared/productVariantOptions";
 import {
   applyCatalogSizeBlanks,
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
   isCatalogSizeBlankBlueprint,
   resolveCatalogSizeBlankUrlMap,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
 import { getSupabaseDesignPublicUrl } from "./supabaseDesigns";
-import { stripLetterboxBars } from "./stripLetterboxBars";
 import { registerShopifyRoutes, registerCartScript, shopifyApiCall, validateShopifyToken } from "./shopify";
 import { ensureShopifyCarrierService } from "./printify-checkout-shipping";
 import { isCreatorPlatformShop } from "./creator-host";
 import { ensureValidOfflineAccessToken, getBearerTokenFromRequest, recoverOrCreateInstallationFromSession } from "./shopify-offline-token";
+import { forgetAuthorizedShop, rememberAuthorizedShop, takeAuthorizedShop } from "./authorized-shop-cache";
 import { registerAdminBrandingRoutes } from "./routes/admin-branding";
 import { privacyPolicyHtml } from "./privacy-policy";
 import { renderTermsOfUseHtml } from "./terms-of-use";
-import { getTermsContent } from "./creator-config";
-import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canSaveMerchantDesigns } from "./customizer-plans";
+import { getTermsContent, requestLooksLikeStagingHost } from "./creator-config";
+import { getPageLimit, canCreatePage, getEffectivePlan, isOwnerQuotaBypassShop, PLAN_PRICES_USD, PLAN_DISPLAY_NAMES, PLAN_GENERATION_QUOTAS, PAID_PLANS, getPlanOverageCappedAmountUsd, OVERAGE_USAGE_TERMS, resolveGenerationQuota, getDesignProductLimit, canActivateDesignProduct, canActivateDesignProductEffective, canSaveMerchantDesigns } from "./customizer-plans";
 import {
   findCataloguePlan,
   getActiveCatalogue,
@@ -143,8 +271,16 @@ import {
   type GenerationBillingMode,
 } from "./generation-billing";
 import {
+  lookupAndBlockStorefrontGenerate,
+  resolveShipCountryFromRequest,
+} from "./shipping-generate-gate";
+import { resolvedShipCountryFromReq } from "./ship-country-middleware";
+import { currencyForShipCountry } from "@shared/ship-country";
+import { formatPurchaseThresholdDisplay } from "@shared/reward-grants";
+import { readPinnedUsdToCurrency } from "./pinned-fx";
+import {
   ensureRewardLadder,
-  getRewardLadder,
+  resolveRewardsForShop,
   patchRewardLadder,
   serializeRewardRung,
   tryGrantShareDesign,
@@ -176,6 +312,7 @@ import {
   parseVariantAvailabilityMap,
   unavailableVariantKeys,
   isVariantKeyAvailable,
+  isVariantKeyExplicitlyOutOfStock,
   resolveEffectivePricingStrategy,
   resolveMarkupPercent,
   suggestedRetailDollarsString,
@@ -205,6 +342,34 @@ import {
 import { enqueueMockupJob, getMockupJob } from "./mockup-jobs";
 import { harvestFlatCalibration, type HarvestOptions } from "./flat-calibration";
 import { slimPhoneCaseBlueprintId, type CanonicalPublishedMeta } from "@shared/canonicalProducts";
+import { loadStylePackForMerchant, resolveGeneratePack, resolvePageStyleConfig } from "./style-packs";
+import { generatePackConceptOptions } from "./pack-concept-engine";
+import { anthropicQuotesModel } from "./concept-engine";
+import { getStylePackProfile } from "@shared/stylePackProfiles";
+import { parsePersonalityTraits } from "@shared/creativeBrief";
+import { petposterousProductFamily, petposterousLook } from "@shared/petposterousCreative";
+import {
+  effectiveStyleConfigForPage,
+  listExperienceProfilesForMerchant,
+  loadExperienceProfileForMerchant,
+  resolvePageExperience,
+} from "./experience-profiles";
+import type { PublicExperienceProfile } from "@shared/experienceProfile";
+import { publicCreativeBrief } from "./customer-references";
+import { identityMatches } from "./storefront-identity-check";
+import { signStorefrontIdentityToken, verifyStorefrontIdentityHeader } from "./storefront-identity-token";
+import { canClaimDesign, canCopyCreativeBrief, decideSessionMerge, isAuthenticatedAccount } from "./storefront-identity-source";
+import { isInternalCustomerId, resolveClaimedStorefrontCustomer, resolveStorefrontJobAccess, resolveVariantOwnershipCheckEnabled, resolveVerifiedStorefrontIdentity } from "./storefront-identity";
+import {
+  creativeBriefFromContext,
+  hostPackReferences,
+  modelDefiningStyle,
+  packLayersForCompose,
+  preparePackGeneration,
+  type PackGenerationContext,
+} from "./pack-generation";
+import { normalizeReferenceImages, type TaggedReferenceImage } from "@shared/referenceImages";
+import { isPackOnlyStyle, parseStyleInputCapabilities } from "@shared/stylePacks";
 import {
   parseCustomizerPageStyleConfig,
   validateCustomizerPageStyleConfig,
@@ -233,6 +398,14 @@ import {
   adminProductTypeAccessError,
 } from "./adminProductTypeAccess";
 import {
+  LifestyleMockupError,
+  lifestyleFlatsReady,
+  lifestyleJobProductTypeId,
+  listLifestyleMockups,
+  requestLifestyleMockup,
+} from "./lifestyle-mockup";
+import { LIFESTYLE_GENDERS, LIFESTYLE_MAX_PER_DESIGN_GENDER } from "@shared/lifestyleMockup";
+import {
   merchantManifestFromCanonical,
   resolveCanonicalFlatCalibration,
 } from "./canonicalFlatCalibration";
@@ -252,6 +425,12 @@ import {
   colorIdsWithInStockVariants,
   mergeNewlyAppearedSelectionIds,
 } from "@shared/printifyCatalogSelection";
+import {
+  extractPlaceholderPositionNames,
+  parseStoredPlaceholderPositionNames,
+  resolveCostProbePositionAttempts,
+  minimalCostProbePositions,
+} from "@shared/printifyCostProbePositions";
 
 /**
  * Fire-and-forget flat/mesh on-the-fly mockup calibration for a freshly imported
@@ -360,17 +539,21 @@ function kickoffFlatCalibration(args: {
  * raw body is captured by the express.json `verify` hook (`server/index.ts`).
  * Returns false when the secret/header is missing or the digest mismatches.
  */
-function verifyShopifyWebhookHmac(req: Request): boolean {
-  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
-  const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
-  if (!hmac) return false;
-  const rawBody = (req as any).rawBody;
-  const buf: Buffer = Buffer.isBuffer(rawBody)
-    ? rawBody
-    : typeof rawBody === "string"
-      ? Buffer.from(rawBody, "utf8")
-      : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-  return hmacBase64MatchesAnySecret(buf, hmac);
+function verifyShopifyWebhookHmac(req: Request): Promise<boolean> {
+  return acceptShopifyWebhook(req).then((matched) => matched != null);
+}
+
+async function shopFlatFulfillmentEnabled(shop: string): Promise<boolean> {
+  if (!shop) return false;
+  const { db } = await import("./db");
+  const { shippingStoreSettings } = await import("@shared/schema");
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db
+    .select({ enabled: shippingStoreSettings.flatOrderFulfillmentEnabled })
+    .from(shippingStoreSettings)
+    .where(eq(shippingStoreSettings.shopDomain, shop))
+    .limit(1);
+  return row?.enabled === true;
 }
 
 function toUint8Array(buf: Buffer) {
@@ -460,37 +643,13 @@ async function captureAopCustomerFlowSnapshot(params: {
   }
 }
 
-const STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
-
-function getIdentitySecret(): string {
-  const secret = process.env.APPAI_IDENTITY_SECRET || process.env.SESSION_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("APPAI_IDENTITY_SECRET or SESSION_SECRET must be set");
-    }
-    return "appai-dev-identity-secret";
-  }
-  return secret;
-}
-
-function signStorefrontIdentityToken(customerId: string, shop: string): string {
-  return jwt.sign(
-    { sub: customerId, shop, typ: "storefront_identity" },
-    getIdentitySecret(),
-    { expiresIn: STOREFRONT_IDENTITY_TOKEN_TTL_SECONDS },
-  );
-}
-
 function verifyStorefrontIdentityToken(req: Request): { customerId: string; shop?: string } | null {
-  const auth = req.headers.authorization || "";
-  if (!auth.toLowerCase().startsWith("bearer ")) return null;
-  try {
-    const payload = jwt.verify(auth.slice("bearer ".length), getIdentitySecret()) as jwt.JwtPayload;
-    if (!payload?.sub || payload.typ !== "storefront_identity") return null;
-    return { customerId: String(payload.sub), shop: typeof payload.shop === "string" ? payload.shop : undefined };
-  } catch {
-    return null;
-  }
+  return verifyStorefrontIdentityHeader(req.headers.authorization);
+}
+
+/** The request's identity token must belong to `customerId` (and to this shop when the token names one). */
+function storefrontIdentityMatches(req: Request, customerId: string, shop: string) {
+  return identityMatches(verifyStorefrontIdentityToken(req), customerId, shop);
 }
 
 async function resolveStorefrontCustomerIdentity(args: { shop: string; customerId?: string | null; shopifyCustomerId?: string | null; anonSessionId?: string | null }) {
@@ -669,6 +828,21 @@ function resolveGenerationAspectRatio(
   return aspectRatioStr;
 }
 
+async function designerHiddenColours(productTypeId: number): Promise<Set<string>> {
+  if (!Number.isInteger(productTypeId) || productTypeId <= 0) return new Set();
+  const { inactiveColourKeys } = await import("./colour-blanks");
+  return inactiveColourKeys(productTypeId);
+}
+
+async function designerColourLens(productTypeId: number): Promise<{ hidden: Set<string>; swatches: ColourBlankSwatch[] }> {
+  const { activeColourBlankSwatches } = await import("./colour-blanks");
+  const [hidden, swatches] = await Promise.all([
+    designerHiddenColours(productTypeId),
+    activeColourBlankSwatches(productTypeId),
+  ]);
+  return { hidden, swatches };
+}
+
 function designerDisplayAspectRatio(productType: {
   aspectRatio?: string | null;
   designerType?: string | null;
@@ -736,6 +910,33 @@ async function resizeToAspectRatio(buffer: Buffer, targetDims: TargetDimensions,
 const APPAREL_CHROMA_MATTING_LINE =
   "10. MATTING EDGES: Use hard vector-like edges with no outer glow, drop shadow, or gradient halos. Leave a clean band of solid #FF00FF background between the artwork and the canvas edge so chroma-key removal can eliminate fringe color.";
 
+function applyQuotesLayeredCompose(opts: {
+  catalogSlug: string | null | undefined;
+  userInput: string;
+  quotesVoice?: string | null;
+  quoteArtBrief?: string | null;
+  quoteFontSuggestion?: string | null;
+  storedUserSlotSchema: unknown;
+  subStyleLayer: string;
+  styleOptionId?: string | null;
+}) {
+  const overrides = quotesImageComposeOverrides({
+    catalogSlug: opts.catalogSlug,
+    userInput: opts.userInput,
+    quotesVoice: opts.quotesVoice,
+    quoteArtBrief: opts.quoteArtBrief,
+    quoteFontSuggestion: opts.quoteFontSuggestion,
+    storedUserSlotSchema: opts.storedUserSlotSchema,
+  });
+  return {
+    ...overrides,
+    subStyleLayer: migrateQuotesInventFragment(
+      opts.subStyleLayer,
+      opts.quotesVoice || opts.styleOptionId,
+    ),
+  };
+}
+
 function buildApparelChromaSizingRequirements(designColors: string): string {
   return `
 MANDATORY IMAGE REQUIREMENTS FOR APPAREL PRINTING - FOLLOW EXACTLY:
@@ -756,9 +957,12 @@ ${APPAREL_CHROMA_MATTING_LINE}
 
 function singleCustomerReferenceInstruction(opts: {
   stylePreset?: string | null;
+  catalogSlug?: string | null;
   userPrompt?: string;
 }): string {
-  const isTextStyle = opts.stylePreset && ["opinionated", "quotes"].includes(opts.stylePreset);
+  const slug = opts.catalogSlug || opts.stylePreset;
+  const isTextStyle =
+    isLiteralTextCatalogSlug(slug) || String(slug || "").trim().toLowerCase() === "quotes";
   if (isTextStyle) {
     return `Using the provided reference image as visual inspiration, incorporate its subject as a SINGLE mascot or icon element integrated INTO the typographic composition — positioned between, behind, or alongside the text as part of the overall layout. Do NOT simply overlay or duplicate the reference subject on top of the text. Do NOT repeat the subject multiple times.`;
   }
@@ -939,10 +1143,62 @@ interface SaveImageOptions {
   colorTier?: ColorTier;
   /** 0–100; higher = more aggressive alpha erosion after background removal. */
   bgRemovalSensitivity?: number;
+  /** Per-style WP1 `vectorizeEnabled`, or force on. Env APPAREL_VECTORIZE still wins. */
+  vectorize?: boolean;
+  /** Native-transparent model — skip chroma / processApparelMotif. */
+  skipChroma?: boolean;
+  /** Direct renderer with product-set resolution (2K/4K): crop to print AR, do not downscale to genWidth. */
+  keepSourceResolution?: boolean;
+  /** 241 contain path: do not center-crop the generation to print AR. */
+  printifyBlueprintId?: number | null;
+  /** Reuse-regen only: crop painted letterbox bars. Never for 241/759 probe path. */
+  stripReuseLetterbox?: boolean;
+}
+
+function requestWantsReuseLetterboxStrip(
+  body: { reuseRegenerate?: unknown } | null | undefined,
+  ...texts: Array<string | null | undefined>
+): boolean {
+  if (body?.reuseRegenerate === true) return true;
+  return texts.some((t) => isReuseRegeneratePrompt(t));
+}
+
+async function stripReuseReferenceUrls(urls: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of urls) {
+    try {
+      const next = await stripLetterboxFromImageSource(u, {
+        resizeBack: false,
+        allowBothAxes: true,
+      });
+      if (next.changed) {
+        console.log("[reuse] stripped letterbox bars from a reference image");
+      }
+      out.push(next.url);
+    } catch (err) {
+      console.warn("[reuse] letterbox strip skipped:", (err as Error)?.message);
+      out.push(u);
+    }
+  }
+  return out;
+}
+
+function resolveApparelVectorize(styleEnabled?: boolean | null): boolean {
+  return styleEnabled === true || process.env.APPAREL_VECTORIZE === "true";
 }
 
 async function saveImageToStorage(base64Data: string, mimeType: string, options?: SaveImageOptions): Promise<SaveImageResult> {
-  const { isApparel = false, isAllOverPrint = false, targetDims, bgRemovalSensitivity } = options || {};
+  const {
+    isApparel = false,
+    isAllOverPrint = false,
+    targetDims,
+    bgRemovalSensitivity,
+    vectorize,
+    skipChroma,
+    keepSourceResolution,
+    printifyBlueprintId,
+    stripReuseLetterbox,
+  } = options || {};
   const imageId = crypto.randomUUID();
   let actualMimeType = mimeType.toLowerCase();
   let extension = actualMimeType.includes("png") ? "png" : "jpg";
@@ -952,7 +1208,16 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
 
   // For apparel, remove background using Replicate — including AOP
   // This ensures the motif is clean before tiling or placement
-  if (isApparel) {
+  const storagePath = storagePathFor({ isApparel, skipChroma });
+  if (storagePath === "native") {
+    console.log("[saveImageToStorage] Skipping chroma pipeline (native transparent model)");
+    if (resolveApparelVectorize(vectorize)) {
+      const vectorized = await maybeVectorizeFlatGraphic(buffer, { enabled: true });
+      buffer = vectorized.buffer;
+      extension = vectorized.mimeType === "image/svg+xml" ? "svg" : "png";
+      actualMimeType = vectorized.mimeType;
+    }
+  } else if (storagePath === "chroma") {
     console.log(`[saveImageToStorage] Chroma-first matting for apparel (AOP=${isAllOverPrint})...`);
     const sourceBuffer = buffer;
     const matting = await processApparelMotif(sourceBuffer, {
@@ -960,7 +1225,7 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       bgRemovalSensitivity,
       allowWhiteKey: true,
       useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
-      vectorize: process.env.APPAREL_VECTORIZE === "true",
+      vectorize: resolveApparelVectorize(vectorize),
     });
     buffer = matting.buffer;
     extension = matting.mimeType === "image/svg+xml" ? "svg" : "png";
@@ -970,27 +1235,45 @@ async function saveImageToStorage(base64Data: string, mimeType: string, options?
       console.warn("[saveImageToStorage] Matting QA:", JSON.stringify(matting.qa));
     }
   } else {
-    // Vintage Poster (and similar) often paints cream letterbox bars inside an
-    // already-correct landscape/portrait canvas — strip those so flat placement
-    // fills the dashed print rect edge-to-edge.
-    try {
-      const stripped = await stripLetterboxBars(buffer);
+    // Keep the model's full canvas (cream/blank margins included). Contain-fit
+    // letterboxes in the editor. stripLetterboxBars used to crop those bars
+    // (portrait → top/bottom) and stretch the rest — 241 saw a traveling top cut.
+    if (
+      stripReuseLetterbox &&
+      !shouldProbeCatalogBlankGuide(printifyBlueprintId)
+    ) {
+      const stripped = await stripLetterboxBars(buffer, {
+        allowBothAxes: true,
+        resizeBack: true,
+      });
       if (stripped.changed) {
         buffer = stripped.buffer;
+        extension = "png";
+        actualMimeType = "image/png";
         console.log(
-          `[saveImageToStorage] Stripped letterbox bars L=${stripped.left} R=${stripped.right} T=${stripped.top} B=${stripped.bottom}`,
+          `[saveImageToStorage] reuse letterbox stripped L${stripped.left} R${stripped.right} T${stripped.top} B${stripped.bottom}`,
         );
       }
-    } catch (err) {
-      console.warn("[saveImageToStorage] letterbox strip skipped:", (err as Error).message);
     }
 
-    if (targetDims && targetDims.width !== targetDims.height) {
+    const cropToTarget =
+      !!targetDims && targetDims.width !== targetDims.height && !shouldProbeCatalogBlankGuide(printifyBlueprintId);
+    if (keepSourceResolution) {
+      // Direct-renderer decor: lossless PNG master at source resolution (crop only, never JPEG q90).
+      const sourceMime = actualMimeType;
+      const master = await toLosslessPrintMaster(buffer, cropToTarget ? targetDims!.width / targetDims!.height : null);
+      buffer = master.buffer;
+      extension = "png";
+      actualMimeType = "image/png";
+      console.log(
+        `[saveImageToStorage] print master png ${master.width}x${master.height} from ${sourceMime} (cropped=${master.cropped})`,
+      );
+    } else if (cropToTarget) {
       const outputFormat =
         actualMimeType.includes("jpeg") || actualMimeType.includes("jpg")
           ? "jpeg"
           : "png";
-      buffer = (await resizeToAspectRatio(buffer, targetDims, outputFormat)) as Buffer;
+      buffer = (await resizeToAspectRatio(buffer, targetDims!, outputFormat)) as Buffer;
       extension = outputFormat === "jpeg" ? "jpg" : "png";
       actualMimeType = outputFormat === "jpeg" ? "image/jpeg" : "image/png";
     }
@@ -1724,6 +2007,7 @@ async function getAuthorizedInstallation(shop: string) {
  * reject flow instead of hammering Shopify with a known-bad token.
  */
 async function markShopTokenInvalid(shop: string): Promise<void> {
+  forgetAuthorizedShop(shop);
   try {
     const inst = await storage.getShopifyInstallationByShop(shop);
     if (inst && inst.status === "active") {
@@ -1938,6 +2222,13 @@ export async function registerRoutes(
       const duration = Date.now() - startTime;
       console.log(`[Storefront ${requestId}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
     });
+    // "finish" never fires when the caller aborts first — that read as a silent hang.
+    res.on("close", () => {
+      if (res.writableFinished) return;
+      console.warn(
+        `[Storefront ${requestId}] ${req.method} ${req.originalUrl} - client closed before response (${Date.now() - startTime}ms)`,
+      );
+    });
 
     next();
   });
@@ -2130,6 +2421,7 @@ export async function registerRoutes(
 
     const hardcodedFallback = STYLE_PRESETS.map((s) => ({
       id: s.id,
+      catalogSlug: s.id === "none" ? null : s.id,
       name: s.name,
       promptSuffix: s.promptPrefix,
       category: s.category,
@@ -2137,6 +2429,15 @@ export async function registerRoutes(
       options: (s as any).options,
       baseImageUrl: (s as any).baseImageUrl,
       descriptionOptional: false,
+      userSlotSchema: (s as any).userSlotSchema ?? null,
+      generationModel: (s as any).generationModel ?? null,
+      outputMode: (s as any).outputMode ?? null,
+      ...styleBackgroundApiFields({
+        catalogSlug: s.id === "none" ? null : s.id,
+        backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (s as any).backgroundRequired ?? null,
+      }),
     }));
 
     // ── Cache hit: respond immediately without touching the DB ──────────────
@@ -2159,24 +2460,39 @@ export async function registerRoutes(
 
       console.log(`[CONFIG] DB done ${Date.now() - t0}ms, ${dbStyles.length} styles`);
 
+      // Pack-only styles are never part of the global fallback list.
+      const publicDbStyles = dbStyles.filter((s) => !isPackOnlyStyle(s));
       const stylePresets = dedupeStylePresets(
-        dbStyles.length > 0
-          ? dbStyles.map((s) => {
+        publicDbStyles.length > 0
+          ? publicDbStyles.map((s) => {
               // Merge options and baseImageUrl from hardcoded STYLE_PRESETS (DB doesn't store sub-options)
               // promptPlaceholder: prefer DB value (merchant-editable), fall back to hardcoded default
-              const hardcoded = STYLE_PRESETS.find(h => h.id === s.id.toString() || h.name === s.name);
+              const hardcoded = findCatalogPreset(s);
               // Prefer DB-stored options (merchant-edited) over hardcoded defaults
               const dbOptions = (s as any).options ?? null;
               const hardcodedOptions = (hardcoded as any)?.options ?? null;
               return {
                 id: s.id.toString(),
+                catalogSlug: resolveCatalogSlug(s),
                 name: s.name,
                 promptSuffix: s.promptPrefix,
                 category: s.category || "all",
                 promptPlaceholder: (s as any).promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-                options: dbOptions || hardcodedOptions,
+                options: mergeCatalogStyleOptions(dbOptions, hardcodedOptions),
                 baseImageUrl: (s as any).baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
                 descriptionOptional: !!(s as any).descriptionOptional,
+                userSlotSchema: effectiveStoredUserSlotSchema(
+                  (s as any).userSlotSchema,
+                  (hardcoded as any)?.userSlotSchema,
+                ),
+                generationModel: (s as any).generationModel ?? null,
+                outputMode: (s as any).outputMode ?? (hardcoded as any)?.outputMode ?? null,
+                ...styleBackgroundApiFields({
+                  catalogSlug: resolveCatalogSlug(s),
+                  backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+                  defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+                  backgroundRequired: (s as any).backgroundRequired ?? null,
+                }),
               };
             })
           : hardcodedFallback,
@@ -2207,6 +2523,40 @@ export async function registerRoutes(
       return res.json(fallbackPayload);
     }
   });
+
+  function offeredSizeNames(productType: { sizes?: unknown; selectedSizeIds?: unknown }): string[] {
+    let sizes: unknown = productType.sizes;
+    let selected: unknown = productType.selectedSizeIds;
+    try {
+      if (typeof sizes === "string") sizes = JSON.parse(sizes || "[]");
+      if (typeof selected === "string") selected = JSON.parse(selected || "[]");
+    } catch {
+      return [];
+    }
+    const list = Array.isArray(sizes) ? sizes : [];
+    const ids = Array.isArray(selected) ? selected.map(String) : [];
+    const chosen = ids.length
+      ? list.filter((row: any) => ids.includes(String(row?.id)))
+      : list;
+    return chosen.map((row: any) => String(row?.name || "").trim()).filter(Boolean);
+  }
+
+  function sizeChartForOfferedSizes(chart: Record<string, any> | null, names: string[]): Record<string, any> | null {
+    if (!chart || !Array.isArray(chart.sizes) || names.length === 0) return chart;
+    const wanted = new Set(names.map((name) => name.toLowerCase()));
+    const keep = chart.sizes.map((name: unknown, index: number) => index === 0 || wanted.has(String(name || "").trim().toLowerCase()));
+    if (!keep.some((flag: boolean, index: number) => index > 0 && flag)) return chart;
+    return {
+      ...chart,
+      sizes: chart.sizes.filter((_: unknown, index: number) => keep[index]),
+      rows: Array.isArray(chart.rows)
+        ? chart.rows.map((row: { label?: string; values?: unknown[] }) => ({
+            ...row,
+            values: Array.isArray(row.values) ? row.values.filter((_: unknown, index: number) => keep[index + 1]) : [],
+          }))
+        : chart.rows,
+    };
+  }
 
   async function getNormalizedSizeChartByBlueprintId(blueprintId: number): Promise<Record<string, any> | null> {
     if (!Number.isFinite(blueprintId)) return null;
@@ -2273,6 +2623,9 @@ export async function registerRoutes(
     res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
     res.json({ chart });
   }));
+
+  const { registerFindMySizeRoutes } = await import("./find-my-size");
+  registerFindMySizeRoutes(app);
 
   // 🔒 Everything below may register /api auth middleware
   await setupAuth(app);
@@ -2497,7 +2850,7 @@ export async function registerRoutes(
         }
       }
 
-      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl } = req.body;
+      const { prompt, userPrompt: rawUserPromptAdmin, stylePreset, styleOptionId: styleOptionIdAdmin, size, frameColor, referenceImage, referenceImages: referenceImagesArr, productTypeId, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrl, quoteArtBrief: quoteArtBriefAdmin, quoteFontSuggestion: quoteFontSuggestionAdmin, quotesVoice: quotesVoiceAdmin, decorBackgroundFill: decorBackgroundFillAdmin } = req.body;
 
       if (!prompt || !size) {
         return res.status(400).json({ error: "Prompt and size are required" });
@@ -2527,9 +2880,20 @@ export async function registerRoutes(
       // Look up style preset and get its promptSuffix
       let stylePromptPrefix = "";
       let styleName = "";
+      let catalogSlugAdmin: string | null = null;
+      let styleOutputModeAdmin: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let styleCategory = "all"; // Track category for base prompt enforcement
       let styleBaseImageUrl: string | undefined; // Style-level base reference image
+      let styleVectorizeEnabled: boolean | null = null;
+      let styleGenerationModel: string | null = null;
+      let styleGenerationModelDecor: string | null = null;
+      let styleGenerationQuality: string | null = null;
+      let styleUserSlotSchema: unknown = null;
+      let styleOptionsAdmin: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const adminTaggedRefs = normalizeReferenceImages(referenceImagesArr, referenceImage);
+      let adminPackCtx: PackGenerationContext | null = null;
       if (stylePreset) {
         // Use product type's merchant for style lookup (merchant-scoped styles)
         const merchantId = productType?.merchantId;
@@ -2537,12 +2901,29 @@ export async function registerRoutes(
           const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
           const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
           if (selectedStyle) {
+            const packPrep = await preparePackGeneration({
+              style: selectedStyle as any,
+              merchantId,
+              body: req.body,
+              referenceImages: adminTaggedRefs,
+            });
+            if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+            adminPackCtx = packPrep.ctx;
             styleName = selectedStyle.name || "";
+            catalogSlugAdmin = resolveCatalogSlug(selectedStyle);
+            styleOutputModeAdmin = (selectedStyle as any).outputMode ?? null;
             styleCategory = selectedStyle.category || "all";
             if (selectedStyle.promptPrefix) {
               stylePromptPrefix = selectedStyle.promptPrefix;
             }
             stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+            styleVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+            const adminModelStyle = modelDefiningStyle(selectedStyle as any, adminPackCtx, dbStyles as any[]);
+            styleGenerationModel = adminModelStyle.generationModel ?? null;
+            styleGenerationModelDecor = adminModelStyle.generationModelDecor ?? null;
+            styleGenerationQuality = adminModelStyle.generationQuality ?? null;
+            styleUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+            styleOptionsAdmin = (selectedStyle as any).options ?? null;
             const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
               (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
             if (dbBaseUrls.length > 0) styleBaseImageUrl = dbBaseUrls[0];
@@ -2555,10 +2936,14 @@ export async function registerRoutes(
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugAdmin = hardcodedStyle.id;
+            styleOutputModeAdmin = (hardcodedStyle as any).outputMode ?? styleOutputModeAdmin;
             styleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            styleUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? styleUserSlotSchema;
+            styleOptionsAdmin = (hardcodedStyle as any).options ?? styleOptionsAdmin;
           }
         }
       }
@@ -2633,17 +3018,38 @@ export async function registerRoutes(
       // Check if this is an apparel product - either from productType or from style preset category
       // This covers both hardcoded and merchant-created styles via styleCategory
       // AOP zip hoodies use designerType "all-over-print" — still need chroma matting.
-      let isApparel = resolveIsApparelGeneration(productType, styleCategory);
+      let isApparel = resolveIsApparelGeneration(productType, styleCategory, {
+        outputMode: styleOutputModeAdmin,
+        catalogSlug: catalogSlugAdmin,
+      });
+      if (adminPackCtx?.profile.key === "petposterous" && adminPackCtx.visualSystem) {
+        adminPackCtx.productRenderer = petposterousProductFamily(productType, isApparel);
+        if (petposterousLook(adminPackCtx.visualSystem)?.compatibility[adminPackCtx.productRenderer] === "hidden") return res.status(400).json({ error: "LOOK_NOT_AVAILABLE" });
+      }
+      const legacyStyleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: styleGenerationModel,
+          generationQuality: styleGenerationQuality,
+          outputMode: styleOutputModeAdmin,
+          catalogSlug: catalogSlugAdmin,
+          generationModelDecor: styleGenerationModelDecor,
+        },
+        productType?.designerType,
+        { isApparel },
+      );
+      const adminGenPlan = resolveGenerationPlan({
+        merchantId: productType?.merchantId ?? null,
+        packProfileKey: adminPackCtx?.profile.key,
+        productFamily: adminPackCtx?.productRenderer ?? petposterousProductFamily(productType, isApparel),
+        isApparel,
+        styleRoute: legacyStyleGen.route,
+        nativeTransparent: legacyStyleGen.nativeTransparent,
+      });
+      const styleGen = styleGenForPlan(legacyStyleGen, adminGenPlan);
+      const adminKeepResolution = planKeepsSourceResolution(adminGenPlan);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          styleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (isAllOverPrint && stylePromptPrefix) {
+      if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -2692,36 +3098,33 @@ export async function registerRoutes(
       // Apply style prompt prefix - use dark tier variant for apparel on dark colors
       // User description comes first so the AI treats it as the primary subject.
       const userDescAdmin = (rawUserPromptAdmin || "").trim();
-      let fullPrompt: string;
-      
-      if (styleCategory === "apparel" && isApparel && colorTier === "dark" && stylePreset) {
-        const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-        if (darkTierPrompt) {
-          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${darkTierPrompt}` : darkTierPrompt;
-        } else {
-          fullPrompt = prompt;
-        }
-        console.log(`[Generate] Using dark tier prompt for ${stylePreset}`);
-      } else {
-        if (stylePromptPrefix) {
-          fullPrompt = userDescAdmin ? `${userDescAdmin}, ${stylePromptPrefix}` : stylePromptPrefix;
-        } else {
-          fullPrompt = prompt;
-        }
+      const styleLayerAdmin = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier,
+        stylePresetId: stylePreset,
+        catalogSlug: catalogSlugAdmin,
+        styleName,
+        category: styleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: styleGen.model,
+        outputMode: styleOutputModeAdmin,
+      });
+      const floatingDecorAdmin = isDecorFloatingNativeFillPath({
+        catalogSlug: catalogSlugAdmin,
+        generationModel: styleGen.model,
+        outputMode: styleOutputModeAdmin,
+        isApparelGeneration: isApparel,
+      });
+      if (colorTier === "dark" && (stylePromptPrefixDark || APPAREL_DARK_TIER_PROMPTS[stylePreset || ""])) {
+        console.log(`[Generate] Using dark tier style layer for ${stylePreset}`);
       }
 
-      // Different requirements for apparel vs wall art
+      // Decor keeps product-canvas sizing. Apparel/graphics chroma lives only in the locked base.
       let sizingRequirements: string;
       
-      if (isApparel && isAllOverPrint) {
-        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAop
-          ? buildAopPatternSizingRequirements(userDescAdmin)
-          : buildAopSizingRequirements(userDescAdmin);
-      } else if (isApparel) {
-        sizingRequirements = buildApparelChromaSizingRequirements(
-          apparelMotifDesignColors(userDescAdmin, colorTier === "dark"),
-        );
+      if (isApparel || floatingDecorAdmin) {
+        sizingRequirements = "";
       } else {
         // Wall art needs full-bleed edge-to-edge designs
         // Build shape-specific safe zone instructions
@@ -2788,26 +3191,56 @@ ${orientationExtra}
 `;
       }
 
-      // Build final prompt: CONSTRAINTS FIRST, then style, then user description
-      // This ensures Gemini prioritizes our dimensional requirements over style biases
+      // Build final prompt: locked base + style layer + user (chroma only in nano-banana base)
       const geminiAspectRatio = mapToGeminiAspectRatio(aspectRatioStr);
-      
-      // Restructure prompt: constraints first, then style/content
-      const constraintsFirst = sizingRequirements;
-      const styleAndContent = fullPrompt; // Already has style prefix + user prompt
-      fullPrompt = `${constraintsFirst}\n\n=== ARTWORK DESCRIPTION ===\n${styleAndContent}`;
+      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugAdmin));
+      {
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugAdmin, id: stylePreset, name: styleName, category: styleCategory });
+        styleOptionsAdmin = mergeCatalogStyleOptions(styleOptionsAdmin, (hc as any)?.options);
+      }
+      const subStyleAdminRaw = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdAdmin,
+        styleOptions: styleOptionsAdmin,
+        clientPrompt: prompt,
+        userInput: userDescAdmin,
+      });
+      const quotesAdmin = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugAdmin,
+        userInput: userDescAdmin,
+        quotesVoice: quotesVoiceAdmin,
+        quoteArtBrief: quoteArtBriefAdmin,
+        quoteFontSuggestion: quoteFontSuggestionAdmin,
+        storedUserSlotSchema: styleUserSlotSchema,
+        subStyleLayer: subStyleAdminRaw,
+        styleOptionId: styleOptionIdAdmin,
+      });
+      const layeredAdminInput = {
+        category: styleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: styleGen.model,
+        catalogSlug: catalogSlugAdmin,
+        styleLayer: styleLayerAdmin,
+        subStyleLayer: quotesAdmin.subStyleLayer,
+        userInput: quotesAdmin.userInput,
+        userSlotSchema: quotesAdmin.userSlotSchema,
+        fontLayer: quotesAdmin.fontLayer,
+        artLayer: quotesAdmin.artLayer,
+        isAllOverPrint,
+        isPatternStyle: usePatternAopAdmin,
+        outputMode: styleOutputModeAdmin,
+      };
+      const layeredAdmin = composeLayeredPrompt(layeredAdminInput);
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredAdmin, sizingRequirements);
       
       console.log(`[Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${aspectRatioStr})`);
 
       // Resolve customer reference image(s) — Preview Studio sends `referenceImages[]`
       const customerImageUrls: string[] = [];
-      const rawRefImagesAdmin: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
-        ? referenceImagesArr
-        : referenceImage ? [referenceImage] : [];
-      for (const refImg of rawRefImagesAdmin.slice(0, 5)) {
+      let customerTaggedAdmin: TaggedReferenceImage[] = [];
+      for (const tagged of adminTaggedRefs) {
+        const refImg = tagged.url;
         try {
           let resolvedUrl: string | null = null;
-          if (typeof refImg !== "string") continue;
           if (refImg.startsWith("data:")) {
             resolvedUrl = refImg;
           } else if (refImg.startsWith("http")) {
@@ -2818,11 +3251,18 @@ ${orientationExtra}
           }
           if (resolvedUrl) {
             customerImageUrls.push(resolvedUrl);
+            customerTaggedAdmin.push({ ...tagged, url: resolvedUrl });
             console.log(`[Generate] Reference image ${customerImageUrls.length}: type=${resolvedUrl.startsWith("data:") ? "data-url" : "http-url"}, size=${resolvedUrl.length} chars`);
           }
         } catch (refErr) {
           console.warn("[Generate] Could not process reference image, skipping:", refErr);
         }
+      }
+      if (requestWantsReuseLetterboxStrip(req.body, rawUserPromptAdmin, prompt)) {
+        const stripped = await stripReuseReferenceUrls(customerImageUrls);
+        customerImageUrls.length = 0;
+        customerImageUrls.push(...stripped);
+        customerTaggedAdmin = stripped.map((url, i) => ({ ...(customerTaggedAdmin[i] ?? { role: "other" as const, label: null }), url }));
       }
       const customerImageUrl: string | null = customerImageUrls[0] || null;
 
@@ -2839,7 +3279,20 @@ ${orientationExtra}
       const inputImageUrl: string | string[] | null = imageInputUrls.length > 1 ? imageInputUrls : imageInputUrls[0] || null;
 
       // When reference images are provided, instruct the model how to use them
-      if (imageInputUrls.length > 0) {
+      if (adminPackCtx) {
+        fullPrompt = wrapLayeredArtworkPrompt(
+          composeLayeredPrompt({
+            ...layeredAdminInput,
+            packLayers: packLayersForCompose(adminPackCtx, {
+              isApparel,
+              colorTier: isApparel ? colorTier : null,
+              styleImageCount: allStyleBaseUrls.length,
+              customerImages: customerTaggedAdmin,
+            }),
+          }),
+          sizingRequirements,
+        );
+      } else if (imageInputUrls.length > 0) {
         let refInstruction: string;
         if (effectiveStyleBaseUrl && customerImageUrls.length > 0) {
           refInstruction = `Two reference images are provided. The FIRST is a style/scene foundation — use it as the visual template and overall composition guide. The SECOND is the customer's subject (e.g. their pet, logo, or photo) — incorporate this subject into the design as the focal element. Do NOT duplicate or repeat the subject.`;
@@ -2848,6 +3301,7 @@ ${orientationExtra}
         } else if (customerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
+            catalogSlug: catalogSlugAdmin,
             userPrompt: userDescAdmin,
           });
         } else {
@@ -2856,22 +3310,59 @@ ${orientationExtra}
         fullPrompt = `${refInstruction} ${fullPrompt}`;
       }
 
-      // Generate image using Replicate
-      const usePatternAopAdmin = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
-
-      const { mimeType, data } = await generateImageBase64({
-        prompt: fullPrompt,
-        aspectRatio: geminiAspectRatio,
-        inputImageUrl,
-        isApparel,
-        isAllOverPrint,
-        isPatternStyle: usePatternAopAdmin,
-        userPrompt: userDescAdmin || null,
-        cylindricalWrap: useCylindricalWrapPrompt({
-          designerType: productType?.designerType,
-          isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
-        }),
+      // Generate image (provider per adminGenPlan)
+      const adminEndUser = openAIEndUserId(genShopDomain ?? null, customer.id);
+      const adminEventCtx = {
+        kind: "image" as const,
+        route: "admin-generate",
+        merchantId: productType?.merchantId ?? null,
+        shopDomain: genShopDomain ?? null,
+        experienceProfile: adminPackCtx?.profile.key ?? null,
+        stylePack: adminPackCtx?.packSlug ?? null,
+        styleSlug: catalogSlugAdmin,
+        productFamily: adminPackCtx?.productRenderer ?? null,
+        visualSystem: adminPackCtx?.visualSystem ?? null,
+        conceptFramework: adminPackCtx?.conceptFramework ?? null,
+        plan: adminGenPlan,
+        legacyModel: styleGen.model ?? "nano-banana",
+        legacyQuality: styleGen.model ? styleGen.quality : null,
+        endUserHash: adminEndUser ?? null,
+      };
+      const adminGenStart = Date.now();
+      let adminGenResult: Awaited<ReturnType<typeof generateImageBase64>>;
+      try {
+        adminGenResult = await generateImageBase64({
+          prompt: fullPrompt,
+          aspectRatio: geminiAspectRatio,
+          inputImageUrl,
+          isApparel,
+          isAllOverPrint,
+          isPatternStyle: usePatternAopAdmin,
+          userPrompt: userDescAdmin || null,
+          cylindricalWrap: useCylindricalWrapPrompt({
+            designerType: productType?.designerType,
+            isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+          }),
+          generationModel: styleGen.model,
+          generationQuality: styleGen.quality,
+          nativeTransparent: styleGen.nativeTransparent,
+          layered: true,
+          ...(adminPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+          generationPlan: adminGenPlan,
+          endUserId: adminEndUser,
+        });
+      } catch (genErr) {
+        void recordGenerationEvent(adminEventCtx, { success: false, durationMs: Date.now() - adminGenStart, error: genErr });
+        if (adminGenPlan.imagePath === "legacy") throw genErr;
+        throw new Error(customerSafeGenerationError(genErr, adminGenPlan));
+      }
+      void recordGenerationEvent(adminEventCtx, {
+        success: !!adminGenResult.data,
+        durationMs: Date.now() - adminGenStart,
+        meta: adminGenResult.meta,
+        error: adminGenResult.data ? undefined : new Error("no image data"),
       });
+      const { mimeType, data } = adminGenResult;
 console.log("[api/generate] replicate returned", {
   mimeType,
   dataType: typeof data,
@@ -2920,7 +3411,12 @@ console.log("[api/generate] replicate returned", {
   isAllOverPrint,
   targetDims,
   bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
-});
+  vectorize: resolveApparelVectorize(styleVectorizeEnabled),
+          skipChroma: styleGen.nativeTransparent,
+          keepSourceResolution: adminKeepResolution,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptAdmin, prompt),
+        });
 
 console.log("[api/shopify/generate] saved image", result);
 
@@ -3007,8 +3503,8 @@ console.log("[api/shopify/generate] saved image", result);
             sessionId: null,
             customerId: null,
             status: "complete",
-            prompt,
-            userPrompt: rawUserPromptAdmin ?? null,
+            prompt: quotesAdmin.committed ? quotesAdmin.userInput : prompt,
+            userPrompt: quotesAdmin.committed ? quotesAdmin.userInput : rawUserPromptAdmin ?? null,
             stylePreset: stylePreset ?? null,
             size: size ?? null,
             frameColor: frameColor ?? null,
@@ -3035,11 +3531,13 @@ console.log("[api/shopify/generate] saved image", result);
       });
     } catch (error: any) {
       console.error("Error generating artwork:", error);
-      // Return detailed error message for debugging
       const errorMessage = error?.message || String(error) || "Unknown error";
-      res.status(500).json({
-        error: "Failed to generate artwork",
-        details: errorMessage
+      const classified = classifyGenerationFailure(errorMessage);
+      res.status(classified.httpStatus).json({
+        error: classified.kind === "retriable" ? "Failed to generate artwork" : classified.code,
+        code: classified.code,
+        message: classified.userMessage,
+        details: errorMessage,
       });
     }
   });
@@ -3095,40 +3593,130 @@ console.log("[api/shopify/generate] saved image", result);
       // Look up the original style preset
       let stylePromptPrefix = "";
       const stylePreset = originalDesign.stylePreset;
+      let regenGenerationModel: string | null = null;
+      let regenGenerationQuality: string | null = null;
+      let regenStyleCategory = "apparel";
+      let regenUserSlotSchema: unknown = null;
+      let regenCatalogSlug: string | null = null;
+      let regenPromptPrefixDark: string | null = null;
+      let regenOutputMode: string | null = null;
+      let regenStyleName = "";
       
       if (stylePreset) {
-        if (newColorTier === "dark") {
-          stylePromptPrefix = resolveApparelDarkTierPrefix(stylePreset, null);
+        const merchantId = productType?.merchantId;
+        let matchedDbStyle = false;
+        if (merchantId) {
+          const dbStyles = await storage.getStylePresetsByMerchant(merchantId);
+          const selectedStyle = dbStyles.find((s: { id: number }) => s.id.toString() === stylePreset);
+          if (selectedStyle) {
+            // Pack concept + punchline are not stored on the design, so a pack
+            // style cannot be rebuilt faithfully here; never regenerate it bare.
+            const packPrep = await preparePackGeneration({
+              style: selectedStyle as any,
+              merchantId,
+              body: {},
+              referenceImages: [],
+            });
+            if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+            if (packPrep.ctx) {
+              return res.status(409).json({
+                error: "REGENERATE_NOT_SUPPORTED",
+                message: "Create this design again from the style to change the garment tier.",
+              });
+            }
+            matchedDbStyle = true;
+            regenPromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+            regenOutputMode = (selectedStyle as any).outputMode ?? null;
+            regenStyleName = (selectedStyle as any).name || "";
+            regenGenerationModel = (selectedStyle as any).generationModel ?? null;
+            regenGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+            regenStyleCategory = (selectedStyle as any).category || "apparel";
+            regenUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+            if ((selectedStyle as any).promptPrefix) stylePromptPrefix = (selectedStyle as any).promptPrefix;
+            regenCatalogSlug = resolveCatalogSlug(selectedStyle);
+          }
         }
         if (!stylePromptPrefix) {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle && hardcodedStyle.promptPrefix) {
             stylePromptPrefix = hardcodedStyle.promptPrefix;
+            regenStyleCategory = hardcodedStyle.category || regenStyleCategory;
+            regenCatalogSlug = hardcodedStyle.id;
+            regenStyleName = regenStyleName || hardcodedStyle.name;
+            regenOutputMode = regenOutputMode ?? (hardcodedStyle as any).outputMode ?? null;
+            if (!matchedDbStyle) {
+              regenUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? regenUserSlotSchema;
+            }
           }
         }
       }
 
-      // Build the prompt
+      // Same resolution as the generate routes: floating styles stay on
+      // gpt-image-2, the DB dark prefix is honoured, AOP prefixes are sanitised.
+      const regenGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: regenGenerationModel,
+          generationQuality: regenGenerationQuality,
+          outputMode: regenOutputMode,
+          catalogSlug: regenCatalogSlug,
+        },
+        productType?.designerType,
+      );
+      const regenIsAllOverPrint = !!(productType as any)?.isAllOverPrint;
+      if (regenIsAllOverPrint && stylePromptPrefix) {
+        stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
+      }
+
       const prompt = originalDesign.prompt;
-      let fullPrompt = stylePromptPrefix ? `${stylePromptPrefix} ${prompt}` : prompt;
-      
-      // Add sizing requirements — always use #FF00FF chroma key background for apparel
-      const isDarkTier = newColorTier === "dark";
-      const designColors = isDarkTier 
-        ? "BRIGHT, VIBRANT colors including white and light tones. AVOID dark, black, and hot pink/magenta colors in the design."
-        : "VIBRANT colors. White may be used inside the subject (teeth, eyes, highlights) but NOT as a background mat. AVOID hot pink/magenta in the design.";
-      
-      fullPrompt += buildApparelChromaSizingRequirements(designColors);
+      const regenStyleLayer = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: regenPromptPrefixDark,
+        colorTier: newColorTier === "dark" ? "dark" : "light",
+        stylePresetId: stylePreset,
+        catalogSlug: regenCatalogSlug,
+        styleName: regenStyleName,
+        category: regenStyleCategory,
+        isApparelGeneration: true,
+        generationModel: regenGen.model,
+        outputMode: regenOutputMode,
+      });
+      const layeredRegen = composeLayeredPrompt({
+        category: regenStyleCategory,
+        isApparelGeneration: true,
+        generationModel: regenGen.model,
+        catalogSlug: regenCatalogSlug,
+        styleLayer: regenStyleLayer,
+        userInput: prompt,
+        userSlotSchema: regenUserSlotSchema,
+        isAllOverPrint: regenIsAllOverPrint,
+        isPatternStyle: !!(regenIsAllOverPrint && styleIsPatternMaker(regenStyleName, stylePromptPrefix, regenCatalogSlug)),
+        outputMode: regenOutputMode,
+      });
+      const fullPrompt = wrapLayeredArtworkPrompt(layeredRegen);
 
       console.log(`[Regenerate-Tier] Regenerating design ${designId} for ${newColorTier} tier`);
 
       // Generate the new image (Replicate)
       const recolorIsAllOverPrint = !!(productType as any)?.isAllOverPrint;
-const { data: base64Data, mimeType } = await generateImageBase64({
-  prompt: fullPrompt,
-  isApparel: true,
-  isAllOverPrint: recolorIsAllOverPrint,
-});
+const { data: base64Data, mimeType } = await withGenerationEvent(
+  {
+    kind: "image",
+    route: "regenerate-tier",
+    merchantId: (productType as any)?.merchantId ?? null,
+    legacyModel: regenGen.model ?? "nano-banana",
+    legacyQuality: regenGen.model ? regenGen.quality : null,
+  },
+  () =>
+    generateImageBase64({
+      prompt: fullPrompt,
+      isApparel: true,
+      isAllOverPrint: recolorIsAllOverPrint,
+      generationModel: regenGen.model,
+      generationQuality: regenGen.quality,
+      nativeTransparent: regenGen.nativeTransparent,
+      layered: true,
+    }),
+);
 
 // Match the old Gemini shape so the rest of the code still works
 const imagePart = {
@@ -3149,7 +3737,8 @@ if (!imagePart.inlineData.data) {
         const finalMimeType = mimeType || "image/png";
 const result = await saveImageToStorage(base64Data, finalMimeType, { 
           isApparel: true, 
-          colorTier: newColorTier as ColorTier
+          colorTier: newColorTier as ColorTier,
+          skipChroma: regenGen.nativeTransparent,
         });
         generatedImageUrl = result.imageUrl;
         thumbnailImageUrl = result.thumbnailUrl;
@@ -3329,17 +3918,26 @@ console.log("[shopify/session] installation ok", {
         clientIp: ipKey,
       };
       
-      // If customer is logged in, create/get their customer record
+      // The session's customer pays for /api/shopify/generate and owns its jobs, so it
+      // is bound only to a proven identity (token for this shop, or proxy-signed Shopify
+      // customer). An unproven customerId gets an anonymous session instead.
       let internalCustomer = null;
       if (customerId) {
         try {
-          internalCustomer = await storage.getOrCreateShopifyCustomer(shop, customerId, customerEmail);
+          const owner = await resolveVerifiedStorefrontIdentity(
+            req,
+            shop,
+            { shopifyCustomerId: String(customerId) },
+            { allowAnonymous: false },
+          );
+          if (!owner.ok) throw new Error(`unverified customer claim (${owner.error})`);
+          internalCustomer = owner.customer;
           sessionData.customerId = customerId;
           sessionData.customerEmail = customerEmail;
           sessionData.customerName = customerName;
           sessionData.internalCustomerId = internalCustomer.id;
         } catch (e) {
-          console.error("Error creating Shopify customer:", e);
+          console.warn("[shopify/session] customer not attached:", (e as Error)?.message || e);
         }
       }
       
@@ -3376,7 +3974,7 @@ console.log("[shopify/session] installation ok", {
   app.post("/api/shopify/generate", async (req: Request, res: Response) => {
     let embedInstallation: Awaited<ReturnType<typeof getAuthorizedInstallation>> = null;
     try {
-      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed } = req.body;
+      const { prompt, userPrompt: rawUserPromptEmbed, stylePreset, styleOptionId: styleOptionIdEmbed, size, frameColor, referenceImage, referenceImages: referenceImagesArr, shop, sessionToken, bgRemovalSensitivity, baseImageUrl: clientBaseImageUrlEmbed, quoteArtBrief: quoteArtBriefEmbed, quoteFontSuggestion: quoteFontSuggestionEmbed, quotesVoice: quotesVoiceEmbed, decorBackgroundFill: decorBackgroundFillEmbed } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -3466,19 +4064,44 @@ console.log("[shopify/session] installation ok", {
       let stylePromptPrefix = "";
       let stylePromptPrefixDark: string | null = null;
       let styleName = "";
+      let catalogSlugEmbed: string | null = null;
+      let embedOutputMode: string | null = null;
       let embedStyleCategory = "all";
       let embedStyleBaseImageUrl: string | undefined;
       let embedStyleBaseImageUrls: string[] = [];
+      let embedVectorizeEnabled: boolean | null = null;
+      let embedGenerationModel: string | null = null;
+      let embedGenerationQuality: string | null = null;
+      let embedUserSlotSchema: unknown = null;
+      let embedStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
       if (stylePreset && installation.merchantId) {
         const dbStyles = await storage.getStylePresetsByMerchant(installation.merchantId);
         const selectedStyle = dbStyles.find((s: { id: number; name?: string; promptPrefix: string | null; category?: string | null; baseImageUrl?: string | null }) => s.id.toString() === stylePreset);
         if (selectedStyle) {
+          const packPrep = await preparePackGeneration({
+            style: selectedStyle as any,
+            merchantId: installation.merchantId,
+            body: req.body,
+            referenceImages: normalizeReferenceImages(referenceImagesArr, referenceImage),
+          });
+          if (!packPrep.ok) return res.status(packPrep.status).json(packPrep.body);
+          // Pack prompt layers are composed on the storefront + Preview Studio routes only.
+          if (packPrep.ctx) {
+            return res.status(400).json({ error: "STYLE_NOT_SUPPORTED_HERE", message: "This style is not available in this editor." });
+          }
           styleName = selectedStyle.name || "";
+          catalogSlugEmbed = resolveCatalogSlug(selectedStyle);
+          embedOutputMode = (selectedStyle as any).outputMode ?? null;
           embedStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+          embedVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+          embedGenerationModel = (selectedStyle as any).generationModel ?? null;
+          embedGenerationQuality = (selectedStyle as any).generationQuality ?? null;
+          embedUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+          embedStyleOptions = (selectedStyle as any).options ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           embedStyleBaseImageUrls = dbBaseUrls;
@@ -3488,10 +4111,14 @@ console.log("[shopify/session] installation ok", {
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugEmbed = hardcodedStyle.id;
+            embedOutputMode = (hardcodedStyle as any).outputMode ?? embedOutputMode;
             embedStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            embedUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? embedUserSlotSchema;
+            embedStyleOptions = (hardcodedStyle as any).options ?? embedStyleOptions;
           }
         }
       }
@@ -3506,16 +4133,21 @@ console.log("[shopify/session] installation ok", {
         productType = await storage.getProductType(parseInt(productTypeId));
       }
 
-      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory);
+      const embedIsApparelEarly = resolveIsApparelGeneration(productType, embedStyleCategory, {
+        outputMode: embedOutputMode,
+        catalogSlug: catalogSlugEmbed,
+      });
       const embedIsAllOverPrintEarly = !!(productType?.isAllOverPrint);
-      if (embedIsApparelEarly && !embedIsAllOverPrintEarly) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          embedStyleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (embedIsAllOverPrintEarly && stylePromptPrefix) {
+      const embedStyleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: embedGenerationModel,
+          generationQuality: embedGenerationQuality,
+          outputMode: embedOutputMode,
+          catalogSlug: catalogSlugEmbed,
+        },
+        productType?.designerType,
+      );
+      if (embedIsAllOverPrintEarly && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -3555,18 +4187,32 @@ console.log("[shopify/session] installation ok", {
       // When user provides a description, it becomes the subject; style prefix provides the artistic direction.
       // Pattern: "[userDescription], rendered as [stylePrefix]" so the AI prioritises the user's intent.
       const userDescEmbed = (rawUserPromptEmbed || "").trim();
-      let fullPrompt: string;
-      if (stylePromptPrefix) {
-        if (userDescEmbed) {
-          // User description first so the model treats it as the primary subject
-          fullPrompt = `${userDescEmbed}, ${stylePromptPrefix}`;
-        } else {
-          // No description — style prefix drives the generation (uses reference image as subject)
-          fullPrompt = stylePromptPrefix;
+      let embedColorTier: ColorTier = "light";
+      if (embedIsApparelEarly && frameColor && productType) {
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+        if (selectedColor?.hex) {
+          embedColorTier = getColorTier(selectedColor.hex);
         }
-      } else {
-        fullPrompt = prompt;
       }
+      const styleLayerEmbed = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier: embedColorTier,
+        stylePresetId: stylePreset,
+        catalogSlug: catalogSlugEmbed,
+        styleName,
+        category: embedStyleCategory,
+        isApparelGeneration: embedIsApparelEarly,
+        generationModel: embedStyleGen.model,
+        outputMode: embedOutputMode,
+      });
+      const floatingDecorEmbed = isDecorFloatingNativeFillPath({
+        catalogSlug: catalogSlugEmbed,
+        generationModel: embedStyleGen.model,
+        outputMode: embedOutputMode,
+        isApparelGeneration: embedIsApparelEarly,
+      });
 
       // Determine aspect ratio and orientation
       if (
@@ -3599,30 +4245,8 @@ console.log("[shopify/session] installation ok", {
       });
 
       let sizingRequirements: string;
-      if (embedIsApparelEarly && embedIsAllOverPrintEarly) {
-        const usePatternAop = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAop
-          ? buildAopPatternSizingRequirements(userDescEmbed)
-          : buildAopSizingRequirements(userDescEmbed);
-      } else if (embedIsApparelEarly) {
-        let colorTier: ColorTier = "light";
-        if (frameColor && productType) {
-          const frameColors = JSON.parse(productType.frameColors || "[]");
-          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
-          if (selectedColor?.hex) {
-            colorTier = getColorTier(selectedColor.hex);
-          }
-        }
-        const isDarkTier = colorTier === "dark";
-        if (embedStyleCategory === "apparel" && isDarkTier && stylePreset) {
-          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-          if (darkTierPrompt) {
-            fullPrompt = userDescEmbed ? `${userDescEmbed}, ${darkTierPrompt}` : darkTierPrompt;
-          }
-        }
-        sizingRequirements = buildApparelChromaSizingRequirements(
-          apparelMotifDesignColors(userDescEmbed, isDarkTier),
-        );
+      if (embedIsApparelEarly || floatingDecorEmbed) {
+        sizingRequirements = "";
       } else {
         const printShape = productType?.printShape || "rectangle";
         const bleedMargin = productType?.bleedMarginPercent || 5;
@@ -3683,16 +4307,50 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
+      {
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugEmbed, id: stylePreset, name: styleName, category: embedStyleCategory });
+        embedStyleOptions = mergeCatalogStyleOptions(embedStyleOptions, (hc as any)?.options);
+      }
+      const subStyleEmbedRaw = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdEmbed,
+        styleOptions: embedStyleOptions,
+        clientPrompt: prompt,
+        userInput: userDescEmbed,
+      });
+      const quotesEmbed = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugEmbed,
+        userInput: userDescEmbed,
+        quotesVoice: quotesVoiceEmbed,
+        quoteArtBrief: quoteArtBriefEmbed,
+        quoteFontSuggestion: quoteFontSuggestionEmbed,
+        storedUserSlotSchema: embedUserSlotSchema,
+        subStyleLayer: subStyleEmbedRaw,
+        styleOptionId: styleOptionIdEmbed,
+      });
+      const layeredEmbed = composeLayeredPrompt({
+        category: embedStyleCategory,
+        isApparelGeneration: embedIsApparelEarly,
+        generationModel: embedStyleGen.model,
+        catalogSlug: catalogSlugEmbed,
+        styleLayer: styleLayerEmbed,
+        subStyleLayer: quotesEmbed.subStyleLayer,
+        userInput: quotesEmbed.userInput,
+        userSlotSchema: quotesEmbed.userSlotSchema,
+        fontLayer: quotesEmbed.fontLayer,
+        artLayer: quotesEmbed.artLayer,
+        isAllOverPrint: embedIsAllOverPrintEarly,
+        isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
+        outputMode: embedOutputMode,
+      });
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredEmbed, sizingRequirements);
       
       console.log(`[Shopify Generate] Using Gemini aspect ratio: ${geminiAspectRatio} (from ${sizeConfig.aspectRatio})`);
 
       // Resolve customer reference image(s) — supports both single and array
       const embedCustomerImageUrls: string[] = [];
-      const rawRefImages: string[] = Array.isArray(referenceImagesArr) && referenceImagesArr.length > 0
-        ? referenceImagesArr
-        : referenceImage ? [referenceImage] : [];
-      for (const refImg of rawRefImages.slice(0, 5)) {
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const rawRefImages: string[] = normalizeReferenceImages(referenceImagesArr, referenceImage).map((r) => r.url);
+      for (const refImg of rawRefImages) {
         try {
           let resolvedUrl: string | null = null;
           if (refImg.startsWith("data:")) {
@@ -3711,10 +4369,18 @@ ${orientationExtra}
           console.warn("[Shopify Generate] Could not process reference image, skipping:", refErr);
         }
       }
+      if (requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt)) {
+        const stripped = await stripReuseReferenceUrls(embedCustomerImageUrls);
+        embedCustomerImageUrls.length = 0;
+        embedCustomerImageUrls.push(...stripped);
+      }
       const embedCustomerImageUrl: string | null = embedCustomerImageUrls[0] || null;
 
       // Check if this is an apparel product (covers both DB and hardcoded styles)
-      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory);
+      let isApparel = resolveIsApparelGeneration(productType, embedStyleCategory, {
+        outputMode: embedOutputMode,
+        catalogSlug: catalogSlugEmbed,
+      });
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
       const embedImageInputUrls: string[] = [];
@@ -3737,6 +4403,7 @@ ${orientationExtra}
         } else if (embedCustomerImageUrl) {
           refInstruction = singleCustomerReferenceInstruction({
             stylePreset,
+            catalogSlug: catalogSlugEmbed,
             userPrompt: userDescEmbed,
           });
         } else {
@@ -3746,15 +4413,32 @@ ${orientationExtra}
       }
 
       // Generate image via Replicate
-      const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-        prompt: fullPrompt,
-        aspectRatio: geminiAspectRatio ?? "1:1",
-        inputImageUrl,
-        isApparel,
-        isAllOverPrint,
-        userPrompt: userDescEmbed || null,
-        cylindricalWrap,
-      });
+      const { data: base64Data, mimeType: generatedMimeType } = await withGenerationEvent(
+        {
+          kind: "image",
+          route: "shopify-embed-generate",
+          merchantId: installation?.merchantId ?? null,
+          shopDomain: installation?.shopDomain ?? null,
+          styleSlug: catalogSlugEmbed,
+          legacyModel: embedStyleGen.model ?? "nano-banana",
+          legacyQuality: embedStyleGen.model ? embedStyleGen.quality : null,
+        },
+        () =>
+          generateImageBase64({
+            prompt: fullPrompt,
+            aspectRatio: geminiAspectRatio ?? "1:1",
+            inputImageUrl,
+            isApparel,
+            isAllOverPrint,
+            isPatternStyle: !!(embedIsAllOverPrintEarly && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugEmbed)),
+            userPrompt: userDescEmbed || null,
+            cylindricalWrap,
+            generationModel: embedStyleGen.model,
+            generationQuality: embedStyleGen.quality,
+            nativeTransparent: embedStyleGen.nativeTransparent,
+            layered: true,
+          }),
+      );
 
       if (!base64Data) {
         console.error("[Shopify Generate] Replicate returned no image data");
@@ -3781,6 +4465,10 @@ ${orientationExtra}
           isAllOverPrint,
           targetDims,
           bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+          vectorize: resolveApparelVectorize(embedVectorizeEnabled),
+          skipChroma: embedStyleGen.nativeTransparent,
+          printifyBlueprintId: productType?.printifyBlueprintId,
+          stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt),
         });
         imageUrl = result.imageUrl;
         thumbnailUrl = result.thumbnailUrl;
@@ -3792,6 +4480,10 @@ ${orientationExtra}
             isAllOverPrint,
             targetDims,
             bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+            vectorize: resolveApparelVectorize(embedVectorizeEnabled),
+            skipChroma: embedStyleGen.nativeTransparent,
+            printifyBlueprintId: productType?.printifyBlueprintId,
+            stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPromptEmbed, prompt),
           });
           imageUrl = result.imageUrl;
           thumbnailUrl = result.thumbnailUrl;
@@ -3808,13 +4500,29 @@ ${orientationExtra}
 
       // Bill merchant or customer only after successful generation.
       if (usedCustomerPaidCredit && customer) {
+        const embedJob = await storage.createGenerationJob({
+          shop,
+          customerId: customer.id,
+          status: "complete",
+          prompt: String(rawUserPromptEmbed ?? prompt ?? ""),
+          userPrompt: rawUserPromptEmbed ?? null,
+          stylePreset: stylePreset ?? null,
+          size: size ?? null,
+          frameColor: frameColor ?? null,
+          designImageUrl: imageUrl,
+          thumbnailUrl: thumbnailUrl ?? null,
+          designId,
+          billingMode: "customer_paid",
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        });
         const consumed = await applyCustomerBillingOnSuccess({
           customerId: customer.id,
           mode: "customer_paid",
+          generationJobId: embedJob.id,
           idempotencyKey: `shopify-generation:${embedBillingReqId}`,
           externalRef: embedBillingReqId,
         });
-        if (!consumed) {
+        if (!consumed.consumed) {
           return res.status(403).json({ error: "INSUFFICIENT_CREDITS", message: "You've run out of credits." });
         }
         customer = (await storage.getCustomer(customer.id)) ?? customer;
@@ -3905,10 +4613,7 @@ ${orientationExtra}
   ): Promise<void> {
     if (!productId) return;
     try {
-      const resp = await fetch(`https://${shop}/admin/api/2025-10/products/${productId}.json`, {
-        method: "DELETE",
-        headers: { "X-Shopify-Access-Token": accessToken },
-      });
+      const resp = await deleteProductRestCompat(shop, accessToken, productId);
       if (resp.ok || resp.status === 404) {
         console.log(`[shopify-cleanup] Deleted product ${productId} from ${shop}`);
       } else {
@@ -3988,14 +4693,33 @@ ${orientationExtra}
     }
   }
 
+  /** variantMap Printify id for a REST variant built from size/colour display names. */
+  function printifyIdForOptionNames(
+    variantMap: Record<string, any>,
+    sizes: Array<{ id: string; name: string }>,
+    colors: Array<{ id: string; name: string }>,
+    v: { option1?: string | null; option2?: string | null },
+  ): { printifyVariantId?: string | number | null } {
+    const size = sizes.find((s) => s.name === v.option1);
+    if (!size) return {};
+    const color = colors.find((c) => c.name === v.option2);
+    const entry = variantMap[`${size.id}:${color ? color.id : 'default'}`];
+    return { printifyVariantId: entry?.printifyVariantId ?? null };
+  }
+
   async function createShopifyProductForType(
     shop: string,
     accessToken: string,
     productType: any,
     merchant: any,
-    selectedColorIds?: string[],
-    variantPrices?: Record<string, string>,
+    selectedColorIds: string[] | undefined,
+    variantPrices: Record<string, string> | undefined,
+    visibility: "published" | "unlisted" | "hidden",
   ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
+    if (visibility !== "published" && visibility !== "unlisted" && visibility !== "hidden") {
+      const caller = new Error().stack?.split("\n").map((line) => line.trim()).filter((line) => line.startsWith("at "))[1]?.replace(/^at /, "") || "unknown call site";
+      throw new Error(`Visibility kind is required: published | unlisted | hidden. Omitted at ${caller}`);
+    }
     const allSizes = typeof productType.sizes === 'string' ? JSON.parse(productType.sizes) : productType.sizes || [];
     const allColors = typeof productType.frameColors === 'string' ? JSON.parse(productType.frameColors) : productType.frameColors || [];
     const baseMockupImages = typeof productType.baseMockupImages === 'string' ? JSON.parse(productType.baseMockupImages) : productType.baseMockupImages || {};
@@ -4022,6 +4746,12 @@ ${orientationExtra}
     // intentional empty selection — fall back to all rather than creating 0 variants.
     if (sizesToUse.length === 0 && allSizes.length > 0) sizesToUse = allSizes;
     if (colorsToUse.length === 0 && colorIdsToUse.length > 0 && allColors.length > 0) colorsToUse = allColors;
+    if (sizesToUse.length < sizeIdSet.size || colorsToUse.length < colorIdSet.size) {
+      console.warn(
+        `[createShopifyProductForType] pt ${productType.id}: selection matched ${sizesToUse.length}/${sizeIdSet.size} sizes, ` +
+          `${colorsToUse.length}/${colorIdSet.size} colours — unmatched ids are dropped from the Shopify product`,
+      );
+    }
     const priceMap: Record<string, string> = variantPrices && typeof variantPrices === 'object' ? variantPrices : {};
 
     const shopifyVariants: any[] = [];
@@ -4073,11 +4803,14 @@ ${orientationExtra}
       }
     }
     if (shopifyVariants.length === 0) throw new Error('No variants to create — check size/color selections.');
-    if (shopifyVariants.length > 100) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max 100.`);
 
     const productOptions: any[] = [];
     if (allSizes.length > 0) productOptions.push({ name: 'Size', values: Array.from(new Set(shopifyVariants.map((v: any) => v.option1))) });
     if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors, productType.colorOptionName), values: Array.from(new Set(shopifyVariants.filter((v: any) => v.option2).map((v: any) => v.option2!))) });
+    applyPrintSidesToRestProduct(productType, shopifyVariants, productOptions, (v) =>
+      printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+    );
+    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) throw new Error(`Too many variants (${shopifyVariants.length}). Shopify allows max ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`);
 
     const images: any[] = [];
     if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -4093,7 +4826,7 @@ ${orientationExtra}
         body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
         vendor: merchant.storeName || 'AI Art Studio',
         product_type: productType.name,
-        status: 'unlisted',
+        status: shopifyStatusForVisibility(visibility),
         published: false,
         tags: ['custom-design', 'ai-artwork', 'design-studio', 'ai-art-studio-enabled'],
         options: productOptions.length > 0 ? productOptions : undefined,
@@ -4116,11 +4849,7 @@ ${orientationExtra}
       await deleteShopifyProductBestEffort(shop, accessToken, productType.shopifyProductId);
     }
 
-    const shopifyResponse = await fetch(`https://${shop}/admin/api/2025-10/products.json`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': accessToken },
-      body: JSON.stringify(shopifyProduct),
-    });
+    const shopifyResponse = await createProductRestCompat(shop, accessToken, shopifyProduct.product);
 
     if (!shopifyResponse.ok) {
       const errorText = await shopifyResponse.text();
@@ -4132,14 +4861,16 @@ ${orientationExtra}
     const shopifyHandle = createdProduct.product.handle;
     const createdVariants = createdProduct.product.variants || [];
 
-    const shopifyVariantIds: Record<string, number> = {};
-    for (const v of createdVariants) {
-      const sizeOption = v.option1 || 'default';
-      const colorOption = v.option2 || 'default';
-      shopifyVariantIds[`${sizeOption}:${colorOption}`] = v.id;
-    }
+    const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
-    try { await ensureProductPublishedToOnlineStore(shop, accessToken, newShopifyProductId); } catch (_) { /* non-fatal */ }
+    try { await ensureProductPublishedToOnlineStore(shop, accessToken, createdProduct.product.id); } catch (_) { /* non-fatal */ }
+
+    // Promote copies this category onto the design. The shop import used to
+    // create the shell without one, so every apparel shell gets Clothing Tops > T-Shirts.
+    if (String(productType.designerType || "") === "apparel") {
+      const { ensureTshirtCategory } = await import("./flywheel-category");
+      await ensureTshirtCategory(shop, newShopifyProductId, accessToken);
+    }
 
     await storage.updateProductType(productType.id, {
       shopifyProductId: newShopifyProductId,
@@ -4147,10 +4878,11 @@ ${orientationExtra}
       shopifyProductUrl: `https://${shop}/admin/products/${newShopifyProductId}`,
       shopifyShopDomain: shop,
       shopifyVariantIds: shopifyVariantIds,
+      shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
       lastPushedToShopify: new Date(),
     });
 
-    const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+    const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
     const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
     if (cheapestVariantId) {
       await syncCustomizerPagesForShopifyProduct({
@@ -4179,7 +4911,7 @@ ${orientationExtra}
     variantPrices?: Record<string, string>,
   ): Promise<{ shopifyProductId: string; shopifyHandle: string }> {
     try {
-      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, [], variantPrices);
+      return await createShopifyProductForType(shop, installation.accessToken, productType, merchant, [], variantPrices, "unlisted");
     } catch (e: any) {
       if (!isShopifyAuthError(e)) throw e;
       const retried = await ensureValidOfflineAccessToken(installation, {
@@ -4192,7 +4924,7 @@ ${orientationExtra}
         throw err;
       }
       Object.assign(installation, retried.installation);
-      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, [], variantPrices);
+      return await createShopifyProductForType(shop, retried.accessToken, productType, merchant, [], variantPrices, "unlisted");
     }
   }
 
@@ -4274,7 +5006,7 @@ ${orientationExtra}
             shopifyProductHandle: null,
             shopifyProductUrl: null,
             shopifyShopDomain: null,
-            shopifyVariantIds: null,
+            shopifyVariantIds: null, shopifyVariantIdsBoth: null,
           });
         } else if (existingShopDomain !== shopDomain) {
           console.log(`[Shopify Publish] Product was published to ${existingShopDomain}, but publishing to ${shopDomain} - creating new product`);
@@ -4284,21 +5016,16 @@ ${orientationExtra}
             shopifyProductHandle: null,
             shopifyProductUrl: null,
             shopifyShopDomain: null,
-            shopifyVariantIds: null,
+            shopifyVariantIds: null, shopifyVariantIdsBoth: null,
           });
         } else {
           console.log(`[Shopify Publish] Product already exists (${productType.shopifyProductId}), deleting for republish...`);
           
           try {
-            const deleteResponse = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
-              {
-                method: "DELETE",
-                headers: {
-                  "X-Shopify-Access-Token": installation.accessToken,
-                  "Content-Type": "application/json",
-                },
-              }
+            const deleteResponse = await deleteProductRestCompat(
+              shopDomain,
+              installation.accessToken,
+              productType.shopifyProductId,
             );
             
             if (deleteResponse.ok || deleteResponse.status === 404) {
@@ -4309,7 +5036,7 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
             } else if (deleteResponse.status === 401 || deleteResponse.status === 403) {
               // Token is invalid - abort publish and require reinstall
@@ -4430,15 +5157,6 @@ ${orientationExtra}
         }
       }
 
-      // Validate Shopify's 100 variant limit
-      const SHOPIFY_VARIANT_LIMIT = 100;
-      if (shopifyVariants.length > SHOPIFY_VARIANT_LIMIT) {
-        return res.status(400).json({ 
-          error: `Too many variants (${shopifyVariants.length})`,
-          details: `Shopify allows a maximum of ${SHOPIFY_VARIANT_LIMIT} variants per product. Please select fewer colors.`
-        });
-      }
-
       if (shopifyVariants.length === 0) {
         return res.status(400).json({ 
           error: "No variants to create",
@@ -4460,6 +5178,16 @@ ${orientationExtra}
         productOptions.push({
           name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+      applyPrintSidesToRestProduct(productType, shopifyVariants as any[], productOptions, (v) =>
+        printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+      );
+
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product. Please select fewer colors.`
         });
       }
 
@@ -4504,7 +5232,7 @@ ${orientationExtra}
           `,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: productType.name,
-          status: "unlisted",
+          status: shopifyStatusForVisibility("unlisted"),
           published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
@@ -4558,17 +5286,7 @@ ${orientationExtra}
       };
 
       // Call Shopify Admin API to create the product
-      const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": installation.accessToken,
-          },
-          body: JSON.stringify(shopifyProduct),
-        }
-      );
+      const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, shopifyProduct.product);
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
@@ -4602,17 +5320,13 @@ ${orientationExtra}
       console.log(`Created Shopify product ${shopifyProductId} (handle: ${shopifyHandle}) for product type ${productType.id}`);
 
       // Build a map of size:color to Shopify variant ID for future lookups
-      const shopifyVariantIds: Record<string, number> = {};
-      for (const v of createdVariants) {
-        const sizeOption = v.option1 || 'default';
-        const colorOption = v.option2 || 'default';
-        const key = `${sizeOption}:${colorOption}`;
-        shopifyVariantIds[key] = v.id;
-      }
+      const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
       // Publish to Online Store so /cart/add.js accepts the variant IDs
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+        const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+        const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+        await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
         console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
       } catch (pubErr: any) {
         console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -4625,6 +5339,7 @@ ${orientationExtra}
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
         shopifyShopDomain: shopDomain, // Track which shop this was published to
         shopifyVariantIds: shopifyVariantIds,
+        shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
         lastPushedToShopify: new Date(),
       });
 
@@ -4733,6 +5448,12 @@ ${orientationExtra}
           const productOptions: Array<{ name: string; values: string[] }> = [];
           if (allSizes.length > 0) productOptions.push({ name: "Size", values: Array.from(new Set(shopifyVariants.map(v => v.option1))) });
           if (allColors.length > 0) productOptions.push({ name: getColorOptionName(allColors), values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))) });
+          applyPrintSidesToRestProduct(productType, shopifyVariants as any[], productOptions, (v) =>
+            printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+          );
+          if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+            return res.status(400).json({ error: `Too many variants (${shopifyVariants.length})`, details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.` });
+          }
 
           const images: Array<{ src: string; alt: string }> = [];
           if (baseMockupImages.front) images.push({ src: baseMockupImages.front, alt: `${productType.name} - Front` });
@@ -4748,7 +5469,7 @@ ${orientationExtra}
               body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
               vendor: merchant.storeName || "AI Art Studio",
               product_type: productType.designerType,
-              status: "unlisted",
+              status: shopifyStatusForVisibility("unlisted"),
               published: false,
               tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
               options: productOptions.length > 0 ? productOptions : undefined,
@@ -4766,11 +5487,7 @@ ${orientationExtra}
             },
           };
 
-          const shopifyResponse = await fetch(`https://${shopDomain}/admin/api/2025-10/products.json`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": installation.accessToken },
-            body: JSON.stringify(shopifyProduct),
-          });
+          const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, shopifyProduct.product);
 
           if (!shopifyResponse.ok) {
             const errorText = await shopifyResponse.text();
@@ -4783,15 +5500,13 @@ ${orientationExtra}
           const shopifyHandle = createdProduct.product.handle;
           const createdVariants = createdProduct.product.variants || [];
 
-          const shopifyVariantIds: Record<string, number> = {};
-          for (const v of createdVariants) {
-            const key = `${v.option1 || 'default'}:${v.option2 || 'default'}`;
-            shopifyVariantIds[key] = v.id;
-          }
+          const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
           // Publish to Online Store so /cart/add.js accepts the variant IDs
           try {
-            await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+            const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+            const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+            await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
             console.log(`Product ${shopifyProductId} published to Online Store sales channel`);
           } catch (pubErr: any) {
             console.warn(`Failed to publish product ${shopifyProductId} to Online Store: ${pubErr.message}`);
@@ -4804,10 +5519,11 @@ ${orientationExtra}
             shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
             shopifyShopDomain: shopDomain,
             shopifyVariantIds: shopifyVariantIds,
+            shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
             lastPushedToShopify: new Date(),
           });
 
-          const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+          const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
           const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
           if (cheapestVariantId) {
             await syncCustomizerPagesForShopifyProduct({
@@ -4856,16 +5572,14 @@ ${orientationExtra}
       // We always delete-and-recreate so the variant list stays in sync with the DB.
       console.log(`[Update Shopify] Deleting existing product ${productType.shopifyProductId} to re-create with correct variants...`);
 
-      const deleteResp = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`,
-        {
-          method: "DELETE",
-          headers: { "X-Shopify-Access-Token": installation.accessToken },
-        }
+      const deleteResp = await deleteProductRestCompat(
+        shopDomain,
+        installation.accessToken,
+        productType.shopifyProductId,
       );
 
       if (!deleteResp.ok && deleteResp.status !== 404) {
-        const delErr = await deleteResp.text();
+        const delErr = deleteResp.text;
         console.error("[Update Shopify] Delete failed:", deleteResp.status, delErr);
         return res.status(deleteResp.status).json({ error: "Failed to delete existing Shopify product", details: delErr });
       }
@@ -4876,7 +5590,7 @@ ${orientationExtra}
         shopifyProductHandle: null,
         shopifyProductUrl: null,
         shopifyShopDomain: null,
-        shopifyVariantIds: null,
+        shopifyVariantIds: null, shopifyVariantIdsBoth: null,
       });
 
       // Reload the product type with the cleared ID so the create path below works correctly
@@ -4946,14 +5660,6 @@ ${orientationExtra}
         }
       }
 
-      // Validate variant limit
-      if (shopifyVariants.length > 100) {
-        return res.status(400).json({ 
-          error: `Too many variants (${shopifyVariants.length})`,
-          details: "Shopify allows a maximum of 100 variants per product."
-        });
-      }
-
       // Build product options — only include color option if colors are actually used
       const productOptions: Array<{ name: string; values: string[] }> = [];
       
@@ -4968,6 +5674,16 @@ ${orientationExtra}
         productOptions.push({
           name: getColorOptionName(allColors),
           values: Array.from(new Set(shopifyVariants.filter(v => v.option2).map(v => v.option2!))),
+        });
+      }
+      applyPrintSidesToRestProduct(freshProductType, shopifyVariants as any[], productOptions, (v) =>
+        printifyIdForOptionNames(variantMap, sizesToUse, colorsToUse, v),
+      );
+
+      if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+        return res.status(400).json({ 
+          error: `Too many variants (${shopifyVariants.length})`,
+          details: `Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} variants per product.`
         });
       }
 
@@ -4999,7 +5715,7 @@ ${orientationExtra}
           body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
           vendor: merchant.storeName || "AI Art Studio",
           product_type: freshProductType.designerType,
-          status: "unlisted",
+          status: shopifyStatusForVisibility("unlisted"),
           published: false,
           tags: ["custom-design", "ai-artwork", "design-studio", "ai-art-studio-enabled"],
           options: productOptions.length > 0 ? productOptions : undefined,
@@ -5017,17 +5733,7 @@ ${orientationExtra}
         },
       };
 
-      const shopifyResponse = await fetch(
-        `https://${shopDomain}/admin/api/2025-10/products.json`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": installation.accessToken,
-          },
-          body: JSON.stringify(createPayload),
-        }
-      );
+      const shopifyResponse = await createProductRestCompat(shopDomain, installation.accessToken, createPayload.product);
 
       if (!shopifyResponse.ok) {
         const errorText = await shopifyResponse.text();
@@ -5039,13 +5745,12 @@ ${orientationExtra}
       const shopifyProductId = createdProduct.product.id;
       const shopifyHandle = createdProduct.product.handle;
       const createdVariants = createdProduct.product.variants || [];
-      const shopifyVariantIds: Record<string, number> = {};
-      for (const v of createdVariants) {
-        shopifyVariantIds[`${v.option1 || 'default'}:${v.option2 || 'default'}`] = v.id;
-      }
+      const { front: shopifyVariantIds, both: shopifyVariantIdsBoth } = splitShopifyVariantIdsBySides(createdVariants);
 
       try {
-        await ensureProductPublishedToOnlineStore(shopDomain, installation.accessToken, shopifyProductId);
+        const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+        const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+        await ensureProductPublishedToOnlineStore(shopDomain, pubAccessToken, shopifyProductId);
         console.log(`[Update Shopify] Product ${shopifyProductId} published to Online Store`);
       } catch (pubErr: any) {
         console.warn(`[Update Shopify] Failed to publish product ${shopifyProductId}: ${pubErr.message}`);
@@ -5057,10 +5762,11 @@ ${orientationExtra}
         shopifyProductUrl: `https://${shopDomain}/admin/products/${shopifyProductId}`,
         shopifyShopDomain: shopDomain,
         shopifyVariantIds: shopifyVariantIds,
+        shopifyVariantIdsBoth: Object.keys(shopifyVariantIdsBoth).length > 0 ? shopifyVariantIdsBoth : null,
         lastPushedToShopify: new Date(),
       });
 
-      const cheapestCreated = pickLowestPricedShopifyVariant(createdVariants);
+      const cheapestCreated = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(createdVariants, "front"));
       const cheapestVariantId = cheapestCreated?.id ?? createdVariants[0]?.id;
       if (cheapestVariantId) {
         await syncCustomizerPagesForShopifyProduct({
@@ -5292,21 +5998,11 @@ ${orientationExtra}
               </div>
             `;
 
-            const updateProductResponse = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${product.id}.json`,
-              {
-                method: "PUT",
-                headers: {
-                  "Content-Type": "application/json",
-                  "X-Shopify-Access-Token": installation.accessToken,
-                },
-                body: JSON.stringify({
-                  product: {
-                    id: product.id,
-                    body_html: cleanBodyHtml,
-                  },
-                }),
-              }
+            const updateProductResponse = await updateProductDescriptionRestCompat(
+              shopDomain,
+              installation.accessToken,
+              product.id,
+              cleanBodyHtml,
             );
 
             if (!updateProductResponse.ok) {
@@ -5353,7 +6049,7 @@ ${orientationExtra}
     title: string;
     option1: string;
     option2: string | null;
-    option3: null;
+    option3: string | null;
     price: string;
     available: boolean;
   }> {
@@ -5395,9 +6091,12 @@ ${orientationExtra}
     if (frameColors.length > 0) {
       for (const size of sizes) {
         for (const color of frameColors) {
+          // Only minted Shopify rows. Fake fallback-* ids made findVariantId
+          // succeed for unminted colours (WP-55 ATC fail-open).
           const shopifyVariantId = lookupVariantId(size, color);
+          if (!shopifyVariantId) continue;
           fallbackVariants.push({
-            id: shopifyVariantId || `fallback-${productType.id}-${size.id}-${color.id}`,
+            id: shopifyVariantId,
             title: `${size.name} / ${color.name}`,
             option1: size.name,
             option2: color.name,
@@ -5410,8 +6109,9 @@ ${orientationExtra}
     } else {
       for (const size of sizes) {
         const shopifyVariantId = lookupVariantId(size);
+        if (!shopifyVariantId) continue;
         fallbackVariants.push({
-          id: shopifyVariantId || `fallback-${productType.id}-${size.id}`,
+          id: shopifyVariantId,
           title: size.name,
           option1: size.name,
           option2: null,
@@ -5422,7 +6122,38 @@ ${orientationExtra}
       }
     }
 
-    return fallbackVariants;
+    const bothIds = (typeof productType.shopifyVariantIdsBoth === 'string'
+      ? JSON.parse(productType.shopifyVariantIdsBoth || '{}')
+      : productType.shopifyVariantIdsBoth) as Record<string, number> | null;
+    if (!bothIds || Object.keys(bothIds).length === 0) return fallbackVariants;
+
+    // Print sides rows: value sits after the existing options, as on Shopify.
+    const withSides: any[] = [];
+    const sideSlot = frameColors.length > 0 ? 'option3' : 'option2';
+    for (const fv of fallbackVariants) {
+      withSides.push({ ...fv, title: `${fv.title} / ${PRINT_SIDES_FRONT}`, [sideSlot]: PRINT_SIDES_FRONT });
+    }
+    for (const size of sizes) {
+      const colorList: Array<{ id: string; name: string } | undefined> = frameColors.length > 0 ? frameColors : [undefined];
+      for (const color of colorList) {
+        const keys = color
+          ? [`${size.name}:${color.name}`, `${size.id}:${color.id}`]
+          : [`${size.name}:default`, `${size.id}:default`];
+        const id = keys.map((k) => bothIds[k]).find(Boolean);
+        if (!id) continue;
+        const base = color ? `${size.name} / ${color.name}` : size.name;
+        withSides.push({
+          id,
+          title: `${base} / ${PRINT_SIDES_BOTH}`,
+          option1: size.name,
+          option2: color ? color.name : PRINT_SIDES_BOTH,
+          option3: color ? PRINT_SIDES_BOTH : null,
+          price: '0.00',
+          available: true,
+        });
+      }
+    }
+    return withSides;
   }
 
   /** Merge real Shopify prices onto DB fallback rows (fallback hardcodes price: 0.00). */
@@ -5441,7 +6172,7 @@ ${orientationExtra}
       if (rv?.id != null && rv.price != null && parseFloat(String(rv.price)) > 0) {
         priceById.set(String(rv.id), String(rv.price));
       }
-      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}`.toLowerCase();
+      const optKey = `${String(rv.option1 ?? "").trim()}|${String(rv.option2 ?? "").trim()}|${printSidesOfVariant(rv) ?? ""}`.toLowerCase();
       if (rv.price != null && parseFloat(String(rv.price)) > 0) {
         priceByOptions.set(optKey, String(rv.price));
       }
@@ -5451,7 +6182,7 @@ ${orientationExtra}
       if (parseFloat(v.price) > 0) return v;
       const byId = priceById.get(String(v.id));
       if (byId) return { ...v, price: byId };
-      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}`.toLowerCase();
+      const optKey = `${String(v.option1 ?? "").trim()}|${String(v.option2 ?? "").trim()}|${printSidesOfVariant(v) ?? ""}`.toLowerCase();
       const byOpt = priceByOptions.get(optKey);
       if (byOpt) return { ...v, price: byOpt };
       return v;
@@ -5462,8 +6193,9 @@ ${orientationExtra}
   function selectBaseCatalogVariants(rawVariants: any[]): any[] {
     if (!rawVariants.length) return [];
 
+    // Print sides (Front / Front + Back) is a real catalog axis, not a shadow row.
     const withoutDesignThird = rawVariants.filter(
-      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base",
+      (v) => v.option3 == null || v.option3 === "" || v.option3 === "base" || isPrintSidesValue(v.option3),
     );
     if (withoutDesignThird.length > 0) return withoutDesignThird;
 
@@ -5471,7 +6203,7 @@ ${orientationExtra}
     const seen = new Set<string>();
     const deduped: any[] = [];
     for (const v of rawVariants) {
-      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}`;
+      const key = `${v.option1 ?? ""}:${v.option2 ?? ""}:${printSidesOfVariant(v) ?? ""}`;
       if (!seen.has(key)) {
         seen.add(key);
         deduped.push(v);
@@ -5609,92 +6341,157 @@ ${orientationExtra}
           return res.status(404).json({ error: "Product not published to Shopify yet" });
         }
         
-        // Use Shopify Admin API to get product variants
-        const adminApiUrl = `https://${shopDomain}/admin/api/2025-10/products/${productType.shopifyProductId}.json`;
-        console.log(`[Product Variants] Fetching from Admin API: ${adminApiUrl}`);
-        
-        const adminResponse = await fetch(adminApiUrl, {
-          headers: {
-            'X-Shopify-Access-Token': installation.accessToken
-          }
-        });
-        
-        if (!adminResponse.ok) {
-          const errorText = await adminResponse.text().catch(() => '');
-          console.log(`[Product Variants] Admin API failed with status ${adminResponse.status}: ${errorText}`);
-          
-          // Fallback 1: Try the public product JSON endpoint (no auth required)
+        // Resolve a fresh Admin token when possible; fall back to the stored
+        // column when the /admin/oauth/access_token refresh path is down (see
+        // docs/tickets/shopify-token-refresh-401-followup.md). Falls back
+        // safely because the helper never mutates or blanks installation.
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+
+        console.log(`[Product Variants] Fetching from Admin API: product ${productType.shopifyProductId} (${shopDomain})`);
+        const adminRead = await getProductRestCompat(shopDomain, accessToken, productType.shopifyProductId);
+        const adminStatus = adminRead.ok
+          ? 200
+          : Number(/API error (\d{3})/.exec(adminRead.error || "")?.[1] || (adminRead.needsReinstall ? 401 : 502));
+
+        // A failed Admin read falls through to the existing fallback chain
+        // (public endpoint → DB-cached variants) so a transient Shopify hiccup
+        // still serves ATC. 502 is only returned when every fallback is exhausted.
+        if (!adminRead.ok || !adminRead.data) {
+          console.warn(
+            `[Product Variants] Shopify Admin read failed: status=${adminStatus} error=${String(adminRead.error || "").slice(0, 200)}`,
+          );
+
+          // Fallback 1: public /products/{handle}.json (no auth required).
+          // Guarded before JSON.parse so an HTML soft-404 / redirect can't
+          // crash us either. Routed through mapVariantsForCatalogResponse
+          // so the shape matches Admin-200 (imageSrc + ?? null defaults).
+          // Public endpoint prices come straight from the storefront JSON,
+          // which returns real merchant-set prices — no suppression needed.
           if (productType.shopifyProductHandle) {
             try {
               const publicUrl = `https://${shopDomain}/products/${productType.shopifyProductHandle}.json`;
               console.log(`[Product Variants] Trying public endpoint: ${publicUrl}`);
               const publicResponse = await fetch(publicUrl);
-              if (publicResponse.ok) {
+              const publicCT = (publicResponse.headers.get('content-type') || '').toLowerCase();
+              if (publicResponse.ok && publicCT.includes('application/json')) {
                 const publicData = await publicResponse.json();
                 const publicVariants = publicData.product?.variants || [];
+                const publicImages = publicData.product?.images || [];
                 if (publicVariants.length > 0) {
                   console.log(`[Product Variants] Fetched ${publicVariants.length} variants via public endpoint`);
                   return res.json({
-                    variants: publicVariants.map((v: any) => ({
-                      id: v.id,
-                      title: v.title,
-                      option1: v.option1,
-                      option2: v.option2,
-                      option3: v.option3,
-                      price: v.price,
-                      available: v.available
-                    })),
-                    source: "public"
+                    variants: mapVariantsForCatalogResponse(publicVariants, true, publicImages),
+                    source: "public",
                   });
                 }
+              } else {
+                const pubBody = await publicResponse.text().catch(() => '');
+                console.warn(
+                  `[Product Variants] Public endpoint non-JSON/non-OK: status=${publicResponse.status} ` +
+                    `content-type=${publicCT || '(none)'} body=${pubBody.slice(0, 200)}`,
+                );
               }
             } catch (publicError) {
               console.log(`[Product Variants] Public endpoint failed:`, publicError);
             }
           }
-          
-          // Fallback 2: Use product type's own variant data from our database
-          // This allows add-to-cart to work even when Shopify API has auth issues
+
+          // Fallback 2: Use product type's own variant data from our database.
+          // Routed through mapVariantsForCatalogResponse so every row carries
+          // the same shape as the Admin-200 success path (imageSrc included).
+          //
+          // Price-integrity guard: this fallback runs after Admin upstream
+          // failed, so enrichVariantsWithShopifyPrices has no live prices to
+          // merge and every row's price stays at the hardcoded "0.00" from
+          // buildFallbackVariantsFromProductType. Serving a shape-perfect
+          // 200 with $0 prices is worse than a loud 502 — it sails past
+          // every downstream check and lands zero-price variants in cart.
+          // If ANY variant is unpriced, suppress the fallback entirely and
+          // fall through to the 502. Root-cause of the enrichment gap is
+          // tracked separately (see docs/tickets/shopify-token-refresh-401-followup.md
+          // for context — the same auth outage that triggers this branch).
           const fallbackVariants = enrichVariantsWithShopifyPrices(
             buildFallbackVariantsFromProductType(productType),
             [],
           );
-          if (fallbackVariants.length > 0) {
-            console.log(`[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`);
-            return res.json({ variants: fallbackVariants, source: "fallback" });
-          }
-          
-          return res.status(404).json({ error: "Could not fetch product variants from Shopify" });
-        } else {
-          const data = await adminResponse.json();
-          const variants = data.product?.variants || [];
-          const productImages = data.product?.images || [];
-          
-          console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
-
-          const baseVariants = selectBaseCatalogVariants(variants);
-          if (baseVariants.length === 0) {
-            const fallbackVariants = enrichVariantsWithShopifyPrices(
-              buildFallbackVariantsFromProductType(productType),
-              variants,
+          const fallbackHasUnpriced = fallbackVariants.some(
+            (v) => !v.price || Number.parseFloat(String(v.price)) <= 0,
+          );
+          if (fallbackVariants.length > 0 && !fallbackHasUnpriced) {
+            console.log(
+              `[Product Variants] Using fallback variant data from product type (${fallbackVariants.length} variants)`,
             );
-            if (fallbackVariants.length > 0) {
-              console.log(
-                `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
-              );
-              return res.json({ variants: fallbackVariants, source: "fallback" });
-            }
-            if (variants.length > 0) {
-              console.warn(
-                `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
-                variants[0]?.option3,
-              );
-            }
+            return res.json({
+              variants: mapVariantsForCatalogResponse(fallbackVariants, true),
+              source: "fallback",
+            });
           }
-          return res.json({
-            variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
+          if (fallbackVariants.length > 0 && fallbackHasUnpriced) {
+            console.warn(
+              `[Product Variants] Suppressing DB fallback for ${shopDomain} productTypeId ${productTypeId}: ` +
+                `${fallbackVariants.length} variants but at least one has zero/missing price — ` +
+                `refusing to serve $0 into cart. Returning 502 instead.`,
+            );
+          }
+
+          // All fallbacks exhausted (or suppressed for price integrity) —
+          // surface the upstream failure so the theme can show a meaningful
+          // error instead of pretending fine.
+          return res.status(502).json({
+            error: 'shopify_auth_or_upstream',
+            status: adminStatus,
           });
         }
+
+        const data = adminRead.data;
+        const variants = data.product?.variants || [];
+        const productImages = data.product?.images || [];
+
+        console.log(`[Product Variants] Fetched ${variants.length} variants via Admin API for productTypeId ${productTypeId}`);
+
+        const baseVariants = selectBaseCatalogVariants(variants);
+        if (baseVariants.length === 0) {
+          const fallbackVariants = enrichVariantsWithShopifyPrices(
+            buildFallbackVariantsFromProductType(productType),
+            variants,
+          );
+          // Same price-integrity guard as the outer fallback. Here enrich
+          // merges from the live Admin `variants` list, so rows usually get
+          // real prices — but a name-mismatch or an Admin variant with its
+          // own zero price would leave some rows at $0. Refuse to serve
+          // partially-priced fallback: log and fall through to the empty
+          // baseVariants 200 (which the theme can render as "no variants
+          // available" rather than adding $0 to cart).
+          const fallbackHasUnpriced = fallbackVariants.some(
+            (v) => !v.price || Number.parseFloat(String(v.price)) <= 0,
+          );
+          if (fallbackVariants.length > 0 && !fallbackHasUnpriced) {
+            console.log(
+              `[Product Variants] Admin returned ${variants.length} variants but catalog empty after filter; using DB fallback (${fallbackVariants.length})`,
+            );
+            return res.json({
+              variants: mapVariantsForCatalogResponse(fallbackVariants, true, productImages),
+              source: "fallback",
+            });
+          }
+          if (fallbackVariants.length > 0 && fallbackHasUnpriced) {
+            console.warn(
+              `[Product Variants] Suppressing inner DB fallback for ${shopDomain} productTypeId ${productTypeId}: ` +
+                `${fallbackVariants.length} variants but at least one has zero/missing price after enrichment — ` +
+                `refusing to serve $0 into cart. Returning empty baseVariants instead.`,
+            );
+          }
+          if (variants.length > 0) {
+            console.warn(
+              `[Product Variants] All ${variants.length} Admin variants filtered out; sample option3:`,
+              variants[0]?.option3,
+            );
+          }
+        }
+        return res.json({
+          variants: mapVariantsForCatalogResponse(baseVariants, true, productImages),
+        });
       } else {
         // Use handle to fetch from public endpoint
         const safeHandle = (handle as string).replace(/[^a-z0-9-]/gi, '');
@@ -5703,21 +6500,30 @@ ${orientationExtra}
         }
         fetchUrl = `https://${shopDomain}/products/${safeHandle}.json`;
       }
-      
-      // Fetch public product JSON from Shopify
+
+      // Fetch public product JSON from Shopify (handle path only)
       const response = await fetch(fetchUrl);
-      
-      if (!response.ok) {
-        console.log(`[Product Variants] Failed to fetch from ${fetchUrl}: ${response.status}`);
+
+      // Parse guard: the handle branch never had a fallback chain, so a
+      // non-JSON / non-OK storefront response returns 404 as it always did.
+      // The guard just prevents JSON.parse from crashing on an HTML body.
+      const publicContentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (!response.ok || !publicContentType.includes('application/json')) {
+        const rawBody = await response.text().catch(() => '');
+        console.warn(
+          `[Product Variants] Public storefront non-JSON/non-OK: url=${fetchUrl} ` +
+            `status=${response.status} content-type=${publicContentType || '(none)'} ` +
+            `body=${rawBody.slice(0, 200)}`,
+        );
         return res.status(404).json({ error: "Product not found" });
       }
-      
+
       const data = await response.json();
       const variants = data.product?.variants || [];
       const productImages = data.product?.images || [];
-      
+
       console.log(`[Product Variants] Fetched ${variants.length} variants from ${fetchUrl}`);
-      
+
       const baseVariants = selectBaseCatalogVariants(variants);
       res.json({
         variants: mapVariantsForCatalogResponse(baseVariants, false, productImages),
@@ -5968,9 +6774,14 @@ ${orientationExtra}
       const sizes = typeof productType.sizes === 'string' 
         ? JSON.parse(productType.sizes) 
         : productType.sizes || [];
-      const frameColors = typeof productType.frameColors === 'string' 
+      const parsedFrameColors = typeof productType.frameColors === 'string' 
         ? JSON.parse(productType.frameColors) 
         : productType.frameColors || [];
+      const designerLens = await designerColourLens(productType.id);
+      const hiddenDesignerColours = designerLens.hidden;
+      const frameColors = hiddenDesignerColours.size
+        ? parsedFrameColors.filter((colour: { name?: string; id?: string }) => !frameColourHidden(colour?.name, colour?.id, hiddenDesignerColours))
+        : parsedFrameColors;
 
       const [aspectW, aspectH] = designerDisplayAspectRatio(productType).split(":").map(Number);
       const aspectRatio = aspectW / aspectH;
@@ -5997,6 +6808,24 @@ ${orientationExtra}
       let baseMockupImages = typeof productType.baseMockupImages === 'string'
         ? JSON.parse(productType.baseMockupImages)
         : productType.baseMockupImages || {};
+      // Preview Studio has no Shopify variant photos. Attach 759 size-keyed
+      // catalog blanks so the dashed box uses the same PNG + mask as the
+      // storefront. In-memory only — do not persist or rewrite primary/gallery.
+      if (
+        productType.printifyBlueprintId ===
+        CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals
+      ) {
+        const mergedDecalBlanks = mergeCatalogSizeBlanksIfNeeded(
+          productType.printifyBlueprintId,
+          baseMockupImages,
+        );
+        if (mergedDecalBlanks.blanksBySize) {
+          baseMockupImages = {
+            ...baseMockupImages,
+            blanksBySize: mergedDecalBlanks.blanksBySize,
+          };
+        }
+      }
 
       // Self-heal empty base mockups. Catalogue-activated products (esp. AOP)
       // can land with baseMockupImages `{}` — the storefront still shows a blank
@@ -6066,10 +6895,16 @@ ${orientationExtra}
         : productType.variantMap || {};
 
       const sizeChart = productType.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productType.printifyBlueprintId)
+        ? sizeChartForOfferedSizes(
+            await getNormalizedSizeChartWithTimeout(productType.printifyBlueprintId),
+            offeredSizeNames(productType),
+          )
         : null;
 
       console.log(`[Designer API] Building config for product type ${id}: ${productType.name}`);
+      const mintedFrameColors = overlayBlankSwatches(filterFrameColorsToMintedShopify(frameColors, {
+        shopifyVariantIds: (productType as any).shopifyVariantIds,
+      }), designerLens.swatches);
       const designerConfig = {
         id: productType.id,
         name: productType.name,
@@ -6105,14 +6940,18 @@ ${orientationExtra}
             aspectRatio: sizeType === "dimensional" ? sizeAspectRatio : undefined,
           };
         }),
-        frameColors: frameColors.map((c: any) => ({
+        frameColors: mintedFrameColors.map((c: any) => ({
           id: c.id,
           name: c.name,
           hex: c.hex,
         })),
         // Determine the label for the color/option selector
-        colorLabel: getColorOptionName(frameColors, productType.colorOptionName),
+        colorLabel: getColorOptionName(mintedFrameColors, productType.colorOptionName),
         sizeChart,
+        sizeFinder: await (await import("./find-my-size")).findMySizePayload({
+          shop: (productType as any).shopifyShopDomain,
+          productTypeId: productType.id,
+        }),
         canvasConfig: {
           maxDimension,
           width: canvasWidth,
@@ -6120,6 +6959,7 @@ ${orientationExtra}
           safeZoneMargin,
         },
         variantMap,
+        shopifyVariantIds: (productType as any).shopifyVariantIds || null,
         isAllOverPrint: productType.isAllOverPrint || false,
         aopTemplateId: productType.aopTemplateId || null,
         panelMappingTemplate: (productType as any).panelMappingTemplate || null,
@@ -6287,10 +7127,11 @@ ${orientationExtra}
       };
 
       // Match storefront: same merchant styles + page allow-list (not /api/config).
-      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets } =
+      const { styleConfig: pageStyleConfig, stylePresets: pageStylePresets, experienceProfile: ptExperience } =
         await resolveStylePresetsForProductType(productType as any);
       (designerConfig as any).styleConfig = pageStyleConfig;
       (designerConfig as any).stylePresets = pageStylePresets;
+      if (ptExperience) (designerConfig as any).experienceProfile = ptExperience;
 
       console.log(
         `[Designer API] Returning config for ${productType.name}, designerType: ${designerConfig.designerType}` +
@@ -6375,6 +7216,14 @@ ${orientationExtra}
     productTypeId: number,
     designerType?: string | null,
   ): Promise<CustomizerPageStyleConfig> {
+    return (await resolveStyleSourceForProductType(productTypeId, designerType)).config;
+  }
+
+  /** Newest page's style config + the page itself (for its experience profile). */
+  async function resolveStyleSourceForProductType(
+    productTypeId: number,
+    designerType?: string | null,
+  ): Promise<{ config: CustomizerPageStyleConfig; page: { experienceProfileId?: string | null } | null }> {
     try {
       const pages = await storage.listCustomizerPagesByProductTypeId(productTypeId);
       // Prefer active pages; newest first (list is createdAt ascending).
@@ -6384,37 +7233,53 @@ ${orientationExtra}
       ];
       for (const page of ordered) {
         const cfg = parseCustomizerPageStyleConfig(page.styleConfig);
-        if (cfg) return cfg;
+        if (cfg) return { config: cfg, page };
       }
+      // A profile page may carry no style config of its own (its pack comes from the profile).
+      const profiled = ordered.find((p) => p.experienceProfileId);
+      if (profiled) return { config: defaultStyleConfigForDesignerType(designerType), page: profiled };
     } catch (e) {
       console.warn(
         `[styleConfig] Failed to load customizer pages for pt ${productTypeId}:`,
         e,
       );
     }
-    return defaultStyleConfigForDesignerType(designerType);
+    return { config: defaultStyleConfigForDesignerType(designerType), page: null };
   }
 
   /** Map DB style rows the same way `/api/proxy/customizer-page` does. */
   function mapDbStylesForDesigner(dbStyles: any[]) {
     return dbStyles.map((s: any) => {
-      const hardcoded = STYLE_PRESETS.find(
-        (h) => h.id === s.id.toString() || h.name === s.name,
-      );
+      const hardcoded = findCatalogPreset(s);
       return {
         id: s.id.toString(),
+        catalogSlug: resolveCatalogSlug(s),
         name: s.name,
         promptSuffix: s.promptPrefix,
         promptPrefix: s.promptPrefix,
         category: s.category || "all",
         promptPlaceholder:
           s.promptPlaceholder || (hardcoded as any)?.promptPlaceholder,
-        options: s.options || (hardcoded as any)?.options,
+        options: mergeCatalogStyleOptions(s.options, (hardcoded as any)?.options),
         baseImageUrl:
           s.baseImageUrl || (hardcoded as any)?.baseImageUrl || undefined,
         baseImageUrls:
           s.baseImageUrls || (hardcoded as any)?.baseImageUrls || undefined,
         descriptionOptional: !!s.descriptionOptional,
+        userSlotSchema: effectiveStoredUserSlotSchema(
+          s.userSlotSchema,
+          (hardcoded as any)?.userSlotSchema,
+        ),
+        generationModel: s.generationModel ?? null,
+        outputMode: s.outputMode ?? (hardcoded as any)?.outputMode ?? null,
+        visibility: s.visibility ?? null,
+        inputCapabilities: parseStyleInputCapabilities(s.inputCapabilities),
+        ...styleBackgroundApiFields({
+          catalogSlug: resolveCatalogSlug(s),
+          backgroundSelectorEnabled: s.backgroundSelectorEnabled ?? null,
+          defaultBackgroundColor: s.defaultBackgroundColor ?? null,
+          backgroundRequired: s.backgroundRequired ?? null,
+        }),
       };
     });
   }
@@ -6423,6 +7288,7 @@ ${orientationExtra}
   function hardcodedStylePresetsForDesigner() {
     return STYLE_PRESETS.map((s) => ({
       id: s.id,
+      catalogSlug: s.id === "none" ? null : s.id,
       name: s.name,
       promptSuffix: s.promptPrefix,
       promptPrefix: s.promptPrefix,
@@ -6432,6 +7298,15 @@ ${orientationExtra}
       baseImageUrl: (s as any).baseImageUrl || undefined,
       baseImageUrls: (s as any).baseImageUrls || undefined,
       descriptionOptional: !!(s as any).descriptionOptional,
+      userSlotSchema: (s as any).userSlotSchema ?? null,
+      generationModel: (s as any).generationModel ?? null,
+      outputMode: (s as any).outputMode ?? null,
+      ...styleBackgroundApiFields({
+        catalogSlug: s.id === "none" ? null : s.id,
+        backgroundSelectorEnabled: (s as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (s as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (s as any).backgroundRequired ?? null,
+      }),
     }));
   }
 
@@ -6447,11 +7322,12 @@ ${orientationExtra}
   }): Promise<{
     styleConfig: CustomizerPageStyleConfig;
     stylePresets: ReturnType<typeof mapDbStylesForDesigner>;
+    experienceProfile: PublicExperienceProfile | null;
   }> {
-    const styleConfig = await resolveStyleConfigForProductType(
-      productType.id,
-      productType.designerType,
-    );
+    const source = await resolveStyleSourceForProductType(productType.id, productType.designerType);
+    const experience = await resolvePageExperience(source.page, productType.merchantId);
+    let styleConfig =
+      effectiveStyleConfigForPage(source.page ? source.config : null, experience?.row) ?? source.config;
     let stylePresets: ReturnType<typeof mapDbStylesForDesigner> = [];
     try {
       const merchantId = productType.merchantId;
@@ -6472,12 +7348,13 @@ ${orientationExtra}
         typeof mapDbStylesForDesigner
       >;
     }
+    styleConfig = await resolvePageStyleConfig(styleConfig, productType.merchantId, stylePresets);
     stylePresets = filterStylePresetsForPage(
       stylePresets,
       styleConfig,
       productType.designerType,
     ) as ReturnType<typeof mapDbStylesForDesigner>;
-    return { styleConfig, stylePresets };
+    return { styleConfig, stylePresets, experienceProfile: experience?.public ?? null };
   }
 
   async function hydratePrintifyBothCostsFromPlatform(pt: any): Promise<any> {
@@ -6509,44 +7386,65 @@ ${orientationExtra}
    * Extracted so we can call it from the fast path (direct ID lookup) and the
    * full fallback path (merchant lookup chain) without duplicating 100 lines of code.
    */
+  async function atcModeForShop(shop: string | null | undefined) {
+    if (!shop) return normalizeAtcMode(null);
+    try {
+      const inst = await withTimeout(storage.getShopifyInstallationByShop(shop), 1500, "atcModeForShop");
+      return normalizeAtcMode((inst as { atcMode?: string } | null)?.atcMode);
+    } catch {
+      return normalizeAtcMode(null);
+    }
+  }
+
   function buildDesignerConfig(
     productTypeToUse: any,
     requestedId: number,
     resolvedFrom?: string,
-    sizeChart?: Record<string, any> | null
+    sizeChart?: Record<string, any> | null,
+    mintedCatalog?: Array<{
+      id?: string | number;
+      title?: string | null;
+      option1?: string | null;
+      option2?: string | null;
+    }> | null,
+    hiddenColourKeys?: Set<string>,
+    blankSwatches?: readonly ColourBlankSwatch[],
   ): Record<string, any> {
     const allSizes = typeof productTypeToUse.sizes === "string"
       ? JSON.parse(productTypeToUse.sizes)
       : productTypeToUse.sizes || [];
-    const allFrameColors = typeof productTypeToUse.frameColors === "string"
+    const parsedFrameColors = typeof productTypeToUse.frameColors === "string"
       ? JSON.parse(productTypeToUse.frameColors)
       : productTypeToUse.frameColors || [];
+    const hidden = hiddenColourKeys ?? new Set<string>();
+    const allFrameColors = hidden.size
+      ? parsedFrameColors.filter((colour: { name?: string; id?: string }) => !frameColourHidden(colour?.name, colour?.id, hidden))
+      : parsedFrameColors;
+    const catalogForColours = hidden.size && mintedCatalog
+      ? mintedCatalog.filter((row) => !frameColourHidden(row.option2, row.option2, hidden))
+      : mintedCatalog;
 
-    // Filter sizes and colors to only those the merchant has selected.
-    // Empty array means the merchant deliberately cleared the selection (e.g. no color option).
-    // null/undefined means never configured — fall back to showing all.
+    // Sizes: merchant selectedSizeIds (null = never configured → all; [] = none).
+    // Colours: minted Shopify only — never selectedColorIds (can exceed the 100-variant cap).
     const rawSizeIds = typeof productTypeToUse.selectedSizeIds === "string"
       ? productTypeToUse.selectedSizeIds
       : JSON.stringify(productTypeToUse.selectedSizeIds ?? null);
-    const rawColorIds = typeof productTypeToUse.selectedColorIds === "string"
-      ? productTypeToUse.selectedColorIds
-      : JSON.stringify(productTypeToUse.selectedColorIds ?? null);
 
     // Parse — treat null JSON as "never set"
     const savedSizeIds: string[] | null = rawSizeIds && rawSizeIds !== "null"
       ? JSON.parse(rawSizeIds)
-      : null;
-    const savedColorIds: string[] | null = rawColorIds && rawColorIds !== "null"
-      ? JSON.parse(rawColorIds)
       : null;
 
     // null = never configured → show all; [] = deliberately cleared → show none
     const sizes = savedSizeIds !== null
       ? allSizes.filter((s: any) => savedSizeIds.includes(s.id))
       : allSizes;
-    const frameColors = savedColorIds !== null
-      ? allFrameColors.filter((c: any) => savedColorIds.includes(c.id))
-      : allFrameColors;
+    // Customer colours = minted Shopify only. selectedColorIds is merchant intent
+    // and can exceed the 100-variant cap (WP-55: 14 selected, ~11 minted).
+    const frameColors = overlayBlankSwatches(filterFrameColorsToMintedShopify(allFrameColors, {
+      catalog: catalogForColours,
+      shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds,
+    }), blankSwatches || []);
 
     const displayAspectRatio = designerDisplayAspectRatio(productTypeToUse);
     const [aspectW, aspectH] = displayAspectRatio.split(":").map(Number);
@@ -6785,6 +7683,7 @@ ${orientationExtra}
         safeZoneMargin,
       },
       variantMap,
+      shopifyVariantIds: (productTypeToUse as any).shopifyVariantIds || null,
       variantAvailability: parseVariantAvailabilityMap(
         (productTypeToUse as any).variantAvailability,
       ),
@@ -6947,13 +7846,27 @@ ${orientationExtra}
           res.set("Cache-Control", "no-cache, no-store, must-revalidate");
           res.set("Pragma", "no-cache");
           res.set("Expires", "0");
-          const sizeChart = productTypeForConfig!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
-            : null;
-          const fastConfig = buildDesignerConfig(productTypeForConfig!, id, undefined, sizeChart);
+          const [sizeChart, fastAtcMode] = await Promise.all([
+            productTypeForConfig!.printifyBlueprintId
+              ? getNormalizedSizeChartWithTimeout(productTypeForConfig!.printifyBlueprintId)
+              : null,
+            atcModeForShop(shop),
+          ]);
+          const fastLens = await designerColourLens(productTypeForConfig!.id);
+          const fastConfig = buildDesignerConfig(
+            productTypeForConfig!,
+            id,
+            undefined,
+            sizeChart,
+            undefined,
+            fastLens.hidden,
+            fastLens.swatches,
+          );
+          (fastConfig as any).atcMode = fastAtcMode;
           const fastStyles = await resolveStylePresetsForProductType(productTypeForConfig! as any);
           (fastConfig as any).styleConfig = fastStyles.styleConfig;
           (fastConfig as any).stylePresets = fastStyles.stylePresets;
+          if (fastStyles.experienceProfile) (fastConfig as any).experienceProfile = fastStyles.experienceProfile;
           return res.json(fastConfig);
         }
         console.log(`[SF-DESIGNER ${requestId}] FAST PATH miss for id=${id} — falling back to merchant lookup`);
@@ -7101,13 +8014,27 @@ ${orientationExtra}
       // 5️⃣ BUILD CONFIG using shared helper
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Building designer config...`);
       const buildStart = Date.now();
-      const sizeChart = productTypeForConfig.printifyBlueprintId
-        ? await getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
-        : null;
-      const designerConfig = buildDesignerConfig(productTypeForConfig, id, resolvedFrom, sizeChart);
+      const [sizeChart, sfAtcMode] = await Promise.all([
+        productTypeForConfig.printifyBlueprintId
+          ? getNormalizedSizeChartWithTimeout(productTypeForConfig.printifyBlueprintId)
+          : null,
+        atcModeForShop(shop),
+      ]);
+      const designerLens = await designerColourLens(Number(productTypeForConfig?.id) || id);
+      const designerConfig = buildDesignerConfig(
+        productTypeForConfig,
+        id,
+        resolvedFrom,
+        sizeChart,
+        undefined,
+        designerLens.hidden,
+        designerLens.swatches,
+      );
+      (designerConfig as any).atcMode = sfAtcMode;
       const sfStyles = await resolveStylePresetsForProductType(productTypeForConfig as any);
       (designerConfig as any).styleConfig = sfStyles.styleConfig;
       (designerConfig as any).stylePresets = sfStyles.stylePresets;
+      if (sfStyles.experienceProfile) (designerConfig as any).experienceProfile = sfStyles.experienceProfile;
       console.log(`[SF-DESIGNER ${requestId}] [STEP 6] Config built - ${Date.now() - buildStart}ms`);
 
       // 6️⃣ SEND RESPONSE
@@ -7561,6 +8488,22 @@ ${orientationExtra}
   );
 
   // Storefront ping endpoint - quick health check for embed to verify connectivity
+  // ATC-debug sits next to ping so Railway can see browser-side cart retries.
+  app.post("/api/storefront/atc-debug", (req: Request, res: Response) => {
+    const event = String(req.body?.event || "").slice(0, 64);
+    const attempt = req.body?.attempt;
+    const variantId = String(req.body?.variantId || "").replace(/\D/g, "").slice(0, 20);
+    const created = !!req.body?.created;
+    const soldOutRace = !!req.body?.soldOutRace;
+    const source = String(req.body?.source || "").slice(0, 32);
+    const cid = String(req.body?.cid || req.body?.correlationId || "").slice(0, 80);
+    const reason = String(req.body?.reason || "").slice(0, 64);
+    console.log(
+      `[ATC-debug] event=${event} attempt=${attempt ?? "-"} variant=${variantId || "-"} created=${created} soldOut=${soldOutRace} source=${source} cid=${cid} reason=${reason}`,
+    );
+    res.json({ ok: true });
+  });
+
   app.get("/api/storefront/ping", (req: Request, res: Response) => {
     const timestamp = Date.now();
     const reqId = (req as any).reqId || "none";
@@ -7601,13 +8544,18 @@ ${orientationExtra}
       let creditsRemaining = 0;
 
       if (customerId) {
+        // Wallet state only for the proven caller (token / proxy-signed Shopify
+        // customer) — never for a claimed id.
         const rawCustomerId = String(customerId);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
-        const customer = await resolveStorefrontCustomerIdentity({
-          shop: String(shop),
-          customerId: isInternalCustomer ? rawCustomerId : null,
-          shopifyCustomerId: isInternalCustomer ? null : rawCustomerId,
-        });
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
+        const verified = await resolveVerifiedStorefrontIdentity(
+          req,
+          String(shop),
+          { shopifyCustomerId: isInternalCustomer ? null : rawCustomerId, customerId: rawCustomerId },
+          { allowAnonymous: false },
+        );
+        if (!verified.ok) return res.status(verified.status).json({ error: verified.error });
+        const customer = verified.customer;
         const balance = await storage.ensureCustomerBalance(customer.id);
         generationsUsed = balance.freeGenerationsUsed || 0;
         creditsRemaining = balance.credits || 0;
@@ -7626,6 +8574,21 @@ ${orientationExtra}
       res.status(500).json({ error: "Failed to check status" });
     }
   });
+
+  async function merchantStoreDisplayName(
+    shop: string,
+    installation: { merchantId?: string | number | null } | null | undefined,
+  ): Promise<string | null> {
+    try {
+      const merchant = installation?.merchantId
+        ? await storage.getMerchant(String(installation.merchantId))
+        : await storage.getMerchantByShop(shop);
+      const name = String(merchant?.storeName || "").trim();
+      return name || null;
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * GET /api/storefront/customizer-page?shop=&handle=
@@ -7654,42 +8617,26 @@ ${orientationExtra}
     const rawCreatorUsername = String(req.query.creatorUsername || "").trim();
     const rawCreatorId = String(req.query.creatorId || "").trim();
 
-    const designerPromise = (async () => {
-      if (!page.productTypeId) return null;
-      try {
-        const pt = await storage.getProductType(page.productTypeId);
-        if (!pt) return null;
-        const prepared = await prepareProductTypeForDesigner(pt, {
-          allowUnpublishedHarvest: true,
-        });
-        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
-        // Size chart is loaded client-side; waiting here added up to 2.5s before
-        // the first placeholder could render.
-        return buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, null);
-      } catch (e) {
-        console.warn(
-          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
-          e,
-        );
-        return null;
-      }
-    })();
-
     const variantsPromise = (async () => {
-      const empty: Array<{ id: string; title: string; price: string }> = [];
+      const empty: {
+        mapped: Array<{ id: string; title: string; price: string }>;
+        liveCatalog: Array<{
+          id?: string | number;
+          title?: string | null;
+          option1?: string | null;
+          option2?: string | null;
+        }> | null;
+      } = { mapped: [], liveCatalog: null };
       if (!page.baseProductId || !installation) return empty;
       try {
         const tokenReady = await ensureValidOfflineAccessToken(installation);
         const accessToken = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
         if (!accessToken) throw new Error("No Shopify access token");
-        const prodResult = await shopifyApiCall(
-          shop,
-          accessToken,
-          `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`,
-        );
+        const prodResult = await getProductRestCompat(shop, accessToken, page.baseProductId);
         const rawVariants: any[] = prodResult.data?.product?.variants ?? [];
         const productImages: any[] = prodResult.data?.product?.images ?? [];
         let baseVariants = selectBaseCatalogVariants(rawVariants);
+        let fromLiveShopify = baseVariants.length > 0;
         if (baseVariants.length === 0 && page.productTypeId) {
           const pt = await storage.getProductType(page.productTypeId);
           if (pt) {
@@ -7715,14 +8662,46 @@ ${orientationExtra}
             () => {},
           );
         }
-        return mapped;
+        return { mapped, liveCatalog: fromLiveShopify ? mapped : null };
       } catch (e) {
         console.warn(`[storefront/customizer-page] variants failed:`, e);
         return empty;
       }
     })();
 
-    const [designerConfig, variants] = await Promise.all([designerPromise, variantsPromise]);
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (!pt) return null;
+        const prepared = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        const ptForDesigner = await hydratePrintifyBothCostsFromPlatform(prepared);
+        // Size chart is loaded client-side; waiting here added up to 2.5s before
+        // the first placeholder could render.
+        const { liveCatalog } = await variantsPromise;
+        const pageLens = await designerColourLens(page.productTypeId);
+        return buildDesignerConfig(
+          ptForDesigner!,
+          page.productTypeId,
+          undefined,
+          null,
+          liveCatalog,
+          pageLens.hidden,
+          pageLens.swatches,
+        );
+      } catch (e) {
+        console.warn(
+          `[storefront/customizer-page] Failed designerConfig for productTypeId=${page.productTypeId}:`,
+          e,
+        );
+        return null;
+      }
+    })();
+
+    const [designerConfig, variantResult] = await Promise.all([designerPromise, variantsPromise]);
+    const variants = variantResult.mapped;
 
     let stylePresets: any[] = [];
     try {
@@ -7788,9 +8767,13 @@ ${orientationExtra}
       }
     }
 
-    const pageStyleConfig =
-      parseCustomizerPageStyleConfig(page.styleConfig) ??
-      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    const pageExperience = await resolvePageExperience(page, installation?.merchantId);
+    const pageStyleConfig = await resolvePageStyleConfig(
+      effectiveStyleConfigForPage(parseCustomizerPageStyleConfig(page.styleConfig), pageExperience?.row) ??
+        defaultStyleConfigForDesignerType(designerConfig?.designerType),
+      installation?.merchantId,
+      stylePresets,
+    );
     // Creator assignment is the catalog — do not drop styles because the
     // customizer page was saved as Apparel-only / selected merchant IDs.
     if (!creatorStorefrontStyles) {
@@ -7805,6 +8788,12 @@ ${orientationExtra}
       promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
     }));
 
+    const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
+    const presentment = presentmentFromRequest(req, shopCurrency);
+    const storeName = await merchantStoreDisplayName(shop, installation);
+    const atcMode = normalizeAtcMode((installation as { atcMode?: string } | null)?.atcMode);
+    if (designerConfig) (designerConfig as any).atcMode = atcMode;
+
     return res.json({
       id: page.id,
       handle: page.handle,
@@ -7817,11 +8806,16 @@ ${orientationExtra}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
+      atcMode,
       designerConfig,
       variants,
       stylePresets,
       styleConfig: pageStyleConfig,
+      experienceProfile: pageExperience?.public ?? null,
       freshDesignAllowed: page.status === "active" || page.status === "preview",
+      presentment,
+      storeName,
+      themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
 
@@ -7937,6 +8931,97 @@ ${orientationExtra}
     }
   }));
 
+  // Quotes Step A — Sonnet only. Never debits a credit. Not on the generate path.
+  app.post("/api/storefront/quote-options", async (req: Request, res: Response) => {
+    const railwayEnv = `${process.env.RAILWAY_ENVIRONMENT || ""} ${process.env.RAILWAY_ENVIRONMENT_NAME || ""}`.toLowerCase();
+    const staging = requestLooksLikeStagingHost(req) || railwayEnv.includes("staging");
+    const fail = (err: any, fallbackStatus: number) => {
+      const status = Number(err?.status) || fallbackStatus;
+      const payload = staging
+        ? stagingQuoteErrorPayload(err)
+        : { error: err?.message || "Quote writer is unavailable" };
+      return res.status(status).json(payload);
+    };
+    try {
+      const theme = String(req.body?.theme || "").trim();
+      const voice = String(req.body?.voice || "").trim();
+      const shopRaw = String(req.body?.shop || req.query.shop || "");
+      const shop = shopRaw ? normalizeMyshopifyShopDomain(shopRaw) : "";
+      if (shop) {
+        const installation = await getAuthorizedInstallation(shop);
+        if (!installation) {
+          return res.status(401).json({ error: "Shop not authorized" });
+        }
+      }
+      const options = await generateQuoteOptions(theme, voice);
+      return res.json({ options });
+    } catch (err: any) {
+      console.warn("[quote-options] route", err?.stack || err?.message || err);
+      return fail(err, 500);
+    }
+  });
+
+  /**
+   * Style-pack concept writer (Quotes pattern): three concepts before any image.
+   * The style must be a pack style the shop's merchant may use, whose pack
+   * profile has a concept writer. Never debits a credit.
+   */
+  app.post("/api/storefront/concept-options", async (req: Request, res: Response) => {
+    try {
+      const shop = normalizeMyshopifyShopDomain(String(req.body?.shop || ""));
+      const installation = shop ? await getAuthorizedInstallation(shop) : null;
+      if (!installation?.merchantId) return res.status(401).json({ error: "Shop not authorized" });
+      const styleId = String(req.body?.styleId || "").trim();
+      const styles = await storage.getStylePresetsByMerchant(installation.merchantId);
+      const style = styles.find((s) => String(s.id) === styleId && s.isActive);
+      if (!style) return res.status(404).json({ error: "Style not found" });
+      const { allowed, pack } = await resolveGeneratePack(
+        style as any,
+        installation.merchantId,
+        typeof req.body?.stylePackId === "string" ? req.body.stylePackId : null,
+      );
+      const profile = allowed && pack ? getStylePackProfile(pack.pack.promptProfileKey) : null;
+      if (!profile) return res.status(404).json({ error: "This style has no concept writer" });
+      const f = (req.body?.fields && typeof req.body.fields === "object" ? req.body.fields : {}) as Record<string, unknown>;
+      const text = (v: unknown, max = 400) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
+      const labelOf = (opts: Array<{ id: string; label: string }>, id: unknown) =>
+        opts.find((o) => o.id === id)?.label ?? "";
+      const subStyle = (findCatalogPreset(style as any) as any)?.options?.choices?.find((c: any) => c.id === f.subStyle);
+      const traits = parsePersonalityTraits(f.personalityTraits);
+      const conceptEventCtx = {
+        kind: "concepts" as const,
+        route: "storefront-concept-options",
+        merchantId: installation.merchantId,
+        shopDomain: shop,
+        experienceProfile: profile.key,
+        stylePack: pack?.pack.slug ?? null,
+        styleSlug: resolveCatalogSlug(style as any),
+        legacyModel: anthropicQuotesModel(),
+      };
+      const conceptStart = Date.now();
+      const options = await generatePackConceptOptions(profile, [
+        ["style", profile.key === "petposterous" ? "" : `${style.name}${subStyle ? ` — ${subStyle.name}` : ""}`],
+        ["pet", [text(f.petName, 40), text(f.species, 40)].filter(Boolean).join(", ")],
+        ["personality", traits.join(", ")],
+        ["behaviour", text(f.behavior)],
+        ["humour", labelOf(profile.humorOptions, f.humor)],
+        ["relationship", labelOf(profile.relationshipOptions, f.relationship)],
+        ["owner in the picture", f.hasOwnerPhoto === true ? "yes" : ""],
+        ["words mode", text(f.wordsMode, 20)],
+        ["exact customer words", f.wordsMode === "exact" ? text(f.exactWords, 120) : ""],
+      ]).catch((err) => {
+        void recordGenerationEvent(conceptEventCtx, { success: false, durationMs: Date.now() - conceptStart, error: err });
+        throw err;
+      });
+      void recordGenerationEvent(conceptEventCtx, { success: true, durationMs: Date.now() - conceptStart });
+      return res.json({ options });
+    } catch (err: any) {
+      console.warn("[concept-options] route", err?.stack || err?.message || err);
+      const status = Number(err?.status) || 500;
+      return res.status(status).json({ error: err?.message || "Concept writer is unavailable" });
+    }
+  });
+
   // ==================== STOREFRONT GENERATE (NO SESSION TOKEN) ====================
   // Used by storefront embeds where App Bridge session tokens are not available.
   // Validates shop domain + active installation instead of session token.
@@ -7958,7 +9043,11 @@ ${orientationExtra}
       const {
         prompt,
         userPrompt: rawUserPrompt,
+        quoteArtBrief: quoteArtBriefSf,
+        quoteFontSuggestion: quoteFontSuggestionSf,
+        quotesVoice: quotesVoiceSf,
         stylePreset,
+        styleOptionId: styleOptionIdSf,
         size,
         frameColor,
         referenceImage,
@@ -7972,8 +9061,11 @@ ${orientationExtra}
         creatorUsername: rawCreatorUsername,
         creatorId: rawCreatorId,
         creatorSessionId: rawCreatorSessionId,
+        decorBackgroundFill: decorBackgroundFillSf,
       } = req.body;
       console.log(P, reqId, "start", { shop, sessionId: sessionId?.substring(0, 8), customerId, productTypeId, contentType: req.headers["content-type"] });
+      // Legacy string[] and role-tagged [{url, role, label}] both accepted.
+      const sfTaggedRefs = normalizeReferenceImages(referenceImagesArrSf, referenceImage);
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required", reqId, stage: "validation" });
@@ -8093,17 +9185,28 @@ ${orientationExtra}
       let customer: any = null;
       let resolvedJobCustomerId: string | null = null;
 
-      if (customerId) {
-        const tokenIdentity = verifyStorefrontIdentityToken(req);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-        customer = await resolveStorefrontCustomerIdentity({
-          shop,
-          customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
-          shopifyCustomerId: isInternalCustomer ? null : customerId,
-        }).catch((err) => {
-          console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
-          return null;
-        });
+      // Customer wallet only from proof (token / proxy-signed Shopify id); an
+      // unproven customerId falls through to the anonymous session path below.
+      const isInternalCustomer =
+        typeof customerId === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const provenSfResult = customerId
+        ? await resolveVerifiedStorefrontIdentity(
+            req,
+            shop,
+            { shopifyCustomerId: isInternalCustomer ? null : String(customerId) },
+            { allowAnonymous: false },
+          ).catch((err) => {
+            console.warn(P, reqId, `customer ${customerId} could not be resolved:`, err?.message);
+            return null;
+          })
+        : null;
+      const provenSf = provenSfResult?.ok ? provenSfResult : null;
+      if (customerId && !provenSf) {
+        console.warn(P, reqId, `customer ${customerId} not proven — using anonymous session`);
+      }
+      if (provenSf) {
+        customer = provenSf.customer;
 
         if (customer) {
           resolvedJobCustomerId = customer.id;
@@ -8120,14 +9223,20 @@ ${orientationExtra}
             shopFreeRemaining = freePeek.remaining;
             shopFreeUsed = freePeek.used;
           }
-          let paidCredits = balance.credits;
+          let paidCredits = storefrontPaidSpendable({
+            earnedCredits: balance.earnedCredits,
+            packCredits: balance.packCredits,
+          });
           if (creatorCtx) {
             const { peekCreatorEarned } = await import("./creator-earned");
             const creatorEarned = await peekCreatorEarned({
               creatorId: creatorCtx.id,
               customerId: customer.id,
             });
-            paidCredits = creatorEarned + (balance.packCredits ?? 0);
+            paidCredits = storefrontPaidSpendable({
+              earnedCredits: creatorEarned,
+              packCredits: balance.packCredits,
+            });
           }
           const spend = pickStorefrontGenerationSpend({
             shopFreeRemaining,
@@ -8145,7 +9254,13 @@ ${orientationExtra}
           } else if (spend === "customer_paid") {
             usedCustomerPaidCredit = true;
             storefrontBillingMode = "customer_paid";
-            console.log(P, reqId, `customer ${customer.id} shop free exhausted — will deduct ${balance.credits} ledger credits on success`);
+            console.log(
+              P,
+              reqId,
+              creatorCtx
+                ? `customer ${customer.id} shop free exhausted — will spend creator-earned then pack (${paidCredits} visible paid)`
+                : `customer ${customer.id} shop free exhausted — will spend earned then pack (${paidCredits} visible paid)`,
+            );
           } else if (creatorCtx) {
             return res.status(403).json({
               error: "FREE_LIMIT_REACHED",
@@ -8178,6 +9293,12 @@ ${orientationExtra}
         });
 
         if (anonCustomer) {
+          const anonAliasTypes = (await storage.getCustomerAliases(anonCustomer.id).catch(() => [])).map((a) => a.aliasType);
+          if (isAuthenticatedAccount({ userId: anonCustomer.userId, aliasTypes: anonAliasTypes })) {
+            // This session was merged into a signed-in account; the session id alone
+            // never acts as that account (same rule as identity bootstrap).
+            return res.status(401).json({ error: "SIGN_IN_REQUIRED", rotateSession: true, message: "Please sign in again to continue." });
+          }
           resolvedJobCustomerId = anonCustomer.id;
           if (creatorCtx) {
             const { peekCreatorCustomerFreeGens } = await import("./creator-quota");
@@ -8278,17 +9399,45 @@ ${orientationExtra}
 
       rateLimit.count++;
 
-      if (!prompt || !size) {
+      if (!size || (prompt == null && rawUserPrompt == null)) {
         return res.status(400).json({ error: "Prompt and size are required" });
+      }
+
+      // Phase 4 Slice A/B: size×country coverage gate — refuse BEFORE job create
+      // or credit spend. Country is middleware req.shipCountry (cookie > IP > US).
+      const shipCountry = resolveShipCountryFromRequest(req); // req.shipCountry from middleware
+      const shippingBlock = await lookupAndBlockStorefrontGenerate({
+        productTypeId,
+        size,
+        color: frameColor,
+        country: shipCountry,
+      });
+      if (shippingBlock) {
+        console.warn(P, reqId, "shipping coverage blocked generate", {
+          country: shippingBlock.country,
+          sizeId: shippingBlock.sizeId,
+          reason: shippingBlock.reason,
+          code: shippingBlock.code,
+        });
+        return res.status(409).json({ ...shippingBlock, reqId, stage: "shipping" });
       }
 
       // Merchant plan quota is consumed in the worker after success (peek-only here).
       let stylePromptPrefix = "";
       let styleName = "";
+      let catalogSlugSf: string | null = null;
+      let sfOutputMode: string | null = null;
       let stylePromptPrefixDark: string | null = null;
       let sfStyleCategory = "all";
       let sfStyleBaseImageUrl: string | undefined;
       let sfStyleBaseImageUrls: string[] = [];
+      let sfVectorizeEnabled: boolean | null = null;
+      let sfGenerationModel: string | null = null;
+      let sfGenerationModelDecor: string | null = null;
+      let sfGenerationQuality: string | null = null;
+      let sfUserSlotSchema: unknown = null;
+      let sfStyleOptions: { choices?: Array<{ id?: string; name?: string; promptFragment?: string }> } | null = null;
+      let sfPackCtx: PackGenerationContext | null = null;
       if (creatorCtx && stylePreset) {
         const { isStyleEntitledForGenerate } = await import("./creator-styles");
         const entitled = await isStyleEntitledForGenerate(creatorCtx.id, stylePreset);
@@ -8314,12 +9463,31 @@ ${orientationExtra}
           return true;
         });
         if (selectedStyle) {
+          const packPrep = await preparePackGeneration({
+            style: selectedStyle as any,
+            merchantId: installation.merchantId,
+            body: req.body,
+            referenceImages: sfTaggedRefs,
+          });
+          if (!packPrep.ok) {
+            return res.status(packPrep.status).json({ ...packPrep.body, reqId, stage: "style" });
+          }
+          sfPackCtx = packPrep.ctx;
           styleName = selectedStyle.name || "";
+          catalogSlugSf = resolveCatalogSlug(selectedStyle);
+          sfOutputMode = (selectedStyle as any).outputMode ?? null;
           sfStyleCategory = selectedStyle.category || "all";
           if (selectedStyle.promptPrefix) {
             stylePromptPrefix = selectedStyle.promptPrefix;
           }
           stylePromptPrefixDark = (selectedStyle as any).promptPrefixDark ?? null;
+          sfVectorizeEnabled = (selectedStyle as any).vectorizeEnabled ?? null;
+          const sfModelStyle = modelDefiningStyle(selectedStyle as any, sfPackCtx, dbStyles as any[]);
+          sfGenerationModel = sfModelStyle.generationModel ?? null;
+          sfGenerationModelDecor = sfModelStyle.generationModelDecor ?? null;
+          sfGenerationQuality = sfModelStyle.generationQuality ?? null;
+          sfUserSlotSchema = (selectedStyle as any).userSlotSchema ?? null;
+          sfStyleOptions = (selectedStyle as any).options ?? null;
           const dbBaseUrls: string[] = (selectedStyle as any).baseImageUrls ||
             (selectedStyle.baseImageUrl ? [selectedStyle.baseImageUrl] : []);
           sfStyleBaseImageUrls = dbBaseUrls;
@@ -8329,10 +9497,14 @@ ${orientationExtra}
           const hardcodedStyle = STYLE_PRESETS.find(s => s.id === stylePreset);
           if (hardcodedStyle) {
             styleName = hardcodedStyle.name;
+            catalogSlugSf = hardcodedStyle.id;
+            sfOutputMode = (hardcodedStyle as any).outputMode ?? sfOutputMode;
             sfStyleCategory = hardcodedStyle.category || "all";
             if (hardcodedStyle.promptPrefix) {
               stylePromptPrefix = hardcodedStyle.promptPrefix;
             }
+            sfUserSlotSchema = (hardcodedStyle as any).userSlotSchema ?? sfUserSlotSchema;
+            sfStyleOptions = (hardcodedStyle as any).options ?? sfStyleOptions;
           }
         }
       }
@@ -8426,17 +9598,43 @@ ${orientationExtra}
       }
 
       // Determine apparel status early — affects both prompt and dimensions
-      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory);
+      let isApparel = resolveIsApparelGeneration(productType, sfStyleCategory, {
+        outputMode: sfOutputMode,
+        catalogSlug: catalogSlugSf,
+      });
+      if (sfPackCtx?.profile.key === "petposterous" && sfPackCtx.visualSystem) {
+        sfPackCtx.productRenderer = petposterousProductFamily(productType, isApparel);
+        if (petposterousLook(sfPackCtx.visualSystem)?.compatibility[sfPackCtx.productRenderer] === "hidden") {
+          return res.status(400).json({ error: "LOOK_NOT_AVAILABLE", message: "Choose a compatible look for this product." });
+        }
+      }
+      const legacySfStyleGen = resolveStyleGenerationForProduct(
+        {
+          generationModel: sfGenerationModel,
+          generationQuality: sfGenerationQuality,
+          outputMode: sfOutputMode,
+          catalogSlug: catalogSlugSf,
+          generationModelDecor: sfGenerationModelDecor,
+        },
+        productType?.designerType,
+        { isApparel },
+      );
+      const sfGenPlan = applyRendererOverride(
+        resolveGenerationPlan({
+          merchantId: installation.merchantId ?? null,
+          packProfileKey: sfPackCtx?.profile.key,
+          productFamily: sfPackCtx?.productRenderer ?? petposterousProductFamily(productType, isApparel),
+          isApparel,
+          styleRoute: legacySfStyleGen.route,
+          nativeTransparent: legacySfStyleGen.nativeTransparent,
+        }),
+        req.get("x-appai-renderer-override"),
+      );
+      const sfStyleGen = styleGenForPlan(legacySfStyleGen, sfGenPlan);
+      const sfKeepResolution = planKeepsSourceResolution(sfGenPlan);
 
       const isAllOverPrint = !!(productType?.isAllOverPrint);
-      if (isApparel && !isAllOverPrint) {
-        stylePromptPrefix = resolveMotifStylePrefix(
-          sfStyleCategory,
-          styleName,
-          stylePreset,
-          stylePromptPrefix,
-        );
-      } else if (isAllOverPrint && stylePromptPrefix) {
+      if (isAllOverPrint && stylePromptPrefix) {
         stylePromptPrefix = sanitizeStylePrefixForAop(stylePromptPrefix);
       }
 
@@ -8470,47 +9668,37 @@ ${orientationExtra}
       // When user provides a description, it becomes the subject; style prefix provides artistic direction.
       // Pattern: "[userDescription], [stylePrefix]" so the AI prioritises the user's intent.
       const userDescSf = (rawUserPrompt || "").trim();
-      let fullPrompt: string;
-      if (stylePromptPrefix) {
-        if (userDescSf) {
-          fullPrompt = `${userDescSf}, ${stylePromptPrefix}`;
-        } else {
-          fullPrompt = stylePromptPrefix;
+      let sfColorTier: ColorTier = "light";
+      if (isApparel && frameColor && productType) {
+        const frameColors = JSON.parse(productType.frameColors || "[]");
+        const selectedColor = frameColors.find((c: any) => c.id === frameColor);
+        if (selectedColor?.hex) {
+          sfColorTier = getColorTier(selectedColor.hex);
         }
-      } else {
-        fullPrompt = prompt;
       }
+      const styleLayerSf = resolveStyleLayerRaw({
+        lightPrefix: stylePromptPrefix,
+        darkPrefix: stylePromptPrefixDark,
+        colorTier: sfColorTier,
+        stylePresetId: stylePreset,
+        catalogSlug: catalogSlugSf,
+        styleName,
+        category: sfStyleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: sfStyleGen.model,
+        outputMode: sfOutputMode,
+      });
+      const floatingDecorSf = isDecorFloatingNativeFillPath({
+        catalogSlug: catalogSlugSf,
+        generationModel: sfStyleGen.model,
+        outputMode: sfOutputMode,
+        isApparelGeneration: isApparel,
+      });
 
       let sizingRequirements: string;
 
-      if (isApparel && isAllOverPrint) {
-        const usePatternAopSf = styleIsPatternMaker(styleName, stylePromptPrefix);
-        sizingRequirements = usePatternAopSf
-          ? buildAopPatternSizingRequirements(userDescSf)
-          : buildAopSizingRequirements(userDescSf);
-      } else if (isApparel) {
-        // Apparel: #FF00FF chroma key background for precise removal
-        const frameColor = req.body.frameColor;
-        let colorTier: ColorTier = "light";
-        if (frameColor && productType) {
-          const frameColors = JSON.parse(productType.frameColors || "[]");
-          const selectedColor = frameColors.find((c: any) => c.id === frameColor);
-          if (selectedColor?.hex) {
-            colorTier = getColorTier(selectedColor.hex);
-          }
-        }
-        const isDarkTier = colorTier === "dark";
-        const designColors = apparelMotifDesignColors(userDescSf, isDarkTier);
-
-        // Use dark tier prompt variant if available
-        if (sfStyleCategory === "apparel" && isDarkTier && stylePreset) {
-          const darkTierPrompt = resolveApparelDarkTierPrefix(stylePreset, stylePromptPrefixDark);
-          if (darkTierPrompt) {
-            fullPrompt = userDescSf ? `${userDescSf}, ${darkTierPrompt}` : darkTierPrompt;
-          }
-        }
-
-        sizingRequirements = buildApparelChromaSizingRequirements(designColors);
+      if (isApparel || floatingDecorSf) {
+        sizingRequirements = "";
       } else {
         // Decor: full-bleed edge-to-edge designs
         const printShape = productType?.printShape || "rectangle";
@@ -8576,7 +9764,43 @@ ${orientationExtra}
       }
 
       const geminiAspectRatio = mapToGeminiAspectRatio(sizeConfig.aspectRatio);
-      fullPrompt = `${sizingRequirements}\n\n=== ARTWORK DESCRIPTION ===\n${fullPrompt}`;
+      {
+        const hc = findCatalogPreset({ catalogSlug: catalogSlugSf, id: stylePreset, name: styleName, category: sfStyleCategory });
+        sfStyleOptions = mergeCatalogStyleOptions(sfStyleOptions, (hc as any)?.options);
+      }
+      const subStyleSfRaw = resolveSubStyleFragment({
+        styleOptionId: styleOptionIdSf,
+        styleOptions: sfStyleOptions,
+        clientPrompt: prompt,
+        userInput: userDescSf,
+      });
+      const quotesSf = applyQuotesLayeredCompose({
+        catalogSlug: catalogSlugSf,
+        userInput: userDescSf,
+        quotesVoice: quotesVoiceSf,
+        quoteArtBrief: quoteArtBriefSf,
+        quoteFontSuggestion: quoteFontSuggestionSf,
+        storedUserSlotSchema: sfUserSlotSchema,
+        subStyleLayer: subStyleSfRaw,
+        styleOptionId: styleOptionIdSf,
+      });
+      const layeredSfInput = {
+        category: sfStyleCategory,
+        isApparelGeneration: isApparel,
+        generationModel: sfStyleGen.model,
+        catalogSlug: catalogSlugSf,
+        styleLayer: styleLayerSf,
+        subStyleLayer: quotesSf.subStyleLayer,
+        userInput: quotesSf.userInput,
+        userSlotSchema: quotesSf.userSlotSchema,
+        fontLayer: quotesSf.fontLayer,
+        artLayer: quotesSf.artLayer,
+        isAllOverPrint,
+        isPatternStyle: !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf)),
+        outputMode: sfOutputMode,
+      };
+      const layeredSf = composeLayeredPrompt(layeredSfInput);
+      let fullPrompt = wrapLayeredArtworkPrompt(layeredSf, sizingRequirements);
 
       // Capture appUrl from request before responding (used for reference image resolution in worker)
       const appUrl = process.env.APP_URL || `${req.protocol}://${req.get("host")}`;
@@ -8595,8 +9819,8 @@ ${orientationExtra}
         sessionId: sessionId ?? null,
         customerId: resolvedJobCustomerId,
         status: "pending",
-        prompt,
-        userPrompt: rawUserPrompt ?? null,
+        prompt: quotesSf.committed ? quotesSf.userInput : (typeof rawUserPrompt === "string" ? rawUserPrompt : prompt),
+        userPrompt: quotesSf.committed ? quotesSf.userInput : rawUserPrompt ?? null,
         stylePreset: stylePreset ?? null,
         size: size ?? null,
         frameColor: frameColor ?? null,
@@ -8627,10 +9851,28 @@ ${orientationExtra}
 
           // Resolve customer reference image(s) — supports both single and array
           const sfCustomerImageUrls: string[] = [];
-          const sfRawRefImages: string[] = Array.isArray(referenceImagesArrSf) && referenceImagesArrSf.length > 0
-            ? referenceImagesArrSf
-            : referenceImage ? [referenceImage] : [];
-          for (const refImg of sfRawRefImages.slice(0, 5)) {
+          let sfCustomerTagged: TaggedReferenceImage[] = [];
+          // Pack generations: photos go to the private bucket (signed URLs to the
+          // model) and the structured creative brief is stored on the job.
+          let sfRefsToResolve = sfTaggedRefs;
+          if (sfPackCtx) {
+            const hosted = await hostPackReferences({
+              shop: installation.shopDomain,
+              jobId,
+              refs: sfTaggedRefs,
+              log: (m) => console.log(`${W} ${m}`),
+            });
+            sfRefsToResolve = hosted.refs;
+            await storage.updateGenerationJob(jobId, {
+              creativeBrief: creativeBriefFromContext(sfPackCtx, {
+                styleSlug: catalogSlugSf,
+                subStyle: typeof styleOptionIdSf === "string" && styleOptionIdSf ? styleOptionIdSf : null,
+                references: hosted.brief,
+              }),
+            } as any);
+          }
+          for (const tagged of sfRefsToResolve) {
+            const refImg = tagged.url;
             try {
               let resolvedUrl: string | null = null;
               if (refImg.startsWith("data:")) {
@@ -8642,15 +9884,25 @@ ${orientationExtra}
               }
               if (resolvedUrl) {
                 sfCustomerImageUrls.push(resolvedUrl);
+                sfCustomerTagged.push({ ...tagged, url: resolvedUrl });
                 const urlType = resolvedUrl.startsWith("data:") ? "data-url" : "http-url";
                 console.log(`${W} Reference image ${sfCustomerImageUrls.length}: type=${urlType}, size=${resolvedUrl.length} chars`);
                 if (sfCustomerImageUrls.length === 1) {
-                  await storage.updateGenerationJob(jobId, { referenceImageUrl: urlType === "data-url" ? "data-url-provided" : resolvedUrl });
+                  // Pack photos are private: never record a (signed, expiring) URL here.
+                  await storage.updateGenerationJob(jobId, {
+                    referenceImageUrl: sfPackCtx ? "private-reference" : urlType === "data-url" ? "data-url-provided" : resolvedUrl,
+                  });
                 }
               }
             } catch (refErr) {
               console.warn(`${W} Could not process reference image, skipping:`, refErr);
             }
+          }
+          if (requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt)) {
+            const stripped = await stripReuseReferenceUrls(sfCustomerImageUrls);
+            sfCustomerImageUrls.length = 0;
+            sfCustomerImageUrls.push(...stripped);
+            sfCustomerTagged = stripped.map((url, i) => ({ ...(sfCustomerTagged[i] ?? { role: "other" as const, label: null }), url }));
           }
           const sfCustomerImageUrl: string | null = sfCustomerImageUrls[0] || null;
           console.log(`${W} ref image resolved +${Date.now() - wStart}ms`);
@@ -8667,7 +9919,22 @@ ${orientationExtra}
           for (const u of sfCustomerImageUrls) sfImageInputUrls.push(u);
           const inputImageUrl: string | string[] | null = sfImageInputUrls.length > 1 ? sfImageInputUrls : sfImageInputUrls[0] || null;
 
-          if (sfImageInputUrls.length > 0) {
+          if (sfPackCtx) {
+            // Pack prompts carry numbered image roles + identity rules inside the
+            // composed layers (never prepended, never truncated).
+            fullPrompt = wrapLayeredArtworkPrompt(
+              composeLayeredPrompt({
+                ...layeredSfInput,
+                packLayers: packLayersForCompose(sfPackCtx, {
+                  isApparel,
+                  colorTier: isApparel ? sfColorTier : null,
+                  styleImageCount: sfStyleRefs.length,
+                  customerImages: sfCustomerTagged,
+                }),
+              }),
+              sizingRequirements,
+            );
+          } else if (sfImageInputUrls.length > 0) {
             let refInstruction: string;
             if (effectiveSfStyleBaseUrl && sfCustomerImageUrls.length > 0) {
               refInstruction = `Multiple reference images are provided. The FIRST is a style/scene foundation — use it as the visual template. The remaining image(s) are the customer's subject(s) — incorporate them as focal elements. Do NOT duplicate subjects.`;
@@ -8676,6 +9943,7 @@ ${orientationExtra}
             } else if (sfCustomerImageUrl) {
               refInstruction = singleCustomerReferenceInstruction({
                 stylePreset,
+                catalogSlug: catalogSlugSf,
                 userPrompt: userDescSf,
               });
             } else {
@@ -8687,20 +9955,58 @@ ${orientationExtra}
           // Call AI image generation
           const aiStart = Date.now();
           console.log(`${W} calling AI (aspectRatio=${geminiAspectRatio ?? "1:1"}) +${aiStart - wStart}ms`);
-          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix));
-          const { data: base64Data, mimeType: generatedMimeType } = await generateImageBase64({
-            prompt: fullPrompt,
-            aspectRatio: geminiAspectRatio ?? "1:1",
-            inputImageUrl,
-            isApparel,
-            isAllOverPrint,
-            isPatternStyle: usePatternAopSf,
-            userPrompt: userDescSf || null,
-            cylindricalWrap: useCylindricalWrapPrompt({
-              designerType: productType?.designerType,
-              isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
-            }),
+          const usePatternAopSf = !!(isAllOverPrint && styleIsPatternMaker(styleName, stylePromptPrefix, catalogSlugSf));
+          const sfEndUser = openAIEndUserId(shop, workerCustomerId ?? sessionId ?? null);
+          const sfEventCtx = {
+            kind: "image" as const,
+            route: "storefront-generate",
+            jobId,
+            merchantId: installation.merchantId ?? null,
+            shopDomain: shop,
+            experienceProfile: sfPackCtx?.profile.key ?? null,
+            stylePack: sfPackCtx?.packSlug ?? null,
+            styleSlug: catalogSlugSf,
+            productFamily: sfPackCtx?.productRenderer ?? null,
+            visualSystem: sfPackCtx?.visualSystem ?? null,
+            conceptFramework: sfPackCtx?.conceptFramework ?? null,
+            plan: sfGenPlan,
+            legacyModel: sfStyleGen.model ?? "nano-banana",
+            legacyQuality: sfStyleGen.model ? sfStyleGen.quality : null,
+            endUserHash: sfEndUser ?? null,
+          };
+          let sfGenResult: Awaited<ReturnType<typeof generateImageBase64>>;
+          try {
+            sfGenResult = await generateImageBase64({
+              prompt: fullPrompt,
+              aspectRatio: geminiAspectRatio ?? "1:1",
+              inputImageUrl,
+              isApparel,
+              isAllOverPrint,
+              isPatternStyle: usePatternAopSf,
+              userPrompt: userDescSf || null,
+              cylindricalWrap: useCylindricalWrapPrompt({
+                designerType: productType?.designerType,
+                isKnownWrapAround: productType ? resolveWrapAround(productType) : false,
+              }),
+              generationModel: sfStyleGen.model,
+              generationQuality: sfStyleGen.quality,
+              nativeTransparent: sfStyleGen.nativeTransparent,
+              layered: true,
+              ...(sfPackCtx ? { packLayered: true, transparencyCheck: "enforce" as const } : {}),
+              generationPlan: sfGenPlan,
+              endUserId: sfEndUser,
+            });
+          } catch (genErr) {
+            void recordGenerationEvent(sfEventCtx, { success: false, durationMs: Date.now() - aiStart, error: genErr });
+            throw genErr;
+          }
+          void recordGenerationEvent(sfEventCtx, {
+            success: !!sfGenResult.data,
+            durationMs: Date.now() - aiStart,
+            meta: sfGenResult.meta,
+            error: sfGenResult.data ? undefined : new Error("no image data"),
           });
+          const { data: base64Data, mimeType: generatedMimeType } = sfGenResult;
           console.log(`${W} AI returned ${Date.now() - aiStart}ms, hasData=${!!base64Data}, total +${Date.now() - wStart}ms`);
 
           if (!base64Data) {
@@ -8733,6 +10039,11 @@ ${orientationExtra}
               isAllOverPrint,
               targetDims,
               bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+              vectorize: resolveApparelVectorize(sfVectorizeEnabled),
+              skipChroma: sfStyleGen.nativeTransparent,
+              keepSourceResolution: sfKeepResolution,
+              printifyBlueprintId: productType?.printifyBlueprintId,
+              stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
             });
             imageUrl = result.imageUrl;
             thumbnailUrl = result.thumbnailUrl;
@@ -8745,20 +10056,25 @@ ${orientationExtra}
                 isAllOverPrint,
                 targetDims,
                 bgRemovalSensitivity: typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
+                vectorize: resolveApparelVectorize(sfVectorizeEnabled),
+                skipChroma: sfStyleGen.nativeTransparent,
+                keepSourceResolution: sfKeepResolution,
+                printifyBlueprintId: productType?.printifyBlueprintId,
+                stripReuseLetterbox: requestWantsReuseLetterboxStrip(req.body, rawUserPrompt, prompt),
               });
               imageUrl = result.imageUrl;
               thumbnailUrl = result.thumbnailUrl;
               console.log(`${W} storage save OK on retry ${Date.now() - saveStart}ms`);
             } catch (retryError) {
               console.error(`${W} Storage save failed on retry, using data URL:`, retryError);
-              if (isApparel) {
+              if (isApparel && !sfStyleGen.nativeTransparent) {
                 const matted = await processApparelMotif(Buffer.from(base64Data, "base64"), {
                   isAllOverPrint,
                   bgRemovalSensitivity:
                     typeof bgRemovalSensitivity === "number" ? bgRemovalSensitivity : undefined,
                   allowWhiteKey: true,
                   useMlFallback: process.env.APPAREL_ML_BG_FALLBACK !== "false",
-                  vectorize: process.env.APPAREL_VECTORIZE === "true",
+                  vectorize: resolveApparelVectorize(sfVectorizeEnabled),
                 });
                 imageUrl = `data:${matted.mimeType};base64,${matted.buffer.toString("base64")}`;
               } else {
@@ -8812,6 +10128,7 @@ ${orientationExtra}
               } else {
                 const paid = await spendStudioCredit({
                   customerId: workerCustomerId,
+                  generationJobId: jobId,
                   idempotencyKey: reqId.toString(),
                   externalRef: reqId.toString(),
                   shop,
@@ -8862,6 +10179,7 @@ ${orientationExtra}
               installation,
               billingMode: workerBillingMode,
               customerId: workerCustomerId,
+              generationJobId: jobId,
               idempotencyKey: reqId.toString(),
               freeGenerationLimit: workerFreeLimit,
             });
@@ -8885,9 +10203,10 @@ ${orientationExtra}
           console.log(`${W} complete designId=${designId} total=${Date.now() - wStart}ms`);
         } catch (workerErr: any) {
           console.error(`${W} worker failed +${Date.now() - wStart}ms stage=unknown:`, workerErr.message ?? workerErr);
+          const safeWorkerError = customerSafeGenerationError(workerErr, sfGenPlan);
           await storage.updateGenerationJob(jobId, {
             status: "failed",
-            errorMessage: workerErr.message ?? "Unknown generation error",
+            errorMessage: safeWorkerError,
           }).catch(() => {});
           void logMerchantGeneration({
             installation,
@@ -8899,11 +10218,16 @@ ${orientationExtra}
             stylePreset: stylePreset ?? null,
             size: size ?? null,
             success: false,
-            errorMessage: workerErr.message ?? "Unknown generation error",
+            errorMessage: safeWorkerError,
           });
           void recordGenerationOutcomeForFounder(installation, false);
         }
-      })();
+      })().catch((fatalErr: any) => {
+        // Last-resort net: anything that slips past the try/catch above (e.g. a
+        // rejection from a bare `void` fire-and-forget call) must not become an
+        // unhandled promise rejection — that crashes the whole Node process.
+        console.error(`${P} ${reqId} worker IIFE unhandled rejection:`, fatalErr?.stack ?? fatalErr);
+      });
 
       // Return jobId immediately — client will poll /generate/status
       console.log(P, reqId, `responding jobId=${jobId} — total ${Date.now() - t0}ms`);
@@ -8951,6 +10275,17 @@ ${orientationExtra}
         return res.status(404).json({ error: "Job not found", reqId });
       }
 
+      // Artwork plus the owner's wallet balance. A job id is not proof.
+      const statusAccess = await resolveStorefrontJobAccess(
+        req,
+        shop,
+        job,
+        typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+      );
+      if (!statusAccess.ok) {
+        return res.status(statusAccess.status).json({ error: statusAccess.error, reqId });
+      }
+
       console.log(`[SF STATUS] ${reqId} jobId=${jobId} status=${job.status} ${Date.now() - t0}ms`);
 
       if (job.status === "complete") {
@@ -8982,6 +10317,8 @@ ${orientationExtra}
           artworksRemaining = storefrontArtworksRemaining({
             shopFreeRemaining: wallet.shopFreeRemaining,
             freeGenerationsUsed: wallet.freeGenerationsUsed,
+            earnedCredits: wallet.earnedCredits,
+            packCredits: wallet.packCredits,
             paidCredits: wallet.credits,
             freeGenerationLimit: wallet.freeGenerationLimit,
           });
@@ -8993,7 +10330,12 @@ ${orientationExtra}
           artworksRemaining = creditsRemaining;
         }
 
+        // Pack generations only; legacy responses are unchanged (no key).
+        const statusBrief = (job as any).creativeBrief
+          ? await publicCreativeBrief((job as any).creativeBrief, completeInstall?.shopDomain ?? shop)
+          : null;
         return res.json({
+          ...(statusBrief ? { creativeBrief: statusBrief } : {}),
           status: "complete",
           imageUrl: job.designImageUrl,
           thumbnailUrl: job.thumbnailUrl,
@@ -9047,30 +10389,62 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      // Resolve the signed-in customer to our internal UUID. The client can send
-      // either the internal id (bearer token / bootstrap) or a Shopify customer id.
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
+      // Target account: proven only (identity token for this shop, or the App
+      // Proxy's signed Shopify customer). The body customerId is a consistency
+      // check, never proof. Anonymous identities can't be merge targets.
       const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(customerId));
-      const signedInCustomer = await resolveStorefrontCustomerIdentity({
+      const target = await resolveVerifiedStorefrontIdentity(
+        req,
         shop,
-        customerId: tokenIdentity && tokenIdentity.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? String(customerId) : null),
-        shopifyCustomerId: isInternalCustomer ? null : String(customerId),
-      }).catch((err) => {
-        console.warn(`[Storefront Merge] could not resolve signed-in customer ${customerId}:`, err?.message);
-        return null;
-      });
+        {
+          shopifyCustomerId: isInternalCustomer ? null : String(customerId),
+          customerId: String(customerId),
+        },
+        { allowAnonymous: false },
+      );
+      if (!target.ok) {
+        return res.status(target.status).json({ error: target.error });
+      }
+      const signedInCustomerId = target.customer.id;
 
-      const signedInCustomerId = signedInCustomer?.id ?? String(customerId);
-
-      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
-
-      // If an anon customer wallet was already created for this session, fold it
-      // into the signed-in wallet so free gens / rewards survive login.
-      let walletsLinked = false;
+      // Source session: possession of the browser's session id, plus — when the
+      // caller sends its pre-login anonymous token — that token must be this
+      // session's customer. A session already owned by another account is refused.
       const anonCustomer = await storage
         .findCustomerByAlias("anon_session", String(sessionId), shop)
         .catch(() => undefined);
-      if (anonCustomer && anonCustomer.id !== signedInCustomerId) {
+      const decision = await decideSessionMerge({
+        anonCustomer: anonCustomer
+          ? {
+              id: anonCustomer.id,
+              authenticated: isAuthenticatedAccount({
+                userId: anonCustomer.userId,
+                aliasTypes: (await storage.getCustomerAliases(anonCustomer.id).catch(() => [])).map((a) => a.aliasType),
+              }),
+            }
+          : null,
+        targetCustomerId: signedInCustomerId,
+        targetIsAccount:
+          (target.kind === "customer" && target.via === "shopify") ||
+          isAuthenticatedAccount({
+            userId: target.customer.userId,
+            aliasTypes: (await storage.getCustomerAliases(signedInCustomerId).catch(() => [])).map((a) => a.aliasType),
+          }),
+        anonTokenCustomerId:
+          typeof req.body?.anonIdentityToken === "string"
+            ? verifyStorefrontIdentityHeader(`Bearer ${req.body.anonIdentityToken}`)?.customerId ?? "invalid"
+            : null,
+      });
+      if (!decision.ok) {
+        return res.status(decision.status).json({ error: decision.error });
+      }
+
+      const merged = await storage.mergeSessionToCustomer(shop, sessionId, signedInCustomerId);
+
+      // Fold this session's anonymous wallet into the account so free gens /
+      // rewards survive login.
+      let walletsLinked = false;
+      if (decision.linkWallet && anonCustomer) {
         try {
           await storage.linkAnonCustomerToSignedIn(anonCustomer.id, signedInCustomerId);
           walletsLinked = true;
@@ -9092,12 +10466,12 @@ ${orientationExtra}
   // Persists a generation to a customer's account. Requires customerId.
   app.post("/api/storefront/save-design", async (req: Request, res: Response) => {
     try {
-      const { jobId, customerId, shop } = req.body;
+      const { jobId, customerId: claimedCustomerId, shop } = req.body;
 
       if (!jobId || !shop) {
         return res.status(400).json({ error: "jobId and shop are required" });
       }
-      if (!customerId) {
+      if (!claimedCustomerId) {
         return res.status(401).json({ error: "LOGIN_REQUIRED", message: "Please log in to save designs." });
       }
 
@@ -9110,6 +10484,14 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
+      // The design is saved to the verified caller only (token for this shop /
+      // proxy-signed Shopify customer); the body customerId must match it.
+      const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+      if (!owner.ok) {
+        return res.status(owner.status).json({ error: owner.error });
+      }
+      const customerId = owner.customer.id;
+
       const job = await storage.getGenerationJob(jobId);
       console.log(`[SaveDesign] jobId=${jobId} found=${!!job} jobShop=${job?.shop} reqShop=${shop} status=${job?.status} hasImage=${!!job?.designImageUrl} existingCustomerId=${job?.customerId}`);
       if (!job || job.shop !== shop) {
@@ -9119,6 +10501,10 @@ ${orientationExtra}
       // Only save if the job is complete (has an image)
       if (job.status !== 'complete' || !job.designImageUrl) {
         return res.status(400).json({ error: "Design generation is not complete yet" });
+      }
+      // Never take over a design that already belongs to someone else.
+      if (!canClaimDesign(job.customerId, customerId)) {
+        return res.status(403).json({ error: "DESIGN_OWNED_BY_ANOTHER_CUSTOMER" });
       }
 
       const aliases = await storage.getCustomerAliases(customerId).catch(() => []);
@@ -9182,9 +10568,27 @@ ${orientationExtra}
   // Called by the client after mockups are generated, to persist them on the job record.
   // Also accepts optional baseProductId + baseVariantId to pre-create a shadow product
   // in the background, so Add to Cart is instant when the user clicks it.
+  /** Last path segment without query — stable across proxy / asset-base rewrites. */
+  const artworkFilename = (url: unknown): string => {
+    const s = String(url || "").trim();
+    if (!s || s.startsWith("data:")) return "";
+    const noQuery = s.split("?")[0].split("#")[0];
+    const seg = noQuery.split("/").filter(Boolean).pop() || "";
+    return seg.toLowerCase();
+  };
+
   app.post("/api/storefront/save-mockups", async (req: Request, res: Response) => {
     try {
-      const { shop, jobId, mockupUrls, baseProductId, baseVariantId, productTypeId } = req.body;
+      const {
+        shop,
+        jobId,
+        mockupUrls,
+        baseProductId,
+        baseVariantId,
+        productTypeId,
+        printConfig,
+        designId: designIdHint,
+      } = req.body;
       if (!shop || !jobId || !Array.isArray(mockupUrls)) {
         return res.status(400).json({ error: "shop, jobId, and mockupUrls[] are required" });
       }
@@ -9196,8 +10600,12 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
-      // Only store valid absolute URLs (Printify CDN URLs)
-      const validUrls = mockupUrls.filter((u: any) => typeof u === 'string' && u.startsWith('http'));
+      // Hosted http(s) or a clean data: preview. Unwrap host-concat data: first
+      // so we never persist https://<host>/data:image/…
+      const validUrls = mockupUrls
+        .filter((u: unknown): u is string => typeof u === "string")
+        .map((u) => normalizePreviewUrl(u))
+        .filter((u): u is string => !!u && isPersistablePreviewUrl(u));
       const mockupPatch: Record<string, unknown> = { mockupUrls: validUrls };
       if (productTypeId != null && String(productTypeId).trim()) {
         const nextPt = String(productTypeId).trim();
@@ -9213,162 +10621,157 @@ ${orientationExtra}
       // kick off shadow product creation now so Add to Cart is instant.
       // We respond immediately and let this run in the background.
       const primaryMockupUrl = validUrls[0];
-      if (baseProductId && baseVariantId && primaryMockupUrl && installation.accessToken) {
-        const token = installation.accessToken;
-        const apiBase = `https://${shop}/admin/api/2025-10`;
-        const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
 
-        // Fire-and-forget: don't await, respond to client immediately
-        (async () => {
-          try {
-            const refreshShadowImage = async (productId: string, variantId: string) => {
-              try {
-                const imgRes = await fetch(`${apiBase}/products/${productId}/images.json`, {
-                  method: "POST",
-                  headers,
-                  body: JSON.stringify({
-                    image: {
-                      src: primaryMockupUrl,
-                      variant_ids: [Number(variantId)],
-                    },
-                  }),
-                });
-                if (!imgRes.ok) {
-                  const t = await imgRes.text();
-                  console.warn(
-                    `[PreShadow] Failed to refresh shadow image:`,
-                    imgRes.status,
-                    t.substring(0, 200),
-                  );
-                }
-              } catch (imgErr: any) {
-                console.warn(`[PreShadow] Failed to refresh shadow image:`, imgErr?.message || imgErr);
-              }
-            };
-
-            // Check if shadow product already exists for this job
-            const freshJob = await storage.getGenerationJob(jobId);
-            if (freshJob?.shadowVariantId && freshJob?.shadowProductId) {
-              console.log(`[PreShadow] jobId=${jobId} already has shadow product ${freshJob.shadowProductId}`);
-              await refreshShadowImage(freshJob.shadowProductId, freshJob.shadowVariantId);
-              return;
+      // ── Derive the pre-mint key server-side ─────────────────────────────────
+      // ATC persists `job::catalogVariant::cfgHash` (atcShadowDesignId). The
+      // pre-mint must land under that SAME key or it expires unused and ATC
+      // cold-mints at tap (replica race). The client sends the canonical
+      // fingerprint input it will hash at ATC; we allow-list it, check its
+      // artwork against the job, and derive the key ourselves. A client
+      // `designId` is a hint only — logged on mismatch, never minted from.
+      let preShadowDesignId = "";
+      let preShadowCfgInput: ReturnType<typeof sanitizePrintConfigInput> = null;
+      let preShadowSkipReason = "";
+      // PrintConfig-less callers (Printers-merge ~embed 7946) persist mockup
+      // URLs only — they must not mint and must not touch preShadowByVariant
+      // or the singleton preShadowDesignId (that partial write split snapshot vs id).
+      if (baseProductId && baseVariantId && primaryMockupUrl && printConfig != null) {
+        preShadowCfgInput = sanitizePrintConfigInput(printConfig);
+        if (!preShadowCfgInput) {
+          preShadowSkipReason = "printConfig rejected by sanitizer";
+        } else {
+          const cfgArt = artworkFilename(preShadowCfgInput.artworkUrl);
+          const jobArt = artworkFilename(job.designImageUrl);
+          if (cfgArt && jobArt && cfgArt !== jobArt) {
+            preShadowSkipReason = `artwork mismatch cfg=${cfgArt} job=${jobArt}`;
+          } else {
+            const atomic = atomicPreShadowVariantEntry(jobId, baseVariantId, preShadowCfgInput);
+            if (!atomic) {
+              preShadowSkipReason = "atomic entry rejected";
+            } else {
+              preShadowDesignId = atomic.designId;
+              preShadowCfgInput = atomic.snapshot;
             }
-
-            // Check published_products table (existing shadow product for this designId)
-            const designId = jobId; // generationJob.id is used as designId in published_products
-            const existing = await storage.getPublishedProduct(shop, designId);
-            if (existing && existing.status === 'active') {
-              // Reuse existing shadow product — just store the IDs on the job
-              console.log(`[PreShadow] jobId=${jobId} reusing existing shadow product ${existing.shopifyProductId}`);
-              await storage.updateGenerationJob(jobId, {
-                shadowProductId: existing.shopifyProductId,
-                shadowVariantId: existing.shopifyVariantId,
-                shadowExpiresAt: existing.expiresAt,
-              } as any);
-              if (existing.shopifyProductId && existing.shopifyVariantId) {
-                await refreshShadowImage(existing.shopifyProductId, existing.shopifyVariantId);
-              }
-              return;
-            }
-
-            // Fetch base product to get price/title
-            const productRes = await fetch(`${apiBase}/products/${baseProductId}.json`, { headers });
-            if (!productRes.ok) {
-              console.warn(`[PreShadow] Failed to fetch base product ${baseProductId}: ${productRes.status}`);
-              return;
-            }
-            const { product: baseProduct } = await productRes.json();
-            const baseVariant = baseProduct.variants.find((v: any) => String(v.id) === String(baseVariantId));
-            if (!baseVariant) {
-              console.warn(`[PreShadow] Base variant ${baseVariantId} not found on product ${baseProductId}`);
-              return;
-            }
-
-            // Build shadow product title
-            const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
-              .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
-              .join(' / ');
-            const shadowTitle = `${baseProduct.title}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
-
-            // Create the shadow product — expires in 1 hour if not added to cart
-            const oneHourFromNow = new Date(Date.now() + 1 * 60 * 60 * 1000);
-            const createRes = await fetch(`${apiBase}/products.json`, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify({
-                product: {
-                  title: shadowTitle,
-                  status: 'unlisted',
-                  published: false,
-                  tags: 'appai-shadow',
-                  variants: [{
-                    price: baseVariant.price,
-                    compare_at_price: baseVariant.compare_at_price || null,
-                    taxable: baseVariant.taxable,
-                    requires_shipping: baseVariant.requires_shipping,
-                    weight: baseVariant.weight,
-                    weight_unit: baseVariant.weight_unit,
-                    inventory_management: null,
-                    inventory_policy: 'continue',
-                    fulfillment_service: 'manual',
-                  }],
-                  images: [{ src: primaryMockupUrl }],
-                },
-              }),
-            });
-            if (!createRes.ok) {
-              const errText = await createRes.text();
-              console.error(`[PreShadow] Failed to create shadow product: ${createRes.status}`, errText.substring(0, 200));
-              return;
-            }
-            const { product: shadowProduct } = await createRes.json();
-            const shadowVariant = shadowProduct.variants[0];
-            console.log(`[PreShadow] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for jobId=${jobId}`);
-
-            // Publish to Online Store channel
-            try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
-
-            // Assign mockup image to the variant
-            if (shadowProduct.images?.length > 0) {
-              const imgId = shadowProduct.images[0].id;
-              await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
-                method: 'PUT', headers,
-                body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
-              }).catch(() => {});
-            }
-
-            // Persist in published_products table
-            await storage.createPublishedProduct({
-              shop,
-              designId,
-              customerKey: null,
-              shopifyProductId: String(shadowProduct.id),
-              shopifyVariantId: String(shadowVariant.id),
-              shopifyProductHandle: shadowProduct.handle || null,
-              baseVariantId: String(baseVariantId),
-              status: 'active',
-              expiresAt: oneHourFromNow,
-              cartAddedAt: null,
-            } as any);
-
-            // Store shadow product IDs on the job record for instant cart add
-            await storage.updateGenerationJob(jobId, {
-              shadowProductId: String(shadowProduct.id),
-              shadowVariantId: String(shadowVariant.id),
-              shadowExpiresAt: oneHourFromNow,
-            } as any);
-
-            console.log(`[PreShadow] jobId=${jobId} shadow product ready — variantId=${shadowVariant.id}`);
-          } catch (bgErr: any) {
-            console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
           }
-        })();
+        }
+        if (preShadowSkipReason) {
+          console.warn(`[PreShadow] jobId=${jobId} skipped — ${preShadowSkipReason}`);
+        } else if (designIdHint && String(designIdHint).trim() !== preShadowDesignId) {
+          console.warn(
+            `[PreShadow] jobId=${jobId} designId hint mismatch hint=${String(designIdHint).slice(0, 120)} derived=${preShadowDesignId} — using derived`,
+          );
+        }
       }
 
-      return res.json({ saved: true });
+      if (preShadowDesignId && preShadowCfgInput && installation.accessToken) {
+        const token = installation.accessToken;
+        const designId = preShadowDesignId;
+        const cfgSnapshot = preShadowCfgInput;
+        const mode = normalizeAtcMode((installation as { atcMode?: string }).atcMode);
+        // shadow-direct stays inline. base-first enqueues; the worker mints.
+        void import("./shadow-mint-worker").then(({ startPreShadowForMode }) =>
+          startPreShadowForMode(mode, {
+            shop,
+            token,
+            jobId,
+            baseProductId: String(baseProductId),
+            baseVariantId: String(baseVariantId),
+            primaryMockupUrl,
+            designId,
+            cfgSnapshot,
+            priceOverride: null,
+          }, "Background"),
+        ).catch((bgErr: any) => {
+          console.error(`[PreShadow] Background error for jobId=${jobId}:`, bgErr?.message);
+        });
+      }
+
+      return res.json({ saved: true, ...(preShadowDesignId ? { shadowDesignId: preShadowDesignId } : {}) });
     } catch (err: any) {
       console.error("[SaveMockups]", err);
       return res.status(500).json({ error: "Failed to save mockups" });
+    }
+  });
+
+  // Warm the selected catalog variant's shadow after a size/colour change
+  // (no mockupUrls write). printConfig required — never a legacy job::vid row.
+  app.post("/api/storefront/preshadow-variant", async (req: Request, res: Response) => {
+    try {
+      const {
+        shop,
+        jobId,
+        baseProductId,
+        baseVariantId,
+        printConfig,
+        designId: designIdHint,
+        mockupUrl,
+      } = req.body || {};
+      if (!shop || !jobId || !baseProductId || !baseVariantId) {
+        return res.status(400).json({ error: "shop, jobId, baseProductId, and baseVariantId are required" });
+      }
+      if (printConfig == null) {
+        return res.status(400).json({ error: "printConfig is required" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation?.accessToken) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+      const clientMockup =
+        typeof mockupUrl === "string" && mockupUrl.startsWith("https://") ? mockupUrl : "";
+      const jobMockups = Array.isArray(job.mockupUrls) ? (job.mockupUrls as unknown[]) : [];
+      const jobPrimary = jobMockups
+        .filter((u): u is string => typeof u === "string")
+        .map((u) => normalizePreviewUrl(u))
+        .find((u) => !!u && u.startsWith("https://"));
+      const primaryMockupUrl = clientMockup || jobPrimary || "";
+      if (!primaryMockupUrl) {
+        return res.status(400).json({ error: "https mockupUrl is required" });
+      }
+      const cfg = sanitizePrintConfigInput(printConfig);
+      if (!cfg) {
+        return res.status(400).json({ error: "printConfig rejected by sanitizer" });
+      }
+      const cfgArt = artworkFilename(cfg.artworkUrl);
+      const jobArt = artworkFilename(job.designImageUrl);
+      if (cfgArt && jobArt && cfgArt !== jobArt) {
+        console.warn(`[PreShadow] preshadow-variant skipped — artwork mismatch cfg=${cfgArt} job=${jobArt}`);
+        return res.status(409).json({ error: "artwork mismatch" });
+      }
+      const atomic = atomicPreShadowVariantEntry(jobId, baseVariantId, cfg);
+      if (!atomic) {
+        return res.status(400).json({ error: "could not derive persist key" });
+      }
+      if (designIdHint && String(designIdHint).trim() !== atomic.designId) {
+        console.warn(
+          `[PreShadow] preshadow-variant hint mismatch hint=${String(designIdHint).slice(0, 120)} derived=${atomic.designId} — using derived`,
+        );
+      }
+      const mode = normalizeAtcMode((installation as { atcMode?: string }).atcMode);
+      // Join exact key or mint once. ATC tap during debounce hits this same key.
+      // base-first enqueues instead; shadow-direct still mints inline.
+      void import("./shadow-mint-worker").then(({ startPreShadowForMode }) =>
+        startPreShadowForMode(mode, {
+          shop,
+          token: installation.accessToken!,
+          jobId,
+          baseProductId: String(baseProductId),
+          baseVariantId: String(baseVariantId),
+          primaryMockupUrl,
+          designId: atomic.designId,
+          cfgSnapshot: atomic.snapshot,
+          priceOverride: null,
+        }, "preshadow-variant"),
+      ).catch((e: any) => {
+        console.error(`[PreShadow] preshadow-variant error jobId=${jobId}:`, e?.message);
+      });
+      return res.json({ started: true, shadowDesignId: atomic.designId });
+    } catch (err: any) {
+      console.error("[PreShadowVariant]", err);
+      return res.status(500).json({ error: "Failed to start pre-mint" });
     }
   });
 
@@ -9376,8 +10779,29 @@ ${orientationExtra}
   // Never reuse the source job id — that keeps the source productTypeId/pageHandle.
   app.post("/api/storefront/fork-design", async (req: Request, res: Response) => {
     try {
-      const { shop, artworkUrl, prompt, productTypeId, customerId, size, frameColor, pageHandle } =
+      const { shop, artworkUrl, prompt, productTypeId, customerId: claimedCustomerId, size, frameColor, pageHandle } =
         req.body || {};
+      const stylePresetRaw =
+        typeof req.body?.stylePreset === "string"
+          ? req.body.stylePreset
+          : typeof req.body?.styleId === "string"
+            ? req.body.styleId
+            : "";
+      const catalogSlugRaw =
+        typeof req.body?.catalogSlug === "string"
+          ? req.body.catalogSlug
+          : typeof req.body?.catalog_slug === "string"
+            ? req.body.catalog_slug
+            : "";
+      const styleNameRaw =
+        typeof req.body?.styleName === "string"
+          ? req.body.styleName
+          : typeof req.body?.style_name === "string"
+            ? req.body.style_name
+            : "";
+      const stylePreset = stylePresetRaw.trim() || null;
+      const catalogSlug = catalogSlugRaw.trim() || null;
+      const styleName = styleNameRaw.trim() || null;
       if (!shop || !artworkUrl || !productTypeId) {
         return res
           .status(400)
@@ -9403,16 +10827,40 @@ ${orientationExtra}
         designState.pageHandle = pageHandle.trim();
       }
       designState.productTypeId = String(productTypeId);
+      if (stylePreset) designState.stylePreset = stylePreset;
+      if (catalogSlug) designState.catalogSlug = catalogSlug;
+      if (styleName) designState.styleName = styleName;
       const promptText =
         typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Reused artwork";
+      const forkShop = shop.toLowerCase().replace(/^https?:\/\//, "");
+      // The fork belongs to the verified caller; a claimed customerId needs proof.
+      // No claim = anonymous fork (unowned), as before.
+      let customerId: string | null = null;
+      if (claimedCustomerId) {
+        const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+        if (!owner.ok) {
+          return res.status(owner.status).json({ error: owner.error });
+        }
+        customerId = owner.customer.id;
+      }
+      // Carry a style-pack creative brief over only from the caller's own source
+      // design (the brief holds private reference-photo paths).
+      let forkBrief: unknown = null;
+      if (customerId && typeof req.body?.sourceJobId === "string" && req.body.sourceJobId) {
+        const sourceJob = await storage.getGenerationJob(req.body.sourceJobId).catch(() => undefined);
+        if (canCopyCreativeBrief(sourceJob, forkShop, customerId) && (sourceJob as any).creativeBrief) {
+          forkBrief = (sourceJob as any).creativeBrief;
+        }
+      }
       const job = await storage.createGenerationJob({
-        shop: shop.toLowerCase().replace(/^https?:\/\//, ""),
+        ...(forkBrief ? { creativeBrief: forkBrief } : {}),
+        shop: forkShop,
         sessionId: null,
-        customerId: customerId ? String(customerId) : null,
+        customerId,
         status: "complete",
         prompt: promptText,
         userPrompt: promptText,
-        stylePreset: null,
+        stylePreset,
         size: typeof size === "string" ? size : null,
         frameColor: typeof frameColor === "string" ? frameColor : null,
         productTypeId: String(productTypeId),
@@ -9451,6 +10899,10 @@ ${orientationExtra}
       if (!source || source.shop !== String(shop).toLowerCase().replace(/^https?:\/\//, "")) {
         return res.status(404).json({ error: "Source design not found" });
       }
+      const access = await resolveStorefrontJobAccess(req, String(shop), source, req.body?.sessionId);
+      if (!access.ok) {
+        return res.status(access.status).json({ error: access.error });
+      }
       const prevState =
         source.designState && typeof source.designState === "object" && !Array.isArray(source.designState)
           ? (source.designState as Record<string, unknown>)
@@ -9478,6 +10930,7 @@ ${orientationExtra}
         referenceImageUrl: source.referenceImageUrl,
         designImageUrl: source.designImageUrl,
         thumbnailUrl: source.thumbnailUrl,
+        ...((source as any).creativeBrief ? { creativeBrief: (source as any).creativeBrief } : {}),
         designState: {
           ...prevRest,
           ...patch,
@@ -9508,6 +10961,10 @@ ${orientationExtra}
       const job = await storage.getGenerationJob(jobId);
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
+      }
+      const access = await resolveStorefrontJobAccess(req, shop, job, req.body?.sessionId);
+      if (!access.ok) {
+        return res.status(access.status).json({ error: access.error });
       }
       const prevState =
         job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
@@ -9556,6 +11013,10 @@ ${orientationExtra}
             ...((prevHoodie.enabled as object) || {}),
             ...((nextHoodie.enabled as object) || {}),
           },
+          tileSettings: {
+            ...((prevHoodie.tileSettings as object) || {}),
+            ...((nextHoodie.tileSettings as object) || {}),
+          },
         };
       }
       // Sync size / colour / artwork onto job columns so test orders and
@@ -9600,12 +11061,154 @@ ${orientationExtra}
     }
   });
 
+  // Best-effort observability: record when the client's AOP panel-capture
+  // persist (persistPrintPanels in embed-design.tsx) fails or silently
+  // no-ops, so a permanently-stranded line stops being invisible. Stores a
+  // single latest diagnostic, not a history — this is a breadcrumb for the
+  // stuck-job DB sweep, not an audit log. Never blocks or affects ATC.
+  app.post("/api/storefront/aop-panel-persist-diagnostic", async (req: Request, res: Response) => {
+    try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `aop-persist-diag:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        return res.status(429).json({ error: "Too many diagnostic requests." });
+      }
+
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const jobId = String(req.body?.jobId || "").trim();
+      const outcome = String(req.body?.outcome || "").trim();
+      const reason = String(req.body?.reason || "").trim().slice(0, 200);
+      if (!shop || !jobId || (outcome !== "no_op" && outcome !== "error")) {
+        return res.status(400).json({ error: "shop, jobId, and a valid outcome are required" });
+      }
+      if (jobId.length > 80 || jobId.includes("/") || jobId.includes("..")) {
+        return res.status(400).json({ error: "Invalid jobId" });
+      }
+
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const prevState =
+        job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
+          ? (job.designState as Record<string, unknown>)
+          : {};
+      const mergedDesignState: Record<string, unknown> = {
+        ...prevState,
+        aopPanelPersistDiagnostic: {
+          at: new Date().toISOString(),
+          outcome,
+          reason: reason || undefined,
+        },
+      };
+      await storage.updateGenerationJob(jobId, { designState: mergedDesignState } as any);
+      return res.json({ ok: true });
+    } catch (err: any) {
+      console.error("[AopPanelPersistDiagnostic]", err);
+      return res.status(500).json({ error: "Failed to record diagnostic" });
+    }
+  });
+
+  // Freeze AOP print panels onto a short _aop_pl path for merchant Ajax ATC.
+  // Creator cart already does this in attachAopPanelSnapshotToLineAttributes.
+  app.post("/api/storefront/aop-line-snapshot", async (req: Request, res: Response) => {
+    try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `aop-snap:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many panel snapshot requests." });
+      }
+
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const jobId = String(req.body?.jobId || "").trim();
+      if (!shop || !jobId) {
+        return res.status(400).json({ error: "shop and jobId are required" });
+      }
+      if (jobId.length > 80 || jobId.includes("/") || jobId.includes("..")) {
+        return res.status(400).json({ error: "Invalid jobId" });
+      }
+
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ error: "Shop not authorized" });
+      }
+      const job = await storage.getGenerationJob(jobId);
+      if (!job || job.shop !== shop) {
+        return res.status(404).json({ error: "Job not found" });
+      }
+
+      const {
+        persistAopLinePanelSnapshot,
+        normalizeAopPanels,
+      } = await import("./aop-line-snapshot");
+      const AOP_SNAPSHOT_MAX_PANELS = 32;
+      const AOP_SNAPSHOT_MAX_URL_LEN = 2048;
+      let designState: Record<string, unknown> = {};
+      if (job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)) {
+        designState = job.designState as Record<string, unknown>;
+      } else if (typeof job.designState === "string") {
+        try {
+          designState = JSON.parse(job.designState || "{}") as Record<string, unknown>;
+        } catch {
+          designState = {};
+        }
+      }
+      const freezeGate = evaluateAopSnapshotFreeze({
+        expectedCaptureHash: req.body?.expectedCaptureHash,
+        storedSignature: designState.aopPanelCaptureSignature,
+      });
+      if (!freezeGate.ok) {
+        return res.status(409).json({
+          error: "persist_incomplete",
+          code: freezeGate.code,
+        });
+      }
+
+      let panels = normalizeAopPanels(
+        Array.isArray(req.body?.panels) ? req.body.panels : designState.aopPrintPanelUrls,
+      );
+      if (Array.isArray(req.body?.panels) && req.body.panels.length > AOP_SNAPSHOT_MAX_PANELS) {
+        return res.status(413).json({ error: `Too many panels (max ${AOP_SNAPSHOT_MAX_PANELS}).` });
+      }
+      panels = panels
+        .filter((p) => p.url.length <= AOP_SNAPSHOT_MAX_URL_LEN)
+        .slice(0, AOP_SNAPSHOT_MAX_PANELS);
+      if (panels.length === 0) {
+        return res.status(400).json({ error: "No print panels to freeze" });
+      }
+
+      const snapshot = await persistAopLinePanelSnapshot(jobId, panels);
+      if (!snapshot) {
+        return res.status(500).json({ error: "Failed to persist snapshot" });
+      }
+      return res.json({ snapshot });
+    } catch (err: any) {
+      console.error("[AopLineSnapshot]", err);
+      return res.status(500).json({ error: "Failed to freeze AOP panels" });
+    }
+  });
+
   // ==================== STOREFRONT GET SHADOW VARIANT ====================
   // Lightweight endpoint to check if a pre-created shadow product is ready for a job.
   // Called by the client after save-mockups to get the shadowVariantId for instant cart add.
   app.get("/api/storefront/shadow-variant/:jobId", async (req: Request, res: Response) => {
     try {
       const shop = req.query.shop as string;
+      const wantVid = String(req.query.variantId || "").replace(/\D/g, "");
       const { jobId } = req.params;
       if (!shop || !jobId) {
         return res.status(400).json({ error: "shop and jobId are required" });
@@ -9618,12 +11221,49 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Job not found" });
       }
-      const shadowVariantId = (job as any).shadowVariantId || null;
-      const shadowProductId = (job as any).shadowProductId || null;
-      const shadowExpiresAt = (job as any).shadowExpiresAt || null;
-      const ready = !!(shadowVariantId && shadowProductId);
-      console.log(`[ShadowVariant] jobId=${jobId} ready=${ready} variantId=${shadowVariantId}`);
-      return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt });
+      const shadowAccess = await resolveStorefrontJobAccess(
+        req,
+        shop,
+        job,
+        typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+      );
+      if (!shadowAccess.ok) {
+        return res.status(shadowAccess.status).json({ error: shadowAccess.error });
+      }
+      const ds =
+        job.designState && typeof job.designState === "object" && !Array.isArray(job.designState)
+          ? (job.designState as Record<string, unknown>)
+          : null;
+      const map =
+        ds?.preShadowByVariant &&
+        typeof ds.preShadowByVariant === "object" &&
+        !Array.isArray(ds.preShadowByVariant)
+          ? (ds.preShadowByVariant as Record<string, Record<string, unknown>>)
+          : {};
+      const entry = wantVid && map[wantVid] && typeof map[wantVid] === "object" ? map[wantVid] : null;
+      // Prefer the atomic per-variant row. Never return another size's singleton.
+      const shadowDesignId =
+        (entry && typeof entry.designId === "string" && entry.designId) ||
+        (!wantVid && typeof ds?.preShadowDesignId === "string" && ds.preShadowDesignId) ||
+        null;
+      const shadowVariantId =
+        (entry && typeof entry.shadowVariantId === "string" && entry.shadowVariantId) ||
+        (!wantVid ? (job as any).shadowVariantId || null : null);
+      const shadowProductId =
+        (entry && typeof entry.shadowProductId === "string" && entry.shadowProductId) ||
+        (!wantVid ? (job as any).shadowProductId || null : null);
+      const shadowExpiresAt =
+        (entry && entry.shadowExpiresAt) ||
+        (!wantVid ? (job as any).shadowExpiresAt || null : null);
+      let ready = !!(shadowVariantId && shadowProductId && shadowDesignId);
+      if (ready && shadowDesignId && normalizeAtcMode((installation as { atcMode?: string }).atcMode) === "base-first") {
+        const published = await storage.getPublishedProduct(shop, shadowDesignId);
+        ready = !!(published && published.status === "active" && published.readyAt);
+      }
+      console.log(
+        `[ShadowVariant] jobId=${jobId} vid=${wantVid || "-"} ready=${ready} variantId=${shadowVariantId} key=${shadowDesignId}`,
+      );
+      return res.json({ ready, shadowVariantId, shadowProductId, shadowExpiresAt, shadowDesignId });
     } catch (err: any) {
       console.error("[ShadowVariant]", err);
       return res.status(500).json({ error: "Failed to get shadow variant" });
@@ -9651,6 +11291,13 @@ ${orientationExtra}
       if (!job || job.shop !== shop) {
         return res.status(404).json({ error: "Design not found" });
       }
+      // Only the design's owner (identity token) may remove it from their gallery.
+      if (job.customerId) {
+        const identityCheck = storefrontIdentityMatches(req, job.customerId, shop);
+        if (!identityCheck.ok) {
+          return res.status(identityCheck.status).json({ error: identityCheck.error });
+        }
+      }
       // If client provided a customerId, verify it matches (extra security check)
       if (clientCustomerId && job.customerId && job.customerId !== clientCustomerId) {
         console.warn(`[DeleteDesign] customerId mismatch: job=${job.customerId} client=${clientCustomerId}`);
@@ -9675,7 +11322,7 @@ ${orientationExtra}
     // Generate correlationId before try so it's available in catch
     const correlationId = `mockup_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     try {
-      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId: requestedProductTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -9875,6 +11522,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {
@@ -10043,19 +11691,20 @@ ${orientationExtra}
   app.post("/api/storefront/shadow-product/cart-added", async (req: Request, res: Response) => {
     try {
       const { shop: shopRaw, shadowProductId } = req.body;
+      const shadowVariantId = req.body?.shadowVariantId || req.body?.variantId;
       const shop = normalizeMyshopifyShopDomain(shopRaw);
-      if (!shop || !shadowProductId) return res.status(400).json({ error: "shop and shadowProductId required" });
+      if (!shop || (!shadowProductId && !shadowVariantId)) {
+        return res.status(400).json({ error: "shop and shadowProductId or variantId required" });
+      }
       const installation = await getAuthorizedInstallation(shop);
       if (!installation || installation.status !== "active") return res.status(403).json({ error: "Shop not authorized" });
-      // Find the published product record by shopifyProductId
-      const rows = await db
-        .select()
-        .from(publishedProducts)
-        .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.shopifyProductId, String(shadowProductId))))
-        .limit(1);
-      if (rows.length > 0) {
-        await storage.markShadowProductCartAdded(rows[0].id);
-        console.log(`[ShadowProduct] Extended expiry to 7d for product ${shadowProductId} (cart-added)`);
+      const row = await storage.findActiveShadowProduct(shop, {
+        productId: shadowProductId ? String(shadowProductId) : "",
+        variantId: shadowVariantId ? String(shadowVariantId) : "",
+      });
+      if (row) {
+        await storage.markShadowProductCartAdded(row.id);
+        console.log(`[ShadowProduct] Extended expiry to 7d for product ${row.shopifyProductId} variant ${row.shopifyVariantId} (cart-added)`);
       }
       return res.json({ success: true });
     } catch (e: any) {
@@ -10064,13 +11713,93 @@ ${orientationExtra}
     }
   });
 
+  // ATC fast-path (b74b936d) skips resolve-design-variant. Repair CONTINUE +
+  // Online Store publication here so a reused deny/unpublished shadow cannot 422.
+  // Asserted GraphQL write — not fire-and-forget.
+  app.post("/api/storefront/ensure-shadow-purchasable", async (req: Request, res: Response) => {
+    try {
+      const shop = normalizeMyshopifyShopDomain(req.body?.shop);
+      const variantId = String(req.body?.variantId || "").replace(/\D/g, "");
+      let baseVariantId = String(req.body?.baseVariantId || "").replace(/\D/g, "");
+      if (!shop || !variantId) {
+        return res.status(400).json({ success: false, error: "shop and variantId are required" });
+      }
+      const installation = await getAuthorizedInstallation(shop);
+      if (!installation) {
+        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      }
+      if (!baseVariantId) {
+        const [row] = await db
+          .select({ baseVariantId: publishedProducts.baseVariantId })
+          .from(publishedProducts)
+          .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.shopifyVariantId, variantId)))
+          .limit(1);
+        baseVariantId = String(row?.baseVariantId || "").replace(/\D/g, "");
+      }
+      await ensureShadowVariantPurchasable({
+        shop,
+        token: installation.accessToken!,
+        variantId,
+        baseVariantId: baseVariantId || undefined,
+      });
+      return res.json({ success: true, variantId, inventoryPolicy: "CONTINUE" });
+    } catch (error: any) {
+      if (error instanceof ShadowVariantNotPurchasableError) {
+        console.error("[ShadowProduct] ensure-shadow-purchasable policy write did not land:", error.message);
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+          code: error.code,
+          variantId: error.variantId,
+        });
+      }
+      console.error("[ShadowProduct] ensure-shadow-purchasable error:", error?.message || error);
+      return res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+    }
+  });
+
   // ── Shadow product creation (replaces resolve-design-variant) ────────────────
   // Creates one hidden Shopify product per design with a single variant.
-  // The shadow product is status=draft, not in any collection, tagged appai-shadow.
+  // Status UNLISTED + Online Store; reuse is gated on Ajax /variants/{id}.js.
   // Expiry: 6 hours from creation (extended to 7 days if added to cart).
   // Reuse: if a shadow product already exists for this designId+shop, return it.
   // Legacy alias kept so old clients still work during rollout.
   app.post("/api/storefront/resolve-design-variant", async (req: Request, res: Response) => {
+    // Declared outside the try so the `finally` below (a separate block scope
+    // from `try`) can still see it — a `let` declared inside `try {}` is not
+    // visible in `catch {}`/`finally {}` and threw "settleResolveFlight is not
+    // defined" there after the response had already been sent.
+    let settleResolveFlight: ((v?: { shopifyProductId: string; shopifyVariantId: string } | void) => void) | null =
+      null;
+    const resolveStarted = Date.now();
+    const resolveTag = `[ResolveVariant ${crypto.randomBytes(3).toString("hex")}]`;
+    const resolveSteps: string[] = [];
+    let resolveLap = resolveStarted;
+    const step = (name: string) => {
+      const now = Date.now();
+      const delta = now - resolveLap;
+      resolveLap = now;
+      const label = name.split(" ")[0];
+      resolveSteps.push(`${label}=${delta}`);
+      console.log(`${resolveTag} ${name} +${now - resolveStarted}ms (${delta}ms)`);
+    };
+    const stepLine = () => resolveSteps.join(" ");
+    // Answer still_preparing before the storefront's 30s abort. Work keeps
+    // running and persists, so the next tap reuses instead of re-minting.
+    const sendJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      if (res.headersSent) {
+        step(`late response dropped (deadline already answered) body=${JSON.stringify(body).slice(0, 160)}`);
+        return res;
+      }
+      return sendJson(body);
+    }) as typeof res.json;
+    const deadline = setTimeout(() => {
+      if (res.headersSent) return;
+      step(`deadline ${RESOLVE_DESIGN_VARIANT_DEADLINE_MS}ms hit — answering still_preparing`);
+      res.json({ success: false, error: ATC_SHADOW_STILL_PREPARING, code: "still_preparing" });
+    }, RESOLVE_DESIGN_VARIANT_DEADLINE_MS);
+    res.on("close", () => clearTimeout(deadline));
     try {
       const {
         shop: shopRaw,
@@ -10081,7 +11810,37 @@ ${orientationExtra}
         productTypeId: productTypeIdRaw,
         sizeId,
         colorId,
+        source: sourceRaw,
+        colorName: requestedColourRaw,
+        sizeName: requestedSizeRaw,
       } = req.body;
+      const requestedColour = String(requestedColourRaw || "").trim();
+      const requestedSize = String(requestedSizeRaw || "").trim();
+      const normComboPart = (value: unknown) => String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+      const requestedComboMatches = (variant: { option1?: unknown; option2?: unknown; option3?: unknown } | null | undefined) => {
+        if (!requestedColour && !requestedSize) return true;
+        const options = [variant?.option1, variant?.option2, variant?.option3].map(normComboPart).filter(Boolean);
+        if (requestedColour && !options.includes(normComboPart(requestedColour))) return false;
+        if (requestedSize && !options.includes(normComboPart(requestedSize))) return false;
+        return true;
+      };
+      const refuseUnavailableCombo = () => {
+        console.log(`[ResolveVariant] combo unavailable colour=${requestedColour} size=${requestedSize}`);
+        return res.status(409).json({
+          success: false,
+          error: "That colour isn't available in this size. Please pick another colour or size.",
+          code: "combo_unavailable",
+        });
+      };
+      const refuseNoPrintifyVariant = () => {
+        console.log(`[ResolveVariant] no printify variant colour=${requestedColour} size=${requestedSize} variant=${variantId}`);
+        return res.status(409).json({
+          success: false,
+          error: "That colour isn't available in this size. Please pick another colour or size.",
+          code: "no_printify_variant",
+        });
+      };
+      const source = String(sourceRaw || "");
       const shop = normalizeMyshopifyShopDomain(shopRaw);
       if (!shop || !variantId || !designId || !mockupUrl) {
         return res.status(400).json({ success: false, error: "shop, variantId, designId and mockupUrl are required" });
@@ -10090,26 +11849,25 @@ ${orientationExtra}
         return res.status(400).json({ success: false, error: "mockupUrl must be an https URL" });
       }
 
-      // Product Intelligence OOS guard — refuse shadow create for unavailable size/colour.
+      // Product Intelligence OOS backstop — 409 only for an explicit out_of_stock key.
+      // Missing map/key, unknown/removed, or lookup errors fail-open. Storefront UI is
+      // the primary OOS lock; do not consult the legacy designs table.
       try {
-        let ptId =
+        const ptId =
           productTypeIdRaw != null && String(productTypeIdRaw).trim() !== ""
             ? parseInt(String(productTypeIdRaw), 10)
             : NaN;
-        if (!Number.isFinite(ptId) || ptId <= 0) {
-          const designNum = parseInt(String(designId).replace(/\D/g, ""), 10);
-          if (Number.isFinite(designNum) && designNum > 0) {
-            const design = await storage.getDesign(designNum);
-            if (design?.productTypeId) ptId = design.productTypeId;
-          }
-        }
         if (Number.isFinite(ptId) && ptId > 0 && sizeId) {
           const pt = await storage.getProductType(ptId);
           const avail = parseVariantAvailabilityMap((pt as any)?.variantAvailability);
-          if (
-            Object.keys(avail).length > 0 &&
-            !isVariantKeyAvailable(avail, String(sizeId), String(colorId || "default"))
-          ) {
+          if (isVariantKeyExplicitlyOutOfStock(avail, String(sizeId), String(colorId || "default"))) {
+            console.warn("[ShadowProduct] App-side OOS guard blocked resolve", {
+              shop,
+              designId,
+              sizeId,
+              colorId,
+              productTypeId: ptId,
+            });
             return res.status(409).json({
               success: false,
               error: "Selected size/color is out of stock",
@@ -10120,81 +11878,463 @@ ${orientationExtra}
       } catch (oosErr: any) {
         console.warn("[ShadowProduct] OOS guard skipped:", oosErr?.message || oosErr);
       }
-      // Optional retail override for front+back (or other surcharge tiers). Validated below.
-      const overridePriceNum =
-        priceOverride != null && String(priceOverride).trim() !== ""
-          ? parseFloat(String(priceOverride))
-          : NaN;
-      const hasPriceOverride = Number.isFinite(overridePriceNum) && overridePriceNum > 0;
-      const overridePriceFormatted = hasPriceOverride ? overridePriceNum.toFixed(2) : null;
-      const installation = await getAuthorizedInstallation(shop);
-      if (!installation) {
-        return res.status(403).json({ success: false, error: "Shop not authorized" });
+      // Client price is presentment money (an AU page sends 45.00). It is never
+      // written. printSides "both" selects the shop-currency both-tier catalogue
+      // price inside decideShadowShopPrice.
+      const printSides = req.body?.printSides;
+      // My Pet reuse is a database read. Do it before the shop-token fetch so
+      // a shadow that already exists does not pay getAuthorizedInstallation.
+      let myPetLookedUp = false;
+      let myPetLookupMs = 0;
+      let existing: Awaited<ReturnType<typeof storage.getPublishedProduct>> | undefined;
+      let existingKey: string | undefined;
+      if (source === "my-pet") {
+        myPetLookedUp = true;
+        const lookupStarted = Date.now();
+        const earlyKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
+        for (const key of earlyKeys) {
+          const row = await storage.getPublishedProduct(shop, key);
+          if (row?.status !== "active") continue;
+          if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
+          existing = row;
+          existingKey = key;
+          break;
+        }
+        myPetLookupMs = Date.now() - lookupStarted;
+        if (existing && existing.status === "active") {
+          console.log(
+            `${resolveTag} [ResolveVariant] reuse candidate variant=${existing.shopifyVariantId} — confirm live before return`,
+          );
+        }
       }
-      const token = installation.accessToken!;
+      // Shop row + offline token are cached for 5 minutes. The ownership
+      // check below is this request's signature/session proof and always runs.
+      const cachedAuth = takeAuthorizedShop(shop);
+      const authCache = cachedAuth ? "hit" : "miss";
+      console.log(`[ResolveVariant] authorized cache=${authCache}`);
+      let installation = cachedAuth?.installation ?? null;
+      let token = cachedAuth?.accessToken ?? "";
+      if (!cachedAuth) {
+        installation = await getAuthorizedInstallation(shop);
+        if (!installation) {
+          return res.status(403).json({ success: false, error: "Shop not authorized" });
+        }
+        // ISSUE 3 (post-staging-92) — pre-flight token refresh.
+        //
+        // Previously we read installation.accessToken verbatim and only
+        // reacted to 401s AFTER a Shopify call. With expiring offline tokens
+        // (24h TTL, refresh via grant_type=refresh_token) a request that
+        // arrives after expiry always failed its first call, then
+        // markShopTokenInvalid blanked the token, and the merchant saw
+        // "Admin API token invalid — reconnect the app" until they ran an
+        // OAuth reinstall by hand. The exchange infrastructure already
+        // exists (shopify-offline-token.ts) — getAuthorizedInstallation
+        // just wasn't using it.
+        //
+        // ensureValidOfflineAccessToken refreshes in place when the token
+        // is within REFRESH_SKEW_MS (2min) of expiry via the stored refresh
+        // token, persists the new token, and returns it. Legacy
+        // non-expiring installs get migrated on the same call. Covers the
+        // overwhelming majority of recurrence cases without the shopper
+        // touching Shopify Admin. A fresh result is cached; a token inside
+        // the refresh skew is not.
+        const tokenReady = await ensureValidOfflineAccessToken(installation);
+        if (!tokenReady.ok) {
+          forgetAuthorizedShop(shop);
+          console.error(
+            `${resolveTag} pre-flight refresh failed shop=${shop} error=${tokenReady.error}`,
+          );
+          if (tokenReady.needsReinstall) await markShopTokenInvalid(shop);
+          return res.status(403).json({
+            success: false,
+            error: "Shopify Admin API token invalid — reconnect the app in Shopify Admin",
+            reconnectUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`,
+            fallback: true,
+            variantId: String(variantId),
+          });
+        }
+        token = tokenReady.accessToken;
+        installation = tokenReady.installation;
+        rememberAuthorizedShop(shop, installation, token);
+      }
+      // A real job prefix must be this caller’s design. Non-job keys (cart line
+      // ids, old readable labels) have nothing to steal and stay as they were.
+      // RESOLVE_OWNERSHIP_CHECK=false skips this without a deploy.
+      if (resolveVariantOwnershipCheckEnabled()) {
+        const jobKey = shadowJobPrefix(String(designId));
+        const ownedJob = jobKey ? await storage.getGenerationJob(jobKey) : undefined;
+        if (ownedJob) {
+          const resolveAccess = await resolveStorefrontJobAccess(
+            req,
+            shop,
+            ownedJob,
+            typeof req.body?.sessionId === "string" ? req.body.sessionId : null,
+          );
+          if (!resolveAccess.ok) {
+            console.warn(
+              `${resolveTag} ownership refused status=${resolveAccess.status} job=${jobKey.slice(0, 8)}`,
+            );
+            return res.status(resolveAccess.status).json({
+              success: false,
+              error: "Not authorized to use this design",
+              code: "not_design_owner",
+            });
+          }
+        }
+      }
       const apiBase = `https://${shop}/admin/api/2025-10`;
       const headers: Record<string, string> = { "Content-Type": "application/json", "X-Shopify-Access-Token": token };
+      step(`authorized shop=${shop} design=${String(designId).slice(0, 80)} variant=${variantId} cache=${authCache}`);
+      const logReusedShadowImage = (variantIdForImage: string | number | null | undefined) => {
+        const id = String(variantIdForImage || "").replace(/\D/g, "");
+        if (!id) {
+          console.log(`${resolveTag} [ResolveVariant] shadow image present=false variant=`);
+          return;
+        }
+        void (async () => {
+          let present = false;
+          try {
+            const imageRes = await shadowFetch(`${apiBase}/variants/${id}.json`, { headers });
+            const imageBody = imageRes.ok
+              ? ((await imageRes.json()) as { variant?: { image_id?: unknown } })
+              : null;
+            present = !!imageBody?.variant?.image_id;
+          } catch (imageErr: any) {
+            console.warn(`${resolveTag} shadow image check failed:`, imageErr?.message || imageErr);
+          }
+          console.log(`${resolveTag} [ResolveVariant] shadow image present=${present ? "true" : "false"} variant=${id}`);
+        })();
+      };
 
       // ── Shadow product path ────────────────────────────────────────────────
-      // 1. Check if a shadow product already exists for this designId
-      const existing = await storage.getPublishedProduct(shop, designId);
+      // 1. Reuse by exact persist key. ATC stamps `job::variant::cfgHash` so
+      //    two print snapshots (e.g. two backgrounds) mint distinct shadows.
+      //    PreShadow / legacy still use job::variant; lookup falls back only
+      //    when the incoming id has NO print-config suffix. Never fall back
+      //    from a cfg-keyed id to job::variant — that reused the last mockup
+      //    onto every cart line for the same design.
+      // Lookup (DB) and the base-variant Admin GET do not depend on each
+      // other. My Pet starts both now. A reuse returns on the lookup and does
+      // not wait for the GET. A new combo awaits the GET that is already in
+      // flight. Other flows keep the GET after the lookup so a reuse does
+      // not call Admin.
+      const baseStarted = Date.now();
+      const basePromise =
+        source === "my-pet"
+          ? shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers })
+          : null;
+      if (basePromise) void basePromise.catch(() => {});
+      const readRequestedBaseVariant = async () => {
+        if (!requestedColour && !requestedSize) return null;
+        try {
+          const lookup = basePromise
+            ? await basePromise
+            : await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+          if (!lookup?.ok) return null;
+          const body = (await lookup.clone().json()) as { variant?: { option1?: unknown; option2?: unknown; option3?: unknown } };
+          return body?.variant || null;
+        } catch {
+          return null;
+        }
+      };
+      const persistDesignId = reusableShadowDesignId(String(designId), String(variantId));
+      if (myPetLookedUp) {
+        resolveSteps.push(`lookup=${myPetLookupMs}`);
+        resolveLap = Date.now();
+        console.log(`${resolveTag} lookup done existing=${existing ? existing.shopifyVariantId : "none"} +${Date.now() - resolveStarted}ms (${myPetLookupMs}ms)`);
+      } else {
+        const lookupKeys = shadowLookupKeys(String(designId), String(mockupUrl), String(variantId));
+        for (const key of lookupKeys) {
+          const row = await storage.getPublishedProduct(shop, key);
+          if (row?.status !== "active") continue;
+          if (!shadowMatchesBaseVariant(row.baseVariantId, variantId)) continue;
+          existing = row;
+          existingKey = key;
+          break;
+        }
+        step(`lookup done existing=${existing ? existing.shopifyVariantId : "none"}`);
+      }
       if (existing && existing.status === "active") {
-        console.log(`[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} for design ${designId}`);
+        if (requestedColour || requestedSize) {
+          const requestedBase = await readRequestedBaseVariant();
+          if (!requestedComboMatches(requestedBase)) return refuseUnavailableCombo();
+        }
+        if (source === "my-pet" && (await catalogueVariantGate(shop, String(variantId))) === "refuse") {
+          return refuseNoPrintifyVariant();
+        }
+        console.log(
+          `[ShadowProduct] Reusing existing shadow product ${existing.shopifyProductId} variant ${existing.shopifyVariantId} for design ${designId} (matched key=${existingKey}, persist=${persistDesignId})`,
+        );
+        // Re-read live base FRONT price, then apply both-tier override if sent.
+        // A stale $27 shadow must become $18.95 on next front reuse; Both must stay both-tier.
+        // Independent of purchasable/visibility, so it overlaps them (never rejects).
+        const syncedPromise = existing.shopifyVariantId
+          ? syncShadowVariantPrice({
+              shop,
+              token,
+              shadowVariantId: existing.shopifyVariantId,
+              baseVariantId: String(variantId),
+              printSides,
+              productTypeId: productTypeIdRaw,
+              sizeId,
+              colorId,
+              clientPrice: priceOverride,
+              surchargeCents: existing.priceSurchargeCents ?? 0,
+            })
+          : Promise.resolve(null);
+        try {
+          await ensureShadowVariantPurchasable({
+            shop,
+            token,
+            variantId: existing.shopifyVariantId,
+            baseVariantId: existing.baseVariantId || variantId,
+          });
+          step("reuse purchasable ok");
+          await assertAjaxVariantVisible({
+            shop,
+            variantId: existing.shopifyVariantId,
+            adminLive: true,
+          });
+          step("reuse storefront-visible ok");
+        } catch (reuseErr: any) {
+          if (reuseErr instanceof ShadowStorefrontNotReadyError) {
+            console.warn(
+              `[ShadowProduct] reuse not storefront-visible yet variant=${existing.shopifyVariantId} probe=${reuseErr.probe}`,
+            );
+            return res.json({
+              success: false,
+              error: ATC_SHADOW_STILL_PREPARING,
+              code: "still_preparing",
+            });
+          }
+          if (reuseErr instanceof ShadowVariantNotPurchasableError) {
+            console.warn(
+              `[ShadowProduct] reuse variant missing ${existing.shopifyVariantId} — recreating:`,
+              reuseErr.message,
+            );
+            await storage.updatePublishedProduct(existing.id, {
+              status: "archived",
+              shopifyVariantId: existing.shopifyVariantId,
+            });
+            existing = undefined;
+          } else {
+            throw reuseErr;
+          }
+        }
+        if (!existing) {
+          // Dead Shopify variant. The archived row stays for the audit trail.
+          // Creation below inserts the replacement and becomes the active lookup.
+        } else {
         // Refresh expiry: if not yet cart-added, reset the 6h window from now
         if (!existing.cartAddedAt) {
           const sixHours = new Date(Date.now() + 6 * 60 * 60 * 1000);
           await storage.updatePublishedProduct(existing.id, { expiresAt: sixHours });
         }
-        // Keep shadow price in sync when Print Side / surcharge tier changes for the same design.
-        if (overridePriceFormatted && existing.shopifyVariantId) {
-          try {
-            await fetch(`${apiBase}/variants/${existing.shopifyVariantId}.json`, {
-              method: "PUT",
-              headers,
-              body: JSON.stringify({ variant: { id: Number(existing.shopifyVariantId), price: overridePriceFormatted } }),
-            });
-          } catch (priceErr: any) {
-            console.warn(`[ShadowProduct] Failed to update reused shadow price:`, priceErr?.message || priceErr);
-          }
-        }
-        // Placement edits reuse the same designId — replace the variant image
-        // so cart/checkout thumbnails match the latest mockup.
+        const synced = await syncedPromise;
+        step(`reuse price synced written=${synced?.written ?? "none"}`);
+        // Exact cfg-keyed reuse only. A different print snapshot is a new
+        // persistDesignId, so this refresh cannot overwrite another cart line.
+        let shadowImage: string | null = null;
         if (existing.shopifyProductId && existing.shopifyVariantId) {
-          try {
-            const imgRes = await fetch(
-              `${apiBase}/products/${existing.shopifyProductId}/images.json`,
-              {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                  image: {
-                    src: mockupUrl,
-                    variant_ids: [Number(existing.shopifyVariantId)],
-                  },
-                }),
-              },
-            );
-            if (!imgRes.ok) {
-              const t = await imgRes.text();
+          const reusedProductId = existing.shopifyProductId;
+          const reusedVariantId = existing.shopifyVariantId;
+          const refreshReusedShadow = async () => {
+            let setSrc = mockupUrl;
+            try {
+              const imgRes = await shadowFetch(
+                `${apiBase}/products/${reusedProductId}/images.json`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: {
+                      src: mockupUrl,
+                      variant_ids: [Number(reusedVariantId)],
+                    },
+                  }),
+                },
+                SHADOW_CREATE_FETCH_TIMEOUT_MS,
+              );
+              if (!imgRes.ok) {
+                const t = await imgRes.text();
+                console.warn(
+                  `[ShadowProduct] Failed to refresh reused shadow image:`,
+                  imgRes.status,
+                  t.substring(0, 200),
+                );
+              } else {
+                const imgBody = (await imgRes.json().catch(() => ({}))) as { image?: { src?: string } };
+                setSrc = imgBody?.image?.src || mockupUrl;
+                const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+                console.log(
+                  `[ShadowProduct] image set product=${reusedProductId} variant=${reusedVariantId} shopifyTail=${tail(setSrc)} mockupTail=${tail(mockupUrl)} source=${source || "customizer"}`,
+                );
+              }
+            } catch (imgErr: any) {
               console.warn(
                 `[ShadowProduct] Failed to refresh reused shadow image:`,
-                imgRes.status,
-                t.substring(0, 200),
+                imgErr?.message || imgErr,
               );
             }
-          } catch (imgErr: any) {
-            console.warn(
-              `[ShadowProduct] Failed to refresh reused shadow image:`,
-              imgErr?.message || imgErr,
-            );
+            try {
+              const titleRes = await shadowFetch(
+                `${apiBase}/products/${reusedProductId}.json?fields=id,title`,
+                { headers },
+              );
+              if (titleRes.ok) {
+                const titleBody = (await titleRes.json()) as { product?: { title?: string } };
+                const currentTitle = String(titleBody?.product?.title || "");
+                const cleanedTitle = stripProviderSuffix(currentTitle);
+                if (cleanedTitle && cleanedTitle !== currentTitle) {
+                  await shadowFetch(`${apiBase}/products/${reusedProductId}.json`, {
+                    method: "PUT",
+                    headers,
+                    body: JSON.stringify({
+                      product: { id: Number(reusedProductId), title: cleanedTitle },
+                    }),
+                  });
+                }
+              }
+            } catch (titleErr: any) {
+              console.warn(
+                `[ShadowProduct] Failed to strip provider from reused shadow title:`,
+                titleErr?.message || titleErr,
+              );
+            }
+            return setSrc;
+          };
+          // The cart drawer paints _mockup_url immediately. Shopify's image
+          // fetch must not hold the variant id. Checkout still uses the
+          // variant image; the storefront's pre-checkout hold covers the
+          // rare case where that upload has not finished.
+          void refreshReusedShadow();
+        }
+        return res.json({
+          success: true,
+          variantId: existing.shopifyVariantId,
+          reused: true,
+          designId: persistDesignId,
+          matchedKey: existingKey,
+          shadowImage: shadowImage || mockupUrl,
+          price: synced?.written ?? null,
+          priceSource: synced?.source ?? null,
+          liveFrontPrice: synced?.front ?? null,
+        });
+        }
+      }
+
+      // Join a PreShadow mint already running for THIS persist key (size-change
+      // debounce). Timeout is "not ready" — do not start a second mint.
+      const flightKey = preShadowFlightKey(shop, persistDesignId);
+      const flight = await awaitExistingFlight(flightKey, RESOLVE_FLIGHT_JOIN_MS);
+      step(`flight join=${flight}`);
+      if (flight === "timeout") {
+        console.warn(`[ShadowProduct] in-flight await timed out key=${persistDesignId}`);
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
+      if (flight === "joined") {
+        const after = await storage.getPublishedProduct(shop, persistDesignId);
+        let joinedDead = false;
+        if (
+          after?.status === "active" &&
+          shadowMatchesBaseVariant(after.baseVariantId, variantId)
+        ) {
+          console.log(
+            `[ShadowProduct] Reusing existing shadow product ${after.shopifyProductId} variant ${after.shopifyVariantId} for design ${designId} (matched key=${persistDesignId}, persist=${persistDesignId}, joined-inflight)`,
+          );
+          try {
+            await ensureShadowVariantPurchasable({
+              shop,
+              token,
+              variantId: after.shopifyVariantId,
+              baseVariantId: after.baseVariantId || variantId,
+            });
+            await assertAjaxVariantVisible({
+              shop,
+              variantId: after.shopifyVariantId,
+              adminLive: true,
+            });
+          } catch (joinErr: any) {
+            if (joinErr instanceof ShadowStorefrontNotReadyError) {
+              return res.json({
+                success: false,
+                error: ATC_SHADOW_STILL_PREPARING,
+                code: "still_preparing",
+              });
+            }
+            if (joinErr instanceof ShadowVariantNotPurchasableError) {
+              console.warn(
+                `[ShadowProduct] joined reuse variant missing ${after.shopifyVariantId} — recreating:`,
+                joinErr.message,
+              );
+              await storage.updatePublishedProduct(after.id, { status: "archived" });
+              joinedDead = true;
+            } else {
+              throw joinErr;
+            }
+          }
+          if (!joinedDead) {
+            if (source === "my-pet") logReusedShadowImage(after.shopifyVariantId);
+            return res.json({
+              success: true,
+              variantId: after.shopifyVariantId,
+              reused: true,
+              designId: persistDesignId,
+              matchedKey: persistDesignId,
+            });
           }
         }
-        return res.json({ success: true, variantId: existing.shopifyVariantId, reused: true });
+        if (!joinedDead) {
+          return res.json({
+            success: false,
+            error: ATC_SHADOW_STILL_PREPARING,
+            code: "still_preparing",
+          });
+        }
       }
+
+      // Claim this key so a debounce that fires during ATC create joins us
+      // instead of minting a second product.
+      const flightPromise = new Promise<{ shopifyProductId: string; shopifyVariantId: string } | void>(
+        (resolveFlight) => {
+          settleResolveFlight = resolveFlight;
+        },
+      );
+      registerPreShadowInFlight(flightKey, flightPromise);
 
       // 2. Canonical source of truth: resolve productId from variantId.
       //    Ignore inbound productId because storefront/theme sources can be stale or wrong.
-      const variantLookupRes = await fetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      //    My Pet started this GET in parallel with the published-product lookup.
+      const fetchStarted = basePromise ? baseStarted : Date.now();
+      let variantLookupRes = basePromise
+        ? await basePromise
+        : await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+      const baseFetchMs = Date.now() - fetchStarted;
+      step(`base variant lookup ${variantLookupRes.status} fetch=${baseFetchMs}ms`);
+      // ISSUE 3 (post-staging-92) — on-401 retry. Pre-flight refresh above
+      // handles the known-expired case; this catches the edge where the
+      // token looked valid to us (not yet within REFRESH_SKEW_MS) but
+      // Shopify rejected it anyway (manual revoke, clock skew, mid-flight
+      // expiry). forceRefresh:true bypasses the "looks fresh" short-circuit.
+      // One retry only — if that also 401s, fall through to markShopTokenInvalid.
+      if (variantLookupRes.status === 401 || variantLookupRes.status === 403) {
+        forgetAuthorizedShop(shop);
+        const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
+        if (retried.ok) {
+          token = retried.accessToken;
+          Object.assign(installation, retried.installation);
+          headers["X-Shopify-Access-Token"] = token;
+          rememberAuthorizedShop(shop, installation, token);
+          variantLookupRes = await shadowFetch(`${apiBase}/variants/${variantId}.json`, { headers });
+          step(`base variant lookup retry-after-refresh ${variantLookupRes.status}`);
+        } else {
+          console.warn(`${resolveTag} variant lookup 401 refresh failed: ${retried.error}`);
+        }
+      }
       if (!variantLookupRes.ok) {
         const t = await variantLookupRes.text();
         console.error(`[ShadowProduct] Failed to fetch variant ${variantId}:`, t.substring(0, 200));
@@ -10211,7 +12351,7 @@ ${orientationExtra}
         return res.status(variantLookupRes.status).json({ success: false, error: "Failed to fetch variant", fallback: true, variantId: String(variantId) });
       }
       const { variant: baseVariantRecord } = await variantLookupRes.json();
-      if (!hasPriceOverride && !hasPositiveRetailPrice(baseVariantRecord?.price)) {
+      if (!hasPositiveRetailPrice(baseVariantRecord?.price)) {
         return res.status(400).json({
           success: false,
           error: "This product is still $0.00. Set retail prices before adding to cart.",
@@ -10224,65 +12364,131 @@ ${orientationExtra}
         return res.json({ success: false, error: "Could not resolve productId from variantId", fallback: true, variantId: String(variantId) });
       }
       console.log(`[ShadowProduct] Using canonical productId=${productId} resolved from variantId=${variantId}`);
+      if (source === "my-pet" && (await catalogueVariantGate(shop, String(variantId), productId)) === "refuse") {
+        return refuseNoPrintifyVariant();
+      }
 
       // 3. Use variant payload as canonical metadata for shadow variant creation.
       //    This avoids hard-failing on /products/{id}.json when productId is stale/unavailable.
       const baseVariant = baseVariantRecord;
+      if ((requestedColour || requestedSize) && !requestedComboMatches(baseVariant)) {
+        return refuseUnavailableCombo();
+      }
       if (!baseVariant || String(baseVariant.id) !== String(variantId)) {
         console.warn(`[ShadowProduct] Base variant ${variantId} not found in variant lookup payload`);
         return res.json({ success: false, error: "Base variant not found", fallback: true, variantId: String(variantId) });
       }
+      let myPetSurchargeCents = 0;
+      if (source === "my-pet") {
+        const { getMyPetSettings } = await import("./my-pet");
+        myPetSurchargeCents = (await getMyPetSettings(shop)).surchargeCents;
+      }
+      const decidedPrice = await decideShadowShopPrice({
+        shop,
+        token,
+        baseVariantId: String(variantId),
+        catalogueVariant: baseVariant,
+        printSides,
+        productTypeId: productTypeIdRaw,
+        sizeId,
+        colorId,
+        clientPrice: priceOverride,
+        surchargeCents: myPetSurchargeCents,
+      });
+      const shadowPrice = decidedPrice.written;
+      if (!shadowPrice) {
+        return res.status(400).json({
+          success: false,
+          error: "This product is still $0.00. Set retail prices before adding to cart.",
+          code: "PRICES_REQUIRED",
+        });
+      }
 
       // Best-effort product title lookup for a nicer shadow title (non-fatal).
+      // My Pet skips it: the extra Admin GET sat on the add-to-cart path.
       let baseProductTitle = "Custom Design";
-      try {
-        const productRes = await fetch(`${apiBase}/products/${productId}.json`, { headers });
-        if (productRes.ok) {
-          const { product: baseProduct } = await productRes.json();
-          if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
-        } else {
-          const t = await productRes.text();
-          console.warn(`[ShadowProduct] Product title lookup failed for ${productId}:`, t.substring(0, 160));
+      if (source === "my-pet") {
+        step("title skipped");
+      } else {
+        try {
+          const productRes = await shadowFetch(`${apiBase}/products/${productId}.json?fields=id,title`, { headers });
+          if (productRes.ok) {
+            const { product: baseProduct } = await productRes.json();
+            if (baseProduct?.title) baseProductTitle = String(baseProduct.title);
+          } else {
+            const t = await productRes.text();
+            console.warn(`[ShadowProduct] Product title lookup failed for ${productId}:`, t.substring(0, 160));
+          }
+        } catch (e: any) {
+          console.warn(`[ShadowProduct] Product title lookup error for ${productId}:`, e?.message || e);
         }
-      } catch (e: any) {
-        console.warn(`[ShadowProduct] Product title lookup error for ${productId}:`, e?.message || e);
+        step("title");
       }
 
       // 4. Build a clean human-readable title from variant options
       const variantOptionParts = [baseVariant.option1, baseVariant.option2, baseVariant.option3]
         .filter((o: any) => o && o !== 'Default Title' && o !== 'base')
         .join(' / ');
-      const shadowTitle = `${baseProductTitle}${variantOptionParts ? ' — ' + variantOptionParts : ''}`;
+      const shadowTitle = buildShadowProductTitle(baseProductTitle, variantOptionParts);
 
       // 5. Create the shadow product in Shopify
       // Must be status=active + published=true so the storefront cart API can add it.
       // It stays hidden from customers because it is not added to any collection and
       // is not linked from navigation — Shopify only surfaces products in collections.
       const sixHoursFromNow = new Date(Date.now() + 6 * 60 * 60 * 1000);
-      const createProductRes = await fetch(`${apiBase}/products.json`, {
+      step("creating shadow product");
+      const createProductBody = JSON.stringify({
+        product: {
+          title: shadowTitle,
+          status: shopifyStatusForVisibility("hidden"),
+          tags: 'appai-shadow',
+          variants: [{
+            price: shadowPrice,
+            compare_at_price: baseVariant.compare_at_price || null,
+            taxable: baseVariant.taxable,
+            requires_shipping: baseVariant.requires_shipping,
+            weight: baseVariant.weight,
+            weight_unit: baseVariant.weight_unit,
+            inventory_management: null,          // untracked — never sold-out
+            inventory_policy: 'continue',
+            fulfillment_service: 'manual',
+          }],
+          // My Pet returns the variant id before Shopify downloads the mockup.
+          // Other flows still send the image with the product so the variant
+          // image exists in the response.
+          ...(source === "my-pet" ? {} : { images: [{ src: mockupUrl }] }),
+        },
+      });
+      let createProductRes = await shadowFetch(`${apiBase}/products.json`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          product: {
-            title: shadowTitle,
-            status: 'unlisted',                   // accessible by direct link, hidden from browse/search
-            published: false,
-            tags: 'appai-shadow',
-            variants: [{
-              price: overridePriceFormatted || baseVariant.price,
-              compare_at_price: baseVariant.compare_at_price || null,
-              taxable: baseVariant.taxable,
-              requires_shipping: baseVariant.requires_shipping,
-              weight: baseVariant.weight,
-              weight_unit: baseVariant.weight_unit,
-              inventory_management: null,          // untracked — never sold-out
-              inventory_policy: 'continue',
-              fulfillment_service: 'manual',
-            }],
-            images: [{ src: mockupUrl }],
-          },
-        }),
+        body: createProductBody,
       });
+      // ISSUE 3 (post-staging-92) — same on-401 retry pattern as the variant
+      // lookup above. One refresh, one retry; fall through to markShopTokenInvalid
+      // if still 401. Idempotency note: this is the shadow-product create call,
+      // which is the first side-effect we make. If the first attempt actually
+      // created a product then returned 401, the retry would create a second
+      // orphan — but a 401 means the request never authenticated, so there's
+      // no server-side state change. Safe to retry.
+      if (createProductRes.status === 401 || createProductRes.status === 403) {
+        forgetAuthorizedShop(shop);
+        const retried = await ensureValidOfflineAccessToken(installation, { forceRefresh: true });
+        if (retried.ok) {
+          token = retried.accessToken;
+          Object.assign(installation, retried.installation);
+          headers["X-Shopify-Access-Token"] = token;
+          rememberAuthorizedShop(shop, installation, token);
+          createProductRes = await shadowFetch(`${apiBase}/products.json`, {
+            method: 'POST',
+            headers,
+            body: createProductBody,
+          });
+          step(`create shadow product retry-after-refresh ${createProductRes.status}`);
+        } else {
+          console.warn(`${resolveTag} create product 401 refresh failed: ${retried.error}`);
+        }
+      }
       if (!createProductRes.ok) {
         const errText = await createProductRes.text();
         console.error(`[ShadowProduct] Failed to create shadow product:`, createProductRes.status, errText.substring(0, 300));
@@ -10300,26 +12506,16 @@ ${orientationExtra}
       }
       const { product: shadowProduct } = await createProductRes.json();
       const shadowVariant = shadowProduct.variants[0];
-      console.log(`[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId}`);
+      console.log(
+        `[ShadowProduct] Created shadow product ${shadowProduct.id} variant ${shadowVariant.id} for design ${designId} (persist=${persistDesignId}) status=${shadowProduct.status} published_at=${shadowProduct.published_at ?? null}`,
+      );
+      step(`created shadow variant=${shadowVariant.id}`);
 
-      // 6. Ensure the shadow product is published to the Online Store sales channel
-      //    (required for unlisted products to be accessible via the storefront cart API)
-      try { await ensureProductPublishedToOnlineStore(shop, token, Number(shadowProduct.id)); } catch (_) { /* non-fatal */ }
-
-      // 7. Assign the mockup image to the variant
-      if (shadowProduct.images && shadowProduct.images.length > 0) {
-        const imgId = shadowProduct.images[0].id;
-        await fetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
-          method: 'PUT',
-          headers,
-          body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
-        }).catch(() => { /* non-fatal */ });
-      }
-
-      // 8. Persist the shadow product record in our DB
+      // Persist before the purchasable writes: if they time out, the next tap
+      // reuses (and re-asserts) this product instead of minting another.
       await storage.createPublishedProduct({
         shop,
-        designId,
+        designId: persistDesignId,
         customerKey: null,
         shopifyProductId: String(shadowProduct.id),
         shopifyVariantId: String(shadowVariant.id),
@@ -10328,12 +12524,279 @@ ${orientationExtra}
         status: 'active',
         expiresAt: sixHoursFromNow,
         cartAddedAt: null,
+        priceSurchargeCents: source === "my-pet" ? myPetSurchargeCents : null,
       } as any);
+      step("persisted");
 
-      return res.json({ success: true, variantId: String(shadowVariant.id), created: true });
+      // My Pet: the variant id is addable once CONTINUE has landed. Publishing,
+      // the seo.hidden metafield, the mockup image, delivery profile, shipping
+      // and the Ajax visibility poll all finish after this response. The cart
+      // drawer paints _mockup_url; checkout still uses the variant image.
+      // CONTINUE stays on this side of the response. Admin API 2025-10 ignores
+      // REST inventory_policy, so the new variant is DENY at qty 0 until this
+      // GraphQL write lands. /cart/add.js then 422s "sold out", and the client
+      // adds as soon as this handler returns.
+      if (source === "my-pet") {
+        const continueStarted = Date.now();
+        const confirmed = await confirmShadowInventoryContinue({
+          shop,
+          token,
+          variantId: shadowVariant.id,
+          productId: shadowProduct.id,
+        });
+        const continueMs = Date.now() - continueStarted;
+        resolveSteps.push(`inventory-continue=${continueMs}`);
+        console.log(`${resolveTag} inventory-continue ${continueMs}ms`);
+        const steps = stepLine();
+        console.log(`${resolveTag} breakdown ${steps} total=${Date.now() - resolveStarted}ms`);
+        settleResolveFlight?.({
+          shopifyProductId: String(shadowProduct.id),
+          shopifyVariantId: String(shadowVariant.id),
+        });
+        settleResolveFlight = null;
+        const shadowProductId = String(shadowProduct.id);
+        const shadowVariantNum = Number(shadowVariant.id);
+        const bgMark = (name: string, ms: number) => {
+          console.log(`${resolveTag} background ${name}=${ms}ms`);
+        };
+        void (async () => {
+          const bgStarted = Date.now();
+          // The mockup upload used to wait out publish and shipping, so a new
+          // combo reached the cart with no variant image. Start it now.
+          const imageJob = (async () => {
+            const imageStarted = Date.now();
+            try {
+              const imgRes = await shadowFetch(
+                `${apiBase}/products/${shadowProductId}/images.json`,
+                {
+                  method: "POST",
+                  headers,
+                  body: JSON.stringify({
+                    image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
+                  }),
+                },
+                SHADOW_CREATE_FETCH_TIMEOUT_MS,
+              );
+              if (!imgRes.ok) {
+                const t = await imgRes.text();
+                console.warn(
+                  `${resolveTag} background image failed:`,
+                  imgRes.status,
+                  t.substring(0, 200),
+                );
+              } else {
+                console.log(`${resolveTag} background image set variant=${shadowVariantNum}`);
+              }
+            } catch (imgErr: any) {
+              console.warn(`${resolveTag} background image failed:`, imgErr?.message || imgErr);
+            }
+            bgMark("image", Date.now() - imageStarted);
+          })();
+          try {
+            await Promise.all([
+              imageJob,
+              completeShadowVariantPurchasable({
+                shop,
+                token,
+                variantId: shadowVariant.id,
+                baseVariantId: variantId,
+                productGid: confirmed.productGid,
+                itemId: confirmed.itemId,
+                mark: bgMark,
+              }),
+            ]);
+          } catch (bgErr: any) {
+            console.warn(
+              `${resolveTag} background purchasable failed:`,
+              bgErr?.message || bgErr,
+            );
+          }
+          const metaStarted = Date.now();
+          try {
+            const metaRes = await shadowFetch(
+              `${apiBase}/products/${shadowProductId}/metafields.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  metafield: {
+                    namespace: "seo",
+                    key: "hidden",
+                    value: "1",
+                    type: "number_integer",
+                  },
+                }),
+              },
+              SHADOW_CREATE_FETCH_TIMEOUT_MS,
+            );
+            if (!metaRes.ok) {
+              const t = await metaRes.text();
+              console.warn(`${resolveTag} background metafield failed:`, metaRes.status, t.substring(0, 160));
+            }
+          } catch (metaErr: any) {
+            console.warn(`${resolveTag} background metafield failed:`, metaErr?.message || metaErr);
+          }
+          bgMark("metafield", Date.now() - metaStarted);
+          const visibleStarted = Date.now();
+          try {
+            await assertAjaxVariantVisible({
+              shop,
+              variantId: shadowVariant.id,
+              adminLive: true,
+            });
+            bgMark("visible-poll", Date.now() - visibleStarted);
+          } catch (visErr: any) {
+            bgMark("visible-poll", Date.now() - visibleStarted);
+            console.warn(
+              `${resolveTag} background visible-poll failed:`,
+              visErr?.message || visErr,
+            );
+          }
+          console.log(`${resolveTag} background done total=${Date.now() - bgStarted}ms`);
+        })();
+        return res.json({
+          success: true,
+          variantId: String(shadowVariant.id),
+          created: true,
+          designId: persistDesignId,
+          shadowImage: mockupUrl,
+          price: shadowPrice,
+          priceSource: "catalogue-variant",
+          liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
+          steps,
+        });
+      }
+
+      await ensureShadowVariantPurchasable({
+        shop,
+        token,
+        variantId: shadowVariant.id,
+        baseVariantId: variantId,
+      });
+      step("created purchasable ok");
+
+      // 6. Assign the mockup image to the variant. My Pet does this after
+      // the response: the product and variant already exist, and the cart
+      // line carries _mockup_url for the drawer.
+      let createdShadowImage = mockupUrl;
+      if (source === "my-pet") {
+        const shadowProductId = String(shadowProduct.id);
+        const shadowVariantNum = Number(shadowVariant.id);
+        void (async () => {
+          try {
+            const imgRes = await shadowFetch(
+              `${apiBase}/products/${shadowProductId}/images.json`,
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  image: { src: mockupUrl, variant_ids: [shadowVariantNum] },
+                }),
+              },
+              SHADOW_CREATE_FETCH_TIMEOUT_MS,
+            );
+            if (!imgRes.ok) {
+              const t = await imgRes.text();
+              console.warn(
+                `[ShadowProduct] async image failed product=${shadowProductId}:`,
+                imgRes.status,
+                t.substring(0, 200),
+              );
+            } else {
+              const imgBody = (await imgRes.json().catch(() => ({}))) as { image?: { src?: string } };
+              const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+              console.log(
+                `[ShadowProduct] async image set product=${shadowProductId} variant=${shadowVariantNum} shopifyTail=${tail(imgBody?.image?.src || "")} mockupTail=${tail(mockupUrl)}`,
+              );
+            }
+          } catch (imgErr: any) {
+            console.warn(
+              `[ShadowProduct] async image failed product=${shadowProductId}:`,
+              imgErr?.message || imgErr,
+            );
+          }
+        })();
+      } else if (shadowProduct.images && shadowProduct.images.length > 0) {
+        const imgId = shadowProduct.images[0].id;
+        createdShadowImage = shadowProduct.images[0].src || mockupUrl;
+        await shadowFetch(`${apiBase}/products/${shadowProduct.id}/images/${imgId}.json`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ image: { id: imgId, variant_ids: [shadowVariant.id] } }),
+        }).catch(() => { /* non-fatal */ });
+      }
+      {
+        const tail = (url: string) => String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+        console.log(
+          `[ShadowProduct] image set product=${shadowProduct.id} variant=${shadowVariant.id} shopifyTail=${tail(createdShadowImage)} mockupTail=${tail(mockupUrl)} source=${source || "customizer"}`,
+        );
+      }
+
+      try {
+        await assertAjaxVariantVisible({
+          shop,
+          variantId: shadowVariant.id,
+          adminLive: true,
+        });
+        step("created storefront-visible ok");
+      } catch (visErr: any) {
+        if (visErr instanceof ShadowStorefrontNotReadyError) {
+          settleResolveFlight?.({
+            shopifyProductId: String(shadowProduct.id),
+            shopifyVariantId: String(shadowVariant.id),
+          });
+          settleResolveFlight = null;
+          console.warn(
+            `[ShadowProduct] created but not storefront-visible yet variant=${shadowVariant.id} probe=${visErr.probe}`,
+          );
+          return res.json({
+            success: false,
+            error: ATC_SHADOW_STILL_PREPARING,
+            code: "still_preparing",
+          });
+        }
+        throw visErr;
+      }
+
+      settleResolveFlight?.({
+        shopifyProductId: String(shadowProduct.id),
+        shopifyVariantId: String(shadowVariant.id),
+      });
+      settleResolveFlight = null;
+      return res.json({
+        success: true,
+        variantId: String(shadowVariant.id),
+        created: true,
+        designId: persistDesignId,
+        shadowImage: createdShadowImage,
+        price: shadowPrice,
+        priceSource: "catalogue-variant",
+        liveFrontPrice: baseVariant.price != null ? String(baseVariant.price) : null,
+      });
     } catch (error: any) {
+      step(`error ${error?.name || "Error"}: ${String(error?.message || error).slice(0, 200)}`);
+      if (error instanceof ShadowStorefrontNotReadyError || isFetchTimeoutError(error)) {
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
+      if (error instanceof ShadowVariantNotPurchasableError) {
+        console.error("[ShadowProduct] Policy write did not land:", error.message);
+        return res.json({
+          success: false,
+          error: ATC_SHADOW_STILL_PREPARING,
+          code: "still_preparing",
+        });
+      }
       console.error("[ShadowProduct] Error:", error);
-      res.status(500).json({ success: false, error: error?.message || "Internal server error" });
+      if (!res.headersSent) res.status(500);
+      res.json({ success: false, error: error?.message || "Internal server error" });
+    } finally {
+      clearTimeout(deadline);
+      settleResolveFlight?.();
+      step("done");
     }
   });
 
@@ -10560,14 +13023,8 @@ ${orientationExtra}
         return res.status(403).json({ error: "Access denied" });
       }
 
-      // Repair URLs mangled by the earlier double-resolution bug
-      // (".../apps/appai/https://<real-url>") — the embedded trailing absolute
-      // URL is the real durable file.
-      const unmangle = (u?: string | null): string | null => {
-        if (!u || typeof u !== 'string') return u ?? null;
-        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
-        return idx > 0 ? u.slice(idx) : u;
-      };
+      // Repair URLs mangled by earlier wrap bugs (proxy+https, host+/data:).
+      const unmangle = (u?: string | null): string | null => unwrapMangledPreviewUrl(u);
 
       return res.json({
         designId: design.id,
@@ -10594,7 +13051,7 @@ ${orientationExtra}
   // ==================== STOREFRONT CUSTOMER DESIGNS LIST ====================
   // POST instead of GET so customerId (UUID) is sent in the body, not the URL.
   // The Shopify App Proxy truncates long query parameter values, which broke UUID lookups.
-  app.post("/api/storefront/customizer/my-designs", async (req: Request, res: Response) => {
+  app.post("/api/storefront/customizer/my-designs", asyncHandler(async (req: Request, res: Response) => {
     try {
       const shop = (req.body.shop || req.query.shop) as string;
       const customerId = (req.body.customerId || req.query.customerId) as string;
@@ -10605,9 +13062,16 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
+      // Saved designs belong to the identity token's customer (signed-in and
+      // anonymous visitors both hold one from identity bootstrap; admin studios
+      // get one from /api/appai/design-studio/identity).
+      const identityCheck = storefrontIdentityMatches(req, String(customerId), shop);
+      if (!identityCheck.ok) {
+        return res.status(identityCheck.status).json({ error: identityCheck.error });
+      }
       const GALLERY_LIMIT = await getGalleryLimitForCustomer(customerId);
       console.log(`[MyDesigns] shop=${shop} customerId=${customerId}`);
-      const rows = await db
+      const fetchedRows = await db
         .select()
         .from(generationJobs)
         .where(
@@ -10618,8 +13082,9 @@ ${orientationExtra}
           )
         )
         .orderBy(desc(generationJobs.createdAt))
-        .limit(GALLERY_LIMIT);
-      console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId}`);
+        .limit(GALLERY_LIMIT * 3);
+      const rows = selectVisibleGalleryJobs(fetchedRows).slice(0, GALLERY_LIMIT);
+      console.log(`[MyDesigns] found ${rows.length} designs for customerId=${customerId} (from ${fetchedRows.length} complete jobs)`);
 
       // Resolve product type names AND page handles for all unique productTypeIds.
       // Some saved test designs were created before product types were recreated
@@ -10657,6 +13122,7 @@ ${orientationExtra}
               productTypeId: customizerPages.productTypeId,
               handle: customizerPages.handle,
               title: customizerPages.title,
+              experienceProfileId: customizerPages.experienceProfileId,
             })
             .from(customizerPages)
             .where(
@@ -10667,8 +13133,10 @@ ${orientationExtra}
               )
             );
           const typeCounts: Record<string, number> = {};
+          // Store-profile pages (e.g. Petposterous) never take part in handle
+          // inference, so classic designs keep resolving to their own page.
           for (const p of pages) {
-            if (!p.productTypeId) continue;
+            if (!p.productTypeId || p.experienceProfileId) continue;
             const key = String(p.productTypeId);
             typeCounts[key] = (typeCounts[key] || 0) + 1;
           }
@@ -10677,7 +13145,7 @@ ${orientationExtra}
           // otherwise stamp the wrong product onto Saved Designs.
           for (const p of pages) {
             if (p.handle && p.title) titleByHandle[p.handle] = p.title;
-            if (!p.productTypeId) continue;
+            if (!p.productTypeId || p.experienceProfileId) continue;
             const key = String(p.productTypeId);
             if (typeCounts[key] === 1) handleMap[key] = p.handle;
           }
@@ -10718,22 +13186,19 @@ ${orientationExtra}
       // real, durable Supabase/CDN file — the uploads themselves are fine, only
       // the stored reference string got wrapped. Recovering it here fixes every
       // affected design instantly, with no need to re-open/re-save them.
-      const unmangleUrl = (u?: string | null): string | null => {
-        if (!u || typeof u !== 'string') return u ?? null;
-        const idx = Math.max(u.lastIndexOf('https://'), u.lastIndexOf('http://'));
-        return idx > 0 ? u.slice(idx) : u;
-      };
+      const unmangleUrl = (u?: string | null): string | null => unwrapMangledPreviewUrl(u);
 
       // Build image URLs using the Shopify App Proxy path so they load without CORS issues
       // from inside the storefront iframe. Shopify rewrites /apps/appai/... → /api/proxy/...
       // For Supabase/external URLs, pass them through directly so gallery previews work.
       const proxyUrl = (u?: string | null) => {
-        const fixed = unmangleUrl(u);
+        const fixed = normalizePreviewUrl(u);
         if (!fixed) return null;
+        if (fixed.startsWith("data:")) return fixed;
         // Supabase or other absolute URL — pass through directly (needed for gallery previews)
-        if (fixed.startsWith('http')) return fixed;
+        if (fixed.startsWith("http")) return fixed;
         // Relative path like /objects/designs/xxx.png → serve via App Proxy
-        const clean = fixed.startsWith('/') ? fixed : `/${fixed}`;
+        const clean = fixed.startsWith("/") ? fixed : `/${fixed}`;
         return `/apps/appai${clean}`;
       };
 
@@ -10842,6 +13307,17 @@ ${orientationExtra}
         visitedShops = [];
       }
 
+      const briefById = new Map<string, unknown>();
+      {
+        await Promise.all(
+          rows
+            .filter((r) => (r as any).creativeBrief)
+            .map(async (r) => {
+              const b = await publicCreativeBrief((r as any).creativeBrief, installation.shopDomain).catch(() => null);
+              if (b) briefById.set(r.id, b);
+            }),
+        );
+      }
       return res.json({
         count: rows.length,
         limit: GALLERY_LIMIT,
@@ -10868,6 +13344,7 @@ ${orientationExtra}
             ? pickOriginPage(String(d.creatorId), resolvedHandle, ptId)
             : null;
           return {
+          ...(briefById.has(d.id) ? { creativeBrief: briefById.get(d.id) } : {}),
           id: d.id,
           artworkUrl:
             proxyUrl(d.designImageUrl) ||
@@ -10901,10 +13378,11 @@ ${orientationExtra}
         })
       });
     } catch (err: any) {
-      console.error("[MyDesigns GET]", err);
+      console.error("[MyDesigns POST]", err?.message ?? err);
+      console.error("[MyDesigns POST] stack:", err?.stack ?? err);
       return res.status(500).json({ error: "Failed to fetch designs" });
     }
-  });
+  }));
 
   // ==================== STOREFRONT AUTH (Google + OTP) ====================
 
@@ -10921,7 +13399,13 @@ ${orientationExtra}
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const ladder = await ensureRewardLadder(installation.shopDomain);
+      const ladder = await resolveRewardsForShop(installation.shopDomain);
+      const shopperCountry = resolvedShipCountryFromReq(req).country;
+      const shopperCurrency = currencyForShipCountry(shopperCountry);
+      const usdToShopperRate = await readPinnedUsdToCurrency({
+        currency: shopperCurrency,
+        shop: installation.shopDomain,
+      });
       const publicRungs = ladder
         .filter((r) =>
           r.rungKey === "email_signup" ||
@@ -10930,11 +13414,20 @@ ${orientationExtra}
         )
         .map((r) => {
           const row = serializeRewardRung(r);
+          const thresholdDisplay =
+            row.rungKey === "purchase_threshold"
+              ? formatPurchaseThresholdDisplay({
+                  usdCents: row.thresholdCents ?? 5000,
+                  shopperCurrency,
+                  usdToShopperRate,
+                })
+              : null;
           return {
             rungKey: row.rungKey,
             enabled: row.enabled,
             creditAmount: row.creditAmount,
             thresholdCents: row.thresholdCents,
+            thresholdDisplay: thresholdDisplay?.label ?? null,
             sortOrder: row.sortOrder,
           };
         });
@@ -11194,13 +13687,24 @@ ${orientationExtra}
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) return res.status(403).json({ error: "Shop not authorized" });
 
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
-        shop,
-        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (typeof customerId === "string" ? customerId : null),
+      // Token (this shop) → proxy-signed Shopify customer → anonymous session.
+      // A body customerId alone never mints a token (it is only compared below).
+      const proven = await resolveVerifiedStorefrontIdentity(req, shop, {
         shopifyCustomerId: typeof shopifyCustomerId === "string" ? shopifyCustomerId : null,
         anonSessionId: typeof anonSessionId === "string" ? anonSessionId : null,
       });
+      if (!proven.ok) {
+        // A merged session can't stand in for its account: the client rotates to
+        // a fresh anonymous session and signs in again if it wants the account.
+        return res.status(401).json({
+          error: "SIGN_IN_REQUIRED",
+          message: "Sign in again to continue.",
+          ...(proven.error === "SESSION_BELONGS_TO_ACCOUNT" ? { rotateSession: true } : {}),
+        });
+      }
+      const customer = proven.customer;
+      const signInRequired =
+        typeof customerId === "string" && !!customerId && customerId !== customer.id && proven.kind !== "customer";
       const creatorCtx = creatorContextFromRequest(req);
       const wallet = await resolveStorefrontWalletView({
         shop,
@@ -11211,6 +13715,7 @@ ${orientationExtra}
       });
       const aliases = await storage.getCustomerAliases(customer.id).catch(() => []);
       const emailAlias = aliases.find((a) => a.aliasType === "otp_email");
+      const googleAlias = aliases.find((a) => a.aliasType === "google");
       let email = emailAlias?.aliasValue || null;
       if (!email) {
         try {
@@ -11220,9 +13725,11 @@ ${orientationExtra}
           /* email column may be missing on older DBs */
         }
       }
+      // AppAI OTP/Google only — a Shopify customer.id in the iframe query
+      // must not mark the visitor signed in or the tray hides Sign in.
       const signedIn =
-        !!email ||
-        !!shopifyCustomerId ||
+        !!emailAlias ||
+        !!googleAlias ||
         (typeof customer.userId === "string" && customer.userId.startsWith("email:"));
       return res.json({
         ok: true,
@@ -11231,6 +13738,8 @@ ${orientationExtra}
         ...wallet,
         email,
         signedIn,
+        // The stored id could not be proven (expired token): this is a fresh identity.
+        ...(signInRequired ? { identityReset: true } : {}),
       });
     } catch (error: any) {
       console.error("[Storefront Identity] bootstrap error:", error);
@@ -11241,18 +13750,20 @@ ${orientationExtra}
   // ==================== STOREFRONT COUPON REDEMPTION ====================
   app.post("/api/storefront/auth/redeem-coupon", async (req: Request, res: Response) => {
     try {
-      const { code, customerId, shop } = req.body;
-      if (!code || !customerId || !shop) {
+      const { code, customerId: claimedCustomerId, shop } = req.body;
+      if (!code || !claimedCustomerId || !shop) {
         return res.status(400).json({ error: "Code, customerId, and shop are required" });
       }
       const installation = await getAuthorizedInstallation(shop);
       if (!installation) {
         return res.status(403).json({ error: "Shop not authorized" });
       }
-      const customer = await storage.getCustomer(customerId);
-      if (!customer) {
-        return res.status(404).json({ error: "Customer not found" });
+      // Credits (and the one-per-customer redemption) go to the proven caller only.
+      const owner = await resolveClaimedStorefrontCustomer(req, shop, claimedCustomerId);
+      if (!owner.ok) {
+        return res.status(owner.status).json({ error: owner.error });
       }
+      const customer = owner.customer;
       const coupon = await storage.getCouponByCode(code);
       if (!coupon) {
         return res.status(404).json({ error: "Invalid coupon code" });
@@ -11298,6 +13809,7 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
+        source: "pack",
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -11321,10 +13833,19 @@ ${orientationExtra}
         amount: coupon.creditAmount,
         description: `Redeemed coupon: ${coupon.code}`,
       });
+      const creatorCtx = creatorContextFromRequest(req);
+      const wallet = await resolveStorefrontWalletView({
+        shop,
+        customerId: customer.id,
+        merchantFreeLimit: (installation as any).storefrontFreeGensPerVisitor,
+        creatorUsername: creatorCtx.creatorUsername,
+        creatorId: creatorCtx.creatorId,
+      });
       res.json({
         ok: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
+        newBalance: wallet.credits,
+        ...walletJson(wallet),
       });
     } catch (error: any) {
       console.error("[Storefront Coupon] redeem error:", error);
@@ -11347,17 +13868,18 @@ ${orientationExtra}
         return res.status(403).json({ error: "Shop not authorized" });
       }
 
-      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
-      const tokenIdentity = verifyStorefrontIdentityToken(req);
-      const customer = await resolveStorefrontCustomerIdentity({
+      // Balances only for the proven caller; the query customerId must match it.
+      const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(customerId);
+      const verified = await resolveVerifiedStorefrontIdentity(
+        req,
         shop,
-        customerId: tokenIdentity?.shop === shop ? tokenIdentity.customerId : (isInternalCustomer ? customerId : null),
-        shopifyCustomerId: isInternalCustomer ? null : customerId,
-      });
-      if (!customer) {
-        console.warn("[Credits Status] customer not found for", customerId);
-        return res.status(404).json({ error: "Customer not found" });
+        { shopifyCustomerId: isInternalCustomer ? null : customerId, customerId },
+        { allowAnonymous: false },
+      );
+      if (!verified.ok) {
+        return res.status(verified.status).json({ error: verified.error });
       }
+      const customer = verified.customer;
       const creatorCtx = creatorContextFromRequest(req);
       const wallet = await resolveStorefrontWalletView({
         shop,
@@ -11384,7 +13906,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Orders Paid] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }
@@ -11428,6 +13950,7 @@ ${orientationExtra}
                 customerId: resolved.id,
                 orderId: String(orderId),
                 subtotalCents,
+                currency: order.currency || order.presentment_currency || "USD",
                 creatorId: orderCreatorId,
               });
               if (r.granted) {
@@ -11440,29 +13963,31 @@ ${orientationExtra}
         }
       }
 
-      // ── Flat/mesh on-the-fly Printify fulfillment (DISABLED BY DEFAULT) ──────
-      // Gated behind FLAT_ORDER_FULFILLMENT_ENABLED so it never runs in
-      // production until prerequisites (e.g. Protected Customer Data approval
-      // for shipping address access) are met. Requires a valid webhook HMAC.
-      // Runs async AFTER we return 200 so the webhook stays fast.
-      if (process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true" && Array.isArray(order.line_items)) {
+      // Printify submission: FLAT_ORDER_FULFILLMENT_ENABLED is a global kill
+      // switch (off → nothing submits). Each shop also needs
+      // shipping_store_settings.flat_order_fulfillment_enabled, which defaults
+      // off. A blank recipient is still refused inside submitFlatOrderToPrintify,
+      // and Printify 8502 stays awaiting_approval with no retry.
+      const fulfillmentDecision = flatFulfillmentDecision(
+        process.env.FLAT_ORDER_FULFILLMENT_ENABLED,
+        process.env.FLAT_ORDER_FULFILLMENT_ENABLED === "true"
+          ? await shopFlatFulfillmentEnabled(shop)
+          : false,
+      );
+      if (fulfillmentDecision !== "submit") {
+        if (Array.isArray(order.line_items)) {
+          console.log("[Shopify Orders Paid] flat fulfillment skipped", {
+            orderId,
+            shop,
+            reason: fulfillmentDecision,
+          });
+        }
+      } else if (Array.isArray(order.line_items)) {
         const rawLines = order.line_items as any[];
-        const shippingAddress = order.shipping_address || order.customer?.default_address || {};
-        // Map the Shopify shipping address → Printify address_to. NOTE: this
-        // path depends on Protected Customer Data access; until approved, the
-        // flag stays OFF. We never source the address from an unverified body.
-        const addressTo = {
-          first_name: String(shippingAddress.first_name || order.customer?.first_name || "Customer"),
-          last_name: String(shippingAddress.last_name || order.customer?.last_name || ""),
-          email: String(order.email || order.contact_email || ""),
-          phone: String(shippingAddress.phone || order.phone || ""),
-          country: String(shippingAddress.country_code || shippingAddress.country || "US"),
-          region: String(shippingAddress.province_code || shippingAddress.province || ""),
-          address1: String(shippingAddress.address1 || ""),
-          address2: String(shippingAddress.address2 || ""),
-          city: String(shippingAddress.city || ""),
-          zip: String(shippingAddress.zip || ""),
-        };
+        // Shopify redacts name, street, zip and phone until Protected Customer
+        // Data is approved. Submit re-reads the order and refuses a blank recipient.
+        const { printifyAddressFromShopifyOrder } = await import("./printify-order-recipient");
+        const addressTo = printifyAddressFromShopifyOrder(order);
         const normalizedLines = rawLines.map((l) => normalizeShopifyOrderLine(l));
         // Fire-and-forget: respond 200 first, run Printify work in the background.
         void (async () => {
@@ -11481,6 +14006,8 @@ ${orientationExtra}
               printifyOrderId: result.printifyOrderId,
               eligibleLines: result.eligibleLines,
               skippedReasons: result.skippedReasons,
+              printFilePaths: result.printFilePaths,
+              error: result.error,
             });
           } catch (e: any) {
             console.error("[Shopify Orders Paid] flat fulfillment error:", e?.message || e);
@@ -11497,6 +14024,21 @@ ${orientationExtra}
       if (shop && Array.isArray(order.line_items)) {
         void recordDesignProductSalesForOrder(shop, order).catch((e: any) =>
           console.warn("[Shopify Orders Paid] design product sale recording failed:", e?.message || e),
+        );
+      }
+
+      // ── My Pet audit (Issue 11): link render rows to the order + write the
+      // ai_art_studio.my_pet_render_id Shopify order metafield so merchants see
+      // the preview / Replicate prediction URL / Supabase paths in the order
+      // page. No-op (returns matched:0) if no My Pet line properties on the order.
+      if (shop && Array.isArray(order.line_items)) {
+        void import("./my-pet")
+          .then(({ recordMyPetSaleForOrder }) => recordMyPetSaleForOrder(shop, order))
+          .catch((e: any) =>
+            console.warn("[Shopify Orders Paid] my-pet sale recording failed:", e?.message || e),
+          );
+        void protectShadowsOnPaidOrder(shop, order, storage).catch((e: any) =>
+          console.warn("[Shopify Orders Paid] shadow protect failed:", e?.message || e),
         );
       }
 
@@ -11560,7 +14102,7 @@ ${orientationExtra}
   app.post("/shopify/webhooks/carts-create", async (req: Request, res: Response) => {
     try {
       const shop = req.headers["x-shopify-shop-domain"] as string;
-      const hmacValid = verifyShopifyWebhookHmac(req);
+      const hmacValid = await verifyShopifyWebhookHmac(req);
       if (shop && hmacValid) {
         void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
           console.warn("[Shopify Carts Create] atc recording failed:", e?.message || e),
@@ -11576,7 +14118,7 @@ ${orientationExtra}
   app.post("/shopify/webhooks/carts-update", async (req: Request, res: Response) => {
     try {
       const shop = req.headers["x-shopify-shop-domain"] as string;
-      const hmacValid = verifyShopifyWebhookHmac(req);
+      const hmacValid = await verifyShopifyWebhookHmac(req);
       if (shop && hmacValid) {
         void recordDesignProductAtcForCart(shop, req.body || {}).catch((e: any) =>
           console.warn("[Shopify Carts Update] atc recording failed:", e?.message || e),
@@ -11597,7 +14139,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const body = req.body || {};
       const orderId = body.order_id || body.admin_graphql_api_order_id || body.order?.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Refunds Create] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }
@@ -11677,7 +14219,7 @@ ${orientationExtra}
       const shop = req.headers["x-shopify-shop-domain"] as string;
       const order = req.body || {};
       const orderId = order.admin_graphql_api_id || order.id;
-      if (!verifyShopifyWebhookHmac(req)) {
+      if (!(await verifyShopifyWebhookHmac(req))) {
         console.warn("[Shopify Orders Cancelled] invalid HMAC", { shop, orderId });
         return res.status(401).send("Unauthorized");
       }
@@ -11875,117 +14417,14 @@ ${orientationExtra}
     }
   });
 
-  // ==================== SHADOW SKU CLEANUP ====================
-  // Deletes expired shadow products from Shopify and removes DB mapping rows.
-  // Runs automatically every 6 hours and can be triggered manually via the admin endpoint below.
-  async function runDesignSkuCleanup(): Promise<{ deleted: number; errors: number }> {
-    let deleted = 0;
-    let errors = 0;
-    try {
-      const expired = await storage.getExpiredDesignSkuMappings(new Date());
-      if (expired.length === 0) return { deleted, errors };
-
-      // Group by shop so we can batch-delete per installation
-      const byShop: Record<string, typeof expired> = {};
-      for (const row of expired) {
-        if (!byShop[row.shopDomain]) byShop[row.shopDomain] = [];
-        byShop[row.shopDomain].push(row);
-      }
-
-      for (const shopDomain of Object.keys(byShop)) {
-        const rows = byShop[shopDomain];
-        const installation = await storage.getShopifyInstallationByShop(shopDomain);
-        if (!installation?.accessToken) {
-          errors += rows.length;
-          continue;
-        }
-
-        for (const row of rows) {
-          try {
-            // Delete the shadow product from Shopify (also deletes its variant + images)
-            await fetch(
-              `https://${shopDomain}/admin/api/2024-10/products/${row.shadowShopifyProductId}.json`,
-              {
-                method: "DELETE",
-                headers: { "X-Shopify-Access-Token": installation.accessToken },
-              }
-            );
-            await storage.deleteDesignSkuMapping(row.id);
-            deleted++;
-          } catch (e: any) {
-            console.warn(`[Design SKU Cleanup] Failed for product ${row.shadowShopifyProductId}:`, e.message);
-            errors++;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error("[Design SKU Cleanup] Unexpected error:", e);
-      errors++;
-    }
-    console.log(`[Design SKU Cleanup] Done: deleted=${deleted} errors=${errors}`);
-    return { deleted, errors };
-  }
+  // Design-SKU and shadow-product cleanup live in scheduled-shadow-cleanup.ts.
+  // Both confirm the live product is still an appai-shadow before deleting it.
 
   // Manual trigger endpoint (ops/testing)
   app.post("/api/admin/design-sku-cleanup", isAuthenticated, async (_req: any, res: Response) => {
     const result = await runDesignSkuCleanup();
     res.json({ ok: true, ...result });
   });
-
-  // ── Shadow product cleanup ──────────────────────────────────────────────────
-  // Runs every hour. Deletes Shopify shadow products whose expiresAt has passed
-  // and marks them as archived in the DB.
-  async function runShadowProductCleanup(): Promise<{ deleted: number; errors: number }> {
-    let deleted = 0;
-    let errors = 0;
-    try {
-      const expired = await storage.getExpiredShadowProducts();
-      if (expired.length === 0) return { deleted, errors };
-      console.log(`[ShadowProduct Cleanup] Found ${expired.length} expired shadow products to clean up`);
-
-      // Group by shop for efficient token lookup
-      const byShop: Record<string, typeof expired> = {};
-      for (const row of expired) {
-        if (!byShop[row.shop]) byShop[row.shop] = [];
-        byShop[row.shop].push(row);
-      }
-
-      for (const shopDomain of Object.keys(byShop)) {
-        const rows = byShop[shopDomain];
-        const installation = await storage.getShopifyInstallationByShop(shopDomain);
-        if (!installation?.accessToken) {
-          errors += rows.length;
-          continue;
-        }
-        for (const row of rows) {
-          try {
-            // Delete the shadow product from Shopify (also removes its variant + images)
-            const delRes = await fetch(
-              `https://${shopDomain}/admin/api/2025-10/products/${row.shopifyProductId}.json`,
-              { method: "DELETE", headers: { "X-Shopify-Access-Token": installation.accessToken } }
-            );
-            if (delRes.ok || delRes.status === 404) {
-              // 404 = already gone from Shopify, still clean up our record
-              await storage.updatePublishedProduct(row.id, { status: "archived" });
-              deleted++;
-            } else {
-              const errText = await delRes.text();
-              console.warn(`[ShadowProduct Cleanup] Shopify DELETE failed (${delRes.status}) for product ${row.shopifyProductId}: ${errText.substring(0, 150)}`);
-              errors++;
-            }
-          } catch (e: any) {
-            console.warn(`[ShadowProduct Cleanup] Error deleting product ${row.shopifyProductId}:`, e?.message);
-            errors++;
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error("[ShadowProduct Cleanup] Unexpected error:", e);
-      errors++;
-    }
-    console.log(`[ShadowProduct Cleanup] Done: deleted=${deleted} errors=${errors}`);
-    return { deleted, errors };
-  }
 
   // Manual trigger endpoint
   app.post("/api/admin/printify-test-artifact-cleanup", isAuthenticated, async (req: any, res: Response) => {
@@ -12006,6 +14445,15 @@ ${orientationExtra}
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
+
+  // base-first mint queue. No-op while every shop stays on shadow-direct.
+  if (process.env.NODE_ENV !== "test") {
+    setInterval(() => {
+      import("./shadow-mint-worker")
+        .then((m) => m.tickShadowMintQueue())
+        .catch((e: Error) => console.error("[ShadowMint] Interval error:", e));
+    }, 2000);
+  }
 
   // Hourly: delete unpublished Mockup Preview / test-order products (1h grace).
   // Draft test *orders* still cancel only after 7 days. Never deletes published
@@ -12112,27 +14560,45 @@ ${orientationExtra}
   //           singleScale, singleRotation, singlePosX, singlePosY }
   // Returns { patternUrl }
   // ── Background removal endpoint (separate from preview) ──────────────────
-  // Called by the client's optional "Remove BG" button in PatternCustomizer.
+  // Fires automatically from the storefront embed on design load for apparel
+  // without flat calibration (client/src/pages/embed-design.tsx). The caller is
+  // an ANONYMOUS storefront visitor — do not put user auth on this route or
+  // auto-background-removal breaks for every visitor. It is protected instead
+  // by the image-origin allowlist plus a per-IP rate limit, because it fetches
+  // a caller-supplied URL from the server's network position and then runs paid ML.
   // Returns a data URL (base64 PNG) of the subject with background removed.
   app.post("/api/pattern/remove-bg", async (req: any, res: Response) => {
     try {
       const { imageUrl } = req.body as { imageUrl: string };
       if (!imageUrl) return res.status(400).json({ error: "imageUrl is required" });
 
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rate = checkCreatorRateLimit({
+        key: `remove-bg:${clientIpFromReq(req)}`,
+        limit: 40,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rate.ok) {
+        res.setHeader("Retry-After", String(rate.retryAfterSec));
+        return res.status(429).json({ error: "Too many background removal requests." });
+      }
+
       // Fetch the image buffer
       let sourceBuffer: Buffer;
-      if (imageUrl.startsWith("/objects/")) {
-        const host = req.get("host") || process.env.RAILWAY_PUBLIC_DOMAIN || "localhost";
-        const protocol = req.protocol || "https";
-        const absoluteUrl = `${protocol}://${host}${imageUrl}`;
-        const srcRes = await fetch(absoluteUrl, { signal: AbortSignal.timeout(15000) });
-        if (!srcRes.ok) throw new Error(`Failed to fetch image (${srcRes.status})`);
-        sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
-      } else if (imageUrl.startsWith("data:")) {
+      if (imageUrl.startsWith("data:")) {
         const base64Part = imageUrl.split(",")[1];
-        sourceBuffer = Buffer.from(base64Part, "base64");
+        sourceBuffer = Buffer.from(base64Part ?? "", "base64");
       } else {
-        const srcRes = await fetch(imageUrl, { signal: AbortSignal.timeout(15000) });
+        // Covers both app-relative /objects/ paths and absolute URLs. The old
+        // code built the /objects/ URL from req.get("host") — a client-controlled
+        // header, so the "safe" branch was itself an SSRF vector.
+        const { resolveAllowedImageUrl } = await import("./safe-image-url");
+        const safe = resolveAllowedImageUrl(imageUrl);
+        if (!safe.ok) {
+          console.warn(`[Remove BG] Refused imageUrl (${safe.reason})`);
+          return res.status(safe.status).json({ error: safe.reason });
+        }
+        const srcRes = await fetch(safe.url, { signal: AbortSignal.timeout(15000) });
         if (!srcRes.ok) throw new Error(`Failed to fetch image (${srcRes.status})`);
         sourceBuffer = Buffer.from(await srcRes.arrayBuffer());
       }
@@ -12375,11 +14841,16 @@ ${orientationExtra}
       }
 
       const { name, description, printifyBlueprintId, mockupTemplateUrl, sizes, frameColors, aspectRatio } = req.body;
+      const { suggestListingCopy } = await import("@shared/listingCopy");
+      const listing = suggestListingCopy(String(name || ""));
       
       const newProductType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description,
+        listingGarmentWord: listing.garmentWord,
+        listingHandleSuffix: listing.handleSuffix,
+        listingStyleLabel: listing.styleLabel,
         printifyBlueprintId,
         mockupTemplateUrl,
         sizes: JSON.stringify(sizes || []),
@@ -12407,6 +14878,8 @@ ${orientationExtra}
     "panelMappingTemplate",
     "onTheFlyTier",
     "flatCalibrationStatus",
+    "printSidesEnabled",
+    "shopifyVariantIdsBoth",
   ] as const;
 
   app.patch("/api/admin/product-types/:id", isAuthenticated, async (req: any, res: Response) => {
@@ -12430,10 +14903,94 @@ ${orientationExtra}
       if (updates.frameColors && Array.isArray(updates.frameColors)) {
         updates.frameColors = JSON.stringify(updates.frameColors);
       }
+      // null = derived default (on where front+back costs exist); false = operator switched off.
+      if ("printSidesEnabled" in updates && updates.printSidesEnabled !== null && typeof updates.printSidesEnabled !== "boolean") {
+        return res.status(400).json({ error: "printSidesEnabled must be true, false, or null" });
+      }
+      if ("listingHandleSuffix" in updates) {
+        const { normaliseHandleSuffix } = await import("@shared/listingCopy");
+        const suffix = normaliseHandleSuffix(updates.listingHandleSuffix);
+        if (suffix == null) {
+          return res.status(400).json({ error: "A handle suffix cannot be a number. Shopify would add its own." });
+        }
+        updates.listingHandleSuffix = suffix;
+      }
+      if ("listingGarmentWord" in updates) {
+        updates.listingGarmentWord = String(updates.listingGarmentWord || "").replace(/\s+/g, " ").trim();
+      }
+      if ("listingStyleLabel" in updates) {
+        updates.listingStyleLabel = String(updates.listingStyleLabel || "").replace(/\s+/g, " ").trim();
+      }
+      if ("compareAtBySize" in updates) {
+        const normalised = normaliseCompareAtBySize(updates.compareAtBySize);
+        if (!normalised.ok) return res.status(400).json({ error: normalised.error });
+        updates.compareAtBySize = normalised.json;
+      }
+      for (const key of ["garmentComfortCopy", "garmentDurabilityCopy"] as const) {
+        if (!(key in updates)) continue;
+        updates[key] = String(updates[key] || "")
+          .split(/\n+/)
+          .map((line: string) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      }
+      if ("garmentShape" in updates) {
+        const shape = String(updates.garmentShape || "");
+        updates.garmentShape = shape === "long-sleeve" || shape === "sweatshirt" || shape === "tee" ? shape : null;
+      }
+      if ("garmentFitEase" in updates) {
+        const ease = updates.garmentFitEase || {};
+        const number = (value: unknown) => {
+          const parsed = Number(value);
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+        };
+        const closer = number(ease.closer);
+        const relaxed = number(ease.relaxed);
+        const oversized = number(ease.oversized);
+        if (closer == null || relaxed == null || oversized == null) {
+          return res.status(400).json({ error: "Ease must be a number of inches for each fit." });
+        }
+        updates.garmentFitEase = { closer, relaxed, oversized };
+      }
+      if ("garmentMeasurements" in updates && updates.garmentMeasurements != null) {
+        const source = updates.garmentMeasurements;
+        const columns = Array.isArray(source.columns)
+          ? source.columns.filter((column: { key?: string; label?: string }) => column?.key && column?.label)
+          : [];
+        const cleanRows = (Array.isArray(source.rows) ? source.rows : []).map((row: { size?: string; values?: Record<string, unknown> }) => {
+          const values: Record<string, number> = {};
+          for (const column of columns) {
+            const raw = row?.values?.[column.key];
+            if (raw === "" || raw == null) continue;
+            const parsed = Number(raw);
+            if (!Number.isFinite(parsed)) return null;
+            values[String(column.key)] = parsed;
+          }
+          return { size: String(row?.size || "").trim(), values };
+        });
+        if (cleanRows.some((row: { size?: string } | null) => !row || !row.size)) {
+          return res.status(400).json({ error: "Each measurement needs a size and a number." });
+        }
+        updates.garmentMeasurements = {
+          model: String(source.model || "").trim(),
+          columns: columns.map((column: { key: string; label: string; role?: string }) => ({
+            key: String(column.key),
+            label: String(column.label),
+            role: column.role === "chest" || column.role === "length" ? column.role : "other",
+          })),
+          rows: cleanRows,
+          toleranceNote: String(source.toleranceNote || "").trim(),
+        };
+      }
 
       const updated = await storage.updateProductType(id, updates);
       if (!updated) {
         return res.status(404).json({ error: "Product type not found" });
+      }
+      if ("garmentComfortCopy" in updates || "garmentDurabilityCopy" in updates) {
+        void import("./garment-accordion-metafields")
+          .then(({ backfillGarmentAccordionMetafields }) => backfillGarmentAccordionMetafields())
+          .catch((error) => console.warn("[garment-accordion] save refresh failed:", error));
       }
       res.json(updated);
     } catch (error) {
@@ -12657,9 +15214,23 @@ ${orientationExtra}
     }
   }
 
-  // Create share link for a design (public endpoint for Shopify embed)
+  // Create share link for a design.
+  // Deliberately unauthenticated: the only caller is the share button in the
+  // anonymous storefront embed. Protected by a per-IP rate limit rather than
+  // user auth, which would make the button unusable for storefront visitors.
   app.post("/api/designs/share", async (req: Request, res: Response) => {
     try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `design-share:${clientIpFromReq(req)}`,
+        limit: 30,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many share links created. Try again shortly." });
+      }
+
       const { 
         imageUrl: rawImageUrl,
         thumbnailUrl,
@@ -12697,16 +15268,17 @@ ${orientationExtra}
 
       // Resolve the sharer's internal customer id (for the share_design Reward Ladder rung).
       // Accept either the internal UUID or a Shopify customer id; verify via bearer token when present.
+      // Attribution (share_design reward) goes to the verified identity only —
+      // signed-in or anonymous. A claimed customerId never decides it; sharing
+      // itself stays open to everyone.
       let ownerCustomerId: string | null = null;
-      if (rawOwnerCustomerId && shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
-        const tokenIdentity = verifyStorefrontIdentityToken(req);
-        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId));
-        const resolved = await resolveStorefrontCustomerIdentity({
-          shop: String(shopDomain),
-          customerId: tokenIdentity && tokenIdentity.shop === shopDomain ? tokenIdentity.customerId : (isInternalCustomer ? String(rawOwnerCustomerId) : null),
-          shopifyCustomerId: isInternalCustomer ? null : String(rawOwnerCustomerId),
+      if (shopDomain && /^[a-zA-Z0-9][a-zA-Z0-9-]*\.myshopify\.com$/.test(String(shopDomain))) {
+        const isInternalCustomer = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(rawOwnerCustomerId || ""));
+        const verified = await resolveVerifiedStorefrontIdentity(req, String(shopDomain), {
+          shopifyCustomerId: rawOwnerCustomerId && !isInternalCustomer ? String(rawOwnerCustomerId) : null,
+          anonSessionId: typeof req.body?.sessionId === "string" ? req.body.sessionId : null,
         }).catch(() => null);
-        if (resolved) ownerCustomerId = resolved.id;
+        if (verified?.ok) ownerCustomerId = verified.customer.id;
       }
 
       let shareCreatorId: string | null = null;
@@ -12787,17 +15359,22 @@ ${orientationExtra}
       await storage.incrementSharedDesignViewCount(sharedDesign.id);
 
       // Reward Ladder — share_design rung. Grant to the sharer when a different
-      // visitor opens the link. visitorKey/visitorCustomerId come from the client
-      // (appai_uid localStorage + logged-in identity when available).
+      // visitor opens the link. The viewer is the verified storefront identity
+      // (token / proxy-signed customer / anonymous session), never a claimed id;
+      // no proof → no grant. The page itself stays public.
       const ownerId = (sharedDesign as any).ownerCustomerId as string | null | undefined;
-      if (ownerId && sharedDesign.shopDomain) {
-        const visitorKey = typeof req.query.visitorKey === "string" ? req.query.visitorKey : null;
-        const visitorCustomerId = typeof req.query.customerId === "string" ? req.query.customerId : null;
+      const viewer =
+        ownerId && sharedDesign.shopDomain
+          ? await resolveVerifiedStorefrontIdentity(req, String(sharedDesign.shopDomain), {
+              anonSessionId: typeof req.query.sessionId === "string" ? req.query.sessionId : null,
+            }).catch(() => null)
+          : null;
+      if (ownerId && sharedDesign.shopDomain && viewer?.ok) {
         void tryGrantShareDesign({
           shop: String(sharedDesign.shopDomain),
           ownerCustomerId: ownerId,
-          visitorCustomerId,
-          visitorKey,
+          visitorCustomerId: viewer.customer.id,
+          visitorKey: null,
           shareId: sharedDesign.id,
           creatorId:
             (sharedDesign as any).creatorId ||
@@ -12830,9 +15407,22 @@ ${orientationExtra}
   });
 
   // Validate and prepare imported design (for Kittl/custom uploads)
-  // This endpoint validates the uploaded image and returns metadata for previewing
+  // This endpoint validates the uploaded image and returns metadata for previewing.
+  // Called from the anonymous storefront embed, so it is rate-limited rather than
+  // user-authenticated. Input is already restricted to our own /objects/uploads/ paths.
   app.post("/api/designs/import", async (req: Request, res: Response) => {
     try {
+      const { checkCreatorRateLimit, clientIpFromReq } = await import("./creator-rate-limit");
+      const rl = checkCreatorRateLimit({
+        key: `design-import:${clientIpFromReq(req)}`,
+        limit: 60,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rl.ok) {
+        res.setHeader("Retry-After", String(rl.retryAfterSec));
+        return res.status(429).json({ error: "Too many imports. Try again shortly." });
+      }
+
       const { 
         imageUrl, 
         source = "upload",
@@ -13195,13 +15785,13 @@ ${orientationExtra}
         });
       }
 
-      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana, customNanoBananaToken } = req.body;
+      const { printifyApiToken, printifyShopId, useBuiltInNanoBanana } = req.body;
       
+      // custom_nano_banana_token is retired (plaintext, never used); provider keys live encrypted in provider_credentials.
       const updated = await storage.updateMerchant(merchant.id, {
         printifyApiToken: printifyApiToken || merchant.printifyApiToken,
         printifyShopId: printifyShopId || merchant.printifyShopId,
         useBuiltInNanoBanana: useBuiltInNanoBanana !== undefined ? useBuiltInNanoBanana : merchant.useBuiltInNanoBanana,
-        customNanoBananaToken: customNanoBananaToken || merchant.customNanoBananaToken,
       });
 
       res.json(updated);
@@ -13616,6 +16206,7 @@ ${orientationExtra}
       const ledgerResult = await storage.applyCreditLedgerEntry({
         customerId: customer.id,
         deltaCredits: coupon.creditAmount,
+        source: "pack",
         reason: "coupon",
         idempotencyKey: unlimitedUses
           ? `coupon:${coupon.id}:${customer.id}:${crypto.randomUUID()}`
@@ -13643,10 +16234,28 @@ ${orientationExtra}
         description: `Redeemed coupon: ${coupon.code}`,
       });
 
+      const shop = installation?.shopDomain || "";
+      const wallet = shop
+        ? await resolveStorefrontWalletView({
+            shop,
+            customerId: customer.id,
+            merchantFreeLimit: (installation as any)?.storefrontFreeGensPerVisitor,
+          })
+        : null;
+      const visible =
+        wallet?.credits ??
+        (ledgerResult.balance?.earnedCredits ?? 0) + (ledgerResult.balance?.packCredits ?? 0);
       res.json({
         success: true,
         creditsAdded: coupon.creditAmount,
-        newBalance: ledgerResult.balance?.credits ?? customer.credits + coupon.creditAmount,
+        newBalance: visible,
+        ...(wallet
+          ? walletJson(wallet)
+          : {
+              credits: visible,
+              earnedCredits: ledgerResult.balance?.earnedCredits ?? 0,
+              packCredits: ledgerResult.balance?.packCredits ?? 0,
+            }),
       });
     } catch (error) {
       console.error("Error redeeming coupon:", error);
@@ -13671,13 +16280,26 @@ ${orientationExtra}
       // Enrich each DB record with hardcoded options/promptPlaceholder when the DB column is null
       // (styles seeded before the options column was added won't have these fields populated)
       const enriched = presets.map((s: any) => {
-        const hardcoded = STYLE_PRESETS.find((h: any) => h.id === s.id.toString() || h.name === s.name);
+        const hardcoded = findCatalogPreset(s);
+        const userSlotSchema = parseUserSlotSchema(s.userSlotSchema);
+        if (resolveCatalogSlug(s) === "opinionated") {
+          console.log(
+            `[admin/styles] Opinionated id=${s.id} slug=opinionated stored prompt_prefix:\n${s.promptPrefix || ""}`,
+          );
+        }
         return {
           ...s,
-          options: s.options ?? (hardcoded as any)?.options ?? null,
+          userSlotSchema,
+          options: mergeCatalogStyleOptions(s.options, (hardcoded as any)?.options),
           promptPlaceholder: s.promptPlaceholder ?? (hardcoded as any)?.promptPlaceholder ?? null,
           baseImageUrl: s.baseImageUrl ?? (hardcoded as any)?.baseImageUrl ?? null,
           baseImageUrls: s.baseImageUrls ?? null,
+          ...styleBackgroundApiFields({
+            catalogSlug: resolveCatalogSlug(s),
+            backgroundSelectorEnabled: s.backgroundSelectorEnabled ?? null,
+            defaultBackgroundColor: s.defaultBackgroundColor ?? null,
+            backgroundRequired: s.backgroundRequired ?? null,
+          }),
         };
       });
       res.json(enriched);
@@ -13697,7 +16319,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Merchant not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationModelDecor, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       if (!name) {
         return res.status(400).json({ error: "Style name is required" });
@@ -13716,6 +16338,22 @@ ${orientationExtra}
         creatorScope: "merchant",
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+        ...(generationModel !== undefined ? { generationModel: persistGenerationModel(generationModel) ?? null } : {}),
+        ...(generationModelDecor !== undefined
+          ? { generationModelDecor: persistGenerationModelDecor(generationModelDecor) ?? null }
+          : {}),
+        ...(generationQuality !== undefined ? { generationQuality: persistGenerationQuality(generationQuality) ?? null } : {}),
+        ...(vectorizeEnabled !== undefined ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null } : {}),
+        ...(userSlotSchema !== undefined ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null } : {}),
+        ...(backgroundSelectorEnabled !== undefined
+          ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+          : {}),
+        ...(defaultBackgroundColor !== undefined
+          ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+          : {}),
+        ...(backgroundRequired !== undefined
+          ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+          : {}),
       } as any);
       configCache.delete("global"); // invalidate so storefront picks up new style
       res.json(preset);
@@ -13741,7 +16379,7 @@ ${orientationExtra}
         return res.status(404).json({ error: "Style preset not found" });
       }
 
-      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options } = req.body;
+      const { name, promptPrefix, promptPrefixDark, category, isActive, sortOrder, baseImageUrl, baseImageUrls, promptPlaceholder, descriptionOptional, options, generationModel, generationModelDecor, generationQuality, vectorizeEnabled, userSlotSchema, backgroundSelectorEnabled, defaultBackgroundColor, backgroundRequired } = req.body;
       
       const updated = await storage.updateStylePreset(presetId, {
         name: name !== undefined ? name : preset.name,
@@ -13756,7 +16394,49 @@ ${orientationExtra}
         descriptionOptional: descriptionOptional !== undefined ? !!descriptionOptional : !!(preset as any).descriptionOptional,
         ...(options !== undefined ? { options: options || null } : {}),
         ...(baseImageUrls !== undefined ? { baseImageUrls: baseImageUrls || null } : {}),
+        ...(generationModel !== undefined
+          ? { generationModel: persistGenerationModel(generationModel) ?? null }
+          : {}),
+        ...(generationModelDecor !== undefined
+          ? { generationModelDecor: persistGenerationModelDecor(generationModelDecor) ?? null }
+          : {}),
+        ...(generationQuality !== undefined
+          ? { generationQuality: persistGenerationQuality(generationQuality) ?? null }
+          : {}),
+        ...(vectorizeEnabled !== undefined
+          ? { vectorizeEnabled: persistVectorizeEnabled(vectorizeEnabled) ?? null }
+          : {}),
+        ...(userSlotSchema !== undefined
+          ? { userSlotSchema: persistUserSlotSchema(userSlotSchema) ?? null }
+          : {}),
+        ...(backgroundSelectorEnabled !== undefined
+          ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+          : {}),
+        ...(defaultBackgroundColor !== undefined
+          ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+          : {}),
+        ...(backgroundRequired !== undefined
+          ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+          : {}),
       } as any);
+      const bgFanOut =
+        backgroundSelectorEnabled !== undefined ||
+        defaultBackgroundColor !== undefined ||
+        backgroundRequired !== undefined;
+      const catalogSlug = resolveCatalogSlug(updated || preset);
+      if (bgFanOut && catalogSlug) {
+        await storage.updateStyleBackgroundByCatalogSlug(catalogSlug, {
+          ...(backgroundSelectorEnabled !== undefined
+            ? { backgroundSelectorEnabled: persistBackgroundSelectorEnabled(backgroundSelectorEnabled) ?? null }
+            : {}),
+          ...(defaultBackgroundColor !== undefined
+            ? { defaultBackgroundColor: persistDefaultBackgroundColor(defaultBackgroundColor) ?? null }
+            : {}),
+          ...(backgroundRequired !== undefined
+            ? { backgroundRequired: persistBackgroundRequired(backgroundRequired) ?? null }
+            : {}),
+        });
+      }
 
       configCache.delete("global"); // invalidate so storefront picks up new placeholder
       res.json(updated);
@@ -13809,14 +16489,15 @@ ${orientationExtra}
       }
 
       // Seed default styles with their categories
-      const defaultStyles = STYLE_PRESETS.map((style, index) => ({
-        merchantId: merchant.id,
-        name: style.name,
-        promptPrefix: style.promptPrefix,
-        category: style.category,
-        isActive: true,
-        sortOrder: index,
-      }));
+      const defaultStyles = STYLE_PRESETS.map((style, index) => {
+        const fields = catalogRowFieldsFromPreset(style as any);
+        return {
+          merchantId: merchant.id,
+          ...fields,
+          isActive: true,
+          sortOrder: index,
+        };
+      });
 
       const createdStyles = [];
       for (const style of defaultStyles) {
@@ -13842,45 +16523,66 @@ ${orientationExtra}
       }
 
       const existingStyles = await storage.getStylePresetsByMerchant(merchant.id);
-      const existingByName = new Map(existingStyles.map(s => [s.name, s]));
+      const existingBySlug = new Map(
+        existingStyles
+          .map((s) => [resolveCatalogSlug(s), s] as const)
+          .filter((row): row is [string, typeof existingStyles[number]] => !!row[0]),
+      );
       
       const updatedStyles = [];
       const createdStyles = [];
 
       for (let i = 0; i < STYLE_PRESETS.length; i++) {
         const preset = STYLE_PRESETS[i];
-        const existing = existingByName.get(preset.name);
+        if (preset.id === "none") continue;
+        const existing = existingBySlug.get(preset.id);
         
         if (existing) {
-          // Update existing style with correct category
+          const fields = catalogRowFieldsFromPreset(preset as any);
           const updated = await storage.updateStylePreset(existing.id, {
-            category: preset.category,
-            promptPrefix: preset.promptPrefix,
+            name: fields.name,
+            category: fields.category,
+            promptPrefix: fields.promptPrefix,
             sortOrder: i,
-          });
+            catalogSlug: preset.id,
+            promptPlaceholder: fields.promptPlaceholder,
+            generationQuality: fields.generationQuality,
+            backgroundSelectorEnabled: fields.backgroundSelectorEnabled,
+            defaultBackgroundColor: fields.defaultBackgroundColor,
+            backgroundRequired: fields.backgroundRequired,
+            ...(fields.outputMode ? { outputMode: fields.outputMode } : {}),
+            ...(fields.generationModel ? { generationModel: fields.generationModel } : {}),
+            ...(isVerbatimShortcutCatalogSlug(preset.id)
+              ? {
+                  userSlotSchema: null,
+                  ...(preset.id === "quotes"
+                    ? { options: (preset as any).options ?? null }
+                    : {}),
+                }
+              : {}),
+          } as any);
           if (updated) updatedStyles.push(updated);
         } else {
-          // Create missing style
+          const fields = catalogRowFieldsFromPreset(preset as any);
           const created = await storage.createStylePreset({
             merchantId: merchant.id,
-            name: preset.name,
-            promptPrefix: preset.promptPrefix,
-            category: preset.category,
+            ...fields,
             isActive: true,
             sortOrder: i,
-          });
+          } as any);
           createdStyles.push(created);
         }
       }
 
-      // Sync canonical apparel chroma prefixes for merchant styles matched by name
+      // Sync canonical apparel chroma prefixes by catalog slug only.
+      // Never match display name — "Pet Portraits" apparel vs decor share a name.
       for (const existing of existingStyles) {
-        const key = existing.name.trim().toLowerCase();
-        const canonicalPrefix = APPAREL_CHROMA_STYLE_BY_NAME[key];
+        if ((existing.category || "").toLowerCase() !== "apparel") continue;
+        const slug = resolveCatalogSlug(existing);
+        const canonicalPrefix = apparelChromaStyleLayerForCatalogSlug(slug);
         if (canonicalPrefix === undefined) continue;
-        if (existing.promptPrefix === canonicalPrefix && existing.category === "apparel") continue;
+        if (existing.promptPrefix === canonicalPrefix) continue;
         const updated = await storage.updateStylePreset(existing.id, {
-          category: "apparel",
           promptPrefix: canonicalPrefix,
         });
         if (updated) updatedStyles.push(updated);
@@ -14751,10 +17453,26 @@ ${orientationExtra}
         }
       }
 
+      // Each blank becomes Front + Front + Back when Print sides applies, so the
+      // wizard's Shopify-limit counters must multiply by this.
+      let printSidesFactor: 1 | 2 = 1;
+      const ptIdNum = Number(req.query.productTypeId);
+      const ownPt =
+        Number.isFinite(ptIdNum) && ptIdNum > 0 ? await storage.getProductType(ptIdNum) : undefined;
+      if (ownPt && merchant && ownPt.merchantId === merchant.id) {
+        printSidesFactor = printSidesFactorForProductType(ownPt);
+      } else if (printSidesOptionLive()) {
+        const hasBack = variants.some((v: any) =>
+          Array.isArray(v?.placeholders) && v.placeholders.some((p: any) => p?.position === "back"),
+        );
+        printSidesFactor = hasBack ? 2 : 1;
+      }
+
       res.json({
         sizes: Array.from(sizesMap.values()),
         colors: Array.from(colorsMap.values()),
         combinations,
+        printSidesFactor,
       });
     } catch (error) {
       console.error("Error fetching variant options:", error);
@@ -14805,11 +17523,13 @@ ${orientationExtra}
           : Number.isFinite(reported) && reported > 0
             ? reported
             : cartesian;
+      const sidesFactor = printSidesFactorForProductType(productType);
+      const shopifyTotal = totalVariants * sidesFactor;
 
-      if (totalVariants > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      if (shopifyTotal > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({
           error: "Too many variants",
-          details: `Selected options would create ${totalVariants} variants. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
+          details: `Selected options would create ${shopifyTotal} variants${sidesFactor > 1 ? ` (${totalVariants} blanks × Front / Front + Back)` : ""}. Maximum is ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.`,
         });
       }
 
@@ -14817,6 +17537,16 @@ ${orientationExtra}
         selectedSizeIds: JSON.stringify(selectedSizeIds || []),
         selectedColorIds: JSON.stringify(selectedColorIds || []),
       });
+
+      try {
+        const { pruneShellVariantsToSelection } = await import("./sync-variant-selection");
+        await pruneShellVariantsToSelection(productTypeId);
+      } catch (err) {
+        console.error(`[variant-selection] product type ${productTypeId} store update failed:`, (err as Error)?.message || err);
+        return res.status(502).json({
+          error: "The selection was saved, but the store product could not be updated. Save again.",
+        });
+      }
 
       res.json(updated);
     } catch (error) {
@@ -14981,7 +17711,7 @@ ${orientationExtra}
       available,
     };
     delete next.lifestyle;
-    // Preserve size-keyed catalog blanks (comforter / wall decals).
+    // Preserve size-keyed catalog blanks (comforter / wall decals / indoor tapestry).
     if (
       currentImages.blanksBySize &&
       typeof currentImages.blanksBySize === "object" &&
@@ -15151,7 +17881,11 @@ ${orientationExtra}
 
       // Unique on blueprint + provider (matches Products Import UI: re-import the same
       // blueprint with a different supplier for a separate EU/US listing).
-      const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
+      // Platform catalogue reference rows (owner shop only) are rewritten by the
+      // daily catalogue job — a merchant page must never bind to one.
+      const existingTypes = (await storage.getProductTypesByMerchant(merchant.id)).filter(
+        (pt) => !(pt as any).isPlatformCatalogRef,
+      );
       const alreadyImported = existingTypes.find(
         (pt) =>
           pt.printifyBlueprintId === blueprintIdNum &&
@@ -15974,24 +18708,29 @@ ${orientationExtra}
       const explicitVariantPick =
         (Array.isArray(selectedSizeIds) && selectedSizeIds.length > 0) ||
         (Array.isArray(selectedColorIds) && selectedColorIds.length > 0);
-      // Setup → Activate has no size/color picker. Auto-trim to Shopify's 100
+      // Costs aren't fetched yet at import; a back placeholder is the proxy for
+      // "front+back costs will exist", so Print sides will double every blank.
+      const importSidesFactor = printSidesOptionLive() && hasBackPlaceholder && !isAllOverPrint ? 2 : 1;
+      const importBlankCap = Math.floor(SHOPIFY_MAX_VARIANTS_PER_PRODUCT / importSidesFactor);
+      // Setup → Activate has no size/color picker. Auto-trim to Shopify's
       // variant cap (prefer all sizes, fewer colors). Products Import still
       // errors when the merchant explicitly picks too many.
-      if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      if (importVariantCount > importBlankCap) {
         if (opts?.autoCapVariants || !explicitVariantPick) {
           const capped = capVariantSelectionForShopifyLimit(
             importSizeIds,
             importColorIds,
             variantMap,
+            importBlankCap,
           );
           importSizeIds = capped.sizeIds;
           importColorIds = capped.colorIds;
           importVariantCount = capped.variantCount;
           console.log(
-            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} variants ` +
-              `(${importSizeIds.length} sizes × ${importColorIds.length} colors)`,
+            `[Import] Auto-capped blueprint ${blueprintIdNum} to ${importVariantCount} blanks ` +
+              `(${importSizeIds.length} sizes × ${importColorIds.length} colors, ×${importSidesFactor} Print sides)`,
           );
-          if (importVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+          if (importVariantCount > importBlankCap) {
             return res.status(400).json({
               error: `Too many variants (${importVariantCount}) even after auto-select. Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product.`,
               code: "SHOPIFY_VARIANT_LIMIT",
@@ -16000,9 +18739,9 @@ ${orientationExtra}
           }
         } else {
           return res.status(400).json({
-            error: `Too many variants (${importVariantCount}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
+            error: `Too many variants (${importVariantCount * importSidesFactor}${importSidesFactor > 1 ? `: ${importVariantCount} blanks × Front / Front + Back` : ""}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT} per product. Select fewer sizes or colors.`,
             code: "SHOPIFY_VARIANT_LIMIT",
-            variantCount: importVariantCount,
+            variantCount: importVariantCount * importSidesFactor,
           });
         }
       }
@@ -16022,6 +18761,9 @@ ${orientationExtra}
           catalogVariants: variants,
           printifyVariantIds: importPrintifyVariantIds,
           baseMockupImages,
+          storedPositions: positionKeys,
+          isAllOverPrint,
+          fulfillmentLayout: catalogFulfillmentLayout,
         });
       const printifyCostsAtImport =
         Object.keys(resolvedImportCosts).length > 0
@@ -16049,10 +18791,15 @@ ${orientationExtra}
                 ? "unsupported"
                 : "pending";
 
+      const { suggestListingCopy } = await import("@shared/listingCopy");
+      const listing = suggestListingCopy(name);
       const productType = await storage.createProductType({
         merchantId: merchant.id,
         name,
         description: resolvedDescription || null,
+        listingGarmentWord: listing.garmentWord,
+        listingHandleSuffix: listing.handleSuffix,
+        listingStyleLabel: listing.styleLabel,
         printifyBlueprintId: blueprintIdNum,
         printifyProviderId: providerId,
         sizes: JSON.stringify(sizes),
@@ -16123,6 +18870,16 @@ ${orientationExtra}
         });
       }
 
+      try {
+        const { mapVariantShippingForProductTypes } = await import("./shipping-tables");
+        await mapVariantShippingForProductTypes([productType.id]);
+      } catch (e) {
+        console.error(
+          `[shipping-tables] import map failed for product type ${productType.id}:`,
+          (e as Error)?.message || e,
+        );
+      }
+
       res.json(productType);
 
       // No per-merchant harvest for catalog-managed products with shared calibration.
@@ -16154,6 +18911,65 @@ ${orientationExtra}
 
   app.post("/api/admin/printify/import", isAuthenticated, async (req: any, res: Response) => {
     await handlePrintifyImportRequest(req, res);
+  });
+
+  async function operatorShopForOwnedImport(req: any, res: Response): Promise<{ shop: string; installation: any; merchant: any } | null> {
+    if (!requirePlatformAdmin(req, res)) return null;
+    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
+      res.status(400).json({ error: "Blueprint import is staging only." });
+      return null;
+    }
+    const { catalogueShopAllowed, catalogueShopDomain } = await import("@shared/operatorCatalogue");
+    const shop = catalogueShopDomain(req.shopDomain);
+    if (!catalogueShopAllowed(shop)) {
+      res.status(403).json({ error: "Blueprint import is not available for this store." });
+      return null;
+    }
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation?.accessToken || installation.status !== "active") {
+      res.status(400).json({ error: "Shopify is not connected for this store." });
+      return null;
+    }
+    const merchant = installation.merchantId ? await storage.getMerchant(installation.merchantId) : null;
+    if (!merchant?.printifyApiToken || !merchant.printifyShopId || !merchant.userId) {
+      res.status(400).json({ error: "Printify is not connected for this store." });
+      return null;
+    }
+    return { shop, installation, merchant };
+  }
+
+  app.get("/api/platform/catalogue-studio/import-providers", isAuthenticated, async (req: any, res: Response) => {
+    const opened = await operatorShopForOwnedImport(req, res);
+    if (!opened) return;
+    const blueprintId = parseInt(String(req.query.blueprintId || ""), 10);
+    if (!blueprintId) return res.status(400).json({ error: "Choose a blueprint." });
+    try {
+      const response = await fetch(`https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers.json`, {
+        headers: { Authorization: `Bearer ${opened.merchant.printifyApiToken}` },
+      });
+      if (!response.ok) return res.status(502).json({ error: "Printify did not return print providers." });
+      const providers = await response.json();
+      const list = Array.isArray(providers) ? providers : [];
+      res.json({
+        providers: list.map((provider: { id?: number; title?: string }) => ({
+          id: Number(provider.id),
+          title: String(provider.title || `Provider ${provider.id}`),
+        })).filter((provider: { id: number }) => provider.id > 0),
+      });
+    } catch (error) {
+      console.error("[owned-type] providers:", error);
+      res.status(500).json({ error: "Print providers could not be loaded." });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/import-owned-type", isAuthenticated, async (req: any, res: Response) => {
+    if (!isPlatformAdminRequest(req)) {
+      return res.status(403).json({ error: "Platform admin only" });
+    }
+    return res.status(400).json({
+      error: "Import this blueprint from Customizer Pages → Create Page. That wizard sets retail prices for this shop before the page is created.",
+      code: "USE_CREATE_PAGE",
+    });
   });
 
   // POST /api/admin/product-types/:id/calibrate-flat - (Re)run on-the-fly flat
@@ -16226,6 +19042,53 @@ ${orientationExtra}
   // merchant can verify, in Printify, that the print file matches the on-screen
   // design BEFORE going live. Never sends to production / never charges.
   // Mandatory per-product pre-launch check for flat/mesh on-the-fly products.
+  // "See it worn" AI lifestyle mockups (admin-only while unproven). POST starts
+  // (or returns the cached) generation for a design + gender; GET lists them.
+  const lifestyleAccess = async (req: any, jobId: string) => {
+    const merchant = await storage.getMerchantByUserId(req.user.claims.sub);
+    if (!merchant) return { status: 404, error: "Merchant not found" };
+    const productTypeId = await lifestyleJobProductTypeId(jobId);
+    const productType = productTypeId != null ? await storage.getProductType(productTypeId) : undefined;
+    const accessErr = adminProductTypeAccessError(req, productType, merchant);
+    return accessErr ? { status: accessErr.status, error: accessErr.error, code: accessErr.code } : null;
+  };
+
+  app.get("/api/admin/lifestyle-mockups", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const jobId = String(req.query.jobId ?? "");
+      if (!jobId) return res.status(400).json({ error: "jobId required" });
+      const denied = await lifestyleAccess(req, jobId);
+      if (denied) return res.status(denied.status).json(denied);
+      res.json({
+        mockups: await listLifestyleMockups(jobId),
+        maxPerGender: LIFESTYLE_MAX_PER_DESIGN_GENDER,
+        flatsReady: await lifestyleFlatsReady(jobId),
+      });
+    } catch (error: any) {
+      console.error("[lifestyle] list failed:", error);
+      res.status(500).json({ error: error?.message || "Failed to list lifestyle mockups" });
+    }
+  });
+
+  app.post("/api/admin/lifestyle-mockups", isAuthenticated, async (req: any, res: Response) => {
+    try {
+      const jobId = String(req.body?.jobId ?? "");
+      const gender = req.body?.gender;
+      if (!jobId) return res.status(400).json({ error: "jobId required" });
+      if (!LIFESTYLE_GENDERS.includes(gender)) return res.status(400).json({ error: "gender must be male or female" });
+      const denied = await lifestyleAccess(req, jobId);
+      if (denied) return res.status(denied.status).json(denied);
+      const row = await requestLifestyleMockup(jobId, gender, req.body?.reroll === true);
+      res.json({ mockup: row });
+    } catch (error: any) {
+      if (error instanceof LifestyleMockupError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
+      console.error("[lifestyle] request failed:", error);
+      res.status(500).json({ error: error?.message || "Failed to start lifestyle mockup" });
+    }
+  });
+
   app.post("/api/admin/product-types/:id/test-printify-order", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
@@ -17177,7 +20040,14 @@ ${orientationExtra}
     const resp = await fetch("https://api.printify.com/v1/shops.json", {
       headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
     });
-    if (!resp.ok) return [];
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error(
+        `Printify rejected this token (HTTP ${resp.status}). Reconnect Printify in Settings.`,
+      );
+    }
+    if (!resp.ok) {
+      throw new Error(`Printify shops.json failed: HTTP ${resp.status}`);
+    }
     const data = await resp.json();
     const shops = Array.isArray(data) ? data : (data.data || []);
     return shops.map((s: any) => ({
@@ -17187,69 +20057,33 @@ ${orientationExtra}
     }));
   }
 
-  async function testPrintifyShopProductsAccess(apiToken: string, shopId: string): Promise<boolean> {
-    const resp = await fetch(
-      `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=1`,
-      { headers: { Authorization: `Bearer ${apiToken}` } },
-    );
-    return resp.ok;
-  }
-
-  /** Shipping uses catalog-only APIs; production costs need a shop the token can write products to. */
+  /**
+   * Shop-scoped calls must use the pinned shop on this token.
+   * A mismatch is logged with both ids and thrown. The shop id is not rewritten.
+   */
   async function resolvePrintifyShopIdForProducts(
     apiToken: string,
     preferredShopId: string | null | undefined,
-  ): Promise<{ shopId: string; corrected: boolean }> {
-    const trimmed = preferredShopId?.trim();
-    if (trimmed && (await testPrintifyShopProductsAccess(apiToken, trimmed))) {
-      return { shopId: trimmed, corrected: false };
+  ): Promise<{ shopId: string }> {
+    const expected = preferredShopId?.trim() || "";
+    if (!expected) {
+      throw new Error("Printify shop id is not set. Add it in Settings.");
     }
-
     const shops = await listPrintifyShops(apiToken);
-    if (shops.length === 0) {
-      throw new Error("No Printify shops found for this API token");
+    const liveIds = shops.map((s) => s.id);
+    if (!liveIds.includes(expected)) {
+      const live = liveIds.length ? liveIds.join(", ") : "(none)";
+      console.error(
+        `[Printify] pinned shop ${expected} is not in this token's shops.json: ${live}`,
+      );
+      throw new Error(
+        `Printify shop ${expected} is not on this token. shops.json returned: ${live}. Reconnect Printify in Settings.`,
+      );
     }
-
-    const shopifyLinked = shops.filter((s) =>
-      String(s.sales_channel || "").toLowerCase().includes("shopify"),
-    );
-    const candidates = [...shopifyLinked, ...shops.filter((s) => !shopifyLinked.includes(s))];
-
-    for (const shop of candidates) {
-      if (await testPrintifyShopProductsAccess(apiToken, shop.id)) {
-        const corrected = shop.id !== trimmed;
-        if (corrected) {
-          console.log(
-            `[Printify Costs] Auto-corrected shop ID ${trimmed ?? "(empty)"} → ${shop.id} (${shop.title}, ${shop.sales_channel ?? "unknown channel"})`,
-          );
-        }
-        return { shopId: shop.id, corrected };
-      }
-    }
-
-    // Fall back to first shop — product create may still work even if list probe failed
-    return { shopId: candidates[0].id, corrected: candidates[0].id !== trimmed };
+    return { shopId: expected };
   }
 
-  /**
-   * Minimal body placeholders for cost probes (avoid filling every AOP panel).
-   * Zip 451 has no bare "front"; leggings use left_side/right_side.
-   */
-  function minimalCostProbePositions(blueprintId: number): string[] | null {
-    switch (Number(blueprintId)) {
-      case 451:
-        return ["front_left", "front_right"];
-      case 256:
-      case 1050:
-        return ["left_side", "right_side"];
-      case 450:
-        return ["front"];
-      default:
-        return null;
-    }
-  }
-
-  /** Raw placeholder list from Printify (no minimal filtering). */
+  /** Placeholder names from official catalog variants.json (not the dead placeholders.json URL). */
   async function fetchRawPlaceholderPositions(
     blueprintId: number,
     providerId: number,
@@ -17258,28 +20092,29 @@ ${orientationExtra}
   ): Promise<string[]> {
     try {
       const resp = await fetch(
-        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants/${variantId}/placeholders.json`,
+        `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json?show-out-of-stock=1`,
         { headers: { Authorization: `Bearer ${apiToken}` } },
       );
-      if (resp.ok) {
-        const data = await resp.json();
-        const list = data.placeholders || data || [];
-        if (Array.isArray(list) && list.length > 0) {
-          return [
-            ...new Set(
-              list
-                .map((p: any) => String(p?.position || "").trim())
-                .filter(Boolean),
-            ),
-          ];
-        }
-      } else {
-        console.warn(`[Printify Costs] Placeholder API returned ${resp.status}`);
+      if (!resp.ok) {
+        console.warn(`[Printify Costs] variants.json returned ${resp.status} while reading placeholder names`);
+        return [];
       }
+      const data = await resp.json();
+      const variants = Array.isArray(data?.variants)
+        ? data.variants
+        : Array.isArray(data)
+          ? data
+          : [];
+      const match = variants.find((v: any) => Number(v?.id) === Number(variantId));
+      const names = extractPlaceholderPositionNames(match ? [match] : variants);
+      if (names.length === 0) {
+        console.warn(`[Printify Costs] variants.json had no placeholder names for ${blueprintId}/${providerId}`);
+      }
+      return names;
     } catch (e) {
-      console.warn("[Printify Costs] Could not fetch placeholder positions:", e);
+      console.warn("[Printify Costs] Could not read placeholder names from variants.json:", e);
+      return [];
     }
-    return [];
   }
 
   /**
@@ -17359,7 +20194,7 @@ ${orientationExtra}
     }
     if (opts?.doubleSidedPrint) return true;
 
-    // Nested variants.json placeholders are usually empty — use placeholders.json.
+    // Placeholder names come from nested variants.json (official Catalog API).
     // Prefer show-out-of-stock so fully OOS providers (baseball tee) still resolve.
     let sampleVid = opts?.sampleVariantId != null ? Number(opts.sampleVariantId) : NaN;
     if (!Number.isFinite(sampleVid) || sampleVid <= 0) {
@@ -17462,7 +20297,10 @@ ${orientationExtra}
     const positions = (Array.isArray(placeholderPosition) ? placeholderPosition : [placeholderPosition])
       .map((p) => String(p || "").trim())
       .filter(Boolean);
-    const effectivePositions = positions.length > 0 ? positions : ["front"];
+    if (positions.length === 0) {
+      return { success: false, costs: {}, error: "No Printify placeholder names to send" };
+    }
+    const effectivePositions = positions;
     const body: any = {
       title: `_cost_probe_${Date.now()}`,
       description: "Temporary product for cost lookup - will be deleted immediately",
@@ -17492,40 +20330,46 @@ ${orientationExtra}
     }
     const product = await createResp.json();
     const tempProductId: string = product.id;
-    let costs = extractCostsFromPrintifyProduct(product);
-
-    // Some blueprints don't include v.cost in the creation response.
-    if (Object.keys(costs).length === 0) {
-      console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
-      try {
-        const fetchResp = await fetch(
-          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
-          { headers: { Authorization: `Bearer ${apiToken}` } },
-        );
-        if (fetchResp.ok) {
-          const fetchedProduct = await fetchResp.json();
-          costs = extractCostsFromPrintifyProduct(fetchedProduct);
-          console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
-        } else {
-          console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
-        }
-      } catch (fetchErr) {
-        console.warn(`[Printify Costs] Re-fetch error for product ${tempProductId}:`, fetchErr);
-      }
-    }
-
-    // Clean up immediately
+    let costs: Record<string, number> = {};
     try {
-      await fetch(
-        `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
-        {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${apiToken}` },
-        },
-      );
-      console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
-    } catch (delErr) {
-      console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+      costs = extractCostsFromPrintifyProduct(product);
+
+      // Some blueprints don't include v.cost in the creation response.
+      if (Object.keys(costs).length === 0) {
+        console.log(`[Printify Costs] Creation response had no costs — fetching product ${tempProductId} to get variant costs`);
+        try {
+          const fetchResp = await fetch(
+            `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+            { headers: { Authorization: `Bearer ${apiToken}` } },
+          );
+          if (fetchResp.ok) {
+            const fetchedProduct = await fetchResp.json();
+            costs = extractCostsFromPrintifyProduct(fetchedProduct);
+            console.log(`[Printify Costs] Re-fetch extracted ${Object.keys(costs).length} costs for product ${tempProductId}`);
+          } else {
+            console.warn(`[Printify Costs] Re-fetch of product ${tempProductId} failed: ${fetchResp.status}`);
+          }
+        } catch (fetchErr) {
+          console.warn(`[Printify Costs] Re-fetch error for product ${tempProductId}:`, fetchErr);
+        }
+      }
+    } finally {
+      try {
+        const delResp = await fetch(
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products/${tempProductId}.json`,
+          {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${apiToken}` },
+          },
+        );
+        if (delResp.ok) {
+          console.log(`[Printify Costs] Deleted temp product ${tempProductId}`);
+        } else {
+          console.error(`[Printify Costs] Delete temp product ${tempProductId} failed: HTTP ${delResp.status}`);
+        }
+      } catch (delErr) {
+        console.error(`[Printify Costs] Failed to delete temp product ${tempProductId}:`, delErr);
+      }
     }
     return { success: true, costs, tempProductId, status };
   }
@@ -17639,6 +20483,9 @@ ${orientationExtra}
     catalogVariants: unknown[];
     printifyVariantIds: number[];
     baseMockupImages: Record<string, unknown>;
+    storedPositions?: string[];
+    isAllOverPrint?: boolean;
+    fulfillmentLayout?: string | null;
   }): Promise<{ costs: Record<string, number>; source: string }> {
     const catalogCosts = extractCostsFromCatalogVariants(args.catalogVariants);
     if (Object.keys(catalogCosts).length > 0) {
@@ -17646,16 +20493,9 @@ ${orientationExtra}
     }
 
     let shopId = args.merchant.printifyShopId?.trim() ?? "";
-    if (shopId && args.merchant.printifyApiToken) {
-      try {
-        const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
-        shopId = resolved.shopId;
-        if (resolved.corrected) {
-          await storage.updateMerchant(args.merchant.id, { printifyShopId: shopId });
-        }
-      } catch {
-        shopId = args.merchant.printifyShopId?.trim() ?? "";
-      }
+    if (args.merchant.printifyApiToken) {
+      const resolved = await resolvePrintifyShopIdForProducts(args.merchant.printifyApiToken, shopId);
+      shopId = resolved.shopId;
     }
 
     if (args.printifyVariantIds.length > 0 && args.merchant.printifyApiToken) {
@@ -17666,6 +20506,12 @@ ${orientationExtra}
         args.providerId,
         args.printifyVariantIds,
         args.baseMockupImages as Record<string, string>,
+        {
+          storedPositions: args.storedPositions,
+          catalogPositions: extractPlaceholderPositionNames(args.catalogVariants),
+          isAllOverPrint: args.isAllOverPrint,
+          fulfillmentLayout: args.fulfillmentLayout,
+        },
       );
       if (Object.keys(waterfallCosts).length > 0) {
         return { costs: waterfallCosts, source: strategyUsed ?? "waterfall" };
@@ -17688,7 +20534,13 @@ ${orientationExtra}
     blueprintId: number,
     providerId: number,
     variantIds: number[],
-    baseMockupImages: Record<string, string>
+    baseMockupImages: Record<string, string>,
+    probeOpts?: {
+      storedPositions?: string[];
+      catalogPositions?: string[];
+      isAllOverPrint?: boolean;
+      fulfillmentLayout?: string | null;
+    },
   ): Promise<{
     costs: Record<string, number>;
     strategyUsed: string | null;
@@ -17696,19 +20548,7 @@ ${orientationExtra}
   }> {
     const diagnostics: Array<{ strategy: string; status?: number; success: boolean; error?: string }> = [];
     const firstVid = variantIds[0];
-    // Prefer minimal AOP body set; fall back to full catalog list if creates fail.
-    const rawPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
-    const minimal = minimalCostProbePositions(blueprintId);
-    const positionAttempts: string[][] = [];
-    if (minimal && (rawPositions.length === 0 || minimal.every((p) => rawPositions.includes(p)))) {
-      positionAttempts.push(minimal);
-    }
-    if (rawPositions.length > 0) {
-      const key = rawPositions.join("|");
-      if (!positionAttempts.some((a) => a.join("|") === key)) positionAttempts.push(rawPositions);
-    }
-    if (positionAttempts.length === 0) positionAttempts.push(minimal || ["front"]);
-    let positions = positionAttempts[0]!;
+    let catalogPositions = [...(probeOpts?.catalogPositions ?? [])];
     const imageSpec = (id: string) => ({ id, x: 0.5, y: 0.5, scale: 1, angle: 0 });
 
     // Printify API rejects temp product creation if variant count exceeds 100.
@@ -17752,6 +20592,9 @@ ${orientationExtra}
         const catalogData = await catalogResp.json();
         const catalogVariants = catalogData.variants || catalogData || [];
         const list = Array.isArray(catalogVariants) ? catalogVariants : [];
+        if (catalogPositions.length === 0) {
+          catalogPositions = extractPlaceholderPositionNames(list);
+        }
         const catalogCosts = extractCostsFromCatalogVariants(list);
         if (hasCosts(catalogCosts)) {
           console.log(
@@ -17777,6 +20620,33 @@ ${orientationExtra}
       diagnostics.push({ strategy: "catalog_variants", success: false, error: String(catalogErr) });
       console.warn("[Printify Costs] Strategy catalog error:", catalogErr);
     }
+
+    if (catalogPositions.length === 0 && Number.isFinite(firstVid)) {
+      catalogPositions = await fetchRawPlaceholderPositions(blueprintId, providerId, firstVid, apiToken);
+    }
+    const resolvedPositions = resolveCostProbePositionAttempts({
+      blueprintId,
+      catalogPositions,
+      storedPositions: probeOpts?.storedPositions,
+      isAllOverPrint: probeOpts?.isAllOverPrint,
+      fulfillmentLayout: probeOpts?.fulfillmentLayout,
+    });
+    const positionAttempts = resolvedPositions.attempts;
+    if (positionAttempts.length === 0) {
+      diagnostics.push({
+        strategy: "placeholder_names",
+        success: false,
+        error:
+          `No Printify placeholder names for blueprint ${blueprintId}/${providerId}` +
+          ` (catalog/stored empty; refusing to invent "front")`,
+      });
+      console.warn(`[Printify Costs] No placeholder names for ${blueprintId}/${providerId}`);
+    } else {
+      console.log(
+        `[Printify Costs] Probe positions from ${resolvedPositions.source}: ${positionAttempts.map((a) => `[${a.join(",")}]`).join(" → ")}`,
+      );
+    }
+    let positions = positionAttempts[0] || [];
 
     // Prefer in-stock IDs for temp-product probes when the catalog flagged availability.
     const probeVariantIds =
@@ -17804,7 +20674,7 @@ ${orientationExtra}
       let found = false;
       while (page <= 5) {
         const listResp = await fetch(
-          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=100&page=${page}`,
+          `https://api.printify.com/v1/shops/${encodeURIComponent(shopId)}/products.json?limit=50&page=${page}`,
           { headers: { Authorization: `Bearer ${apiToken}` } },
         );
         if (!listResp.ok) {
@@ -17885,19 +20755,6 @@ ${orientationExtra}
         if (s1.success && hasCosts(s1.costs)) {
           return { costs: s1.costs, strategyUsed: "chunk_with_image", diagnostics };
         }
-      }
-
-      const s2 = await tryCreateTempProductForCosts(
-        shopId, apiToken, blueprintId, providerId, availableChunk, positions, null,
-      );
-      diagnostics.push({
-        strategy: `empty_images:${posTag}`,
-        status: s2.status,
-        success: s2.success && hasCosts(s2.costs),
-        error: s2.error,
-      });
-      if (s2.success && hasCosts(s2.costs)) {
-        return { costs: s2.costs, strategyUsed: "empty_images", diagnostics };
       }
 
       if (mockupUrl && probeImageId) {
@@ -18037,10 +20894,7 @@ ${orientationExtra}
         }
       }
       if (preferred) {
-        const shopIdForProbe =
-          merchant.printifyShopId?.trim() ||
-          process.env.PRINTIFY_SHOP_ID?.trim() ||
-          "";
+        const shopIdForProbe = merchant.printifyShopId?.trim() || "";
         const forceRefresh = req.query.refresh === "1" || req.query.force === "1";
 
         /** Fill costsBoth when the blueprint has a back print area (baseball tee, etc.). */
@@ -18689,6 +21543,8 @@ ${orientationExtra}
           printifyVariantLabels: cachedLabels,
           costsByNormalizedLabel: buildCostsByNormalizedLabel(cachedCosts, cachedLabels),
           costsBothByNormalizedLabel: buildCostsByNormalizedLabel(cachedCostsBoth, cachedLabels),
+          variantKeyCosts: buildVariantKeyCosts(vm, cachedCosts),
+          variantKeyCostsBoth: buildVariantKeyCosts(vm, cachedCostsBoth),
           supportsBothSides: Object.keys(cachedCostsBoth).length > 0,
           cached: true,
         });
@@ -18704,19 +21560,11 @@ ${orientationExtra}
         ? JSON.parse(productType.baseMockupImages || "{}")
         : (productType.baseMockupImages || {});
 
-      let shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
-      const costApiToken = apiToken || process.env.PRINTIFY_API_TOKEN || "";
-      if (shopId && costApiToken) {
-        try {
-          const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
-          shopId = resolved.shopId;
-          if (resolved.corrected && merchant.printifyShopId?.trim()) {
-            await storage.updateMerchant(merchant.id, { printifyShopId: shopId });
-          }
-        } catch (resolveErr: any) {
-          console.warn("[Printify Costs] Shop resolution failed (catalog lookup may still succeed):", resolveErr);
-          shopId = merchant.printifyShopId?.trim() || process.env.PRINTIFY_SHOP_ID?.trim() || "";
-        }
+      let shopId = merchant.printifyShopId?.trim() || "";
+      const costApiToken = apiToken || "";
+      if (costApiToken) {
+        const resolved = await resolvePrintifyShopIdForProducts(costApiToken, shopId);
+        shopId = resolved.shopId;
       }
 
       let costs: Record<string, number> = {};
@@ -18736,7 +21584,12 @@ ${orientationExtra}
           shopId ?? "",
           costApiToken,
           productType.printifyBlueprintId, productType.printifyProviderId,
-          printifyVariantIds, baseMockupImages
+          printifyVariantIds, baseMockupImages,
+          {
+            storedPositions: parseStoredPlaceholderPositionNames(productType.placeholderPositions),
+            isAllOverPrint: !!productType.isAllOverPrint,
+            fulfillmentLayout: (productType as any).fulfillmentLayout ?? null,
+          },
         );
         costs = waterfall.costs;
         strategyUsed = waterfall.strategyUsed;
@@ -18780,7 +21633,9 @@ ${orientationExtra}
             diagnostics,
           });
         }
-        const lastErr = diagnostics.find((d) => d.error)?.error?.slice(0, 300);
+        const lastErr =
+          diagnostics.find((d) => d.status && d.error)?.error?.slice(0, 300) ||
+          diagnostics.find((d) => d.error)?.error?.slice(0, 300);
         return res.status(502).json({
           error: "Failed to fetch production costs from Printify",
           message: lastErr || "All cost lookup strategies failed. Check Railway logs for diagnostics.",
@@ -18819,7 +21674,7 @@ ${orientationExtra}
         }
       } else if (hasBackPlaceholder && !shopId?.trim()) {
         console.warn(
-          "[Printify Costs] Front+back probe skipped — no Printify shop ID (set PRINTIFY_SHOP_ID or merchant Shop ID)",
+          "[Printify Costs] Front+back probe skipped — merchant Printify shop id is not set",
         );
       }
 
@@ -18830,13 +21685,8 @@ ${orientationExtra}
         ),
       });
 
-      // Build variant-key → cost mapping
-      const variantKeyCosts: Record<string, number> = {};
-      for (const [key, entry] of Object.entries(variantMap) as [string, any][]) {
-        if (entry?.printifyVariantId && costs[String(entry.printifyVariantId)] !== undefined) {
-          variantKeyCosts[key] = costs[String(entry.printifyVariantId)];
-        }
-      }
+      const variantKeyCosts = buildVariantKeyCosts(variantMap, costs);
+      const variantKeyCostsBoth = buildVariantKeyCosts(variantMap, costsBoth);
 
        // Build printifyVariantId → label mapping AND name-based bridge for shopifyVariantIds
       const printifyVariantLabels: Record<string, string> = {};
@@ -18876,6 +21726,7 @@ ${orientationExtra}
         costs,
         costsBoth,
         variantKeyCosts,
+        variantKeyCostsBoth,
         shopifyVariantCosts,
         printifyVariantLabels,
         costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, printifyVariantLabels),
@@ -18937,7 +21788,12 @@ ${orientationExtra}
       const { costs, strategyUsed, diagnostics } = await fetchPrintifyCostsWaterfall(
         shopId, apiToken,
         productType.printifyBlueprintId, productType.printifyProviderId,
-        printifyVariantIds, baseMockupImages
+        printifyVariantIds, baseMockupImages,
+        {
+          storedPositions: parseStoredPlaceholderPositionNames(productType.placeholderPositions),
+          isAllOverPrint: !!productType.isAllOverPrint,
+          fulfillmentLayout: (productType as any).fulfillmentLayout ?? null,
+        },
       );
 
       return res.json({
@@ -19054,7 +21910,7 @@ ${orientationExtra}
   app.post("/api/mockup/generate", isAuthenticated, async (req: any, res: Response) => {
     try {
       const userId = req.user.claims.sub;
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!productTypeId || !designImageUrl) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -19150,6 +22006,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {
@@ -19177,7 +22034,7 @@ ${orientationExtra}
   // Uses Shopify session tokens instead of Replit auth
   app.post("/api/shopify/mockup", async (req: Request, res: Response) => {
     try {
-      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, preferContextViews, preferPersonViews } = req.body;
+      const { productTypeId, designImageUrl, patternUrl, sizeId, colorId, scale, x, y, shop, sessionToken, mirrorLegs, panelUrls, printOnBack, printPlacement, bgColor, backgroundColor, preferContextViews, preferPersonViews } = req.body;
 
       if (!shop) {
         return res.status(400).json({ error: "Shop domain required" });
@@ -19302,6 +22159,7 @@ ${orientationExtra}
         mirrorLegs: !!mirrorLegs,
         panelUrls: Array.isArray(panelUrls) && panelUrls.length > 0 ? panelUrls : undefined,
         bgColor: typeof bgColor === "string" ? bgColor : undefined,
+        backgroundColor: typeof backgroundColor === "string" || backgroundColor === null ? backgroundColor : undefined,
         preferContextViews: !!preferContextViews,
         preferPersonViews: !!preferPersonViews,
       }, {
@@ -19544,6 +22402,8 @@ ${orientationExtra}
     res.json({
       shop,
       customerId: customer.id,
+      // Admin studios (Preview Studio / merchant studio) read saved designs with this.
+      identityToken: signStorefrontIdentityToken(customer.id, shop),
       savedCount,
       savedLimit: MERCHANT_STUDIO_GALLERY_LIMIT,
       canSaveDesigns: canSaveMerchantDesigns(plan.planName, plan.planStatus),
@@ -19560,25 +22420,25 @@ ${orientationExtra}
   // to the ONE color/style the design was generated in (per-color re-rendering is a follow-up —
   // see the plan's "Colors that can't render are excluded from the variant set" note).
 
-  /** Live Shopify prices for a product type's customizer page, keyed by "sizeId:colorId" / "sizeId:default". */
+  /** Front Shopify variant prices. A catalogue design prints the front only. */
   async function fetchCustomizerPagePriceMap(
     shop: string,
     installation: any,
     productType: any,
   ): Promise<Record<string, string>> {
+    const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
+    const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
     try {
-      const allSizes = typeof productType.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType.sizes || [];
-      const allColors = typeof productType.frameColors === "string" ? JSON.parse(productType.frameColors || "[]") : productType.frameColors || [];
       const pages = await storage.listCustomizerPagesByProductTypeId(productType.id);
       const page = pages.find((p: any) => p.shop === shop && p.baseProductId);
       if (!page) return {};
-      const prodRes = await shopifyApiCall(shop, installation.accessToken, `products/${page.baseProductId}.json?fields=id,variants`);
+      const prodRes = await getProductRestCompat(shop, installation.accessToken, page.baseProductId);
       const variants = prodRes.data?.product?.variants || [];
       const priceMap: Record<string, string> = {};
-      for (const v of variants) {
+      for (const v of filterCatalogByPrintSides(variants as any[], "front")) {
         const size = allSizes.find((s: any) => s.name === v.option1);
         if (!size) continue;
-        if (v.option2) {
+        if (v.option2 && !isPrintSidesValue(v.option2)) {
           const color = allColors.find((c: any) => c.name === v.option2);
           if (color) priceMap[`${size.id}:${color.id}`] = v.price;
         } else {
@@ -19621,8 +22481,10 @@ ${orientationExtra}
       const colorKey = jobColorId ? `${size.id}:${jobColorId}` : null;
       const defaultKey = `${size.id}:default`;
       if (!(colorKey && variantMap[colorKey]) && !variantMap[defaultKey]) continue;
-      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey] || "0.00";
+      const price = (colorKey && priceMap[colorKey]) || priceMap[defaultKey];
+      if (!price) continue;
       const numericPrice = parseFloat(price);
+      if (!Number.isFinite(numericPrice) || numericPrice <= 0) continue;
       shopifyVariants.push({
         option1: size.name,
         price: Number.isFinite(numericPrice) && numericPrice > 0 ? numericPrice.toFixed(2) : "0.00",
@@ -19652,7 +22514,9 @@ ${orientationExtra}
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
       .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
-      .replace(/javascript:/gi, "");
+      .replace(/javascript:/gi, "")
+      .replace(/[^.?!<>]*\bcharts?\s+below\b[^.?!<>]*[.?!]?/gi, "")
+      .replace(/<p>\s*<\/p>/gi, "");
   }
 
   /** Fetch + sanitize Printify catalog blueprint description (used by import / Create Page / activate). */
@@ -19803,6 +22667,22 @@ ${orientationExtra}
     const productType = await storage.getProductType(productTypeId);
     if (!productType) return res.status(404).json({ error: "Product type not found" });
 
+    // Same publisher promote uses. Refuse before any Shopify product exists
+    // when this type has no studio variant on the shipping map.
+    try {
+      const { assertProductTypeReadyToPromote } = await import("./promote-shipping");
+      await assertProductTypeReadyToPromote({
+        shop,
+        productTypeName: productType.name,
+        variantIdMaps: [productType.shopifyVariantIds, productType.shopifyVariantIdsBoth],
+      });
+    } catch (err) {
+      if (err instanceof Error && (err as { status?: number }).status === 409) {
+        return res.status(409).json({ error: err.message });
+      }
+      throw err;
+    }
+
     const plan = getEffectivePlan(installation as any, shop);
     const limit = getDesignProductLimit(plan.planName);
 
@@ -19812,13 +22692,20 @@ ${orientationExtra}
     if (shopifyVariants.length === 0) {
       return res.status(400).json({ error: "Couldn't find any purchasable sizes for this design. Check the product's variant setup in the platform catalog." });
     }
-    if (shopifyVariants.length > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
-      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}.` });
+    if (shopifyVariants.length > SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT) {
+      return res.status(400).json({ error: `Too many variants (${shopifyVariants.length}). Shopify allows a maximum of ${SHOPIFY_REST_MAX_VARIANTS_PER_PRODUCT}.` });
     }
 
     // All saved mockup views (front, back, …) become the listing's images, deduped by URL.
     const jobMockupUrls: string[] = Array.isArray(job.mockupUrls)
-      ? Array.from(new Set((job.mockupUrls as string[]).filter((u) => typeof u === "string" && u.startsWith("http"))))
+      ? Array.from(
+          new Set(
+            (job.mockupUrls as string[])
+              .filter((u): u is string => typeof u === "string")
+              .map((u) => normalizePreviewUrl(u))
+              .filter((u): u is string => !!u && isHostedHttpUrl(u)),
+          ),
+        )
       : [];
     const productImageUrls: string[] = jobMockupUrls.length > 0
       ? jobMockupUrls
@@ -19826,7 +22713,10 @@ ${orientationExtra}
     const cleanTitle = ((titleOverride && titleOverride.trim()) || buildDefaultDesignProductTitle(job.userPrompt, productType.name)).slice(0, 250);
 
     const sizeChart = productType.printifyBlueprintId
-      ? await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId))
+      ? sizeChartForOfferedSizes(
+          await getNormalizedSizeChartWithTimeout(Number(productType.printifyBlueprintId)),
+          offeredSizeNames(productType),
+        )
       : null;
     const bodyHtml = buildDesignProductBodyHtml(productType, buildDesignProductSizeChartHtml(sizeChart), job.userPrompt);
 
@@ -19867,7 +22757,9 @@ ${orientationExtra}
     // Default publications to Online Store only (draft stays invisible until activated, but
     // the merchant's "Manage publishing" panel shouldn't show Point of Sale on for these).
     try {
-      await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(shopifyProductId), { hideFromSearch: false });
+      const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+      const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+      await ensureProductPublishedToOnlineStore(shop, pubAccessToken, Number(shopifyProductId), { hideFromSearch: false });
     } catch (e: any) {
       console.warn("[design-products] Failed to set default sales channel:", e?.message);
     }
@@ -20069,8 +22961,11 @@ ${orientationExtra}
         .from(designProducts)
         .where(and(eq(designProducts.merchantId, merchant.id), eq(designProducts.status, "active")));
       const activeCount = Number(activeCountRows[0]?.count ?? 0);
-      const plan = getEffectivePlan(installation as any, shop);
-      const { allowed, limit } = canActivateDesignProduct(plan.planName, activeCount);
+      // Honour per-shop override + owner-shop bypass — see
+      // getEffectiveDesignProductLimit in customizer-plans.ts. Owner / demo
+      // shops and shops with design_product_limit_override = -1 return
+      // Infinity here so `allowed` is always true.
+      const { allowed, limit } = canActivateDesignProductEffective(installation as any, shop, activeCount);
       if (!allowed) {
         return res.status(402).json({
           error: `You've reached your plan's limit of ${limit} active product design${limit === 1 ? "" : "s"}. Deactivate one or upgrade your plan.`,
@@ -20096,7 +22991,9 @@ ${orientationExtra}
         if (status === "active") {
           // Standalone design products should stay discoverable in search/collections —
           // only the shadow checkout SKUs use hideFromSearch (the default).
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, Number(row.shopifyProductId), { hideFromSearch: false });
+          const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+          const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+          await ensureProductPublishedToOnlineStore(shop, pubAccessToken, Number(row.shopifyProductId), { hideFromSearch: false });
         }
       } catch (e: any) {
         console.warn("[design-products] Shopify status update failed:", e.message);
@@ -20109,6 +23006,41 @@ ${orientationExtra}
       .where(eq(designProducts.id, row.id))
       .returning();
     res.json({ success: true, designProduct: updated });
+  }));
+
+  /** PATCH /api/appai/design-products/:id/my-pet — storefront button on this listing. */
+  app.patch("/api/appai/design-products/:id/my-pet", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    const { merchant, installation } = resolved;
+    const shop: string = installation.shopDomain;
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "enabled must be true or false" });
+    }
+    const [row] = await db
+      .select()
+      .from(designProducts)
+      .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id), eq(designProducts.shop, shop)));
+    if (!row) return res.status(404).json({ error: "Design product not found" });
+    if (!row.shopifyProductId) {
+      return res.status(409).json({ error: "This listing has no Shopify product yet." });
+    }
+    const tokenReady = await ensureValidOfflineAccessToken(installation);
+    const token = tokenReady.ok ? tokenReady.accessToken : installation.accessToken;
+    const { setProductMyPetEnabled } = await import("./my-pet-metafields");
+    try {
+      await setProductMyPetEnabled(shop, token, row.shopifyProductId, enabled);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ error: message });
+    }
+    const [updated] = await db
+      .update(designProducts)
+      .set({ myPetEnabled: enabled, updatedAt: new Date() })
+      .where(eq(designProducts.id, row.id))
+      .returning();
+    res.json({ designProduct: updated });
   }));
 
   /** DELETE /api/appai/design-products/:id — unpublish: remove the Shopify product + the listing. */
@@ -20124,9 +23056,28 @@ ${orientationExtra}
       .where(and(eq(designProducts.id, req.params.id), eq(designProducts.merchantId, merchant.id)));
     if (!row) return res.status(404).json({ error: "Design product not found" });
 
+    if (row.printifyProductId) {
+      if (!merchant.printifyApiToken || !merchant.printifyShopId) {
+        return res.status(409).json({
+          error: `${row.title} has Printify product ${row.printifyProductId}, and Printify is not connected, so it was not retired.`,
+        });
+      }
+      const { deletePrintifyProduct } = await import("./flywheel-promote");
+      try {
+        await deletePrintifyProduct(String(merchant.printifyShopId), String(row.printifyProductId), merchant.printifyApiToken);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(502).json({ error: `${message} The Shopify product was left in place.` });
+      }
+    }
     if (row.shopifyProductId) {
       await deleteShopifyProductBestEffort(shop, installation.accessToken, row.shopifyProductId);
     }
+    await db.update(designCandidates).set({
+      status: "retired",
+      printifyProductId: null,
+      updatedAt: new Date(),
+    }).where(eq(designCandidates.designProductId, row.id));
     await db.delete(designProductEvents).where(eq(designProductEvents.designProductId, row.id));
     await db.delete(designProducts).where(eq(designProducts.id, row.id));
     res.json({ success: true });
@@ -20222,6 +23173,16 @@ ${orientationExtra}
     res.json({ success: true, designProduct: updated, addedCount: result.mockupUrls.length });
   }));
 
+  const { mountDesignColourRoutes } = await import("./routes/design-colours");
+  mountDesignColourRoutes(app, "/api/appai/design-products", async (req, res) => {
+    const resolved = await resolveInstallation(req);
+    if (!resolved.ok) {
+      res.status(resolved.status).json({ error: resolved.error });
+      return null;
+    }
+    return resolved.installation.shopDomain;
+  }, [isAuthenticated]);
+
   /** GET /api/appai/customizer-pages */
   app.get("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
@@ -20292,11 +23253,7 @@ ${orientationExtra}
         try {
           const productIdNum = parseInt(String(productId).replace(/\D/g, ""), 10);
           if (!productIdNum) return;
-          const productRes = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json?fields=id,variants`,
-          );
+          const productRes = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           const cheapest = pickLowestPricedShopifyVariant(productRes.data?.product?.variants);
           if (!cheapest) return;
           cheapestByProduct.set(String(productId), {
@@ -20355,20 +23312,24 @@ ${orientationExtra}
       console.warn("[zero-price-alert] admin list notify failed:", e?.message ?? e),
     );
 
+    const pageLimit = Number.isFinite(plan.pageLimit) ? plan.pageLimit : null;
     return res.json({
       pages,
-      limit: plan.pageLimit,
+      limit: pageLimit,
+      unlimited: pageLimit == null,
       count: activeCount,
       planTier: plan.planName ?? "none",
       planName: plan.planName,
       planStatus: plan.planStatus,
+      displayName: plan.displayName,
       requiresPlan: plan.requiresPlan,
-      overLimit: activeCount > plan.pageLimit && plan.isActive,
+      overLimit: pageLimit != null && activeCount > pageLimit && plan.isActive,
     });
   }));
 
   /** POST /api/appai/customizer-pages */
   app.post("/api/appai/customizer-pages", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    let printSidesNotice: string | null = null;
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
 
@@ -20382,7 +23343,7 @@ ${orientationExtra}
     }
     const shop: string = installation.shopDomain;
 
-    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
+    const { title, handle, baseVariantId, baseProductId, productTypeId: incomingProductTypeId, variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent: incomingMarkupPercent, baseMockupImages: incomingBaseMockupImages, styleConfig: incomingStyleConfig } = req.body as {
       title?: string;
       handle?: string;
       baseVariantId?: string;
@@ -20391,10 +23352,15 @@ ${orientationExtra}
       variantPrices?: Record<string, string>;
       /** Front+back retail prices keyed like variantPrices — not written to Shopify base variants. */
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
       baseMockupImages?: { primary?: string; gallery?: string[]; custom?: string[] };
       styleConfig?: unknown;
     };
+    const compareAtNormalised = incomingCompareAt === undefined ? null : normaliseCompareAtBySize(incomingCompareAt);
+    if (compareAtNormalised && !compareAtNormalised.ok) {
+      return res.status(400).json({ error: compareAtNormalised.error });
+    }
 
     if (!title?.trim()) return res.status(400).json({ error: "Title is required" });
     if (!handle?.trim()) return res.status(400).json({ error: "Handle is required" });
@@ -20417,6 +23383,11 @@ ${orientationExtra}
     // Uniqueness check
     const existing = await storage.getCustomizerPageByHandle(shop, handle);
     if (existing) return res.status(409).json({ error: `Handle "${handle}" is already in use` });
+
+    const packConfig = parseCustomizerPageStyleConfig(incomingStyleConfig);
+    if (packConfig?.mode === "pack" && !(await loadStylePackForMerchant(packConfig.packId, installation.merchantId))) {
+      return res.status(400).json({ error: "That style pack isn't available to this store.", code: "STYLE_PACK_UNAVAILABLE" });
+    }
 
     // If a productTypeId is provided but no shopify product exists yet, auto-send it to Shopify as a draft.
     let resolvedBaseProductId = baseProductId;
@@ -20457,11 +23428,12 @@ ${orientationExtra}
       const ptSizeIds: string[] = JSON.parse(ptForSync.selectedSizeIds || "[]");
       const ptColorIds: string[] = JSON.parse(ptForSync.selectedColorIds || "[]");
       const activeVariantCount = countActiveVariantMapKeys(ptVariantMap, ptSizeIds, ptColorIds);
-      if (activeVariantCount > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
+      const shopifyVariantTotal = activeVariantCount * printSidesFactorForProductType(ptForSync);
+      if (shopifyVariantTotal > SHOPIFY_MAX_VARIANTS_PER_PRODUCT) {
         return res.status(400).json({
-          error: `This product has ${activeVariantCount} variants but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
+          error: `This product has ${shopifyVariantTotal} variants${shopifyVariantTotal !== activeVariantCount ? ` (${activeVariantCount} blanks × Front / Front + Back)` : ""} but Shopify allows ${SHOPIFY_MAX_VARIANTS_PER_PRODUCT}. Open Products → Edit Variants to reduce sizes or colors before creating a customizer page.`,
           code: "SHOPIFY_VARIANT_LIMIT",
-          variantCount: activeVariantCount,
+          variantCount: shopifyVariantTotal,
         });
       }
 
@@ -20470,10 +23442,7 @@ ${orientationExtra}
         // If the product was deleted from Shopify or has fewer variants than expected (e.g. after
         // Refresh Variants), clear the stale ID so the create-new-product path below handles it.
         try {
-          const shopifyProdCheck = await shopifyApiCall(
-            shop, installation.accessToken,
-            `products/${ptForSync.shopifyProductId}.json`,
-          );
+          const shopifyProdCheck = await getProductRestCompat(shop, installation.accessToken, ptForSync.shopifyProductId);
 
           if (!shopifyProdCheck.ok || !shopifyProdCheck.data?.product) {
             // Product no longer exists in Shopify — clear stale ID so we re-create it below
@@ -20483,19 +23452,30 @@ ${orientationExtra}
               shopifyProductHandle: null,
               shopifyProductUrl: null,
               shopifyShopDomain: null,
-              shopifyVariantIds: null,
+              shopifyVariantIds: null, shopifyVariantIdsBoth: null,
             });
             ptForSync.shopifyProductId = null;
           } else {
-            // Product exists — check if variant count matches
+            // Product exists — check the Front tier covers every blank the builder would create.
+            // Front + Back (Print sides) variants are counted separately and never trigger a
+            // delete: adding or removing that tier is an explicit migration, not a heal.
             const allSizes = typeof ptForSync.sizes === 'string' ? JSON.parse(ptForSync.sizes || '[]') : (ptForSync.sizes || []);
             const allColors = typeof ptForSync.frameColors === 'string' ? JSON.parse(ptForSync.frameColors || '[]') : (ptForSync.frameColors || []);
-            const savedSizeIds: string[] = typeof ptForSync.selectedSizeIds === 'string' ? JSON.parse(ptForSync.selectedSizeIds || '[]') : (ptForSync.selectedSizeIds || []);
-            const savedColorIds: string[] = typeof ptForSync.selectedColorIds === 'string' ? JSON.parse(ptForSync.selectedColorIds || '[]') : (ptForSync.selectedColorIds || []);
-            const activeSizes = savedSizeIds.length ? allSizes.filter((s: any) => savedSizeIds.includes(s.id)) : allSizes;
-            const activeColors = savedColorIds.length ? allColors.filter((c: any) => savedColorIds.includes(c.id)) : allColors;
-            const expectedVariantCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
-            const shopifyVariantCount = shopifyProdCheck.data.product.variants?.length ?? 0;
+            const activeSizes = ptSizeIds.length ? allSizes.filter((s: any) => ptSizeIds.includes(s.id)) : allSizes;
+            const activeColors = ptColorIds.length ? allColors.filter((c: any) => ptColorIds.includes(c.id)) : allColors;
+            const cartesianCount = activeColors.length > 0 ? activeSizes.length * activeColors.length : activeSizes.length;
+            const liveVariants = (shopifyProdCheck.data.product.variants ?? []) as any[];
+            const tiers = printSidesTierCounts(liveVariants);
+            // Builders create only variantMap combos; the full grid only when the map is empty.
+            const expectedVariantCount = activeVariantCount > 0 ? activeVariantCount : cartesianCount;
+            const shopifyVariantCount = tiers.front;
+            const wantsPrintSides = printSidesActiveForProductType(ptForSync);
+            if (wantsPrintSides && tiers.both < tiers.front) {
+              printSidesNotice = `Shopify product has ${tiers.both}/${tiers.front} Front + Back variants. Print sides needs a product recreate (not done automatically).`;
+            } else if (!wantsPrintSides && tiers.both > 0) {
+              printSidesNotice = `Shopify product still has ${tiers.both} Front + Back variants but Print sides is off for this product type.`;
+            }
+            if (printSidesNotice) console.warn(`[customizer-pages] pt ${ptForSync.id}: ${printSidesNotice}`);
 
             if (shopifyVariantCount < expectedVariantCount) {
               // Fewer variants than expected (e.g. after Refresh Variants) — delete and re-create
@@ -20506,14 +23486,15 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
               ptForSync.shopifyProductId = null;
             } else if (
               variantPrices &&
               typeof variantPrices === "object" &&
               Object.keys(variantPrices).length > 0 &&
-              !allShopifyVariantsHavePositiveRetail(shopifyProdCheck.data.product.variants)
+              // Only a $0 Front tier means a failed create; $0 Front + Back is fixed by price sync.
+              !allShopifyVariantsHavePositiveRetail(filterCatalogByPrintSides(liveVariants, "front"))
             ) {
               // Leftover $0 product from a failed Create Page — recreate with wizard retail.
               console.log(
@@ -20525,7 +23506,7 @@ ${orientationExtra}
                 shopifyProductHandle: null,
                 shopifyProductUrl: null,
                 shopifyShopDomain: null,
-                shopifyVariantIds: null,
+                shopifyVariantIds: null, shopifyVariantIdsBoth: null,
               });
               ptForSync.shopifyProductId = null;
             }
@@ -20567,8 +23548,9 @@ ${orientationExtra}
     // Plan limit check - only for ACTIVE (Live) pages (enforcement catalogue stamp)
     const activeCount = await storage.countActiveCustomizerPages(shop);
     const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
-    const enforcePageLimit =
+    const cataloguePageLimit =
       findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+    const enforcePageLimit = Number.isFinite(plan.pageLimit) ? cataloguePageLimit : Number.POSITIVE_INFINITY;
     const allowed = activeCount < enforcePageLimit;
     const limit = enforcePageLimit;
 
@@ -20650,11 +23632,7 @@ ${orientationExtra}
       const productNum = parseInt(String(resolvedBaseProductId).replace(/\D/g, ""), 10);
       if (!productNum) return res.status(400).json({ error: "Invalid baseProductId" });
 
-      const prodResult = await shopifyApiCall(
-        shop,
-        installation.accessToken,
-        `products/${productNum}.json?fields=id,title,handle,variants`,
-      );
+      const prodResult = await getProductRestCompat(shop, installation.accessToken, productNum);
       if (!prodResult.ok || !prodResult.data?.product) {
         // Product not found for THIS shop. This happens when the stored shopifyProductId is
         // stale (deleted in Shopify) or was published to a *different* shop (product_types is a
@@ -20672,7 +23650,7 @@ ${orientationExtra}
             shopifyProductHandle: null as any,
             shopifyProductUrl: null as any,
             shopifyShopDomain: null as any,
-            shopifyVariantIds: null as any,
+            shopifyVariantIds: null as any, shopifyVariantIdsBoth: null as any,
           });
           try {
             const { shopifyProductId } = await createShopifyProductForTypeHealed(
@@ -20697,7 +23675,7 @@ ${orientationExtra}
             return res.status(400).json({ error: "Product was re-created on Shopify but no product ID was returned. Try again." });
           }
           // Re-fetch the newly created product
-          const newProdResult = await shopifyApiCall(shop, installation.accessToken, `products/${resolvedBaseProductId}.json?fields=id,title,handle,variants`);
+          const newProdResult = await getProductRestCompat(shop, installation.accessToken, resolvedBaseProductId);
           if (!newProdResult.ok || !newProdResult.data?.product) {
             return res.status(400).json({ error: `Newly created product ${resolvedBaseProductId} not found. Please try again.` });
           }
@@ -20761,6 +23739,11 @@ ${orientationExtra}
       if (Number.isFinite(markupNum) && markupNum >= 0) {
         ptUpdates.defaultMarkupPercent = markupNum;
       }
+      if (compareAtNormalised?.ok) {
+        ptUpdates.compareAtBySize = compareAtNormalised.json;
+        if (ptForSync) (ptForSync as any).compareAtBySize = compareAtNormalised.json;
+        if (matchedType) (matchedType as any).compareAtBySize = compareAtNormalised.json;
+      }
       if (ptForMeta && !String(ptForMeta.description || "").trim() && ptForMeta.printifyBlueprintId) {
         const token = resolveCatalogPrintifyToken(merchant);
         if (token) {
@@ -20784,7 +23767,8 @@ ${orientationExtra}
       }
     }
 
-    // Persist front+back retail map on the product type (Shopify base variants stay front-only).
+    // Persist front+back retail map on the product type (also priced onto Print sides
+    // "Front + Back" variants by applyShopifyVariantPrices when the product has them).
     if (
       resolvedProductTypeId &&
       variantPricesBoth &&
@@ -20828,18 +23812,24 @@ ${orientationExtra}
         const productIdNum = parseInt(String(variant.product_id).replace(/\D/g, ""), 10);
         let liveShopifyVariants: Array<{ id?: number; price?: string; title?: string }> = [];
         if (productIdNum) {
-          const alreadyPriced = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json`,
-          );
+          const alreadyPriced = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           liveShopifyVariants = alreadyPriced.data?.product?.variants ?? [];
         }
         const alreadyHasRetail = allShopifyVariantsHavePositiveRetail(liveShopifyVariants);
+        const pricingType = matchedType || ptForSync;
         if (alreadyHasRetail) {
           console.log(
-            `[customizer-pages] Shopify product ${productIdNum} already has retail on ${liveShopifyVariants.length} variants — skipping PUT sync`,
+            `[customizer-pages] Shopify product ${productIdNum} already has retail on ${liveShopifyVariants.length} variants — skipping price overwrite`,
           );
+          if (pricingType) {
+            await applyShopifyCompareAtOnly({
+              shop,
+              accessToken: installation.accessToken,
+              baseProductId: variant.product_id,
+              productType: pricingType,
+              shopifyVariants: liveShopifyVariants,
+            });
+          }
         }
         const applied = alreadyHasRetail
           ? { successCount: liveShopifyVariants.length, unresolvedCount: 0 }
@@ -20849,6 +23839,7 @@ ${orientationExtra}
               baseProductId: variant.product_id,
               productType: matchedType || ptForSync,
               variantPrices,
+              variantPricesBoth: variantPricesBoth ?? null,
               onBaseVariantUpdated: async (formatted, variantNum) => {
                 if (String(variantNum) === String(variant.id)) {
                   variant = { ...variant, price: formatted };
@@ -20856,13 +23847,9 @@ ${orientationExtra}
               },
             });
         if (productIdNum) {
-          const priced = await shopifyApiCall(
-            shop,
-            installation.accessToken,
-            `products/${productIdNum}.json`,
-          );
+          const priced = await getProductRestCompat(shop, installation.accessToken, productIdNum);
           liveShopifyVariants = priced.data?.product?.variants ?? [];
-          const cheapestAfter = pickLowestPricedShopifyVariant(liveShopifyVariants);
+          const cheapestAfter = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(liveShopifyVariants as any[], "front"));
           if (cheapestAfter && hasPositiveRetailPrice(cheapestAfter.price)) variant = cheapestAfter;
         }
         if (initialStatus === "active") {
@@ -20910,7 +23897,9 @@ ${orientationExtra}
         // Ensure the product is published to the Online Store sales channel
         // (required for the customizer page URL to resolve and for /cart/add.js)
         try {
-          await ensureProductPublishedToOnlineStore(shop, installation.accessToken, productIdNum);
+          const pubTokenReady = await ensureValidOfflineAccessToken(installation);
+          const pubAccessToken = pubTokenReady.ok ? pubTokenReady.accessToken : installation.accessToken;
+          await ensureProductPublishedToOnlineStore(shop, pubAccessToken, productIdNum);
           console.log(`[customizer-pages] Product ${productIdNum} published to Online Store (unlisted)`);
         } catch (pubErr: any) {
           console.warn(`[customizer-pages] Failed to publish product ${productIdNum} to Online Store: ${pubErr.message}`);
@@ -21010,10 +23999,18 @@ ${orientationExtra}
       page,
       storefrontUrl: `/pages/${page.handle}`,
       navWarning: null,
+      printSidesNotice,
     });
   }));
 
   /** PATCH /api/appai/customizer-pages/:id */
+  /** Store experience profiles this store may assign to its pages (own + assigned platform profiles). */
+  app.get("/api/appai/experience-profiles", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
+    const resolved = await resolveShopInstallation(req);
+    if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error });
+    res.json({ profiles: await listExperienceProfilesForMerchant(resolved.installation.merchantId) });
+  }));
+
   app.patch("/api/appai/customizer-pages/:id", isAuthenticated, asyncHandler(async (req: any, res: Response) => {
     const resolved = await resolveShopInstallation(req);
     if (!resolved.ok) return res.status(resolved.status).json({ error: resolved.error, ...(resolved.reinstallUrl ? { reinstallUrl: resolved.reinstallUrl } : {}) });
@@ -21081,8 +24078,9 @@ ${orientationExtra}
         const plan = getEffectivePlan(installation as any, shop);
         const activeCount = await storage.countActiveCustomizerPages(shop);
         const enforceCat = await getCatalogueForInstallation(installation.pricingVersion);
-        const limit =
+        const cataloguePageLimit =
           findCataloguePlan(enforceCat, plan.planName)?.pageLimit ?? getPageLimit(plan.planName);
+        const limit = Number.isFinite(plan.pageLimit) ? cataloguePageLimit : Number.POSITIVE_INFINITY;
         const allowed = activeCount < limit;
         if (!allowed) {
           return res.status(402).json({
@@ -21104,7 +24102,21 @@ ${orientationExtra}
       }
       const styleErr = validateCustomizerPageStyleConfig(parsed);
       if (styleErr) return res.status(400).json({ error: styleErr });
+      if (parsed.mode === "pack" && !(await loadStylePackForMerchant(parsed.packId, installation.merchantId))) {
+        return res.status(400).json({ error: "That style pack isn't available to this store.", code: "STYLE_PACK_UNAVAILABLE" });
+      }
       updates.styleConfig = parsed as any;
+    }
+
+    if (req.body.experienceProfileId !== undefined) {
+      const profileId =
+        typeof req.body.experienceProfileId === "string" && req.body.experienceProfileId.trim()
+          ? req.body.experienceProfileId.trim()
+          : null;
+      if (profileId && !(await loadExperienceProfileForMerchant(profileId, installation.merchantId))) {
+        return res.status(400).json({ error: "That store profile isn't available to this store.", code: "EXPERIENCE_PROFILE_UNAVAILABLE" });
+      }
+      updates.experienceProfileId = profileId;
     }
 
     const nextStatus = updates.status ?? dbPage.status;
@@ -21162,19 +24174,11 @@ ${orientationExtra}
           .replace(/&amp;/g, "&")
           .replace(/\s+/g, " ")
           .trim();
-        await shopifyApiCall(
+        await updateProductDescriptionRestCompat(
           shop,
           installation.accessToken,
-          `products/${dbPage.baseProductId}.json`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              product: {
-                id: dbPage.baseProductId,
-                body_html: `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
-              },
-            }),
-          },
+          dbPage.baseProductId,
+          `<div style="padding: 15px 0;"><h4 style="margin: 0 0 10px 0; font-size: 16px; font-weight: 600;">Product Details</h4><p>${cleanDescription}</p></div>`,
         );
       }
     }
@@ -21253,11 +24257,52 @@ ${orientationExtra}
   }));
 
   /** One GraphQL call instead of N REST PUTs — 96 apparel variants otherwise 429. */
+  function productTypeSizeNames(productType: any): string[] {
+    let sizes: Array<{ name?: string }> = [];
+    try {
+      const raw = typeof productType?.sizes === "string" ? JSON.parse(productType.sizes || "[]") : productType?.sizes;
+      sizes = Array.isArray(raw) ? raw : [];
+    } catch {
+      sizes = [];
+    }
+    return sizes.map((size) => String(size?.name || "").trim()).filter(Boolean);
+  }
+
+  /** Compare-at that still differs from Shopify. Null clears a crossed-out price. */
+  function compareAtUpdatesForVariants(
+    productType: any,
+    shopifyVariants: Array<{ id?: number; option1?: string | null; option2?: string | null; option3?: string | null; compare_at_price?: string | null }>,
+  ): Map<number, string | null> {
+    const updates = new Map<number, string | null>();
+    const sizeNames = productTypeSizeNames(productType);
+    if (!sizeNames.length) return updates;
+    const stored = parseCompareAtBySize(productType?.compareAtBySize);
+    for (const variant of shopifyVariants) {
+      const id = Number(variant.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
+      const size = matchedSizeName([variant.option1, variant.option2, variant.option3], sizeNames);
+      if (!size) continue;
+      const wanted = compareAtForSize(stored, size);
+      const live = wantedCompareAt(variant.compare_at_price);
+      if (wanted === live) continue;
+      updates.set(id, wanted || null);
+    }
+    return updates;
+  }
+
+  function wantedCompareAt(value: unknown): string {
+    const text = value == null ? "" : String(value).trim();
+    if (!text) return "";
+    const amount = Number(text);
+    return Number.isFinite(amount) && amount > 0 ? amount.toFixed(2) : "";
+  }
+
   async function bulkUpdateShopifyVariantPrices(
     shop: string,
     accessToken: string,
     productId: number,
     prices: Map<number, string>,
+    compareAtByVariant?: Map<number, string | null>,
   ): Promise<boolean> {
     if (prices.size === 0) return true;
     const entries = [...prices.entries()];
@@ -21281,6 +24326,7 @@ ${orientationExtra}
             variants: chunk.map(([id, price]) => ({
               id: `gid://shopify/ProductVariant/${id}`,
               price,
+              ...(compareAtByVariant?.has(id) ? { compareAtPrice: compareAtByVariant.get(id) } : {}),
             })),
           },
         }),
@@ -21311,6 +24357,32 @@ ${orientationExtra}
     return true;
   }
 
+  /** Write this type's compare-at onto the studio product without changing retail prices. */
+  async function applyShopifyCompareAtOnly(args: {
+    shop: string;
+    accessToken: string;
+    baseProductId: string | number;
+    productType: any;
+    shopifyVariants?: Array<{ id?: number; price?: string; option1?: string | null; option2?: string | null; option3?: string | null; compare_at_price?: string | null }>;
+  }): Promise<void> {
+    const productIdNum = parseInt(String(args.baseProductId).replace(/\D/g, ""), 10);
+    if (!productIdNum) return;
+    const variants = args.shopifyVariants ?? (await getProductRestCompat(args.shop, args.accessToken, productIdNum)).data?.product?.variants ?? [];
+    const compareAtByVariant = compareAtUpdatesForVariants(args.productType, variants);
+    if (compareAtByVariant.size === 0) return;
+    const prices = new Map<number, string>();
+    for (const variant of variants) {
+      const id = Number(variant.id);
+      if (!compareAtByVariant.has(id)) continue;
+      const amount = Number(variant.price);
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      prices.set(id, amount.toFixed(2));
+    }
+    if (prices.size === 0) return;
+    const ok = await bulkUpdateShopifyVariantPrices(args.shop, args.accessToken, productIdNum, prices, compareAtByVariant);
+    if (!ok) console.warn(`[sync-prices] compare-at update failed for product ${productIdNum}`);
+  }
+
   /** Shared Shopify variant price sync used by customizer pages and Products admin. */
   async function applyShopifyVariantPrices(args: {
     shop: string;
@@ -21318,6 +24390,8 @@ ${orientationExtra}
     baseProductId: string | number;
     productType: any;
     variantPrices: Record<string, string>;
+    /** Both-tier retail from the request; defaults to the saved product type map. */
+    variantPricesBoth?: Record<string, string> | null;
     onBaseVariantUpdated?: (price: string, variantNum: number) => Promise<void>;
   }): Promise<{
     updated: Array<{ variantId: number; price: string; success: boolean; error?: string }>;
@@ -21333,14 +24407,13 @@ ${orientationExtra}
     let shopifyVariants: Array<{
       id: number;
       title?: string;
-      option1?: string;
-      option2?: string;
+      option1?: string | null;
+      option2?: string | null;
+      option3?: string | null;
+      compare_at_price?: string | null;
+      price?: string;
     }> = [];
-    const allVariantsResult = await shopifyApiCall(
-      shop,
-      accessToken,
-      `products/${baseProductId}.json`,
-    );
+    const allVariantsResult = await getProductRestCompat(shop, accessToken, baseProductId);
     shopifyVariants = allVariantsResult.data?.product?.variants ?? [];
     const livePriceById = new Map<number, number>();
     for (const sv of shopifyVariants) {
@@ -21404,8 +24477,26 @@ ${orientationExtra}
       uniquePuts.set(variantNum, formatted);
     }
 
+    // Print sides: Front + Back variants follow their Front twin on every sync.
+    const bothPuts = bothTierPriceUpdates({
+      productType,
+      liveVariants: shopifyVariants,
+      pendingFrontPrices: uniquePuts,
+      variantPricesBoth: args.variantPricesBoth ?? null,
+    });
+    for (const [id, price] of bothPuts) {
+      if (!uniquePuts.has(id)) uniquePuts.set(id, price);
+    }
+
+    const compareAtByVariant = compareAtUpdatesForVariants(productType, shopifyVariants);
+    for (const id of compareAtByVariant.keys()) {
+      if (uniquePuts.has(id)) continue;
+      const current = livePriceById.get(id) ?? 0;
+      if (current > 0) uniquePuts.set(id, current.toFixed(2));
+    }
+
     console.log(
-      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size}`,
+      `[sync-prices] mapped ${Object.keys(printifyToShopifyVariantId).length} printify→shopify; shopifyVariants=${shopifyVariants.length}; priceKeys=${Object.keys(variantPrices).length}; uniquePuts=${uniquePuts.size} (front+back ${bothPuts.size})`,
     );
 
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -21419,7 +24510,7 @@ ${orientationExtra}
     };
 
     if (uniquePuts.size > 0 && productIdNum) {
-      const bulkOk = await bulkUpdateShopifyVariantPrices(shop, accessToken, productIdNum, uniquePuts);
+      const bulkOk = await bulkUpdateShopifyVariantPrices(shop, accessToken, productIdNum, uniquePuts, compareAtByVariant);
       if (bulkOk) {
         for (const [variantNum, formatted] of uniquePuts) {
           await markPutSuccess(variantNum, formatted);
@@ -21430,7 +24521,13 @@ ${orientationExtra}
           for (let attempt = 0; attempt < 6; attempt++) {
             const priceResult = await shopifyApiCall(shop, accessToken, `variants/${variantNum}.json`, {
               method: "PUT",
-              body: JSON.stringify({ variant: { id: variantNum, price: formatted } }),
+              body: JSON.stringify({
+                variant: {
+                  id: variantNum,
+                  price: formatted,
+                  ...(compareAtByVariant.has(variantNum) ? { compare_at_price: compareAtByVariant.get(variantNum) } : {}),
+                },
+              }),
             });
             if (priceResult.ok) return priceResult;
             lastError = priceResult.error || "Unknown error";
@@ -21477,17 +24574,13 @@ ${orientationExtra}
     if (!productIdNum) return { ok: false, resynced: false };
 
     const loadVariants = async () => {
-      const priced = await shopifyApiCall(
-        args.shop,
-        args.accessToken,
-        `products/${productIdNum}.json`,
-      );
+      const priced = await getProductRestCompat(args.shop, args.accessToken, productIdNum);
       return (priced.data?.product?.variants ?? []) as Array<{ id?: number; price?: string; title?: string }>;
     };
 
     let variants = await loadVariants();
     if (allShopifyVariantsHavePositiveRetail(variants)) {
-      const cheapest = pickLowestPricedShopifyVariant(variants);
+      const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(variants as any[], "front"));
       return { ok: true, resynced: false, cheapestPrice: cheapest?.price != null ? String(cheapest.price) : undefined };
     }
 
@@ -21513,7 +24606,15 @@ ${orientationExtra}
       const suggested = shopifyToSuggested.get(id);
       if (suggested) variantPrices[String(id)] = suggested;
     }
-    if (Object.keys(variantPrices).length === 0) {
+    const pendingFront = new Map<number, string>(
+      Object.entries(variantPrices).map(([id, p]) => [Number(id), p] as [number, string]),
+    );
+    const bothFixes = bothTierPriceUpdates({
+      productType: args.productType,
+      liveVariants: variants as any[],
+      pendingFrontPrices: pendingFront,
+    });
+    if (Object.keys(variantPrices).length === 0 && bothFixes.size === 0) {
       return { ok: false, resynced: false };
     }
 
@@ -21525,7 +24626,7 @@ ${orientationExtra}
       variantPrices,
     });
     variants = await loadVariants();
-    const cheapest = pickLowestPricedShopifyVariant(variants);
+    const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides(variants as any[], "front"));
     const ok = allShopifyVariantsHavePositiveRetail(variants);
     if (ok && args.pageId && cheapest && hasPositiveRetailPrice(cheapest.price)) {
       const pricedPatch: Record<string, unknown> = {
@@ -21555,14 +24656,19 @@ ${orientationExtra}
     const dbPage = await storage.getCustomizerPageForShop(req.params.id, shop);
     if (!dbPage) return res.status(404).json({ error: "Page not found" });
 
-    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
+    const { variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
+    const pageCompareAt = Object.prototype.hasOwnProperty.call(req.body || {}, "compareAtBySize")
+      ? normaliseCompareAtBySize(incomingCompareAt)
+      : null;
+    if (pageCompareAt && !pageCompareAt.ok) return res.status(400).json({ error: pageCompareAt.error });
 
     // Validate all prices
     for (const [vid, price] of Object.entries(variantPrices)) {
@@ -21591,23 +24697,26 @@ ${orientationExtra}
       (dbPage.productTypeId ? await storage.getProductType(Number(dbPage.productTypeId)) : undefined) ||
       productTypes.find((pt: any) => String(pt.shopifyProductId) === String(dbPage.baseProductId));
 
+    let pricingType = matchedType;
+    if (pageCompareAt?.ok && pricingType?.id) {
+      await storage.updateProductType(pricingType.id, { compareAtBySize: pageCompareAt.json });
+      pricingType = { ...pricingType, compareAtBySize: pageCompareAt.json };
+    }
+
     const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken!,
       baseProductId: dbPage.baseProductId,
-      productType: matchedType,
+      productType: pricingType,
       variantPrices,
+      variantPricesBoth: variantPricesBoth ?? null,
     });
 
     try {
       const productIdNum = parseInt(String(dbPage.baseProductId).replace(/\D/g, ""), 10);
       if (productIdNum) {
-        const priced = await shopifyApiCall(
-          shop,
-          installation.accessToken!,
-          `products/${productIdNum}.json?fields=id,variants`,
-        );
-        const cheapest = pickLowestPricedShopifyVariant(priced.data?.product?.variants);
+        const priced = await getProductRestCompat(shop, installation.accessToken!, productIdNum);
+        const cheapest = pickLowestPricedShopifyVariant(filterCatalogByPrintSides((priced.data?.product?.variants ?? []) as any[], "front"));
         if (cheapest && parseShopifyVariantPrice(cheapest.price) > 0) {
           await storage.updateCustomizerPage(dbPage.id, {
             baseVariantId: String(cheapest.id),
@@ -21687,14 +24796,19 @@ ${orientationExtra}
       });
     }
 
-    const { variantPrices, variantPricesBoth, defaultMarkupPercent } = req.body as {
+    const { variantPrices, variantPricesBoth, compareAtBySize: incomingCompareAt, defaultMarkupPercent } = req.body as {
       variantPrices?: Record<string, string>;
       variantPricesBoth?: Record<string, string>;
+      compareAtBySize?: Record<string, string>;
       defaultMarkupPercent?: number;
     };
     if (!variantPrices || typeof variantPrices !== "object" || Object.keys(variantPrices).length === 0) {
       return res.status(400).json({ error: "variantPrices is required" });
     }
+    const typeCompareAt = Object.prototype.hasOwnProperty.call(req.body || {}, "compareAtBySize")
+      ? normaliseCompareAtBySize(incomingCompareAt)
+      : null;
+    if (typeCompareAt && !typeCompareAt.ok) return res.status(400).json({ error: typeCompareAt.error });
     for (const [vid, price] of Object.entries(variantPrices)) {
       const num = parseFloat(String(price));
       if (isNaN(num) || num <= 0) {
@@ -21712,12 +24826,19 @@ ${orientationExtra}
       }
     }
 
+    let pricingType = productType;
+    if (typeCompareAt?.ok) {
+      await storage.updateProductType(productTypeId, { compareAtBySize: typeCompareAt.json });
+      pricingType = { ...productType, compareAtBySize: typeCompareAt.json };
+    }
+
     const { successCount, totalCount, updated, unresolvedCount } = await applyShopifyVariantPrices({
       shop,
       accessToken: installation.accessToken,
       baseProductId: productType.shopifyProductId,
-      productType,
+      productType: pricingType,
       variantPrices,
+      variantPricesBoth: variantPricesBoth ?? null,
     });
 
     let bothKeyCount = 0;
@@ -21867,6 +24988,12 @@ ${orientationExtra}
               baseProductId: after.shopifyProductId,
               productType: after,
               variantPrices,
+              variantPricesBoth: synthesizeBothRetailMapFromCosts(after.printifyCosts, after.defaultMarkupPercent, {
+                variantMap: after.variantMap,
+                shopifyVariantIds: after.shopifyVariantIds,
+                sizes: after.sizes,
+                frameColors: after.frameColors,
+              }),
             });
             retailAutoUpdate.successCount = applied.successCount;
             retailAutoUpdate.totalCount = applied.totalCount;
@@ -22006,8 +25133,15 @@ ${orientationExtra}
       // Always scope to THIS shop's merchant catalog. Platform admins used to
       // see every merchant's product types here, which made already-published
       // products look like "(new — will be sent to store)" duplicates.
+      // Platform catalogue reference rows stay out of the merchant list, except
+      // legacy rows a page is already bound to (so that page stays manageable).
+      const pageBoundTypeIds = new Set(
+        (await storage.listCustomizerPages(shop)).map((p) => p.productTypeId).filter((id) => id != null),
+      );
       const productTypes = installation.merchantId
-        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter((pt) => pt.isActive)
+        ? (await storage.getProductTypesByMerchant(installation.merchantId)).filter(
+            (pt) => pt.isActive && (!(pt as any).isPlatformCatalogRef || pageBoundTypeIds.has(pt.id)),
+          )
         : [];
 
       // Enrich products that are already on Shopify with live variant data.
@@ -22151,6 +25285,15 @@ ${orientationExtra}
           selectedSizeIds: savedSizeIds,
           selectedColorIds: savedColorIds,
           description: pt.description ?? "",
+          listingGarmentWord: pt.listingGarmentWord ?? "",
+          listingHandleSuffix: pt.listingHandleSuffix ?? "",
+          listingStyleLabel: pt.listingStyleLabel ?? "",
+          compareAtBySize: parseCompareAtBySize(pt.compareAtBySize),
+          garmentComfortCopy: pt.garmentComfortCopy ?? null,
+          garmentDurabilityCopy: pt.garmentDurabilityCopy ?? null,
+          garmentShape: pt.garmentShape ?? "",
+          garmentFitEase: pt.garmentFitEase ?? null,
+          garmentMeasurements: pt.garmentMeasurements ?? null,
           baseMockupImages: typeof pt.baseMockupImages === "string"
             ? JSON.parse(pt.baseMockupImages || "{}")
             : (pt.baseMockupImages || {}),
@@ -22209,6 +25352,19 @@ ${orientationExtra}
     const productGid = `gid://shopify/Product/${productId}`;
 
     try {
+      const { partitionPublications, readProductOnlineStoreState } = await import("./shopify-publications");
+      const already = await readProductOnlineStoreState({
+        shop,
+        accessToken,
+        productId,
+      });
+      if (already.onStore) {
+        console.log(
+          `[ensurePublished] Product ${productId} already on Online Store (status=${already.status}) — skip republish`,
+        );
+        return;
+      }
+
       // Step 1: Get all publications (sales channels)
       const pubQuery = JSON.stringify({
         query: `{ publications(first: 50) { edges { node { id name } } } }`,
@@ -22225,7 +25381,6 @@ ${orientationExtra}
       }
 
       const publications = pubData?.data?.publications?.edges ?? [];
-      const { partitionPublications } = await import("./shopify-publications");
       const { checkout, pos } = partitionPublications(
         publications.map((e: any) => e.node).filter((n: any) => n?.id),
       );
@@ -22344,6 +25499,90 @@ ${orientationExtra}
     next();
   }
 
+  app.post("/api/proxy/atc-telemetry", proxyAuth, (req: Request, res: Response) => {
+    const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+    const waited = Number(body.waitedMs);
+    const result = String(body.result || "").slice(0, 40);
+    console.log(`[AppAI swap-hold] waited=${Number.isFinite(waited) ? waited : "?"}ms result=${result}`);
+    res.status(204).end();
+  });
+
+  // Theme readiness read. Uncached, and includes the live atcMode so a
+  // kill-switch flip reaches a cart that never reloaded the customizer.
+  app.get("/api/proxy/shadow-ready", proxyAuth, async (req: Request, res: Response) => {
+    res.setHeader("Cache-Control", "private, no-store");
+    const shop = (req as any).proxyShop as string;
+    if (!shop) return res.status(400).json({ error: "shop required" });
+    try {
+      const { readShadowReady } = await import("./shadow-mint-worker");
+      const keys = typeof req.query.keys === "string" ? req.query.keys : "";
+      res.json(await readShadowReady(shop, keys));
+    } catch (e: any) {
+      console.error("[ShadowReady]", e?.message);
+      res.status(500).json({ error: "Failed to read shadow readiness" });
+    }
+  });
+
+  function presentmentFromRequest(
+    req: Request,
+    shopCurrency: string | null | undefined,
+  ) {
+    const q = req.query as Record<string, string | undefined>;
+    const qCurrency = String(q.currency || q.presentmentCurrency || "").trim().toUpperCase() || null;
+    const qShop = String(q.shopCurrency || "").trim().toUpperCase() || null;
+    const shop = qShop || (shopCurrency ? String(shopCurrency).trim().toUpperCase() : null) || null;
+    const currency = qCurrency || shop;
+    const rateRaw = parseFloat(String(q.rate || ""));
+    const rate =
+      Number.isFinite(rateRaw) && rateRaw > 0
+        ? rateRaw
+        : currency && shop && currency === shop
+          ? 1
+          : null;
+    const country = String(q.country || "").trim().toUpperCase() || null;
+    const locale = String(q.locale || "").trim() || null;
+    return {
+      shopCurrency: shop,
+      currency,
+      rate,
+      country,
+      locale,
+    };
+  }
+
+  async function shopCurrencyViaAdmin(
+    shop: string,
+    accessToken: string | null | undefined,
+  ): Promise<string | null> {
+    if (!shop || !accessToken) return null;
+    try {
+      const result = await shopifyApiCall(shop, accessToken, "shop.json?fields=id,currency");
+      const code = result?.ok ? result.data?.shop?.currency : null;
+      return code ? String(code).trim().toUpperCase() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  app.post("/api/proxy/theme-snapshot", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
+    const shop: string = (req as any).proxyShop;
+    const theme = req.body?.theme;
+    if (!shop) return res.status(400).json({ error: "Missing shop" });
+    if (!theme || typeof theme !== "object" || Array.isArray(theme)) {
+      return res.status(400).json({ error: "Missing theme" });
+    }
+    const installation = await storage.getShopifyInstallationByShop(shop);
+    if (!installation) return res.status(404).json({ error: "Shop not found" });
+    const clean: Record<string, string> = {};
+    for (const [k, v] of Object.entries(theme as Record<string, unknown>)) {
+      if (typeof k === "string" && typeof v === "string" && k.length < 80 && v.length < 500) {
+        clean[k] = v;
+      }
+    }
+    await storage.updateShopifyInstallation(installation.id, { themeSnapshot: clean });
+    return res.json({ ok: true });
+  }));
+
   /**
    * List customizer pages for an App Proxy shop. Tries the normalized
    * `*.myshopify.com` domain first, then the bare handle for legacy rows.
@@ -22385,6 +25624,7 @@ ${orientationExtra}
     "appai-customizer-embed.js",
     "appai-cart-guard.js",
     "appai-cart-images.js",
+    "appai-print-files-gate.js",
   ]);
   app.get("/api/proxy/theme-asset/:name", (req: Request, res: Response) => {
     const name = String(req.params.name || "");
@@ -22410,53 +25650,64 @@ ${orientationExtra}
   app.get("/api/proxy/remember-creator", proxyAuth, handleRememberCreatorProxy);
 
   /** GET /api/proxy/customizer-pages — returns all pages for this shop (active + disabled) plus fallbackUrl */
-  app.get("/api/proxy/customizer-pages", proxyAuth, async (req: Request, res: Response) => {
-    const shop: string = (req as any).proxyShop;
-    if (!shop) return res.status(400).json({ error: "Missing shop" });
+  app.get("/api/proxy/customizer-pages", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
+    try {
+      const shop: string = (req as any).proxyShop;
+      if (!shop) return res.status(400).json({ error: "Missing shop" });
 
-    const [allPages, installation, merchantForGate] = await Promise.all([
-      listCustomizerPagesForProxyShop(shop),
-      storage.getShopifyInstallationByShop(shop),
-      storage.getMerchantByShop(shop),
-    ]);
+      const [allPages, installation, merchantForGate] = await Promise.all([
+        listCustomizerPagesForProxyShop(shop),
+        storage.getShopifyInstallationByShop(shop),
+        storage.getMerchantByShop(shop),
+      ]);
 
-    // Locked setup-rail rule: pages aren't publicly mountable until Printify is
-    // connected, unless this specific page's signed merchant-preview token is
-    // present (scoped to one handle — doesn't unlock the rest of the shop).
-    const printifyConnected = isPrintifyConnected(merchantForGate);
-    const previewToken = req.query.appai_preview as string | undefined;
-    const pages = allPages.map((p) => ({
-      id: p.id,
-      handle: p.handle,
-      title: p.title,
-      baseVariantId: p.baseVariantId,
-      baseProductTitle: p.baseProductTitle,
-      baseVariantTitle: p.baseVariantTitle,
-      baseProductPrice: displayRetailPrice(p.baseProductPrice),
-      status: p.status,
-      publiclyMountable:
-        (p.status === "active" && printifyConnected) ||
-        ((p.status === "active" || p.status === "preview") &&
-          verifyPreviewToken(previewToken, shop, p.handle)),
-    }));
+      // Locked setup-rail rule: pages aren't publicly mountable until Printify is
+      // connected, unless this specific page's signed merchant-preview token is
+      // present (scoped to one handle — doesn't unlock the rest of the shop).
+      const printifyConnected = isPrintifyConnected(merchantForGate);
+      const previewToken = req.query.appai_preview as string | undefined;
+      const pages = allPages.map((p) => ({
+        id: p.id,
+        handle: p.handle,
+        title: p.title,
+        baseProductId: p.baseProductId,
+        baseVariantId: p.baseVariantId,
+        baseProductTitle: p.baseProductTitle,
+        baseVariantTitle: p.baseVariantTitle,
+        baseProductPrice: displayRetailPrice(p.baseProductPrice),
+        status: p.status,
+        publiclyMountable:
+          (p.status === "active" && printifyConnected) ||
+          ((p.status === "active" || p.status === "preview") &&
+            verifyPreviewToken(previewToken, shop, p.handle)),
+      }));
 
-    // Include fallback URL so embed can redirect disabled-page visitors
-    const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
+      // Include fallback URL so embed can redirect disabled-page visitors
+      const fallbackUrl: string = (installation as any)?.customizerHubUrl ?? "/";
 
-    return res.json({ pages, fallbackUrl, shop });
-  });
+      return res.json({ pages, fallbackUrl, shop });
+    } catch (err: any) {
+      console.error("[proxy/customizer-pages]", err?.message ?? err);
+      console.error("[proxy/customizer-pages] stack:", err?.stack ?? err);
+      throw err;
+    }
+  }));
 
   /** Rewrites local /objects/... storage paths to go through the App Proxy so storefront can load them */
   function rewriteStoragePath(url: string | null | undefined): string | null {
-    if (!url) return null;
-    if (url.startsWith("/objects/")) return `/apps/appai${url}`;
-    return url;
+    const fixed = normalizePreviewUrl(url);
+    if (!fixed) return null;
+    if (fixed.startsWith("/objects/")) return `/apps/appai${fixed}`;
+    return fixed;
   }
 
   /** GET /api/proxy/customizer-page — single page config by handle, for storefront embed */
   app.get("/api/proxy/customizer-page", proxyAuth, asyncHandler(async (req: Request, res: Response) => {
     const shop: string = (req as any).proxyShop;
     const handle = (req.query.handle as string) || "";
+    // Default: do not cache errors / preview / gated misses. Success for a live
+    // page overrides this to a short public TTL (matches storefront clone).
+    res.setHeader("Cache-Control", "private, no-store");
     if (!shop || !handle) return res.status(400).json({ error: "Missing shop or handle" });
 
     let page = await storage.getCustomizerPageByHandle(shop, handle);
@@ -22511,32 +25762,21 @@ ${orientationExtra}
         .catch((e: Error) => console.warn(`[proxy/customizer-page] Failed to backfill boot HTML for page=${page.shopifyPageId}:`, e.message));
     }
 
-    // Embed the full designer config so the iframe never needs to call
-    // /api/storefront/product-types/:id/designer (eliminates the timeout).
-    let designerConfig = null;
-    if (page.productTypeId) {
-      try {
-        const pt = await storage.getProductType(page.productTypeId);
-        if (pt) {
-          const ptForDesigner = await prepareProductTypeForDesigner(pt, {
-            allowUnpublishedHarvest: true,
-          });
-          const sizeChart = ptForDesigner!.printifyBlueprintId
-            ? await getNormalizedSizeChartWithTimeout(ptForDesigner!.printifyBlueprintId)
-            : null;
-          designerConfig = buildDesignerConfig(ptForDesigner!, page.productTypeId, undefined, sizeChart);
-        }
-      } catch (e) {
-        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
-      }
-    }
-
-    // Fetch all variants for the base product so the storefront can render a
-    // variant selector with prices before the customer generates artwork.
-    // Also check product status and auto-publish if needed so /cart/add.js accepts the variant.
-    let variants: Array<{ id: string; title: string; price: string }> = [];
-    let productPublished: boolean | null = null;
-    if (page.baseProductId) {
+    // Match /api/storefront/customizer-page: variants + designerConfig in
+    // parallel; publish is fire-and-forget; size chart is client-side
+    // (waiting here added up to 2.5s before the first placeholder).
+    const variantsPromise = (async () => {
+      const empty: {
+        mapped: Array<{ id: string; title: string; price: string }>;
+        liveCatalog: Array<{
+          id?: string | number;
+          title?: string | null;
+          option1?: string | null;
+          option2?: string | null;
+        }> | null;
+        productPublished: boolean | null;
+      } = { mapped: [], liveCatalog: null, productPublished: null };
+      if (!page.baseProductId) return empty;
       try {
         let accessToken = installation?.accessToken || "";
         if (installation) {
@@ -22546,69 +25786,96 @@ ${orientationExtra}
             installation = tokenReady.installation;
           }
         }
-        if (accessToken) {
-          const prodResult = await shopifyApiCall(
-            shop,
-            accessToken,
-            `products/${page.baseProductId}.json?fields=id,status,published_at,variants,images`
-          );
-          const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
-          const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
-          let baseVariants = selectBaseCatalogVariants(rawVariants);
-          if (baseVariants.length === 0 && page.productTypeId) {
-            const pt = await storage.getProductType(page.productTypeId);
-            if (pt) {
-              const fallback = enrichVariantsWithShopifyPrices(
-                buildFallbackVariantsFromProductType(pt),
-                rawVariants,
+        if (!accessToken) return empty;
+        const prodResult = await getProductRestCompat(shop, accessToken, page.baseProductId);
+        const rawVariants: any[] = prodResult.ok ? (prodResult.data?.product?.variants ?? []) : [];
+        const productImages: any[] = prodResult.ok ? (prodResult.data?.product?.images ?? []) : [];
+        let baseVariants = selectBaseCatalogVariants(rawVariants);
+        const fromLiveShopify = baseVariants.length > 0;
+        if (baseVariants.length === 0 && page.productTypeId) {
+          const pt = await storage.getProductType(page.productTypeId);
+          if (pt) {
+            const fallback = enrichVariantsWithShopifyPrices(
+              buildFallbackVariantsFromProductType(pt),
+              rawVariants,
+            );
+            if (fallback.length > 0) {
+              console.log(
+                `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
+                  `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
+                  `; using DB fallback (${fallback.length})`,
               );
-              if (fallback.length > 0) {
-                console.log(
-                  `[proxy/customizer-page] Product ${page.baseProductId} catalog empty` +
-                    `${prodResult.ok ? "" : ` (Shopify ${prodResult.error || "failed"})`}` +
-                    `; using DB fallback (${fallback.length})`,
-                );
-                baseVariants = fallback;
-              }
-            }
-          }
-          variants = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
-            id: String(v.id),
-            title: v.title || "",
-            price: v.price || "0.00",
-            option1: v.option1 ?? undefined,
-            option2: v.option2 ?? undefined,
-            option3: v.option3 ?? undefined,
-            imageSrc: v.imageSrc ?? undefined,
-          }));
-
-          // Ensure the product is published to the Online Store channel.
-          // Shopify "unlisted" products are accessible via direct URL and purchasable
-          // via /cart/add.js — we do NOT force status: "active" which would make the
-          // product visible in the storefront catalog.
-          const productStatus: string = prodResult.data?.product?.status ?? "";
-          const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
-          console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
-          productPublished = (productStatus === "active" || productStatus === "unlisted") && !!publishedAt;
-
-          const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
-
-          // Ensure product is published to Online Store so /cart/add.js works.
-          // "unlisted" products still work with /cart/add.js when published to Online Store.
-          if (productIdNum && prodResult.ok) {
-            try {
-              await ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum);
-              productPublished = true;
-              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
-            } catch (pubErr: any) {
-              console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
+              baseVariants = fallback;
             }
           }
         }
+        const mapped = mapVariantsForCatalogResponse(baseVariants, true, productImages).map((v) => ({
+          id: String(v.id),
+          title: v.title || "",
+          price: v.price || "0.00",
+          option1: v.option1 ?? undefined,
+          option2: v.option2 ?? undefined,
+          option3: v.option3 ?? undefined,
+          imageSrc: v.imageSrc ?? undefined,
+        }));
+
+        const productStatus: string = prodResult.data?.product?.status ?? "";
+        const publishedAt: string | null = prodResult.data?.product?.published_at ?? null;
+        console.log(`[proxy/customizer-page] Product ${page.baseProductId} status="${productStatus}" published_at="${publishedAt}"`);
+        let productPublished: boolean | null =
+          (productStatus === "active" || productStatus === "unlisted") && !!publishedAt;
+
+        const productIdNum = parseInt(String(page.baseProductId).replace(/\D/g, ""), 10);
+        if (productIdNum && prodResult.ok) {
+          void ensureProductPublishedToOnlineStore(shop, accessToken, productIdNum)
+            .then(() => {
+              console.log(`[proxy/customizer-page] Product ${productIdNum} published to Online Store (status: ${productStatus})`);
+            })
+            .catch((pubErr: Error) => {
+              console.warn(`[proxy/customizer-page] Failed to publish product ${productIdNum}: ${pubErr.message}`);
+            });
+          productPublished = true;
+        }
+        return {
+          mapped,
+          liveCatalog: fromLiveShopify ? mapped : null,
+          productPublished,
+        };
       } catch (e) {
         console.warn(`[proxy/customizer-page] Failed to fetch variants for product=${page.baseProductId}:`, e);
+        return empty;
       }
-    }
+    })();
+
+    const designerPromise = (async () => {
+      if (!page.productTypeId) return null;
+      try {
+        const pt = await storage.getProductType(page.productTypeId);
+        if (!pt) return null;
+        const ptForDesigner = await prepareProductTypeForDesigner(pt, {
+          allowUnpublishedHarvest: true,
+        });
+        const { liveCatalog } = await variantsPromise;
+        const proxyLens = await designerColourLens(page.productTypeId);
+        return buildDesignerConfig(
+          ptForDesigner!,
+          page.productTypeId,
+          undefined,
+          null,
+          liveCatalog,
+          proxyLens.hidden,
+          proxyLens.swatches,
+        );
+      } catch (e) {
+        console.warn(`[proxy/customizer-page] Failed to load designerConfig for productTypeId=${page.productTypeId}:`, e);
+        return null;
+      }
+    })();
+
+    const [designerConfig, variantResult] = await Promise.all([designerPromise, variantsPromise]);
+    let variants = variantResult.mapped;
+    const productPublished = variantResult.productPublished;
+
     if (variants.length === 0 && page.productTypeId) {
       try {
         const pt = await storage.getProductType(page.productTypeId);
@@ -22655,9 +25922,13 @@ ${orientationExtra}
       stylePresets = hardcodedStylePresetsForDesigner();
     }
 
-    const pageStyleConfig =
-      parseCustomizerPageStyleConfig(page.styleConfig) ??
-      defaultStyleConfigForDesignerType(designerConfig?.designerType);
+    const pageExperience = await resolvePageExperience(page, installation?.merchantId);
+    const pageStyleConfig = await resolvePageStyleConfig(
+      effectiveStyleConfigForPage(parseCustomizerPageStyleConfig(page.styleConfig), pageExperience?.row) ??
+        defaultStyleConfigForDesignerType(designerConfig?.designerType),
+      installation?.merchantId,
+      stylePresets,
+    );
     stylePresets = filterStylePresetsForPage(
       stylePresets,
       pageStyleConfig,
@@ -22666,6 +25937,19 @@ ${orientationExtra}
       ...s,
       promptPrefix: (s as any).promptSuffix ?? (s as any).promptPrefix,
     }));
+
+    // Preview tokens must always see a fresh page. Live storefront JSON is
+    // safe to cache briefly — Shopify variant prices / designerConfig rarely
+    // change within a minute, and the iframe already starts in parallel.
+    if (!previewOk) {
+      res.setHeader("Cache-Control", "public, max-age=45, stale-while-revalidate=60");
+    }
+
+    const shopCurrency = await shopCurrencyViaAdmin(shop, installation?.accessToken);
+    const presentment = presentmentFromRequest(req, shopCurrency);
+    const storeName = await merchantStoreDisplayName(shop, installation);
+    const atcMode = normalizeAtcMode((installation as { atcMode?: string } | null)?.atcMode);
+    if (designerConfig) (designerConfig as any).atcMode = atcMode;
 
     return res.json({
       id: page.id,
@@ -22679,14 +25963,19 @@ ${orientationExtra}
       baseVariantTitle: page.baseVariantTitle ?? null,
       baseProductPrice: displayRetailPrice(page.baseProductPrice),
       productTypeId: page.productTypeId ?? null,
+      atcMode,
       appUrl: (process.env.PUBLIC_APP_URL || process.env.APP_URL || "https://appai-pod-production.up.railway.app").replace(/\/$/, ""),
       designerConfig,
       variants,
       stylePresets,
       styleConfig: pageStyleConfig,
+      experienceProfile: pageExperience?.public ?? null,
       productPublished,
       // Disabled pages: saved designs may ATC; new blank sessions cannot start.
       freshDesignAllowed: page.status === "active" || page.status === "preview",
+      presentment,
+      storeName,
+      themeSnapshot: (installation as { themeSnapshot?: Record<string, string> | null } | null)?.themeSnapshot ?? null,
     });
   }));
 
@@ -23230,7 +26519,9 @@ ${orientationExtra}
     }
 
     const existingTypes = await storage.getProductTypesByMerchant(merchant.id);
-    let productType: any = existingTypes.find((pt) => pt.printifyBlueprintId === blueprintId);
+    let productType: any = existingTypes.find(
+      (pt) => pt.printifyBlueprintId === blueprintId && !(pt as any).isPlatformCatalogRef,
+    );
     const reused = !!productType;
 
     const platformPrintifyToken = process.env.PRINTIFY_API_TOKEN || "";
@@ -23401,10 +26692,10 @@ ${orientationExtra}
       planStatus: plan.planStatus,
       isActive: plan.isActive,
       requiresPlan: plan.requiresPlan,
-      pageLimit: plan.pageLimit,
+      pageLimit: Number.isFinite(plan.pageLimit) ? plan.pageLimit : null,
       pagesCount,
       displayName: plan.displayName,
-      overLimit: plan.isActive && pagesCount > plan.pageLimit,
+      overLimit: Number.isFinite(plan.pageLimit) && plan.isActive && pagesCount > plan.pageLimit,
       trialStartedAt: (installation as any).trialStartedAt ?? null,
       billingCurrentPeriodEnd: (installation as any).billingCurrentPeriodEnd ?? null,
       overageBillingActive: hasUsageLine,
@@ -24117,10 +27408,14 @@ ${orientationExtra}
 
   // Register admin branding routes
   registerAdminBrandingRoutes(app);
+  const { registerStagingRenderProbeRoutes } = await import("./routes/staging-render-probe");
+  registerStagingRenderProbeRoutes(app);
   const { registerFlatCalibrationMapperRoutes } = await import("./routes/flat-calibration-mapper");
   registerFlatCalibrationMapperRoutes(app, { storage, isAuthenticated });
   const { registerPlatformCalibrationRoutes } = await import("./routes/platform-calibration");
   registerPlatformCalibrationRoutes(app, { storage, isAuthenticated });
+  const { registerPlatformCredentialRoutes } = await import("./routes/platform-credentials");
+  registerPlatformCredentialRoutes(app, { isAuthenticated });
 
   const { registerPricingModellerRoutes } = await import("./routes/pricing-modeller");
   registerPricingModellerRoutes(app, { isAuthenticated });
@@ -24128,10 +27423,27 @@ ${orientationExtra}
   registerOperatorCatalogRoutes(app, { storage, isAuthenticated });
   const { registerCreatorMarketplaceRoutes } = await import("./routes/creators");
   registerCreatorMarketplaceRoutes(app, { isAuthenticated });
+  const { registerShippingRoutes } = await import("./routes/shipping");
+  registerShippingRoutes(app, { isAuthenticated });
+  const { registerCatalogueStudioRoutes } = await import("./routes/catalogue-studio");
+  registerCatalogueStudioRoutes(app, { isAuthenticated });
+  const { registerFindMySizeRoutes: registerSizeFinderAdmin } = await import("./find-my-size");
+  registerSizeFinderAdmin(app, { isAuthenticated });
+  const { registerMyPetRoutes } = await import("./routes/my-pet");
+  registerMyPetRoutes(app, { isAuthenticated });
+  // Shipping Coverage Service: boot catch-up (lastRunAt-guarded) + nightly diff sync.
+  const { scheduleShippingTablesSync } = await import("./shipping-tables");
+  scheduleShippingTablesSync();
   const { registerCreatorPortalRoutes } = await import("./routes/creator-portal");
   registerCreatorPortalRoutes(app);
   const { registerSupportRoutes } = await import("./routes/support");
   registerSupportRoutes(app, { isAuthenticated });
+  const { registerAtcModeRoutes } = await import("./routes/atc-mode");
+  registerAtcModeRoutes(app, { isAuthenticated });
+  const { registerCheckoutGuardRoutes } = await import("./routes/checkout-guard");
+  registerCheckoutGuardRoutes(app, { isAuthenticated });
+  const { registerFulfillmentAttentionRoutes } = await import("./routes/fulfillment-attention");
+  registerFulfillmentAttentionRoutes(app, { isAuthenticated });
   const { registerStudioGrowthRoutes } = await import("./routes/studio-growth");
   registerStudioGrowthRoutes(app, { isAuthenticated });
   const { registerPlatformAopMapperRoutes } = await import("./routes/platform-aop-mapper");

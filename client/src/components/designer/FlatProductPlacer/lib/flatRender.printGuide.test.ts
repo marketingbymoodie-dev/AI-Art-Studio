@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   expandPrintGuideToPrintFileAspect,
+  flatPlacementRectPx,
   scaleRectToCanvas,
   FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST,
 } from "./flatRender";
+import type { FlatViewCalibration } from "@/pages/embed-design";
 
 describe("scaleRectToCanvas", () => {
   it("maps mask-native bounds into blank/canvas pixels", () => {
@@ -50,5 +52,39 @@ describe("expandPrintGuideToPrintFileAspect", () => {
     const next = expandPrintGuideToPrintFileAspect(rect, null, canvasW, canvasH);
     expect(next.height).toBeCloseTo(50 * FLAT_APPAREL_PRINT_GUIDE_HEIGHT_BOOST, 5);
     expect(next.y).toBeLessThan(rect.y);
+  });
+});
+
+describe("flatPlacementRectPx 759 Preview Studio fallback", () => {
+  const canvasW = 1000;
+  const canvasH = 1000;
+  const harvest = { x: 200, y: 150, width: 600, height: 500 };
+  const view = {
+    visibleRectNormalized: {
+      x: harvest.x / canvasW,
+      y: harvest.y / canvasH,
+      width: harvest.width / canvasW,
+      height: harvest.height / canvasH,
+    },
+    printFileDims: { width: 1800, height: 2400 },
+  } as FlatViewCalibration;
+
+  it("does not apply apparel 1.2 boost when 759 has no mask", () => {
+    const next = flatPlacementRectPx(view, null, canvasW, canvasH, {
+      skipApparelPrintGuideBoost: true,
+    });
+    expect(next).toEqual(harvest);
+  });
+
+  it("still applies apparel 1.2 boost when no-mask fallback is not skipped", () => {
+    const next = flatPlacementRectPx(view, null, canvasW, canvasH, {});
+    const apparel = expandPrintGuideToPrintFileAspect(
+      harvest,
+      view.printFileDims,
+      canvasW,
+      canvasH,
+    );
+    expect(next).toEqual(apparel);
+    expect(next.height).toBeGreaterThan(harvest.height);
   });
 });

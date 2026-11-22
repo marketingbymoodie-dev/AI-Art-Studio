@@ -1,0 +1,319 @@
+import { describe, expect, it } from "vitest";
+import { inheritCatalogueMemberships } from "./shipping-desired-state";
+import {
+  PRINTIFY_FULL_BLEED,
+  capRefusal,
+  catalogueCollectionRules,
+  catalogueListingTags,
+  myPetTagForListing,
+  catalogueTags,
+  catalogueTypeTag,
+  catalogueVisibility,
+  colorPatternMetaobjectFields,
+  catalogueVariantPositions,
+  indexOfDefaultMedium,
+  compareColourThenSize,
+  formatSizeRange,
+  initialTickedColours,
+  sortCatalogueColours,
+  METAOBJECT_SCOPE_REFUSAL,
+  mockupAlt,
+  mockupFileName,
+  variantMediaAssignments,
+  printableSizeNames,
+  sortApparelSizeNames,
+  promoteRefusals,
+  missingShopifyBaseColourMessage,
+  swatchBaseColorName,
+} from "./flywheelPromote";
+
+const ready = {
+  printFilePath: "candidates/bed/print.png",
+  panelId: "Mockup_01",
+  productTypeName: "Unisex Softstyle T-Shirt",
+  tickedColours: ["Sage"],
+  panelColours: ["Sage", "Black"],
+  storedMockupColours: ["Sage"],
+  title: "Bed Etiquette",
+  description: "A pug and a rule.",
+  artStyle: "woodcut",
+  species: "pug",
+  humourOperator: "pp-owner-vs-pet",
+  shippingRefusal: null,
+  metaobjectRefusal: null,
+  publishNow: true,
+  capMessage: null,
+  missingPrices: [] as string[],
+};
+
+describe("flywheel promote decisions", () => {
+  it("publishes by default and can hold a draft, and never uses the unlisted status", () => {
+    expect(catalogueVisibility(true)).toBe("active");
+    expect(catalogueVisibility(false)).toBe("draft");
+    expect(catalogueVisibility(true)).not.toBe("unlisted");
+  });
+
+  it("puts style, species and humour on the product as tags", () => {
+    expect(catalogueTags({ artStyle: "woodcut", species: "pug", humourOperator: "pp-owner-vs-pet" })).toEqual([
+      "woodcut",
+      "pug",
+      "pp-owner-vs-pet",
+    ]);
+  });
+
+  it("adds a shirt-type tag for Shopify and keeps studio products out of that collection", () => {
+    expect(catalogueTypeTag(81)).toBe("aas-type-81");
+    expect(catalogueTypeTag(82)).toBe("aas-type-82");
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 81,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-81"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 82,
+      myPetEnabled: true,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-82", "my-pet"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 81,
+      myPetEnabled: false,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-81"]);
+    expect(myPetTagForListing(["aas-studio-product", "aas-type-82"], true)).toEqual(["aas-studio-product", "aas-type-82"]);
+    expect(catalogueCollectionRules(82)).toEqual({
+      appliedDisjunctively: false,
+      rules: [
+        { column: "TAG", relation: "EQUALS", condition: "aas-type-82" },
+        { column: "TAG", relation: "NOT_EQUALS", condition: "aas-studio-product" },
+      ],
+    });
+  });
+
+  it("names the design and the colour in the image file", () => {
+    expect(mockupFileName("bed-etiquette", "Light grey")).toBe("bed-etiquette-light-grey-front.jpg");
+    expect(mockupAlt("Bed Etiquette", "Sage")).toBe("Bed Etiquette on Sage");
+  });
+
+  it("points every size of a colour at that colour's mockup, and no other", () => {
+    const media = [
+      { id: "gid://shopify/MediaImage/blue", alt: "Bed Etiquette on Blue", filename: "bed-etiquette-blue-front.jpg" },
+      { id: "gid://shopify/MediaImage/light", alt: "", filename: "bed-etiquette-light-grey-front_9f3a.jpg" },
+      { id: "gid://shopify/MediaImage/grey", alt: "Bed Etiquette on Grey", filename: "bed-etiquette-grey-front.jpg" },
+    ];
+    const variants = [
+      { id: "gid://shopify/ProductVariant/1", colour: "Blue" },
+      { id: "gid://shopify/ProductVariant/2", colour: "Blue" },
+      { id: "gid://shopify/ProductVariant/3", colour: "Light grey" },
+      { id: "gid://shopify/ProductVariant/4", colour: "Red" },
+    ];
+    const assigned = variantMediaAssignments({ title: "Bed Etiquette", handle: "bed-etiquette", variants, media });
+    expect(assigned.updates).toEqual([
+      { id: "gid://shopify/ProductVariant/1", mediaId: "gid://shopify/MediaImage/blue" },
+      { id: "gid://shopify/ProductVariant/2", mediaId: "gid://shopify/MediaImage/blue" },
+      { id: "gid://shopify/ProductVariant/3", mediaId: "gid://shopify/MediaImage/light" },
+    ]);
+    expect(assigned.missing).toEqual(["Red"]);
+    expect(assigned.updates.map((row) => row.mediaId)).not.toContain("gid://shopify/MediaImage/grey");
+  });
+
+  it("lays the print file on full bleed", () => {
+    expect(PRINTIFY_FULL_BLEED).toEqual({ x: 0.5, y: 0.5, scale: 1 });
+  });
+
+  it("refuses the cap by naming the designs that hold the slots", () => {
+    expect(capRefusal(2, [{ title: "One", promotedAt: "2026-10-01" }])).toBeNull();
+    expect(capRefusal(1, [{ title: "Bed Etiquette", promotedAt: "2026-10-20" }])).toBe(
+      "Active design-product cap is 1. Holding the slots: Bed Etiquette (2026-10-20)",
+    );
+  });
+
+  it("names every gap before anything is created", () => {
+    const reasons = promoteRefusals({
+      ...ready,
+      printFilePath: null,
+      tickedColours: ["Pink"],
+      storedMockupColours: [],
+      panelColours: ["Sage"],
+      description: "",
+      artStyle: "",
+      publishNow: true,
+      capMessage: "Active design-product cap is 1. Holding the slots: Other (2026-10-01)",
+      missingPrices: ["3XL"],
+    });
+    expect(reasons.join(" ")).toContain("No print file");
+    expect(reasons.join(" ")).toContain("No mockup panel for Pink");
+    expect(reasons.join(" ")).toContain("No stored mockup for Pink");
+    expect(reasons.join(" ")).toContain("Description is not stored");
+    expect(reasons.join(" ")).toContain("missing style");
+    expect(reasons.join(" ")).toContain("No front price for 3XL");
+    expect(reasons.join(" ")).toContain("Holding the slots");
+  });
+
+  it("refuses before create when colour swatches cannot be linked", () => {
+    const reasons = promoteRefusals({
+      ...ready,
+      metaobjectRefusal: METAOBJECT_SCOPE_REFUSAL,
+    });
+    expect(reasons).toEqual([METAOBJECT_SCOPE_REFUSAL]);
+  });
+
+  it("names the sizes a colour can print", () => {
+    const offered = [
+      { id: "xs", name: "XS" },
+      { id: "s", name: "S" },
+      { id: "m", name: "M" },
+      { id: "l", name: "L" },
+      { id: "xl", name: "XL" },
+      { id: "2xl", name: "2XL" },
+      { id: "3xl", name: "3XL" },
+    ];
+    const map = Object.fromEntries(offered.filter((size) => size.id !== "xs").map((size) => [`${size.id}:azalea`, { printifyVariantId: 1 }]));
+    map["xs:white"] = { printifyVariantId: 2 };
+    expect(formatSizeRange(offered.map((size) => size.name), ["S", "M", "L", "XL", "2XL", "3XL"])).toBe("S–3XL");
+    expect(formatSizeRange(offered.map((size) => size.name), offered.map((size) => size.name))).toBe("XS–3XL");
+    expect(formatSizeRange(["S", "M", "L", "XL", "2XL", "3XL", "XS"], ["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toBe("XS–3XL");
+    expect(printableSizeNames(map, { name: "Pink", hex: "DD74A1" }, offered)).toEqual(["S", "M", "L", "XL", "2XL", "3XL"]);
+    expect(printableSizeNames(map, { name: "White", hex: "FFFFFF" }, offered)).toEqual(["XS"]);
+    map["s:sport_grey"] = { printifyVariantId: 3 };
+    expect(printableSizeNames(map, { name: "Sport Grey", hex: "CACACA" }, offered)).toEqual(["S"]);
+  });
+
+  it("orders colours White, Black, Sage, Dark grey, Red, Light grey, Blue, Pink", () => {
+    expect(sortCatalogueColours([
+      { name: "Pink" },
+      { name: "White" },
+      { name: "Red" },
+      { name: "Black" },
+      { name: "Blue" },
+      { name: "Sage" },
+      { name: "Light grey" },
+      { name: "Dark grey" },
+    ]).map((row) => row.name)).toEqual([
+      "White", "Black", "Sage", "Dark grey", "Red", "Light grey", "Blue", "Pink",
+    ]);
+  });
+
+  it("starts with every colour ticked, and keeps an operator's subset", () => {
+    const eight = [
+      { name: "Pink", hex: "DD74A1" },
+      { name: "White", hex: "FFFFFF" },
+      { name: "Black", hex: "25282A" },
+    ];
+    expect(initialTickedColours([], eight).map((row) => row.name)).toEqual(["White", "Black", "Pink"]);
+    expect(initialTickedColours([{ name: "Pink", hex: "DD74A1" }], eight).map((row) => row.name)).toEqual(["Pink"]);
+  });
+
+  it("puts Black first when White is absent, with sizes inside each colour", () => {
+    const positions = catalogueVariantPositions([
+      { id: "p", colour: "Pink", size: "S" },
+      { id: "bxs", colour: "Black", size: "XS" },
+      { id: "bs", colour: "Black", size: "S" },
+      { id: "sage", colour: "Sage", size: "M" },
+    ]);
+    expect(positions.map((row) => row.id)).toEqual(["bxs", "bs", "sage", "p"]);
+    expect(positions.map((row) => row.position)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("keeps M in size order inside the default colour", () => {
+    const positions = catalogueVariantPositions([
+      { id: "wxs", colour: "White", size: "XS" },
+      { id: "ws", colour: "White", size: "S" },
+      { id: "wm", colour: "White", size: "M" },
+      { id: "bxs", colour: "Black", size: "XS" },
+    ]);
+    expect(positions.map((row) => row.id)).toEqual(["wxs", "ws", "wm", "bxs"]);
+    expect(indexOfDefaultMedium([
+      { size: "XS", colour: "White" },
+      { size: "M", colour: "White" },
+    ], ["White", "Black"])).toBe(1);
+  });
+
+  it("puts XS before S, and keeps colour groups in the given order", () => {
+    const colours = ["Black", "White"];
+    const rows = [
+      { colour: "Black", size: "S" },
+      { colour: "Black", size: "M" },
+      { colour: "White", size: "S" },
+      { colour: "Black", size: "XS" },
+      { colour: "White", size: "XS" },
+    ];
+    const ordered = [...rows].sort((a, b) => compareColourThenSize(a, b, colours));
+    expect(ordered.map((row) => `${row.colour} ${row.size}`)).toEqual([
+      "Black XS",
+      "Black S",
+      "Black M",
+      "White XS",
+      "White S",
+    ]);
+    expect(sortApparelSizeNames(["S", "M", "L", "XL", "2XL", "3XL", "XS"])).toEqual([
+      "XS", "S", "M", "L", "XL", "2XL", "3XL",
+    ]);
+  });
+
+  it("does not spend a cap slot when the product is held as a draft", () => {
+    const reasons = promoteRefusals({
+      ...ready,
+      publishNow: false,
+      capMessage: "Active design-product cap is 1. Holding the slots: Other (2026-10-01)",
+    });
+    expect(reasons).toEqual([]);
+  });
+
+  it("keeps a catalogue variant on the studio variant's shipping profile", () => {
+    const next = inheritCatalogueMemberships(
+      [{ classKey: "145:99", group: "g1", shopifyVariantId: "10", source: "base" }],
+      [{ shopifyVariantId: "gid://shopify/ProductVariant/77", studioVariantId: "10" }],
+    );
+    expect(next).toContainEqual({ classKey: "145:99", group: "g1", shopifyVariantId: "77", source: "base" });
+  });
+
+  it("sends a base colour and a solid pattern with the swatch hex", () => {
+    expect(swatchBaseColorName("Light grey")).toBe("Gray");
+    expect(swatchBaseColorName("Sage")).toBe("Green");
+    expect(swatchBaseColorName("Dark grey")).toBe("Gray");
+    expect(swatchBaseColorName("Pink")).toBe("Pink");
+    expect(swatchBaseColorName("Maroon")).toBeNull();
+    expect(swatchBaseColorName("Light Blue")).toBe("Blue");
+    expect(swatchBaseColorName("Dark Heather")).toBe("Gray");
+    expect(swatchBaseColorName("Bay")).toBe("Green");
+    expect(swatchBaseColorName("Berry")).toBe("Purple");
+    expect(swatchBaseColorName("Blossom")).toBe("Pink");
+    expect(swatchBaseColorName("Chambray")).toBe("Blue");
+    expect(swatchBaseColorName("Grey")).toBe("Gray");
+    expect(swatchBaseColorName("Ivory")).toBe("Beige");
+    expect(swatchBaseColorName("Pepper")).toBe("Gray");
+    expect(swatchBaseColorName("True Navy")).toBe("Navy");
+    expect(swatchBaseColorName("Black")).toBe("Black");
+    expect(swatchBaseColorName("White")).toBe("White");
+    expect(missingShopifyBaseColourMessage(["Bay"])).toBe(
+      "Bay has no Shopify base colour. Set it on Colour blanks before publishing.",
+    );
+    const early = promoteRefusals({
+      ...ready,
+      deferApprovalArtifacts: true,
+      printFilePath: null,
+      title: "",
+      description: "",
+      storedMockupColours: [],
+      missingBaseColours: ["Bay"],
+    });
+    expect(early[0]).toBe("Bay has no Shopify base colour. Set it on Colour blanks before publishing.");
+    expect(early.join(" ")).not.toContain("No print file");
+    expect(colorPatternMetaobjectFields({
+      label: "Pink",
+      hex: "DD74A1",
+      baseColorId: "gid://shopify/TaxonomyValue/11",
+      solidPatternId: "gid://shopify/TaxonomyValue/2874",
+    })).toEqual([
+      { key: "label", value: "Pink" },
+      { key: "color", value: "#DD74A1" },
+      { key: "color_taxonomy_reference", value: "[\"gid://shopify/TaxonomyValue/11\"]" },
+      { key: "pattern_taxonomy_reference", value: "gid://shopify/TaxonomyValue/2874" },
+    ]);
+  });
+});

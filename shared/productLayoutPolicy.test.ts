@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isFlatToteBlueprint,
   resolveStorefrontMockupMode,
   usesAopStorefrontCustomizer,
 } from "./productLayoutPolicy";
@@ -63,5 +64,14 @@ describe("productLayoutPolicy — flat vs AOP exclusivity", () => {
     };
     expect(resolveStorefrontMockupMode(product)).toBe("aop");
     expect(usesAopStorefrontCustomizer(product)).toBe(true);
+  });
+});
+
+describe("isFlatToteBlueprint", () => {
+  it("matches shoulder tote 836 and adjustable tote 1300", () => {
+    expect(isFlatToteBlueprint(836)).toBe(true);
+    expect(isFlatToteBlueprint(1300)).toBe(true);
+    expect(isFlatToteBlueprint(77)).toBe(false);
+    expect(isFlatToteBlueprint(66)).toBe(false);
   });
 });

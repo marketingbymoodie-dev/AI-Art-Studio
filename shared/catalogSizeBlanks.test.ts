@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCatalogSizeBlanks,
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  catalogSizeCalibratorModels,
+  isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
+  probeSilhouetteRectFromRgba,
+  DECAL_PREVIEW_PLACEMENT_SCALE,
+  shouldApplyCatalogBlankShading,
+  shouldProbeCatalogBlankGuide,
+  TAPESTRY_PREVIEW_PLACEMENT_SCALE,
+  tapestryPreviewPlacementScale,
   visibleRectForCatalogSizeAspect,
+  visibleRectForCatalogSizeBlank,
 } from "./catalogSizeBlanks";
 
 describe("catalogSizeBlanks", () => {
@@ -64,5 +74,86 @@ describe("catalogSizeBlanks", () => {
   it("can skip print inset when measuring the outer sheet bbox", () => {
     const outer = visibleRectForCatalogSizeAspect("4:3", 0.75, 1);
     expect(outer!.width).toBeCloseTo(0.75, 3);
+  });
+
+  it("treats indoor wall tapestry (241) as a catalog size-blank blueprint", () => {
+    expect(isCatalogSizeBlankBlueprint(241)).toBe(true);
+    expect(isCatalogSizeBlankBlueprint(CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry)).toBe(
+      true,
+    );
+    expect(isCatalogSizeBlankBlueprint(1649)).toBe(false);
+  });
+
+  it("lists every tapestry catalog size as a calibrator model", () => {
+    const models = catalogSizeCalibratorModels(241);
+    expect(models?.map((m) => m.id)).toEqual([
+      "26x36",
+      "36x26",
+      "50x60",
+      "60x50",
+      "68x80",
+      "80x68",
+      "88x104",
+      "104x88",
+    ]);
+    expect(models?.[0]?.name).toBe("26 × 36");
+    expect(catalogSizeCalibratorModels(421)).toBeNull();
+  });
+
+  it("probes fabric silhouette from RGBA instead of a shared letterbox", () => {
+    const w = 100;
+    const h = 100;
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    for (let y = 10; y < 80; y++) {
+      for (let x = 20; x < 70; x++) {
+        const i = (y * w + x) * 4;
+        data[i] = 200;
+        data[i + 1] = 200;
+        data[i + 2] = 200;
+      }
+    }
+    const rect = probeSilhouetteRectFromRgba(data, w, h, { printInset: 1 });
+    expect(rect).toEqual({ x: 0.2, y: 0.1, width: 0.5, height: 0.7 });
+    expect(shouldProbeCatalogBlankGuide(241)).toBe(true);
+    expect(shouldProbeCatalogBlankGuide(759)).toBe(true);
+    expect(shouldProbeCatalogBlankGuide(2706)).toBe(false);
+    expect(shouldApplyCatalogBlankShading(241)).toBe(true);
+    expect(shouldApplyCatalogBlankShading(759)).toBe(false);
+    expect(TAPESTRY_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
+    expect(DECAL_PREVIEW_PLACEMENT_SCALE).toBe(1);
+    expect(tapestryPreviewPlacementScale(null)).toBe(1.15);
+    expect(tapestryPreviewPlacementScale("gpt-image-2")).toBe(1.15);
+  });
+
+  it("uses inch-aspect letterbox for tapestry (same source as wall decals)", () => {
+    const portrait = visibleRectForCatalogSizeBlank(241, "50x60", "50:60");
+    const fromKeyOnly = visibleRectForCatalogSizeBlank(241, "50x60");
+    const landscape = visibleRectForCatalogSizeBlank(241, "60x50", "60:50");
+    const letterbox = visibleRectForCatalogSizeAspect("50:60");
+    expect(portrait).toEqual(letterbox);
+    expect(fromKeyOnly).toEqual(letterbox);
+    expect(portrait!.width / portrait!.height).toBeCloseTo(5 / 6, 2);
+    expect(landscape!.width / landscape!.height).toBeCloseTo(6 / 5, 2);
+    expect(portrait).not.toEqual(landscape);
+  });
+
+  it("resolves tapestry portrait vs landscape size keys", () => {
+    const blanksBySize = {
+      "26x36": "https://cdn.example/26x36.png",
+      "36x26": "https://cdn.example/36x26.png",
+    };
+    const images = { blanksBySize };
+    expect(
+      resolveBlankUrlForSize(images, { id: "26x36", name: '26" × 36"' }),
+    ).toBe(blanksBySize["26x36"]);
+    expect(
+      resolveBlankUrlForSize(images, { id: "36x26", name: '36" × 26"' }),
+    ).toBe(blanksBySize["36x26"]);
   });
 });

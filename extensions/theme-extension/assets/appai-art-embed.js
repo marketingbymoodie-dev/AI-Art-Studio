@@ -9,6 +9,66 @@
   }
   window.__APPAI_CUSTOMIZER_INIT__ = true;
 
+  // Saved-design reopen target — kept out of URLs so a job id is never in a
+  // link someone can share. Tab-scoped sessionStorage keyed by page handle.
+  // Mirror of client/src/lib/reopenDesign.ts: keep key + entry shape in sync.
+  var APPAI_REOPEN_KEY = 'appai_reopen_design';
+  var APPAI_REOPEN_URL_PARAMS = ['loadDesignId', 'loadMockup', 'loadProductName', 'savedDesignId', 'reuseJobId'];
+
+  function appaiPageHandleFromLocation() {
+    var m = (window.location.pathname || '').match(/\/pages\/([^/?#]+)/);
+    if (m) {
+      try { return decodeURIComponent(m[1]).toLowerCase(); } catch (e) { return m[1].toLowerCase(); }
+    }
+    try {
+      var p = new URLSearchParams(window.location.search);
+      return String(p.get('pageHandle') || p.get('page') || '').trim().toLowerCase();
+    } catch (e2) { return ''; }
+  }
+
+  function appaiWriteReopen(id, handle, mockup, productName) {
+    var h = String(handle || '').trim().toLowerCase();
+    if (!id || !h) return;
+    try {
+      sessionStorage.setItem(APPAI_REOPEN_KEY, JSON.stringify({
+        id: String(id), handle: h, mockup: mockup || null, productName: productName || null, ts: Date.now()
+      }));
+    } catch (e) {}
+  }
+
+  /** Reopen entry for the current page only (never another page's design). */
+  function appaiReadReopen() {
+    var h = appaiPageHandleFromLocation();
+    if (!h) return null;
+    try {
+      var e = JSON.parse(sessionStorage.getItem(APPAI_REOPEN_KEY) || 'null');
+      if (e && e.id && String(e.handle || '').toLowerCase() === h) return e;
+    } catch (err) {}
+    return null;
+  }
+
+  function appaiReopenDesignId() {
+    var e = appaiReadReopen();
+    return e ? String(e.id) : '';
+  }
+
+  // Legacy ?loadDesignId= links: move into storage, strip from the address bar.
+  (function appaiStashReopenFromUrl() {
+    try {
+      var url = new URL(window.location.href);
+      var id = url.searchParams.get('loadDesignId') || url.searchParams.get('savedDesignId') || '';
+      var mockup = url.searchParams.get('loadMockup');
+      var productName = url.searchParams.get('loadProductName');
+      var changed = false;
+      APPAI_REOPEN_URL_PARAMS.forEach(function (k) {
+        if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
+      });
+      if (!changed) return;
+      if (id) appaiWriteReopen(id, appaiPageHandleFromLocation(), mockup, productName);
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch (e) {}
+  })();
+
   function appaiTransitionInner(mockupUrl, productName) {
     return ''
       + '<div class="appai-transition-inner">'
@@ -50,6 +110,194 @@
     }
     return el;
   }
+
+  var APPAI_UNFIX_ATTR = 'data-appai-unfix-scroll';
+  var APPAI_UNFIX_STYLE_ID = 'appai-unfix-scroll-style';
+  var APPAI_DRAWER_OPEN_SEL = [
+    '[aria-modal="true"]',
+    'dialog[open]',
+    'cart-drawer.active',
+    'cart-drawer[open]',
+    'cart-drawer.is-open',
+    'cart-drawer[aria-hidden="false"]',
+    '.cart-drawer.active',
+    '.cart-drawer.is-open',
+    'menu-drawer[open]',
+    'header-drawer[open]',
+    'details[open].menu-opening',
+    'details.menu-opening[open]',
+    '.drawer.is-open',
+    '.drawer--open',
+    '.drawer.active',
+    '.js-drawer-open',
+    '[data-drawer-open="true"]'
+  ].join(',');
+
+  /** Overflow hidden/clip — drawer/modal lock, never a reason to unfix. */
+  function appaiOverflowIsLocked() {
+    try {
+      var htmlOy = window.getComputedStyle(document.documentElement).overflowY;
+      if (htmlOy === 'hidden' || htmlOy === 'clip') return true;
+      if (document.body) {
+        var bodyOy = window.getComputedStyle(document.body).overflowY;
+        if (bodyOy === 'hidden' || bodyOy === 'clip') return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function appaiHasScrollLockClass(el) {
+    if (!el || !el.classList) return false;
+    var names = [
+      'overflow-hidden', 'overflowHidden', 'drawer-open', 'js-drawer-open',
+      'lock-scroll', 'scroll-lock', 'menu-open', 'cart-open'
+    ];
+    for (var i = 0; i < names.length; i++) {
+      if (el.classList.contains(names[i])) return true;
+    }
+    return false;
+  }
+
+  /** iOS drawer lock: inline position:fixed + top:-scrollY. top:0 is not a lock. */
+  function appaiHasIosBodyScrollLock() {
+    var body = document.body;
+    if (!body || body.style.position !== 'fixed') return false;
+    var top = body.style.top;
+    if (!top) return false;
+    var n = parseFloat(top);
+    return isFinite(n) && n < 0;
+  }
+
+  /**
+   * Transient drawer/modal lock — NOT the theme's standing layout
+   * position:fixed. We never use position:fixed alone as the signal.
+   * overflow:hidden is a drawer lock only when there is no inner page
+   * scroller; Savor/Ritual keep overflow:hidden as layout and scroll
+   * .page-wrapper.
+   */
+  function appaiIsTransientScrollLock() {
+    if (appaiHasIosBodyScrollLock()) return true;
+    try {
+      if (appaiHasScrollLockClass(document.documentElement)) return true;
+      if (appaiHasScrollLockClass(document.body)) return true;
+      if (document.querySelector(APPAI_DRAWER_OPEN_SEL)) return true;
+    } catch (e) {}
+    if (appaiOverflowIsLocked() && !appaiHasExistingOverflowScroller()) return true;
+    return false;
+  }
+
+  /**
+   * Standing layout lock (html/body position:fixed with no inner scroller).
+   * While OUR unfix is on, computed position is static — remember via the
+   * tagged attr so we do not flap on/off.
+   */
+  function appaiDocumentIsFixedLayout() {
+    try {
+      if (document.documentElement.getAttribute(APPAI_UNFIX_ATTR) === '1') return true;
+      if (window.getComputedStyle(document.documentElement).position === 'fixed') return true;
+      if (document.body && window.getComputedStyle(document.body).position === 'fixed') return true;
+    } catch (e) {}
+    return false;
+  }
+
+  /** True when the document itself is not the page scroller (Savor/Ritual). */
+  function appaiDocumentScrollLocked() {
+    try {
+      if (document.documentElement.getAttribute(APPAI_UNFIX_ATTR) === '1') return false;
+      if (appaiDocumentIsFixedLayout()) return true;
+      if (appaiOverflowIsLocked()) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  /** Genuine overflow scroller — never overflow:visible (#MainContent / main). */
+  function appaiIsOverflowScroller(el) {
+    if (!el) return false;
+    try {
+      var oy = window.getComputedStyle(el).overflowY;
+      return oy === 'auto' || oy === 'scroll' || oy === 'overlay';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function appaiHasScrollRange(el) {
+    return !!(el && el.scrollHeight > el.clientHeight + 1);
+  }
+
+  function appaiHasExistingOverflowScroller() {
+    if (document.body && appaiIsOverflowScroller(document.body) && appaiHasScrollRange(document.body)) {
+      return true;
+    }
+    var wrapper = appaiScrollRootForEmbedIframe();
+    return !!(wrapper && appaiIsOverflowScroller(wrapper) && appaiHasScrollRange(wrapper));
+  }
+
+  function appaiEnsureUnfixStyle() {
+    if (document.getElementById(APPAI_UNFIX_STYLE_ID)) return;
+    var style = document.createElement('style');
+    style.id = APPAI_UNFIX_STYLE_ID;
+    style.setAttribute(APPAI_UNFIX_ATTR, '1');
+    // Overflow is deliberately omitted so a drawer can still set overflow:hidden.
+    style.textContent =
+      'html[' + APPAI_UNFIX_ATTR + '="1"],html[' + APPAI_UNFIX_ATTR + '="1"] body{' +
+      'position:static !important;' +
+      'height:auto !important;' +
+      'max-height:none !important;' +
+      '}';
+    document.head.appendChild(style);
+  }
+
+  function appaiClearScrollUnfix() {
+    try {
+      document.documentElement.removeAttribute(APPAI_UNFIX_ATTR);
+    } catch (e) {}
+    var style = document.getElementById(APPAI_UNFIX_STYLE_ID);
+    if (style && style.parentNode) style.parentNode.removeChild(style);
+  }
+
+  /**
+   * Unlock a standing fixed-body LAYOUT so document.scrollingElement has
+   * range. Never applied for a drawer lock, never if a real overflow
+   * wrapper already exists, never on desktop.
+   */
+  function appaiSyncScrollUnfix() {
+    var allow =
+      appaiIsMobileScrollMode() &&
+      !appaiIsTransientScrollLock() &&
+      !appaiHasExistingOverflowScroller() &&
+      appaiDocumentIsFixedLayout();
+    if (!allow) {
+      appaiClearScrollUnfix();
+      return false;
+    }
+    appaiEnsureUnfixStyle();
+    document.documentElement.setAttribute(APPAI_UNFIX_ATTR, '1');
+    return true;
+  }
+
+  function appaiInstallUnfixObserver() {
+    if (window.__APPAI_UNFIX_OBS__) return;
+    window.__APPAI_UNFIX_OBS__ = true;
+    var sync = function () { appaiSyncScrollUnfix(); };
+    try {
+      var obs = new MutationObserver(sync);
+      var attrs = { attributes: true, attributeFilter: ['class', 'style', 'open', 'aria-hidden', 'aria-modal', 'aria-expanded'] };
+      obs.observe(document.documentElement, attrs);
+      var watchBody = function () {
+        if (!document.body) return;
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: attrs.attributeFilter
+        });
+      };
+      if (document.body) watchBody();
+      else document.addEventListener('DOMContentLoaded', watchBody);
+    } catch (e) {}
+  }
+  appaiInstallUnfixObserver();
 
   /** If the theme scrolls a wrapper around the embed (some Horizon layouts), find it. */
   function appaiScrollRootForEmbedIframe() {
@@ -203,6 +451,100 @@
       return window.innerWidth <= 767;
     }
   }
+
+  /**
+   * Phone-shell pin (fixed-height iframe) is WIDTH-ONLY.
+   * Do NOT reuse appaiIsMobileScrollMode() here: that includes pointer:coarse,
+   * so an iPad would pin the iframe to the viewport while the child still
+   * renders the desktop layout (useIsMobile is innerWidth < 768) and posts
+   * no height — content becomes unreachable. Wheel/touch stay on the locked
+   * coarse-or-narrow predicate above.
+   */
+  function appaiIsPhoneShellMode() {
+    try {
+      return window.matchMedia('(max-width: 767px)').matches;
+    } catch (e) {
+      return window.innerWidth < 768;
+    }
+  }
+
+  function appaiIsDesignerPath() {
+    var path = window.location.pathname || '';
+    return path.indexOf('/apps/appai/s/designer') !== -1 || /(^|\/)s\/designer\/?$/.test(path);
+  }
+
+  function appaiLogPhoneShell(where) {
+    var phone = appaiIsPhoneShellMode();
+    console.log('[AI Art Embed] CP1 ' + where, {
+      phoneShell: phone,
+      innerWidth: window.innerWidth,
+      path: window.location.pathname,
+      designerPath: appaiIsDesignerPath(),
+      host: (window.location.search.match(/[?&]host=([^&]*)/) || [])[1] || ''
+    });
+    return phone;
+  }
+
+  var appaiExitFallbackUrl = '/';
+  function appaiRememberFallbackUrl(url) {
+    if (url && typeof url === 'string') appaiExitFallbackUrl = url;
+  }
+
+  /**
+   * Back-from-customizer landing image. The iframe carousel's first slide is
+   * raw artwork; the product page should show the hero product-with-design
+   * mockup instead. Stash on exit, apply on the destination (including bfcache).
+   */
+  var APPAI_LANDING_MOCKUP_KEY = 'appai_landing_mockup';
+  function appaiStoreLandingMockup(url) {
+    if (!url || typeof url !== 'string') return;
+    try { sessionStorage.setItem(APPAI_LANDING_MOCKUP_KEY, url); } catch (e) {}
+  }
+  function appaiReadLandingMockup() {
+    try { return sessionStorage.getItem(APPAI_LANDING_MOCKUP_KEY) || ''; } catch (e) { return ''; }
+  }
+  function appaiApplyLandingMockup(url) {
+    var src = url || appaiReadLandingMockup();
+    if (!src) return false;
+    var applied = false;
+    var mainImg = document.getElementById('ai-art-main-img');
+    if (mainImg) {
+      mainImg.src = src;
+      applied = true;
+    }
+    var ph = document.getElementById('ai-art-placeholder');
+    if (ph) {
+      var phImg = ph.querySelector('img');
+      if (phImg) {
+        phImg.src = src;
+        phImg.removeAttribute('srcset');
+      } else {
+        phImg = document.createElement('img');
+        phImg.src = src;
+        phImg.alt = 'Product mockup';
+        phImg.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
+        ph.insertBefore(phImg, ph.firstChild);
+      }
+      ph.style.display = '';
+      applied = true;
+    }
+    var native = document.querySelector(
+      '.product__media-item img, .product__media img, [data-product-featured-image], .product-featured-media img, .product__main-photos img'
+    );
+    if (native && native.tagName === 'IMG' && !native.closest('.ai-art-studio-embed, .ai-art-studio-block')) {
+      native.src = src;
+      native.srcset = '';
+      if (native.dataset) {
+        if (native.dataset.src) native.dataset.src = src;
+        if (native.dataset.srcset) native.dataset.srcset = src;
+      }
+      applied = true;
+    }
+    return applied;
+  }
+  window.addEventListener('pageshow', function () {
+    appaiApplyLandingMockup();
+  });
 
   /** Same-origin app-proxy iframe: scroll parent directly (more reliable than postMessage). */
   function appaiAttachIframeWheelForward(iframe, mobileNativeScroll) {
@@ -375,8 +717,7 @@
 
   function appaiShowSavedDesignTransitionFromUrl() {
     try {
-      var params = new URLSearchParams(window.location.search);
-      var loadDesignId = params.get('loadDesignId') || '';
+      var loadDesignId = appaiReopenDesignId();
       if (!loadDesignId || document.getElementById('appai-nav-transition')) return;
       appaiShowTransitionOverlay();
     } catch (e) {}
@@ -384,6 +725,17 @@
 
   window.addEventListener('message', function(event) {
     var data = event && event.data;
+    if (data && data.type === 'ai-art-studio:open-saved-design') {
+      var dest = data.url || '';
+      if (!dest && data.pageHandle) {
+        dest = '/pages/' + encodeURIComponent(String(data.pageHandle));
+        if (data.loadDesignId) appaiWriteReopen(data.loadDesignId, data.pageHandle, data.loadMockup, null);
+      }
+      if (dest && dest.indexOf('/pages/') === 0) {
+        try { window.location.assign(dest); } catch (e) { window.location.href = dest; }
+      }
+      return;
+    }
     if (!data || data.type !== 'AI_ART_STUDIO_SHOW_TRANSITION') return;
     try {
       appaiShowTransitionOverlay();
@@ -670,6 +1022,11 @@
   }
   
   function createDesignStudio(config) {
+    if (appaiIsDesignerPath()) {
+      appaiLogPhoneShell('createDesignStudio skipped — already on /s/designer (no iframe)');
+      return null;
+    }
+    appaiLogPhoneShell('createDesignStudio');
     // Shopify.installations + our DB use *.myshopify.com; window.Shopify.shop is often only the handle.
     function normaliseMyshopifyShopForApi(raw) {
       var s = String(raw || '').trim();
@@ -698,14 +1055,31 @@
     var container, studioContainer;
     var mobileNativeScroll = appaiIsMobileScrollMode();
     function appaiMobileFrameHeight() {
-      var h = window.visualViewport && window.visualViewport.height ? window.visualViewport.height : window.innerHeight;
-      return Math.max(520, Math.floor(h - 24));
+      // PARENT visual viewport is the phone screen (URL bar included).
+      // Child visualViewport is the iframe box — never use that here.
+      var vv = window.visualViewport;
+      var visH = vv && vv.height ? vv.height : (window.innerHeight || 800);
+      var visTop = vv && typeof vv.offsetTop === 'number' ? vv.offsetTop : 0;
+      var visBottom = visTop + visH;
+      if (studioContainer) {
+        var top = studioContainer.getBoundingClientRect().top;
+        var remaining = visBottom - top;
+        return Math.max(400, Math.floor(Math.min(visH, remaining)));
+      }
+      return Math.max(400, Math.floor(visH));
     }
     function applyMobileNativeScrollFrame() {
-      if (!mobileNativeScroll || !studioContainer) return;
-      studioContainer.style.height = appaiMobileFrameHeight() + 'px';
+      if (!appaiIsPhoneShellMode() || !studioContainer) return;
+      var h = appaiMobileFrameHeight();
+      studioContainer.style.height = h + 'px';
+      studioContainer.style.maxHeight = h + 'px';
       studioContainer.style.overflow = 'hidden';
-      studioContainer.style.webkitOverflowScrolling = 'touch';
+      studioContainer.style.webkitOverflowScrolling = '';
+      try {
+        var frame = studioContainer.querySelector('iframe');
+        if (frame) frame.setAttribute('scrolling', 'no');
+      } catch (e) {}
+      appaiSyncScrollUnfix();
     }
     // Undo mobile framing when switching back to desktop mode live (theme
     // editor toggle). 600px matches the container's pre-mount default so
@@ -714,12 +1088,14 @@
     function clearMobileNativeScrollFrame() {
       if (!studioContainer) return;
       studioContainer.style.height = '600px';
+      studioContainer.style.maxHeight = '';
       studioContainer.style.overflow = '';
       studioContainer.style.webkitOverflowScrolling = '';
+      appaiClearScrollUnfix();
     }
 
     const urlParams = new URLSearchParams(window.location.search);
-    const transitionDesignId = urlParams.get('loadDesignId') || '';
+    const transitionDesignId = appaiReopenDesignId();
 
     function appaiLoadingInner() {
       // Page-level #appai-boot already shows the same title, viewport-centered.
@@ -802,15 +1178,25 @@
       studioContainer = container.querySelector('.ai-art-studio-embed__studio');
     }
     ensureAppaiLoadingCover();
-    applyMobileNativeScrollFrame();
-    // Registered unconditionally (not gated on the mount-time mode) because
-    // mobileNativeScroll can flip live via the matchMedia 'change' listener
-    // below (Shopify theme editor mobile-preview toggle). The function itself
-    // no-ops when not currently in mobile mode, so this is a cheap no-op most
-    // of the time on desktop.
-    var resizeFrame = function() { applyMobileNativeScrollFrame(); };
+    if (!appaiIsPhoneShellMode()) {
+      clearMobileNativeScrollFrame();
+    }
+    // Re-pin on URL-bar show/hide (visualViewport resize) and offsetTop
+    // shifts (visualViewport scroll). applyMobileNativeScrollFrame no-ops
+    // on desktop, so these stay attached for live mobile-preview toggles.
+    var pinRaf = 0;
+    var resizeFrame = function () {
+      if (pinRaf) return;
+      pinRaf = window.requestAnimationFrame(function () {
+        pinRaf = 0;
+        applyMobileNativeScrollFrame();
+      });
+    };
     window.addEventListener('resize', resizeFrame, { passive: true });
-    if (window.visualViewport) window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', resizeFrame, { passive: true });
+      window.visualViewport.addEventListener('scroll', resizeFrame, { passive: true });
+    }
     
     const params = new URLSearchParams();
     params.set('shop', normaliseMyshopifyShopForApi(config.shopDomain));
@@ -823,13 +1209,20 @@
     if (config.selectedVariant) {
       params.set('selectedVariant', config.selectedVariant);
     }
+    var pageHandleForIframe = config.customizerPageHandle || config.pageHandle || '';
+    if (pageHandleForIframe) {
+      params.set('page', pageHandleForIframe);
+      params.set('pageHandle', pageHandleForIframe);
+    }
     if (mobileNativeScroll) {
       params.set('mobileNativeScroll', '1');
     }
     // Large Printify imports (for example Bella+Canvas 3001) can have hundreds
     // of variants. Send designerConfig over postMessage instead of putting it
     // in the iframe URL, which can exceed browser/proxy URL limits.
-    if (config.inlineDesignerConfig) {
+    // deferDesignerConfig also lets /pages/:handle start the iframe (and JS
+    // download) before customizer-page JSON is back.
+    if (config.inlineDesignerConfig || config.deferDesignerConfig) {
       params.set('deferDesignerConfig', '1');
     }
     // Disabled pages with a saved design: ATC OK, Start Fresh / new generate blocked.
@@ -845,13 +1238,11 @@
     if (sharedDesignId) {
       params.set('sharedDesignId', sharedDesignId);
     }
-    const loadDesignId = urlParams.get('loadDesignId');
-    if (loadDesignId) {
-      params.set('loadDesignId', loadDesignId);
-    }
-    const loadMockup = urlParams.get('loadMockup');
-    if (loadMockup) {
-      params.set('loadMockup', loadMockup);
+    // iframe src only (never the address bar); the iframe also reads the entry itself.
+    const reopenEntry = appaiReadReopen();
+    if (reopenEntry) {
+      params.set('loadDesignId', String(reopenEntry.id));
+      if (reopenEntry.mockup) params.set('loadMockup', String(reopenEntry.mockup));
     }
     // Reuse Artwork deep-link (cross-product regenerate / open-as-is).
     ['autoReuseGenerate', 'reuseJobId', 'reuseArtworkUrl', 'reusePrompt'].forEach(function (key) {
@@ -863,6 +1254,64 @@
     if (urlParams.get('openSignIn') === '1') {
       params.set('openSignIn', '1');
     }
+    // TEMP: iPhone on-screen console. Remove with MobileDebugOverlay.
+    if (urlParams.get('debugoverlay') === '1') {
+      params.set('debugoverlay', '1');
+    }
+
+    function persistStoreThemeSnapshot(theme) {
+      if (!theme || typeof theme !== 'object') return;
+      try {
+        sessionStorage.setItem('appai:themeSnapshot', JSON.stringify(theme));
+      } catch (e) {}
+      try {
+        fetch('/apps/appai/theme-snapshot', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ theme: theme }),
+          keepalive: true,
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
+    // Phone: top-level designer page (Option B). replace() so Back does not
+    // return to /pages/<handle> and immediately re-redirect.
+    if (appaiIsPhoneShellMode()) {
+      appaiLogPhoneShell('location.replace → /s/designer?host=page');
+      try { persistStoreThemeSnapshot(extractStoreTheme()); } catch (e) {}
+      params.delete('deferDesignerConfig');
+      params.set('host', 'page');
+      params.set('returnTo', window.location.pathname + window.location.search);
+      var s = window.Shopify || {};
+      var cur = (s.currency && s.currency.active) ? String(s.currency.active).toUpperCase() : '';
+      if (!cur) {
+        try {
+          var parts = document.cookie.split(';');
+          for (var ci = 0; ci < parts.length; ci++) {
+            var cp = parts[ci].replace(/^\s+/, '').split('=');
+            if (cp[0] === 'cart_currency' && cp[1]) {
+              cur = decodeURIComponent(cp[1]).toUpperCase();
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+      if (cur) params.set('currency', cur);
+      var rate = s.currency && s.currency.rate != null ? parseFloat(s.currency.rate) : NaN;
+      if (isFinite(rate)) params.set('rate', String(rate));
+      var rootEl = document.getElementById('appai-root');
+      var shopCur = rootEl && rootEl.getAttribute('data-shop-currency');
+      if (shopCur) params.set('shopCurrency', String(shopCur).toUpperCase());
+      if (s.country) params.set('country', String(s.country).toUpperCase());
+      if (s.locale) params.set('locale', String(s.locale));
+      var shopName = appaiShopDisplayName();
+      if (shopName) params.set('shopName', shopName);
+      window.location.replace(
+        window.location.origin + '/apps/appai/s/designer?' + params.toString()
+      );
+      return;
+    }
     
     const iframe = document.createElement('iframe');
     // Use App Proxy path so the iframe loads on the Shopify domain (first-party, no cross-origin fetch issues).
@@ -871,7 +1320,7 @@
     iframe.allow = 'clipboard-write; popups';
     iframe.title = 'AI Art Design Studio';
     iframe.style.cssText = 'width: 100%; height: 100%; border: none; overflow: hidden; display: block;';
-    iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
+    iframe.setAttribute('scrolling', 'no');
     
     iframe.onload = function() {
       // Loading screen is removed on BRIDGE_ACK (when React app is fully mounted),
@@ -880,6 +1329,7 @@
     };
     
     studioContainer.appendChild(iframe);
+    applyMobileNativeScrollFrame();
 
     // ── Live scroll-mode switching ──────────────────────────────────────
     // Shopify's theme editor "mobile preview" toggle resizes the SAME iframe
@@ -903,7 +1353,7 @@
           appaiAttachIframeWheelForward(iframe, false);
         }
         try {
-          iframe.setAttribute('scrolling', mobileNativeScroll ? 'yes' : 'no');
+          iframe.setAttribute('scrolling', 'no');
         } catch (e) {}
         try {
           iframe.contentWindow.postMessage(
@@ -916,6 +1366,18 @@
         appaiScrollModeMql.addEventListener('change', function (e) { appaiOnScrollModeChange(e.matches); });
       } else if (appaiScrollModeMql.addListener) {
         appaiScrollModeMql.addListener(function (e) { appaiOnScrollModeChange(e.matches); }); // Safari <14
+      }
+      // Width-only: pin/unpin the iframe box when crossing 768 without a
+      // pointer-type change (tablet rotate, theme-editor width drag).
+      var appaiPhoneShellMql = window.matchMedia('(max-width: 767px)');
+      var appaiOnPhoneShellChange = function () {
+        if (appaiIsPhoneShellMode()) applyMobileNativeScrollFrame();
+        else clearMobileNativeScrollFrame();
+      };
+      if (appaiPhoneShellMql.addEventListener) {
+        appaiPhoneShellMql.addEventListener('change', appaiOnPhoneShellChange);
+      } else if (appaiPhoneShellMql.addListener) {
+        appaiPhoneShellMql.addListener(appaiOnPhoneShellChange);
       }
     } catch (e) {}
 
@@ -1007,7 +1469,7 @@
     // ================================================================
     // AI Art Bridge v1.0.0 — Production-grade storefront bridge
     // ================================================================
-    var BRIDGE_VERSION = '1.0.0';
+    var BRIDGE_VERSION = '1.0.8';
     window.AI_ART_STUDIO_BRIDGE_VERSION = BRIDGE_VERSION;
 
     var B = '[AI Art Bridge]'; // log prefix
@@ -1105,9 +1567,13 @@
 
     // --- Design SKU: create/reuse a unique Shopify variant per design ---
     // This ensures each cart line item has its own variant image at checkout
-    // without requiring Shopify Plus. Falls back to the original variantId if
-    // the endpoint is unavailable or returns an error.
-    function resolveDesignSku(sourceVariantId, designId, mockupUrl) {
+    // without requiring Shopify Plus. Never fall back to the base catalog
+    // variant (POD qty 0 + DENY → Ajax "already sold out").
+    // Latest proof from the iframe. Used when this page has to call
+    // resolve-design-variant itself. Not written into the button dataset.
+    var storefrontProof = { sessionId: '', identityToken: '' };
+
+    function resolveDesignSku(sourceVariantId, designId, mockupUrl, retailPrice) {
       var appUrl = config.appUrl || '';
       var productId = config.productId || '';
       var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
@@ -1118,12 +1584,12 @@
       }
       // productId is optional — server resolves it from variantId when missing.
       if (!designId || !mockupUrl || !appUrl || !shopDomain) {
-        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'shopDomain:', !!shopDomain, '— using base variantId', sourceVariantId);
-        return Promise.resolve({ variantId: sourceVariantId });
+        console.log(B, '[resolveDesignSku] Missing params — designId:', !!designId, 'mockupUrl:', !!mockupUrl, 'appUrl:', !!appUrl, 'shopDomain:', !!shopDomain);
+        return Promise.reject(new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.'));
       }
       if (!mockupUrl.startsWith('https://')) {
-        console.log(B, '[resolveDesignSku] Non-https mockupUrl:', mockupUrl.substring(0, 80), '— using base variantId', sourceVariantId);
-        return Promise.resolve({ variantId: sourceVariantId });
+        console.log(B, '[resolveDesignSku] Non-https mockupUrl:', mockupUrl.substring(0, 80));
+        return Promise.reject(new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.'));
       }
       var endpoint = appUrl.replace(/\/$/, '') + '/api/storefront/resolve-design-variant';
       console.log(B, '[resolveDesignSku] Calling endpoint for design', designId, 'productId:', productId || '(none, server will resolve)');
@@ -1134,30 +1600,226 @@
         mockupUrl: mockupUrl
       };
       if (productId) resolveBody.productId = String(productId);
+      if (retailPrice) resolveBody.price = String(retailPrice);
+      if (storefrontProof.sessionId) resolveBody.sessionId = storefrontProof.sessionId;
+      var resolveHeaders = { 'Content-Type': 'application/json' };
+      if (storefrontProof.identityToken) resolveHeaders.Authorization = 'Bearer ' + storefrontProof.identityToken;
       return fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: resolveHeaders,
         body: JSON.stringify(resolveBody)
       })
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        if (data && data.success && data.variantId) {
+        if (
+          data &&
+          data.success &&
+          data.variantId &&
+          String(data.variantId) !== String(sourceVariantId)
+        ) {
           console.log(B, '[resolveDesignSku] Resolved variantId:', data.variantId,
-            data.created ? '(created)' : data.reused ? '(reused)' : '(fallback)');
-          return { variantId: data.variantId };
+            data.created ? '(created)' : data.reused ? '(reused)' : '');
+          return {
+            variantId: data.variantId,
+            created: !!data.created,
+            reused: !!data.reused
+          };
         }
-        console.warn(B, '[resolveDesignSku] Bad response, falling back:', data);
-        return { variantId: sourceVariantId };
+        console.warn(B, '[resolveDesignSku] Shadow not ready — refusing base catalog variant:', data);
+        throw new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
       })
       .catch(function(err) {
-        console.warn(B, '[resolveDesignSku] Error, falling back:', err);
-        return { variantId: sourceVariantId };
+        if (err && err.message && err.message.indexOf('isn\'t listed in the store') !== -1) throw err;
+        console.warn(B, '[resolveDesignSku] Error — refusing base catalog fallback:', err);
+        throw new Error('This design isn\'t listed in the store yet. Please refresh the page and try Add to cart again.');
+      });
+    }
+
+    function repairShadowPurchasable(variantId) {
+      var appUrl = (config.appUrl || '').replace(/\/$/, '');
+      var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
+      var id = String(variantId || '').replace(/\D/g, '');
+      if (!appUrl || !shopDomain || !id) return Promise.resolve(false);
+      return fetch(appUrl + '/api/storefront/ensure-shadow-purchasable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shop: shopDomain, variantId: id })
+      }).then(function(r) { return r.json(); })
+        .then(function(data) { return !!(data && data.success); })
+        .catch(function() { return false; });
+    }
+
+    function shadowDesignIdFromProps(properties) {
+      var p = properties || {};
+      return String(p['_shadow_design_id'] || '').trim();
+    }
+
+    function hasPrintConfigSuffix(designId) {
+      var parts = String(designId || '').trim().split('::');
+      if (parts.length < 3) return false;
+      return /^\d+$/.test(parts[1]) && !!parts[2];
+    }
+
+    function findMatchingCartLine(cart, variantId, properties) {
+      var items = (cart && cart.items) || [];
+      var incomingShadow = shadowDesignIdFromProps(properties);
+      var incomingCfg = hasPrintConfigSuffix(incomingShadow);
+      var match = null;
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var p = item.properties || {};
+        var itemShadow = String(p['_shadow_design_id'] || '').trim();
+        if (incomingShadow && itemShadow && incomingShadow === itemShadow) {
+          match = item;
+          break;
+        }
+        // cfg-keyed ATC lines are distinct snapshots — never merge on job id
+        // or a shared PreShadow variant_id.
+        if (incomingCfg) continue;
+        var sameVariant = String(item.variant_id) === String(variantId);
+        if (sameVariant) {
+          match = item;
+          break;
+        }
+      }
+      return match;
+    }
+
+    // Shopify Ajax cart `price` is cents. Expected retail from the iframe is dollars.
+    function parseExpectedPriceCents(price) {
+      if (price == null || price === '') return null;
+      var n = parseFloat(String(price).replace(/[^0-9.]/g, ''));
+      if (!isFinite(n) || n <= 0) return null;
+      return Math.round(n * 100);
+    }
+
+    function cartLinePriceCents(item) {
+      var p = Number(item && item.price);
+      if (isFinite(p) && p > 0) return Math.round(p);
+      return null;
+    }
+
+    // Keep aligned with shared/atcStorefrontRetry.ts
+    var ATC_SHADOW_STILL_PREPARING =
+      'This design is still being prepared for the store. Keep this page open and tap Add to cart again in a moment.';
+    var ATC_PROPAGATION_WAITS_MS = [1000, 1500, 2000, 2500, 3000, 4000, 5000, 7000, 9000];
+    var ATC_MAX_CART_ADD_CALLS_PER_TAP = 10;
+    var ATC_RETRY_AFTER_MIN_MS = 1000;
+    var ATC_RETRY_AFTER_MAX_MS = 30000;
+    var ATC_RETRY_AFTER_DEFAULT_MS = 5000;
+    var ATC_RATE_LIMIT_UNTIL_KEY = 'appai:atcRateLimitUntil';
+
+    function parseRetryAfterMs(header, fallbackMs) {
+      var raw = String(header || '').trim();
+      var fallback = typeof fallbackMs === 'number' && isFinite(fallbackMs)
+        ? fallbackMs
+        : ATC_RETRY_AFTER_DEFAULT_MS;
+      function clamp(ms) {
+        if (!isFinite(ms)) ms = fallback;
+        return Math.min(ATC_RETRY_AFTER_MAX_MS, Math.max(ATC_RETRY_AFTER_MIN_MS, Math.round(ms)));
+      }
+      if (!raw) return clamp(fallback);
+      if (/^\d+(\.\d+)?$/.test(raw)) return clamp(parseFloat(raw) * 1000);
+      var when = Date.parse(raw);
+      if (!isFinite(when)) return clamp(fallback);
+      return clamp(when - Date.now());
+    }
+
+    function readAtcRateLimitRemainingMs() {
+      try {
+        var until = Number(sessionStorage.getItem(ATC_RATE_LIMIT_UNTIL_KEY) || 0);
+        if (!isFinite(until)) return 0;
+        var left = until - Date.now();
+        return left > 0 ? left : 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    function writeAtcRateLimitCooldown(waitMs) {
+      var ms = parseRetryAfterMs(null, waitMs);
+      var until = Date.now() + ms;
+      try { sessionStorage.setItem(ATC_RATE_LIMIT_UNTIL_KEY, String(until)); } catch (_) {}
+      return until;
+    }
+
+    function clearAtcRateLimitCooldown() {
+      try { sessionStorage.removeItem(ATC_RATE_LIMIT_UNTIL_KEY); } catch (_) {}
+    }
+
+    function postCartJson(url, body, timeoutMs) {
+      var controller = new AbortController();
+      var tid = setTimeout(function() { controller.abort(); }, timeoutMs || 15000);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        credentials: 'same-origin',
+        signal: controller.signal
+      }).then(function(res) {
+        clearTimeout(tid);
+        return res.text().then(function(text) {
+          var json;
+          try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
+          return {
+            res: res,
+            json: json,
+            text: text,
+            retryAfter: res.headers && res.headers.get ? res.headers.get('Retry-After') : null
+          };
+        });
+      }).catch(function(err) {
+        clearTimeout(tid);
+        throw {
+          __retryable: true,
+          ambiguous: true,
+          timeout: !!(err && err.name === 'AbortError'),
+          network: !(err && err.name === 'AbortError'),
+          message: ATC_SHADOW_STILL_PREPARING
+        };
+      });
+    }
+
+    function isCartSoldOutMessage(errMsg) {
+      var lower = String(errMsg || '').toLowerCase();
+      return lower.indexOf('sold out') !== -1 || lower.indexOf('cannot add more') !== -1;
+    }
+
+    function logAtcDebug(payload) {
+      try {
+        console.log(B, '[ATC-debug]', payload);
+        var appUrl = (config.appUrl || '').replace(/\/$/, '');
+        if (!appUrl) return;
+        var shopDomain = normaliseMyshopifyShopForApi(config.shopDomain || (window.Shopify && window.Shopify.shop) || '');
+        fetch(appUrl + '/api/storefront/atc-debug', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({
+            shop: shopDomain,
+            source: 'theme'
+          }, payload)),
+          keepalive: true
+        }).catch(function() {});
+      } catch (_) {}
+    }
+
+    function logCartFailure(source, variantId, res, json, text) {
+      console.error(B, '[' + source + ' FAIL]', {
+        httpStatus: res && res.status,
+        variantId: variantId,
+        description: json && json.description,
+        message: json && json.message,
+        errors: json && json.errors,
+        statusField: json && json.status,
+        body: json && json.raw ? String(json.raw).substring(0, 400) : json,
+        raw: text ? String(text).substring(0, 400) : ''
       });
     }
 
     // --- Cart add via Shopify Ajax API ---
-    function addToCart(variantId, quantity, properties) {
+    function addToCart(variantId, quantity, properties, expectedPrice, opts) {
       if (!variantId) return Promise.reject(new Error('Missing variantId'));
+      opts = opts || {};
 
       var safeProps = properties || {};
       if (safeProps['_mockup_url'] && String(safeProps['_mockup_url']).indexOf('data:') === 0) {
@@ -1167,50 +1829,130 @@
         delete safeProps['mockup_url'];
       }
 
-      var body = { items: [{ id: Number(variantId), quantity: quantity || 1, properties: safeProps }] };
-      console.log(B, '_mockup_url being sent:', properties && properties['_mockup_url'] ? properties['_mockup_url'] : '(none)');
-      console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
-
-      var controller = new AbortController();
-      var tid = setTimeout(function() { controller.abort(); }, 15000);
-
-      return fetch('/cart/add.js', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body),
-        credentials: 'same-origin',
-        signal: controller.signal
-      }).then(function(res) {
-        clearTimeout(tid);
-        console.log(B, '/cart/add.js status:', res.status);
-        return res.text().then(function(text) {
-          var json;
-          try { json = JSON.parse(text); } catch(e) { json = { raw: text }; }
-          if (!res.ok) {
-            var errMsg = (json && (json.description || json.message)) || text || 'HTTP ' + res.status;
-            if (res.status === 422 && (errMsg.toLowerCase().includes('cannot find') || errMsg.toLowerCase().includes('not found'))) {
-              console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying once after 3s...');
-              throw { __retryable: true, variantId: variantId, message: 'Product variant not available. It may still be publishing to the store.' };
-            }
-            throw new Error('Cart add failed: ' + errMsg);
-          }
-
-          // After successful add, fetch full cart state for diagnostics
-          fetch('/cart.js', { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(cart) {
-              var lastItem = cart.items && cart.items.length > 0 ? cart.items[cart.items.length - 1] : null;
-              console.log(B, '/cart.js after add — item_count:', cart.item_count, 'last_item:', lastItem ? { title: lastItem.title, variant_id: lastItem.variant_id, has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url']) } : null);
-            })
-            .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
-
-          return json;
-        });
-      }).catch(function(err) {
-        clearTimeout(tid);
-        if (err.name === 'AbortError') throw new Error('Cart request timed out after 15s');
-        throw err;
+      var qty = quantity || 1;
+      var expectedCents = parseExpectedPriceCents(expectedPrice);
+      console.log(B, '_mockup_url being sent:', safeProps['_mockup_url'] ? safeProps['_mockup_url'] : '(none)');
+      console.log(B, 'ATC request', {
+        variantId: variantId,
+        quantity: qty,
+        expectedPrice: expectedPrice || '',
+        expectedCents: expectedCents,
+        shadowDesignId: shadowDesignIdFromProps(safeProps),
+        size: safeProps['_size'] || '',
+        color: safeProps['_color'] || '',
+        displayDesignId: safeProps['_design_id'] || ''
       });
+
+      function postAdd(addQty) {
+        var body = { items: [{ id: Number(variantId), quantity: addQty, properties: safeProps }] };
+        console.log(B, 'POST /cart/add.js', JSON.stringify(body).substring(0, 400));
+        return postCartJson('/cart/add.js', body, 15000)
+          .then(function(out) {
+            console.log(B, '/cart/add.js status:', out.res.status);
+            if (!out.res.ok) {
+              logCartFailure('cart/add.js', variantId, out.res, out.json, out.text);
+              var errMsg = (out.json && (out.json.description || out.json.message)) || out.text || '';
+              var lower = String(errMsg).toLowerCase();
+              if (out.res.status === 429) {
+                throw {
+                  __retryable: true,
+                  rateLimited: true,
+                  retryAfterMs: parseRetryAfterMs(out.retryAfter),
+                  variantId: variantId,
+                  message: ATC_SHADOW_STILL_PREPARING
+                };
+              }
+              if (out.res.status === 422 && (lower.indexOf('cannot find') !== -1 || lower.indexOf('not found') !== -1)) {
+                console.warn(B, 'Variant', variantId, 'not found — product may not be published to Online Store yet. Retrying shortly...');
+                throw {
+                  __retryable: true,
+                  notFound: true,
+                  variantId: variantId,
+                  message: ATC_SHADOW_STILL_PREPARING
+                };
+              }
+              if (out.res.status === 422 && isCartSoldOutMessage(errMsg)) {
+                console.warn(B, 'Variant', variantId, 'sold-out 422 — storefront replica lag on a fresh shadow. Retrying…');
+                throw {
+                  __retryable: true,
+                  soldOutRace: true,
+                  variantId: variantId,
+                  message: ATC_SHADOW_STILL_PREPARING
+                };
+              }
+              if (out.res.status >= 500 || out.res.status === 408) {
+                throw {
+                  __retryable: true,
+                  ambiguous: true,
+                  variantId: variantId,
+                  message: ATC_SHADOW_STILL_PREPARING
+                };
+              }
+              throw {
+                __retryable: false,
+                variantId: variantId,
+                message: ATC_SHADOW_STILL_PREPARING
+              };
+            }
+
+            clearAtcRateLimitCooldown();
+            fetch('/cart.js', { credentials: 'same-origin' })
+              .then(function(r) { return r.json(); })
+              .then(function(after) {
+                var lastItem = after.items && after.items.length > 0 ? after.items[after.items.length - 1] : null;
+                console.log(B, '/cart.js after add — item_count:', after.item_count, 'last_item:', lastItem ? {
+                  title: lastItem.title,
+                  variant_id: lastItem.variant_id,
+                  priceCents: lastItem.price,
+                  expectedCents: expectedCents,
+                  has_mockup: !!(lastItem.properties && lastItem.properties['_mockup_url'])
+                } : null);
+              })
+              .catch(function(e) { console.warn(B, 'Post-add /cart.js fetch failed:', e.message); });
+
+            return out.json;
+          });
+      }
+
+      function runCartDedupThenAdd() {
+        return fetch('/cart.js', { credentials: 'same-origin' })
+          .then(function(r) { return r.json(); })
+          .catch(function() { return { items: [] }; })
+          .then(function(cart) {
+            var existing = findMatchingCartLine(cart, variantId, safeProps);
+            if (existing) {
+              var nextQty = (existing.quantity || 1) + qty;
+              console.log(B, 'Re-add of same design — incrementing line', {
+                lineKey: existing.key,
+                existingVariantId: existing.variant_id,
+                requestedVariantId: variantId,
+                sameVariant: String(existing.variant_id) === String(variantId),
+                fromQty: existing.quantity,
+                toQty: nextQty
+              });
+              return postCartJson('/cart/change.js', { id: existing.key, quantity: nextQty }, 15000)
+                .then(function(out) {
+                  if (!out.res.ok) {
+                    logCartFailure('cart/change.js', existing.variant_id, out.res, out.json, out.text);
+                    throw {
+                      __retryable: true,
+                      ambiguous: true,
+                      variantId: existing.variant_id,
+                      message: ATC_SHADOW_STILL_PREPARING
+                    };
+                  }
+                  clearAtcRateLimitCooldown();
+                  console.log(B, '/cart/change.js status:', out.res.status, 'item_count:', out.json && out.json.item_count);
+                  return out.json;
+                });
+            }
+
+            return postAdd(qty);
+          });
+      }
+
+      if (opts.skipCartJs) return postAdd(qty);
+      return runCartDedupThenAdd();
     }
 
     // --- Refresh cart UI after successful add ---
@@ -1352,12 +2094,184 @@
           freshDesignAllowed: config.freshDesignAllowed !== false,
           stylePresets: config.stylePresets || [],
           styleConfig: config.styleConfig || null,
+          experienceProfile: config.experienceProfile || null,
         }, iframeOrigin || '*');
         console.log(B, 'Sent DESIGNER_CONFIG to iframe:', config.inlineDesignerConfig.name || config.inlineDesignerConfig.id);
       } catch(e) {
         console.warn(B, 'Failed to send DESIGNER_CONFIG:', e.message);
       }
     }
+
+    function readCartCurrencyCookie() {
+      try {
+        var parts = document.cookie.split(';');
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i].replace(/^\s+/, '').split('=');
+          if (p[0] === 'cart_currency' && p[1]) return decodeURIComponent(p[1]).toUpperCase();
+        }
+      } catch (_) {}
+      return '';
+    }
+
+    function readPresentmentMeta() {
+      var s = window.Shopify || {};
+      var cur = (s.currency && s.currency.active) ? String(s.currency.active).toUpperCase() : '';
+      if (!cur) cur = readCartCurrencyCookie();
+      var rate = s.currency && s.currency.rate != null ? parseFloat(s.currency.rate) : NaN;
+      var root = document.getElementById('appai-root');
+      var shopCur = root && root.getAttribute('data-shop-currency');
+      return {
+        currency: cur || '',
+        rate: isFinite(rate) ? rate : null,
+        shopCurrency: shopCur ? String(shopCur).toUpperCase() : '',
+        country: s.country ? String(s.country).toUpperCase() : '',
+        locale: s.locale ? String(s.locale) : ''
+      };
+    }
+
+    function fetchPresentmentPricesByVariantId(handle, done) {
+      if (!handle) { done({}); return; }
+      fetch('/products/' + encodeURIComponent(handle) + '.js', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(p) {
+          var map = {};
+          var list = p && p.variants;
+          if (list) {
+            for (var i = 0; i < list.length; i++) {
+              var v = list[i];
+              if (!v || v.id == null || v.price == null) continue;
+              var cents = parseInt(v.price, 10);
+              if (isFinite(cents) && cents > 0) map[String(v.id)] = cents;
+            }
+          }
+          done(map);
+        })
+        .catch(function() { done({}); });
+    }
+
+    function postShopifyVariantsMessage(variants, baseVariantId, pricesByVariantId) {
+      if (!iframe || !iframe.contentWindow) return;
+      if (!variants || variants.length === 0) return;
+      var meta = readPresentmentMeta();
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
+          variants: variants,
+          baseVariantId: baseVariantId || null,
+          productTypeId: config.productTypeId || null,
+          presentment: {
+            currency: meta.currency,
+            rate: meta.rate,
+            shopCurrency: meta.shopCurrency || null,
+            country: meta.country || null,
+            locale: meta.locale || null,
+            pricesByVariantId: pricesByVariantId || {}
+          }
+        }, iframeOrigin || '*');
+      } catch (e) {
+        console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
+      }
+    }
+
+    function sendShopifyVariants() {
+      if (!config.shopifyVariants || config.shopifyVariants.length === 0) return;
+      var finished = false;
+      function finish(map) {
+        if (finished && map && Object.keys(map).length === 0) return;
+        finished = true;
+        postShopifyVariantsMessage(
+          config.shopifyVariants,
+          config.selectedVariant || null,
+          map || {}
+        );
+        console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
+      }
+      var timer = setTimeout(function() { finish({}); }, 1600);
+      fetchPresentmentPricesByVariantId(config.productHandle || '', function(map) {
+        clearTimeout(timer);
+        finish(map);
+      });
+    }
+
+    function sendStylePresets() {
+      if (!config.stylePresets || config.stylePresets.length === 0) return;
+      try {
+        iframe.contentWindow.postMessage({
+          type: 'AI_ART_STUDIO_STYLE_PRESETS',
+          stylePresets: config.stylePresets,
+        }, iframeOrigin || '*');
+        console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
+      } catch(e) {
+        console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
+      }
+    }
+
+    function applyFetchedStylePayload(payload) {
+      if (!payload) return;
+      if (Array.isArray(payload.stylePresets)) {
+        config.stylePresets = payload.stylePresets;
+      }
+      if (payload.styleConfig !== undefined) {
+        config.styleConfig = payload.styleConfig;
+        config.experienceProfile = payload.experienceProfile || null;
+      }
+    }
+
+    // Ticket B: parent must not be a stale source of truth. Refetch the same
+    // customizer-page (or PDP designer) snapshot before ACK / page-change push.
+    function refreshStylePresetsThen(done) {
+      var finish = function () {
+        if (typeof done === 'function') done();
+      };
+      if (config.__stylePresetsRefreshInFlight) {
+        config.__stylePresetsRefreshInFlight.then(finish, finish);
+        return;
+      }
+      var handle = config.customizerPageHandle || config.pageHandle || '';
+      var shop = normaliseMyshopifyShopForApi(config.shopDomain);
+      var pt = config.productTypeId ? String(config.productTypeId) : '';
+      var request;
+      if (handle) {
+        request = appaiFetchCustomizerConfig(handle, 0, true)
+          .then(function (r) { return r && r.ok ? r.json() : null; })
+          .then(applyFetchedStylePayload);
+      } else if (pt && pt !== '0' && shop) {
+        var designerUrl = '/apps/appai/api/storefront/product-types/' +
+          encodeURIComponent(pt) +
+          '/designer?shop=' + encodeURIComponent(shop) +
+          '&_t=' + Date.now();
+        if (config.productHandle) {
+          designerUrl += '&productHandle=' + encodeURIComponent(config.productHandle);
+        }
+        request = appaiFetchWithTimeout(designerUrl, { credentials: 'same-origin' }, 10000)
+          .then(function (r) { return r && r.ok ? r.json() : null; })
+          .then(applyFetchedStylePayload);
+      } else {
+        finish();
+        return;
+      }
+      config.__stylePresetsRefreshInFlight = Promise.resolve(request)
+        .catch(function (e) {
+          console.warn(B, 'stylePresets refresh failed:', e && e.message);
+        })
+        .then(function () {
+          config.__stylePresetsRefreshInFlight = null;
+        });
+      config.__stylePresetsRefreshInFlight.then(finish, finish);
+    }
+
+    // Early-mount path: parent mutates `config` when customizer-page returns,
+    // then pushes immediately so we don't wait for the next 500ms heartbeat.
+    // Refresh first so page-change / late assign is not a stale boot snapshot.
+    config.__pushDesignerConfig = function () {
+      refreshStylePresetsThen(function () {
+        sendDesignerConfig();
+        if (bridgeAcked) {
+          sendShopifyVariants();
+          sendStylePresets();
+        }
+      });
+    };
 
     iframe.addEventListener('load', function() {
       console.log(B, 'Iframe loaded, starting BRIDGE_READY heartbeat');
@@ -1391,6 +2305,13 @@
       if (!isTrustedMessage(event)) {
         if (isOurs) console.warn(B, 'BLOCKED untrusted:', data.type, 'origin:', event.origin);
         return;
+      }
+
+      if (isFromOurIframe(event)) {
+        if (data.sessionId) storefrontProof.sessionId = String(data.sessionId);
+        if (data.identityToken) storefrontProof.identityToken = String(data.identityToken);
+        if (data.payload && data.payload.sessionId) storefrontProof.sessionId = String(data.payload.sessionId);
+        if (data.payload && data.payload.identityToken) storefrontProof.identityToken = String(data.payload.identityToken);
       }
 
       // ===== GOOGLE AUTH POPUP (iframe → parent opens popup; popup → parent → iframe) =====
@@ -1459,37 +2380,19 @@
 
         // Push Shopify variants (with prices) into the iframe so the generator
         // can render a variant selector internally.
-        if (config.shopifyVariants && config.shopifyVariants.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
-              variants: config.shopifyVariants,
-              baseVariantId: config.selectedVariant || null,
-              productTypeId: config.productTypeId || null,
-            }, iframeOrigin || '*');
-            console.log(B, 'Sent SHOPIFY_VARIANTS to iframe:', config.shopifyVariants.length, 'variants');
-          } catch(e) {
-            console.warn(B, 'Failed to send SHOPIFY_VARIANTS:', e.message);
-          }
-        }
+        sendShopifyVariants();
 
-        // Push style presets so the generator doesn't need to call /api/config.
-        if (config.stylePresets && config.stylePresets.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_STYLE_PRESETS',
-              stylePresets: config.stylePresets,
-            }, iframeOrigin || '*');
-            console.log(B, 'Sent STYLE_PRESETS to iframe:', config.stylePresets.length, 'presets');
-          } catch(e) {
-            console.warn(B, 'Failed to send STYLE_PRESETS:', e.message);
-          }
-        }
+        // Handshake DESIGNER_CONFIG may still be the boot snapshot; refresh
+        // before STYLE_PRESETS so ACK is not a stale dump.
+        refreshStylePresetsThen(function () {
+          sendStylePresets();
+        });
 
         // Send store theme so the iframe can match the merchant's visual style.
         try {
           var storeTheme = extractStoreTheme();
           if (storeTheme && Object.keys(storeTheme).length > 0) {
+            persistStoreThemeSnapshot(storeTheme);
             iframe.contentWindow.postMessage({
               type: 'AI_ART_STUDIO_THEME',
               theme: storeTheme,
@@ -1503,8 +2406,7 @@
         // Send loadDesignId from the parent page URL so the iframe can restore the saved design.
         // This is more reliable than passing it via iframe URL params (which may be cached by Shopify CDN).
         try {
-          var pageUrlParams = new URLSearchParams(window.location.search);
-          var loadDesignIdFromPage = pageUrlParams.get('loadDesignId');
+          var loadDesignIdFromPage = appaiReopenDesignId();
           if (loadDesignIdFromPage) {
             iframe.contentWindow.postMessage({
               type: 'AI_ART_STUDIO_LOAD_DESIGN',
@@ -1578,12 +2480,24 @@
           return;
         }
 
+        var cooldownLeft = readAtcRateLimitRemainingMs();
+        if (cooldownLeft > 0) {
+          console.warn(B, 'ATC blocked by 429 cooldown', cooldownLeft, 'ms');
+          replyToIframe(event, {
+            type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+            correlationId: cid, ok: false, success: false,
+            error: ATC_SHADOW_STILL_PREPARING, _bridgeVersion: BRIDGE_VERSION
+          });
+          return;
+        }
+
         var atcMockupUrl = (data.properties && (data.properties['_mockup_url'] || data.properties['mockup_url'])) || '';
         if (atcMockupUrl && atcMockupUrl.indexOf('data:') === 0) {
           console.warn(B, 'Ignoring data: mockup for shadow-SKU resolve');
           atcMockupUrl = '';
         }
-        var atcDesignId = (data.properties && data.properties['_design_id']) || '';
+        var atcDesignId = shadowDesignIdFromProps(data.properties) ||
+          (data.properties && data.properties['_design_id']) || '';
         // Prefer the iframe's already-resolved shadow variant when it differs from
         // the base catalog variant (avoids a second Shopify Admin create ~5–15s).
         // If that shadow is expired / not published, fall back to resolveDesignSku
@@ -1615,50 +2529,156 @@
           });
         }
 
+        function notifyAtcFinalising(attempt, createdHint) {
+          logAtcDebug({
+            event: 'progress_posted',
+            reason: 'AI_ART_STUDIO_ATC_PROGRESS',
+            attempt: nOrZero(attempt),
+            created: !!createdHint,
+            cid: cid,
+            variantId: data.variantId
+          });
+          replyToIframe(event, {
+            type: 'AI_ART_STUDIO_ATC_PROGRESS',
+            correlationId: cid,
+            phase: 'finalising',
+            attempt: nOrZero(attempt),
+            _bridgeVersion: BRIDGE_VERSION
+          });
+        }
+
+        function nOrZero(n) {
+          return typeof n === 'number' && isFinite(n) ? n : 0;
+        }
+
+        function addWithPublishRetry(variantId, createdHint) {
+          var notifiedFinalising = false;
+          var created = !!createdHint;
+          var repaired = false;
+          var skipCartJs = false;
+          var addCalls = 0;
+          var waits = ATC_PROPAGATION_WAITS_MS;
+          var maxAttempt = ATC_MAX_CART_ADD_CALLS_PER_TAP - 1;
+          function attempt(n) {
+            logAtcDebug({
+              event: 'cart_add_attempt',
+              attempt: n,
+              created: created,
+              cid: cid,
+              variantId: variantId
+            });
+            console.log(B, '[ATC retry] attempt', n + '/' + maxAttempt, 'variant', variantId,
+              created ? '(created:true)' : '(created:false)');
+            if (created || n > 0) {
+              notifiedFinalising = true;
+              notifyAtcFinalising(n, created);
+            }
+            addCalls += 1;
+            return addToCart(variantId, data.quantity, data.properties, data.price, { skipCartJs: skipCartJs })
+              .then(function(cart) {
+                logAtcDebug({
+                  event: 'cart_add_ok',
+                  attempt: n,
+                  created: created,
+                  cid: cid,
+                  variantId: variantId
+                });
+                console.log(B, '[ATC retry] SUCCESS on attempt', n, 'variant', variantId);
+                return cart;
+              })
+              .catch(function(err) {
+                if (!(err && err.__retryable) || n >= maxAttempt || addCalls >= ATC_MAX_CART_ADD_CALLS_PER_TAP) {
+                  logAtcDebug({
+                    event: 'cart_add_give_up',
+                    attempt: n,
+                    created: created,
+                    soldOutRace: !!(err && err.soldOutRace),
+                    rateLimited: !!(err && err.rateLimited),
+                    cid: cid,
+                    variantId: variantId
+                  });
+                  throw err;
+                }
+                notifiedFinalising = true;
+                notifyAtcFinalising(n, created);
+                skipCartJs = !!(err && err.notFound && !err.rateLimited && !err.ambiguous && !err.soldOutRace);
+                var wait = (err && err.rateLimited && err.retryAfterMs)
+                  ? err.retryAfterMs
+                  : waits[Math.min(n, waits.length - 1)];
+                if (err && err.rateLimited) writeAtcRateLimitCooldown(wait);
+                logAtcDebug({
+                  event: 'cart_add_retry_wait',
+                  attempt: n + 1,
+                  created: created,
+                  soldOutRace: !!(err && err.soldOutRace),
+                  rateLimited: !!(err && err.rateLimited),
+                  skipCartJs: skipCartJs,
+                  cid: cid,
+                  variantId: err.variantId || variantId
+                });
+                console.log(B, '[ATC retry] waiting', wait, 'ms then attempt', n + 1,
+                  'for variant', err.variantId,
+                  err.rateLimited ? '(429)' : err.soldOutRace ? '(fresh-shadow sold-out race)' : err.notFound ? '(not-found)' : '(ambiguous)');
+                var prep = Promise.resolve(false);
+                if (!repaired && err && err.notFound) {
+                  repaired = true;
+                  prep = repairShadowPurchasable(variantId);
+                }
+                return prep.then(function() {
+                  return new Promise(function(resolve) { setTimeout(resolve, wait); });
+                }).then(function() { return attempt(n + 1); });
+              });
+          }
+          return attempt(0);
+        }
+
         function resolveFromBaseThenAdd() {
-          return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl)
+          return resolveDesignSku(atcBaseVariantId, atcDesignId, atcMockupUrl, data.price)
             .then(function(sku) {
-              return addToCart(sku.variantId, data.quantity, data.properties);
+              console.log(B, 'Resolved SKU for ATC', sku.variantId,
+                sku.created ? '(created — may retry sold-out race)' : sku.reused ? '(reused)' : '');
+              return addWithPublishRetry(sku.variantId, !!sku.created || !!data.shadowCreated);
             });
         }
 
-        function addWithPublishRetry(variantId) {
-          return addToCart(variantId, data.quantity, data.properties)
-            .catch(function(err) {
-              if (!(err && err.__retryable)) throw err;
-              console.log(B, 'Retrying ATC in 3s for variant', err.variantId);
-              return new Promise(function(resolve) { setTimeout(resolve, 3000); })
-                .then(function() {
-                  return addToCart(err.variantId, data.quantity, data.properties);
-                });
-            });
-        }
+        var sessionMode = 'shadow-direct';
+        try { sessionMode = sessionStorage.getItem('appai:atcMode') || 'shadow-direct'; } catch (e) {}
+        var baseFirstSwap = sessionMode === 'base-first' && !!(data.properties && data.properties._appai_swap_key) && !alreadyShadow;
 
         var addPromise;
-        if (alreadyShadow) {
-          console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId);
-          addPromise = addWithPublishRetry(data.variantId).catch(function(err) {
-            console.warn(B, 'Shadow variant unavailable — re-resolving from base:', (err && err.message) || err);
-            return resolveFromBaseThenAdd();
-          });
-        } else {
-          addPromise = resolveFromBaseThenAdd().catch(function(err) {
-            if (err && err.__retryable) {
-              return addWithPublishRetry(err.variantId);
+        if (baseFirstSwap) {
+          console.log(B, 'base-first ATC — base variant, swap later', data.variantId);
+          addPromise = addToCart(data.variantId, data.quantity, data.properties, data.price);
+        } else if (alreadyShadow) {
+          console.log(B, 'Using iframe-resolved shadow variant (skip duplicate resolve):', data.variantId,
+            data.shadowCreated ? '(iframe created:true)' : '');
+          addPromise = addWithPublishRetry(data.variantId, !!data.shadowCreated).catch(function(err) {
+            var msg = (err && err.message) || String(err || '');
+            var soldOut = !!(err && err.soldOutRace) || isCartSoldOutMessage(msg);
+            if (soldOut || (err && err.rateLimited) || (err && err.ambiguous) || (err && err.timeout) || (err && err.network)) {
+              console.error(B, 'Shadow add failed after retries — NOT re-resolving from base', {
+                shadowVariantId: data.variantId,
+                baseVariantId: atcBaseVariantId,
+                rateLimited: !!(err && err.rateLimited),
+                soldOut: soldOut,
+                message: msg
+              });
+              throw err;
+            }
+            if (err && err.notFound) {
+              console.warn(B, 'Shadow variant unavailable — re-resolving from base:', msg);
+              return resolveFromBaseThenAdd();
             }
             throw err;
           });
+        } else {
+          addPromise = resolveFromBaseThenAdd();
         }
 
         addPromise
           .then(replyAtcOk)
           .catch(function(err) {
-            var msg = (err && err.message) || String(err);
-            if (err && err.__retryable) {
-              replyAtcFail('This product is not available for purchase yet. Please refresh the page and try again.');
-              return;
-            }
-            replyAtcFail(msg);
+            replyAtcFail(ATC_SHADOW_STILL_PREPARING);
           });
         return;
       }
@@ -1698,7 +2718,14 @@
 
       // ===== RESIZE =====
       if (data.type === 'ai-art-studio:resize') {
-        if (mobileNativeScroll) return;
+        // Phone shell: parent visualViewport owns the iframe box. Child
+        // posts must not stretch it (that's what put the bottom tab
+        // below the phone). Tablets (coarse + width >= 768) still grow
+        // from the posted height so desktop layout stays reachable.
+        if (appaiIsPhoneShellMode()) {
+          applyMobileNativeScrollFrame();
+          return;
+        }
         var newH = Math.max(data.height || 0, 400);
         studioContainer.style.height = newH + 'px';
         return;
@@ -1731,6 +2758,38 @@
             _landEl.scrollTop = Math.max(0, _landEl.scrollTop + _rect.top - 16);
           } catch(e) {}
         }
+        applyMobileNativeScrollFrame();
+        return;
+      }
+      // ===== OPEN SAVED DESIGN (in-gallery tile → clean /pages/ URL) =====
+      if (data.type === 'ai-art-studio:open-saved-design') {
+        var savedDest = data.url || '';
+        if (!savedDest && data.pageHandle) {
+          savedDest = '/pages/' + encodeURIComponent(String(data.pageHandle));
+          if (data.loadDesignId) appaiWriteReopen(data.loadDesignId, data.pageHandle, data.loadMockup, null);
+        }
+        if (savedDest) {
+          try {
+            window.location.assign(savedDest);
+          } catch (e) {
+            window.location.href = savedDest;
+          }
+        }
+        return;
+      }
+      // ===== EXIT (mobile Back) =====
+      if (data.type === 'ai-art-studio:exit') {
+        var landingMockup = data.mockupUrl || '';
+        if (landingMockup) appaiStoreLandingMockup(landingMockup);
+        appaiApplyLandingMockup(landingMockup);
+        // Always load the shop home. history.back() can land on a mid-flow
+        // customizer URL (hidden theme content, no Customize pill) and look
+        // like the homepage until a refresh.
+        try {
+          window.location.assign(appaiExitFallbackUrl || '/');
+        } catch (e) {
+          window.location.href = appaiExitFallbackUrl || '/';
+        }
         return;
       }
       // ===== WHEEL FORWARDING =====
@@ -1753,14 +2812,26 @@
       // resolved per event: some themes scroll an inner wrapper (Savor's
       // .page-wrapper), not <html>.
       var _resolveTouchScroller = function (dy) {
-        var pageEl = appaiGetPageScrollElement();
-        if (appaiCanScroll(pageEl, dy, 0)) return pageEl;
+        // After unfix, scrollingElement has range in both directions.
+        // Wrapper only when the document is still locked (Savor/Ritual
+        // overflow:hidden + .page-wrapper). Tall overflow:visible
+        // (#MainContent/main) must never win.
+        var viewport = document.scrollingElement || document.documentElement;
         var wrapper = appaiScrollRootForEmbedIframe();
-        if (wrapper && appaiCanScroll(wrapper, dy, 0)) return wrapper;
-        return pageEl;
+        if (
+          appaiDocumentScrollLocked() &&
+          wrapper &&
+          appaiIsOverflowScroller(wrapper) &&
+          appaiCanScroll(wrapper, dy, 0)
+        ) {
+          return wrapper;
+        }
+        return viewport;
       };
       if (data.type === 'ai-art-studio:touchscroll') {
         stopFling();
+        appaiSyncScrollUnfix();
+        if (appaiIsTransientScrollLock()) return;
         var _tsDy = data.deltaY || 0;
         appaiInstantScrollBy(_resolveTouchScroller(_tsDy), _tsDy, 0);
         return;
@@ -1771,11 +2842,12 @@
       }
       if (data.type === 'ai-art-studio:touchfling') {
         stopFling();
+        if (appaiIsTransientScrollLock()) return;
         var flingV = data.velocityY || 0;
         var alive = true;
         stopFling = function() { alive = false; };
         (function step() {
-          if (!alive || Math.abs(flingV) < 0.5) return;
+          if (!alive || Math.abs(flingV) < 0.5 || appaiIsTransientScrollLock()) return;
           appaiInstantScrollBy(_resolveTouchScroller(flingV), flingV, 0);
           flingV *= 0.95; // friction: decays to ~0 in ~55 rAF frames (~0.9 s)
           requestAnimationFrame(step);
@@ -1792,17 +2864,7 @@
         if (Array.isArray(data.variants)) config.shopifyVariants = data.variants;
         console.log(B, 'Updated parent product context after in-app switch — productTypeId:', config.productTypeId, 'productId:', config.productId);
         if (Array.isArray(data.variants) && data.variants.length > 0) {
-          try {
-            iframe.contentWindow.postMessage({
-              type: 'AI_ART_STUDIO_SHOPIFY_VARIANTS',
-              variants: data.variants,
-              baseVariantId: data.selectedVariant || config.selectedVariant || null,
-              productTypeId: config.productTypeId || null,
-            }, iframeOrigin || '*');
-            console.log(B, 'Re-sent SHOPIFY_VARIANTS after product switch:', data.variants.length, 'variants');
-          } catch(e) {
-            console.warn(B, 'Failed to re-send SHOPIFY_VARIANTS after product switch:', e.message);
-          }
+          sendShopifyVariants();
         }
         return;
       }
@@ -1824,7 +2886,11 @@
           atcBtnEl.style.opacity = data.disabled ? '0.5' : '1';
           atcBtnEl.style.cursor = data.disabled ? 'not-allowed' : 'pointer';
           if (data.payload) {
+            delete data.payload.sessionId;
+            delete data.payload.identityToken;
             atcBtnEl.dataset.payload = JSON.stringify(data.payload);
+          } else {
+            delete atcBtnEl.dataset.payload;
           }
         }
 
@@ -1869,10 +2935,46 @@
     var atcBtn = container.querySelector('#ai-art-atc-btn');
     if (atcBtn) {
       atcBtn.addEventListener('click', function() {
+        if (atcBtn.disabled) return;
         var payloadJson = atcBtn.dataset.payload || '{}';
         var payload;
         try { payload = JSON.parse(payloadJson); } catch(e) { payload = {}; }
-        if (!payload.variantId) return;
+        if (!payload.variantId) {
+          var miss = payload.matchFailed
+            ? 'Could not match that size/color. Try picking size and color again.'
+            : 'Select a size and color first.';
+          atcBtn.textContent = 'Error \u2014 Try Again';
+          atcBtn.style.background = '#c0392b';
+          atcBtn.disabled = false;
+          atcBtn.style.opacity = '1';
+          try {
+            iframe.contentWindow.postMessage({
+              type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
+              correlationId: payload.correlationId || '',
+              ok: false, success: false,
+              error: miss,
+              _bridgeVersion: BRIDGE_VERSION
+            }, '*');
+          } catch (_) {}
+          setTimeout(function() {
+            atcBtn.style.background = '';
+            atcBtn.textContent = 'Add to Cart';
+          }, 3000);
+          return;
+        }
+
+        var btnCooldown = readAtcRateLimitRemainingMs();
+        if (btnCooldown > 0) {
+          atcBtn.textContent = 'Try again in ' + Math.max(1, Math.ceil(btnCooldown / 1000)) + 's';
+          atcBtn.disabled = true;
+          atcBtn.style.opacity = '0.7';
+          setTimeout(function() {
+            atcBtn.disabled = false;
+            atcBtn.style.opacity = '1';
+            atcBtn.textContent = 'Add to Cart';
+          }, btnCooldown);
+          return;
+        }
 
         atcBtn.textContent = 'Adding to Cart\u2026';
         atcBtn.disabled = true;
@@ -1896,10 +2998,53 @@
           } catch(_) {}
         }
 
-        var btnDesignId = (payload.properties && payload.properties['_design_id']) || '';
-        resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '')
+        var btnDesignId = shadowDesignIdFromProps(payload.properties) ||
+          (payload.properties && payload.properties['_design_id']) || '';
+        resolveDesignSku(payload.variantId, btnDesignId, mockupUrl || '', payload.price)
           .then(function(sku) {
-            return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {});
+            var skipCartJs = false;
+            var addCalls = 0;
+            function attempt(n) {
+              logAtcDebug({
+                event: 'cart_add_attempt',
+                attempt: n,
+                created: !!sku.created,
+                variantId: sku.variantId,
+                reason: 'native_button'
+              });
+              console.log(B, '[ATC retry] button attempt', n + '/' + (ATC_MAX_CART_ADD_CALLS_PER_TAP - 1), 'variant', sku.variantId,
+                sku.created ? '(created:true)' : '(created:false)');
+              addCalls += 1;
+              return addToCart(sku.variantId, payload.quantity || 1, payload.properties || {}, payload.price, { skipCartJs: skipCartJs })
+                .then(function(cart) {
+                  logAtcDebug({
+                    event: 'cart_add_ok',
+                    attempt: n,
+                    created: !!sku.created,
+                    variantId: sku.variantId,
+                    reason: 'native_button'
+                  });
+                  return cart;
+                })
+                .catch(function(err) {
+                  var btnWaits = ATC_PROPAGATION_WAITS_MS;
+                  if (!(err && err.__retryable) || n >= btnWaits.length || addCalls >= ATC_MAX_CART_ADD_CALLS_PER_TAP) {
+                    throw err;
+                  }
+                  skipCartJs = !!(err && err.notFound && !err.rateLimited && !err.ambiguous && !err.soldOutRace);
+                  var wait = (err && err.rateLimited && err.retryAfterMs)
+                    ? err.retryAfterMs
+                    : btnWaits[Math.min(n, btnWaits.length - 1)];
+                  if (err && err.rateLimited) writeAtcRateLimitCooldown(wait);
+                  var prep = (err && err.notFound)
+                    ? repairShadowPurchasable(sku.variantId)
+                    : Promise.resolve(false);
+                  return prep.then(function() {
+                    return new Promise(function(resolve) { setTimeout(resolve, wait); });
+                  }).then(function() { return attempt(n + 1); });
+                });
+            }
+            return attempt(0);
           })
           .then(function(cart) {
             // Notify iframe of success so it can show its success state
@@ -1925,7 +3070,7 @@
                 type: 'AI_ART_STUDIO_ADD_TO_CART_RESULT',
                 correlationId: payload.correlationId || '',
                 ok: false, success: false,
-                error: err.message,
+                error: ATC_SHADOW_STILL_PREPARING,
                 _bridgeVersion: BRIDGE_VERSION
               }, '*');
             } catch(e) {}
@@ -2083,6 +3228,7 @@
 
     native.parentNode.insertBefore(ph, native);
     console.log('[AI Art Embed] Created placeholder gallery. liquidImg:', !!liquidImgSrc, 'fallbackImg:', !liquidImgSrc && !!imgSrc);
+    appaiApplyLandingMockup();
   }
 
   function insertStudioAfterProductInfo(studioElement) {
@@ -2269,6 +3415,7 @@
             price: v.price ? (parseFloat(v.price) / 100).toFixed(2) : '0.00',
             option1: v.option1 || undefined,
             option2: v.option2 || undefined,
+            option3: v.option3 || undefined,
           }));
           console.log('[AI Art Embed] Extracted', productVariants.length, 'variants with prices');
         }
@@ -2307,6 +3454,7 @@
       if (studioElement) {
         const doInsert = () => {
           createPlaceholderGallery();
+          appaiApplyLandingMockup();
           insertStudioAfterProductInfo(studioElement);
           cleanupDuplicateGenerators();
         };
@@ -2365,12 +3513,68 @@
    * Only one customizer instance can ever mount — the global guards
    * (__APPAI_CUSTOMIZER_INIT__ + __APPAI_CUSTOMIZER_HANDLED) ensure this.
    */
-  function appaiMountCustomizerConfig(handle, config, opts) {
+  function appaiResolveShopDomain() {
+    var el = document.getElementById('appai-root');
+    var ds = el && el.getAttribute('data-shop');
+    var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
+    var s = String(raw).trim().toLowerCase();
+    if (s.indexOf('.myshopify.com') !== -1) return s;
+    if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
+    return s;
+  }
+
+  function appaiShopDisplayName() {
+    try {
+      var root = document.getElementById('appai-root');
+      var name = root && root.getAttribute('data-shop-name');
+      return name ? String(name).trim() : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function appaiIsHostedCustomizerPage() {
+    return !!document.getElementById('appai-boot') ||
+      !!document.querySelector('.ai-art-studio-block, [data-block-handle="ai-art-studio"]');
+  }
+
+  function appaiUnmountEarlyStudio() {
+    document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    });
+  }
+
+  function appaiAssignPageJsonToStudioConfig(studioConfig, handle, pageCfg) {
+    studioConfig.appUrl = pageCfg.appUrl;
+    studioConfig.productTypeId = pageCfg.productTypeId ? String(pageCfg.productTypeId) : '0';
+    studioConfig.productId = pageCfg.baseProductId || '';
+    studioConfig.productHandle = pageCfg.baseProductHandle || handle;
+    studioConfig.productTitle = pageCfg.baseProductTitle || pageCfg.title || '';
+    studioConfig.displayName = pageCfg.title || '';
+    studioConfig.selectedVariant = pageCfg.baseVariantId;
+    studioConfig.inlineDesignerConfig = pageCfg.designerConfig || null;
+    studioConfig.freshDesignAllowed = pageCfg.freshDesignAllowed !== false;
+    studioConfig.shopifyVariants = pageCfg.variants || [];
+    studioConfig.stylePresets = pageCfg.stylePresets || [];
+    studioConfig.styleConfig = pageCfg.styleConfig || null;
+    studioConfig.experienceProfile = pageCfg.experienceProfile || null;
+    studioConfig.customizerPageHandle = handle;
+    // Cart/drawer pages never load this payload, so later phases read the mode from session.
+    studioConfig.atcMode = pageCfg.atcMode || 'shadow-direct';
+    try { sessionStorage.setItem('appai:atcMode', studioConfig.atcMode); } catch (_) {}
+    try { if (studioConfig.appUrl) sessionStorage.setItem('appai:appUrl', studioConfig.appUrl); } catch (_) {}
+    if (typeof studioConfig.__pushDesignerConfig === 'function') {
+      studioConfig.__pushDesignerConfig();
+    }
+  }
+
+  function appaiMountCustomizerConfig(handle, studioConfig, opts) {
     opts = opts || {};
     var replaceExisting = !!opts.replaceExisting;
-    console.log('[AI Art Embed] STATE=CONFIG_LOADED handle=' + handle +
-      ' productTypeId=' + config.productTypeId +
-      ' hasDesignerConfig=' + !!config.designerConfig);
+    console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle +
+      ' productTypeId=' + studioConfig.productTypeId +
+      ' hasDesignerConfig=' + !!studioConfig.inlineDesignerConfig +
+      ' shell=' + !studioConfig.inlineDesignerConfig);
 
     var mount = document.querySelector('#MainContent') ||
                 document.querySelector('main[role="main"]') ||
@@ -2378,9 +3582,7 @@
                 document.body;
 
     if (replaceExisting) {
-      document.querySelectorAll('#ai-art-studio-auto-embed, .ai-art-studio-embed').forEach(function(el) {
-        if (el && el.parentNode) el.parentNode.removeChild(el);
-      });
+      appaiUnmountEarlyStudio();
     }
 
     // Hide ALL other main-content children on customizer pages — not only on
@@ -2418,42 +3620,15 @@
       if (el.closest('.ai-art-studio-embed') || el.closest('.ai-art-studio-block')) return;
       hideThemeElement(el);
     });
-    var shopDomain = (function () {
-      var el = document.getElementById('appai-root');
-      var ds = el && el.getAttribute('data-shop');
-      var raw = (ds && String(ds).trim()) || ((window.Shopify && window.Shopify.shop) || '');
-      var s = String(raw).trim().toLowerCase();
-      if (s.indexOf('.myshopify.com') !== -1) return s;
-      if (/^[a-z0-9][a-z0-9-]*$/.test(s)) return s + '.myshopify.com';
-      return s;
-    })();
-    var studioEl = createDesignStudio({
-      appUrl:               config.appUrl,
-      shopDomain:           shopDomain,
-      productTypeId:        config.productTypeId ? String(config.productTypeId) : '0',
-      productId:            config.baseProductId || '',
-      productHandle:        config.baseProductHandle || handle,
-      productTitle:         config.baseProductTitle || config.title,
-      displayName:          config.title,
-      description:          '',
-      selectedVariant:      config.baseVariantId,
-      hideAddToCart:        false,
-      enabled:              true,
-      inlineDesignerConfig: config.designerConfig || null,
-      freshDesignAllowed:   config.freshDesignAllowed !== false,
-      // Shopify variants with prices and style presets — pushed into the
-      // iframe via postMessage in the BRIDGE_ACK handler so the generator
-      // can render them internally (no external dropdown needed).
-      shopifyVariants:      config.variants || [],
-      stylePresets:         config.stylePresets || [],
-      styleConfig:          config.styleConfig || null,
-    });
+    if (!studioConfig.shopDomain) {
+      studioConfig.shopDomain = appaiResolveShopDomain();
+    }
+    var studioEl = createDesignStudio(studioConfig);
 
     // null means the iframe was mounted into an existing theme app block.
     if (studioEl) {
       mount.insertBefore(studioEl, mount.firstChild);
     }
-    console.log('[AI Art Embed] STATE=MOUNTED handle=' + handle);
 
     // Remove any duplicate generators that old cached block scripts may have created
     cleanupDuplicateGenerators();
@@ -2475,13 +3650,14 @@
     return fetch(url, Object.assign({}, options, controller ? { signal: controller.signal } : {}))
       .finally(function() { if (timer) clearTimeout(timer); });
   }
-  function appaiFetchCustomizerConfig(handle, attempt) {
+  function appaiFetchCustomizerConfig(handle, attempt, cacheBust) {
     var previewMatch = window.location.search.match(/[?&]appai_preview=([^&]+)/);
-    var savedDesignMatch = window.location.search.match(/[?&](?:savedDesignId|loadDesignId)=([^&]+)/);
+    var savedDesignId = appaiReopenDesignId();
     var url = '/apps/appai/customizer-page?handle=' + encodeURIComponent(handle);
     if (previewMatch) url += '&appai_preview=' + previewMatch[1];
     // Disabled pages only load for saved-design reopen (ATC); pass id for server gate.
-    if (savedDesignMatch) url += '&savedDesignId=' + savedDesignMatch[1];
+    if (savedDesignId) url += '&savedDesignId=' + encodeURIComponent(savedDesignId);
+    if (cacheBust) url += '&_t=' + Date.now();
     return appaiFetchWithTimeout(
       url,
       { credentials: 'same-origin' },
@@ -2489,13 +3665,89 @@
     ).catch(function(e) {
       if (attempt >= 1) throw e;
       console.warn('[AI Art Embed] customizer-page fetch attempt', attempt, 'failed, retrying:', e && e.message);
-      return appaiFetchCustomizerConfig(handle, attempt + 1);
+      return appaiFetchCustomizerConfig(handle, attempt + 1, cacheBust);
     });
   }
 
   function initCustomizerPage(handle, opts) {
     opts = opts || {};
     console.log('[AI Art Embed] STATE=CONFIG_LOADING handle=' + handle);
+    appaiLogPhoneShell('initCustomizerPage handle=' + handle);
+    if (appaiIsDesignerPath()) {
+      console.log('[AI Art Embed] CP1 initCustomizerPage skipped — already on /s/designer');
+      return;
+    }
+    if (appaiIsPhoneShellMode()) {
+      try {
+        var bodyCs = getComputedStyle(document.body);
+        sessionStorage.setItem('appai:themeSnapshot', JSON.stringify({
+          backgroundColor: bodyCs.backgroundColor,
+          textColor: bodyCs.color,
+          fontFamily: bodyCs.fontFamily,
+          fontSize: bodyCs.fontSize
+        }));
+      } catch (e) {}
+      // Seed from the incoming URL so deep links survive the hop: loadDesignId /
+      // loadMockup (Saved Designs), reuseArtworkUrl / reuseJobId (reuse flow),
+      // sharedDesignId, selectedVariant, preview_theme_id. Building this set from
+      // scratch silently dropped all of them.
+      var early = new URLSearchParams(window.location.search);
+      early.delete('deferDesignerConfig');
+      early.set('shop', appaiResolveShopDomain());
+      early.set('page', handle);
+      early.set('pageHandle', handle);
+      early.set('productHandle', handle);
+      early.set('host', 'page');
+      early.set('returnTo', window.location.pathname + window.location.search);
+      var shopifyObj = window.Shopify || {};
+      var earlyCur = (shopifyObj.currency && shopifyObj.currency.active)
+        ? String(shopifyObj.currency.active).toUpperCase() : '';
+      if (earlyCur) early.set('currency', earlyCur);
+      var earlyRate = shopifyObj.currency && shopifyObj.currency.rate != null
+        ? parseFloat(shopifyObj.currency.rate) : NaN;
+      if (isFinite(earlyRate)) early.set('rate', String(earlyRate));
+      var earlyRoot = document.getElementById('appai-root');
+      var earlyShopCur = earlyRoot && earlyRoot.getAttribute('data-shop-currency');
+      if (earlyShopCur) early.set('shopCurrency', String(earlyShopCur).toUpperCase());
+      if (shopifyObj.country) early.set('country', String(shopifyObj.country).toUpperCase());
+      if (shopifyObj.locale) early.set('locale', String(shopifyObj.locale));
+      var earlyShopName = appaiShopDisplayName();
+      if (earlyShopName) early.set('shopName', earlyShopName);
+      var earlyUrl = window.location.origin + '/apps/appai/s/designer?' + early.toString();
+      console.log('[AI Art Embed] CP1 early location.replace', earlyUrl);
+      window.location.replace(earlyUrl);
+      return;
+    }
+
+    // Hosted customizer pages (#appai-boot or theme app block) can start the
+    // iframe immediately. Contact/About /pages/* must wait for the 404 so we
+    // never inject a studio on ordinary merchant pages.
+    var hosted = appaiIsHostedCustomizerPage();
+    var studioConfig = null;
+    if (hosted) {
+      studioConfig = {
+        shopDomain: appaiResolveShopDomain(),
+        productTypeId: '0',
+        productId: '',
+        productHandle: handle,
+        productTitle: '',
+        displayName: '',
+        description: '',
+        selectedVariant: '',
+        hideAddToCart: false,
+        enabled: true,
+        deferDesignerConfig: true,
+        inlineDesignerConfig: null,
+        freshDesignAllowed: true,
+        shopifyVariants: [],
+        stylePresets: [],
+        styleConfig: null,
+        customizerPageHandle: handle,
+      };
+      console.log('[AI Art Embed] STATE=SHELL_MOUNTED handle=' + handle +
+        ' (iframe parallel with customizer-page)');
+      appaiMountCustomizerConfig(handle, studioConfig, opts);
+    }
 
     appaiFetchCustomizerConfig(handle, 0)
       .then(function(r) {
@@ -2511,15 +3763,18 @@
         if (config && config.__appaiNotFound && config.fallbackUrl && !opts.fallbackUrl) {
           opts = Object.assign({}, opts, { fallbackUrl: config.fallbackUrl });
         }
+        if (opts.fallbackUrl) appaiRememberFallbackUrl(opts.fallbackUrl);
+        if (config && config.fallbackUrl) appaiRememberFallbackUrl(config.fallbackUrl);
         if (!config || config.__appaiNotFound) {
           var staleBoot = document.getElementById('appai-boot');
           // Only pages the app itself created/hosts carry these markers: the
           // self-bootstrap cover (#appai-boot) or a theme app block container.
           // Ordinary merchant pages (Contact, About, FAQ...) also live under
           // /pages/ and reach this 404 branch — they must be left untouched.
-          var isAppaiPage = !!staleBoot || !!document.querySelector(
+          var isAppaiPage = hosted || !!staleBoot || !!document.querySelector(
             '.ai-art-studio-block, [data-block-handle="ai-art-studio"]'
           );
+          if (studioConfig) appaiUnmountEarlyStudio();
           if (staleBoot && staleBoot.parentNode) staleBoot.parentNode.removeChild(staleBoot);
           if (opts.fallbackUrl) {
             window.location.href = opts.fallbackUrl;
@@ -2548,7 +3803,35 @@
           return;
         }
 
-        appaiMountCustomizerConfig(handle, config, opts);
+        if (studioConfig) {
+          appaiAssignPageJsonToStudioConfig(studioConfig, handle, config);
+          console.log('[AI Art Embed] STATE=CONFIG_APPLIED handle=' + handle +
+            ' productTypeId=' + studioConfig.productTypeId);
+          cleanupDuplicateGenerators();
+          return;
+        }
+
+        studioConfig = {
+          shopDomain: appaiResolveShopDomain(),
+          productTypeId: '0',
+          productId: '',
+          productHandle: handle,
+          productTitle: '',
+          displayName: '',
+          description: '',
+          selectedVariant: '',
+          hideAddToCart: false,
+          enabled: true,
+          deferDesignerConfig: true,
+          inlineDesignerConfig: null,
+          freshDesignAllowed: true,
+          shopifyVariants: [],
+          stylePresets: [],
+          styleConfig: null,
+          customizerPageHandle: handle,
+        };
+        appaiAssignPageJsonToStudioConfig(studioConfig, handle, config);
+        appaiMountCustomizerConfig(handle, studioConfig, opts);
 
         // Variant selector and style presets are now rendered INSIDE the
         // generator iframe (via AI_ART_STUDIO_SHOPIFY_VARIANTS and
@@ -2556,6 +3839,7 @@
         // handler).  No external DOM is needed here.
       })
       .catch(function(e) {
+        if (studioConfig) appaiUnmountEarlyStudio();
         var failedBoot = document.getElementById('appai-boot');
         if (failedBoot && failedBoot.parentNode) failedBoot.parentNode.removeChild(failedBoot);
         if (opts.fallbackUrl) {

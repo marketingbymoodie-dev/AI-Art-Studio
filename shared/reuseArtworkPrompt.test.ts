@@ -3,6 +3,7 @@ import {
   REUSE_REGENERATE_PREFIX,
   buildReuseRegeneratePrompt,
   composeReuseRegenerateUserPrompt,
+  isReuseRegeneratePrompt,
   unwrapReuseOriginalIdea,
 } from "./reuseArtworkPrompt";
 import { userPromptRequestsPattern } from "./stylePromptCompatibility";
@@ -26,6 +27,11 @@ describe("reuseArtworkPrompt", () => {
 
   it("does not look like a pattern request", () => {
     expect(userPromptRequestsPattern(buildReuseRegeneratePrompt("angry bird"))).toBe(false);
+  });
+
+  it("detects reuse regenerate prompts", () => {
+    expect(isReuseRegeneratePrompt(buildReuseRegeneratePrompt("mona lisa"))).toBe(true);
+    expect(isReuseRegeneratePrompt("a watercolor of the mona lisa")).toBe(false);
   });
 
   it("appends optional customer changes", () => {

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Images, X } from "lucide-react";
 import { API_BASE } from "@/lib/urlBase";
+import { pageHandleFromUrl, writeReopenDesign } from "@/lib/reopenDesign";
+import { normalizePreviewUrl } from "@shared/previewUrl";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
 
 type SavedDesign = {
@@ -51,6 +53,23 @@ function readLoggedInCustomerId(): string | null {
   } catch {
     return null;
   }
+}
+
+/** Identity token written by the designer's identity bootstrap (same origin). */
+function readIdentityToken(): string | null {
+  try {
+    return localStorage.getItem("appai_identity_token") || sessionStorage.getItem("appai_identity_token");
+  } catch {
+    return null;
+  }
+}
+
+function identityHeaders(json: boolean): Record<string, string> {
+  const token = readIdentityToken();
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 function clearStorefrontLogin() {
@@ -104,13 +123,14 @@ function thumbUrl(d: SavedDesign): string {
     ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
-  for (const u of [
-    flat?.front,
-    hoodie?.front,
-    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
-    d.artworkUrl,
-  ]) {
-    if (typeof u === "string" && u.trim()) return u.trim();
+  const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
+  if (typeof fromJob === "string" && fromJob.trim()) {
+    return normalizePreviewUrl(fromJob.trim()) || "";
+  }
+  for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
+    if (typeof u === "string" && u.trim()) {
+      return normalizePreviewUrl(u.trim()) || "";
+    }
   }
   return "";
 }
@@ -277,7 +297,7 @@ export function CreatorSavedDesignsMenu({
     const designsReq = customerId
       ? fetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: identityHeaders(true),
           body: JSON.stringify({ shop, customerId }),
         }).then((r) => r.json())
       : Promise.resolve({ designs: [] });
@@ -318,7 +338,7 @@ export function CreatorSavedDesignsMenu({
       params.set("customerId", customerId);
       const r = await fetch(
         `${API_BASE}/api/storefront/customizer/my-designs/${encodeURIComponent(d.id)}?${params}`,
-        { method: "DELETE" },
+        { method: "DELETE", headers: identityHeaders(false) },
       );
       if (r.ok) setDesigns((prev) => prev.filter((x) => x.id !== d.id));
     } finally {
@@ -465,7 +485,15 @@ export function CreatorSavedDesignsMenu({
                       <a
                         href={href}
                         className="block overflow-hidden rounded-md border border-border hover:border-primary"
-                        onClick={() => setOpen(false)}
+                        onClick={() => {
+                          try {
+                            const handle = pageHandleFromUrl(new URL(href, window.location.origin));
+                            writeReopenDesign(window, { id: d.id, handle });
+                          } catch {
+                            /* ignore */
+                          }
+                          setOpen(false);
+                        }}
                       >
                         {card}
                       </a>

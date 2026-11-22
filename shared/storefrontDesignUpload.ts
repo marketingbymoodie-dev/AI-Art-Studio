@@ -1,0 +1,221 @@
+/**
+ * Storefront design-upload helpers: 429 handling, persist-kick gate,
+ * per-panel reuse, and small-batch hosting. Used by embed-design persist.
+ */
+
+export type AopPanelPersistStatus =
+  | "none"
+  | "saving"
+  | "saved"
+  | "error"
+  | "rateLimited";
+
+/** Cold-start kick only. Never loop after a failed or rate-limited persist. */
+export function shouldKickAopPersist(
+  status: AopPanelPersistStatus,
+  kickAlreadyAttempted: boolean,
+): boolean {
+  if (kickAlreadyAttempted) return false;
+  if (status === "saved" || status === "error" || status === "rateLimited") {
+    return false;
+  }
+  return status === "none" || status === "saving";
+}
+
+export class UploadRateLimitedError extends Error {
+  readonly retryAfterSec: number;
+  constructor(retryAfterSec: number) {
+    const sec = Math.max(1, Math.round(retryAfterSec));
+    super(`Try again in ${sec} second${sec === 1 ? "" : "s"}`);
+    this.name = "UploadRateLimitedError";
+    this.retryAfterSec = sec;
+  }
+}
+
+export function isUploadRateLimitedError(err: unknown): err is UploadRateLimitedError {
+  return err instanceof UploadRateLimitedError;
+}
+
+export function parseRetryAfterSec(
+  headerValue: string | null | undefined,
+  body?: unknown,
+): number {
+  if (headerValue) {
+    const n = parseInt(headerValue, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  if (body && typeof body === "object" && body !== null) {
+    const rec = body as { retryAfter?: unknown; retryAfterSec?: unknown };
+    const n = Number(rec.retryAfterSec ?? rec.retryAfter);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 60;
+}
+
+export type HostedPrintPanel = {
+  position: string;
+  url: string;
+  hash: string;
+};
+
+export type PrintPanelInput = {
+  position: string;
+  dataUrl: string;
+  /** Extra reuse discriminator (e.g. garment background hex). */
+  reuseKey?: string;
+};
+
+/**
+ * Cheap stable fingerprint. Hash every character — a 256-stride sample
+ * skipped most PNG bytes, so two same-size solid fills (navy vs teal
+ * sleeve) collided and the previous session's panel URL was reused.
+ */
+export function hashPanelDataUrl(dataUrl: string, reuseKey = ""): string {
+  const payload = reuseKey ? `${reuseKey}\0${dataUrl}` : dataUrl;
+  let h = 5381;
+  for (let i = 0; i < payload.length; i++) {
+    h = ((h << 5) + h) ^ payload.charCodeAt(i);
+  }
+  return `${payload.length}:${h >>> 0}`;
+}
+
+function isHostedHttpUrl(url: string): boolean {
+  return url.startsWith("https://") || url.startsWith("http://");
+}
+
+export function findReusableHostedPanel(
+  previous: HostedPrintPanel[] | null | undefined,
+  position: string,
+  hash: string,
+): HostedPrintPanel | null {
+  if (!previous?.length || !hash) return null;
+  const found = previous.find((p) => p.position === position);
+  if (!found?.hash || found.hash !== hash) return null;
+  if (!found.url || !isHostedHttpUrl(found.url)) return null;
+  return found;
+}
+
+export function mergeHostedPrintPanels(
+  previous: HostedPrintPanel[] | null | undefined,
+  next: HostedPrintPanel[],
+): HostedPrintPanel[] {
+  const map = new Map((previous ?? []).map((p) => [p.position, p]));
+  for (const p of next) map.set(p.position, p);
+  return [...map.values()];
+}
+
+export function hasReusableHostedPrintSet(
+  previous: HostedPrintPanel[] | null | undefined,
+  positions: string[],
+): boolean {
+  if (!previous?.length || !positions.length) return false;
+  return positions.every((pos) => {
+    const found = previous.find((p) => p.position === pos);
+    // Empty hash = restored URL from another session. Never treat that as
+    // a verified match — hoods were leaking the previous design's fill.
+    return !!(found?.url && found.hash && isHostedHttpUrl(found.url));
+  });
+}
+
+/**
+ * Reuse restored/previously-hosted URLs when the caller has ALREADY proven
+ * the whole design is byte-for-byte unchanged (a matching
+ * `aopPanelCaptureSignature`) — a stronger guarantee than the per-panel hash
+ * `hasReusableHostedPrintSet` requires, which is deliberately left empty on
+ * cross-session restores (see that function's comment) and so can never
+ * pass on the first persist after a reload/reopen. That forces a full
+ * render + re-upload of every panel even when nothing changed, which is
+ * exactly the "upload storm" a slow mobile connection can't survive.
+ *
+ * Callers MUST gate this on a signature match themselves — this function
+ * only checks URL coverage, not whether the design actually matches.
+ * All-or-nothing: any missing/un-hosted position returns `null` so the
+ * caller falls back to the normal render + upload path for every panel.
+ */
+export function resolveSignatureMatchedPanels(
+  positions: string[],
+  previous: HostedPrintPanel[] | null | undefined,
+): Array<{ position: string; url: string }> | null {
+  if (!previous?.length || !positions.length) return null;
+  const out: Array<{ position: string; url: string }> = [];
+  for (const pos of positions) {
+    const found = previous.find((p) => p.position === pos);
+    if (!found?.url || !isHostedHttpUrl(found.url)) return null;
+    out.push({ position: pos, url: found.url });
+  }
+  return out;
+}
+
+export const PRINT_PANEL_UPLOAD_BATCH_SIZE = 2;
+
+export type HostPrintPanelsResult = {
+  hosted: HostedPrintPanel[];
+  failedPositions: string[];
+  uploadsAttempted: number;
+  rateLimited?: { retryAfterSec: number };
+};
+
+/**
+ * Reuse unchanged panel URLs; upload the rest in batches of 2.
+ * Stops the remaining queue on the first 429; keeps successes (including
+ * the other file in a half-finished batch).
+ */
+export async function hostPrintPanelsBatched(opts: {
+  panels: PrintPanelInput[];
+  previous?: HostedPrintPanel[] | null;
+  host: (dataUrl: string) => Promise<string>;
+  batchSize?: number;
+  /** Applied to every panel unless the panel sets its own reuseKey. */
+  reuseKey?: string;
+}): Promise<HostPrintPanelsResult> {
+  const batchSize = Math.max(1, opts.batchSize ?? PRINT_PANEL_UPLOAD_BATCH_SIZE);
+  const hosted: HostedPrintPanel[] = [];
+  const toUpload: Array<PrintPanelInput & { hash: string }> = [];
+  const batchReuseKey = opts.reuseKey ?? "";
+
+  for (const panel of opts.panels) {
+    const hash = hashPanelDataUrl(panel.dataUrl, panel.reuseKey ?? batchReuseKey);
+    const reused = findReusableHostedPanel(opts.previous, panel.position, hash);
+    if (reused) {
+      hosted.push({ position: panel.position, url: reused.url, hash });
+    } else {
+      toUpload.push({ ...panel, hash });
+    }
+  }
+
+  let uploadsAttempted = 0;
+  for (let i = 0; i < toUpload.length; i += batchSize) {
+    const batch = toUpload.slice(i, i + batchSize);
+    const settled = await Promise.allSettled(
+      batch.map(async (panel) => {
+        uploadsAttempted += 1;
+        const url = await opts.host(panel.dataUrl);
+        return { position: panel.position, url, hash: panel.hash };
+      }),
+    );
+    let rateLimited: { retryAfterSec: number } | undefined;
+    let otherError: unknown;
+    for (let j = 0; j < settled.length; j++) {
+      const row = settled[j];
+      if (row.status === "fulfilled") {
+        hosted.push(row.value);
+        continue;
+      }
+      if (isUploadRateLimitedError(row.reason)) {
+        rateLimited = { retryAfterSec: row.reason.retryAfterSec };
+      } else if (!otherError) {
+        otherError = row.reason;
+      }
+    }
+    if (rateLimited) {
+      const failedPositions = toUpload
+        .slice(i)
+        .map((p) => p.position)
+        .filter((pos) => !hosted.some((h) => h.position === pos));
+      return { hosted, failedPositions, uploadsAttempted, rateLimited };
+    }
+    if (otherError) throw otherError;
+  }
+
+  return { hosted, failedPositions: [], uploadsAttempted };
+}

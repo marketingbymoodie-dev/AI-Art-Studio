@@ -9,9 +9,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
-  Image, Loader2, Trash2, Wand2, Pencil, Sparkles, LayoutTemplate, Tag,
-  ExternalLink, Camera, Power, PowerOff, X,
+  Image, Loader2, Trash2, Wand2, Sparkles, LayoutTemplate, Tag,
+  ExternalLink, Camera, Power, PowerOff, X, FlaskConical,
 } from "lucide-react";
+import { normalizePreviewUrl } from "@shared/previewUrl";
+import { EditColours } from "@/components/admin/EditColours";
 
 interface CustomizerPageSummary {
   id: string;
@@ -27,6 +29,8 @@ interface DesignStudioIdentity {
   savedCount: number;
   savedLimit: number;
   canSaveDesigns?: boolean;
+  /** Saved-designs requests require it. */
+  identityToken?: string;
 }
 
 interface SavedMerchantDesign {
@@ -46,9 +50,11 @@ interface DesignProduct {
   id: string;
   jobId: string;
   shopifyProductId: string | null;
+  printifyProductId?: string | null;
   handle: string | null;
   title: string;
   status: "active" | "inactive";
+  myPetEnabled?: boolean;
   mockupUrls: string[] | null;
 }
 
@@ -72,7 +78,10 @@ export default function DesignsPage() {
     queryFn: async () => {
       const res = await fetch(`/api/storefront/customizer/my-designs`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(identity?.identityToken ? { Authorization: `Bearer ${identity.identityToken}` } : {}),
+        },
         credentials: "include",
         body: JSON.stringify({ shop: identity!.shop, customerId: identity!.customerId }),
       });
@@ -100,6 +109,7 @@ export default function DesignsPage() {
       const res = await fetch(`/api/storefront/customizer/my-designs/${jobId}?${params.toString()}`, {
         method: "DELETE",
         credentials: "include",
+        headers: identity?.identityToken ? { Authorization: `Bearer ${identity.identityToken}` } : undefined,
       });
       if (!res.ok) throw new Error("Failed to delete design");
       return res.json();
@@ -159,6 +169,27 @@ export default function DesignsPage() {
     onSettled: () => setBusyProductId(null),
   });
 
+  const myPetMutation = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
+      setBusyProductId(id);
+      const res = await fetch(`/api/appai/design-products/${id}/my-pet`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to update My Pet");
+      return data;
+    },
+    onSuccess: (_data, vars) => {
+      toast({ title: vars.enabled ? "My Pet on" : "My Pet off" });
+      queryClient.invalidateQueries({ queryKey: ["/api/appai/design-products"] });
+    },
+    onError: (err: any) => toast({ title: "My Pet update failed", description: err.message, variant: "destructive" }),
+    onSettled: () => setBusyProductId(null),
+  });
+
   const unpublishMutation = useMutation({
     mutationFn: async (id: string) => {
       setBusyProductId(id);
@@ -198,6 +229,13 @@ export default function DesignsPage() {
     navigate(`/admin/design-studio?productTypeId=${productTypeId}`);
   };
 
+  const openSavedDesignInPreviewStudio = (design: SavedMerchantDesign) => {
+    if (!design.productTypeId) return;
+    navigate(
+      `/admin/create-product?productTypeId=${encodeURIComponent(design.productTypeId)}&loadDesignId=${encodeURIComponent(design.id)}`,
+    );
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-10">
@@ -205,7 +243,7 @@ export default function DesignsPage() {
           <div>
             <h1 className="text-2xl font-semibold">My Designs</h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Create designs with your live customizer pages, then list your favorites as standalone products on your store.
+              Create designs with your live customizer pages, then reopen a saved design in Preview Studio to send a Printify test order, or list favorites as store products.
             </p>
           </div>
           {productsData && (
@@ -293,10 +331,21 @@ export default function DesignsPage() {
                 const isBusy = busyProductId === product?.id;
                 return (
                   <Card key={design.id} className="overflow-hidden" data-testid={`card-saved-design-${design.id}`}>
-                    <div className="aspect-[3/4] bg-muted relative overflow-hidden">
+                    <div
+                      className={`aspect-[3/4] bg-muted relative overflow-hidden${design.productTypeId ? " cursor-pointer" : ""}`}
+                      role={design.productTypeId ? "button" : undefined}
+                      tabIndex={design.productTypeId ? 0 : undefined}
+                      onClick={() => openSavedDesignInPreviewStudio(design)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openSavedDesignInPreviewStudio(design);
+                        }
+                      }}
+                    >
                       {design.mockupUrls?.[0] || design.artworkUrl ? (
                         <img
-                          src={design.mockupUrls?.[0] || design.artworkUrl || ""}
+                          src={normalizePreviewUrl(design.mockupUrls?.[0] || design.artworkUrl) || ""}
                           alt={design.prompt || "Saved design"}
                           className="w-full h-full object-cover"
                           loading="lazy"
@@ -330,11 +379,11 @@ export default function DesignsPage() {
                           size="sm"
                           className="flex-1"
                           disabled={!design.productTypeId}
-                          onClick={() => navigate(`/admin/design-studio?productTypeId=${design.productTypeId}&loadDesignId=${design.id}`)}
+                          onClick={() => openSavedDesignInPreviewStudio(design)}
                           data-testid={`button-continue-editing-${design.id}`}
                         >
-                          <Pencil className="h-3.5 w-3.5 mr-1" />
-                          Edit
+                          <FlaskConical className="h-3.5 w-3.5 mr-1" />
+                          Preview Studio
                         </Button>
                         <Button
                           variant="ghost"
@@ -368,6 +417,17 @@ export default function DesignsPage() {
                         </Button>
                       ) : (
                         <div className="space-y-1.5 pt-1 border-t">
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={product.myPetEnabled !== false}
+                              disabled={isBusy}
+                              aria-label={`My Pet for ${product.title}`}
+                              data-testid={`checkbox-my-pet-${design.id}`}
+                              onChange={(e) => myPetMutation.mutate({ id: product.id, enabled: e.target.checked })}
+                            />
+                            My Pet
+                          </label>
                           <div className="flex gap-2">
                             {product.shopifyProductId && (
                               <a
@@ -400,6 +460,9 @@ export default function DesignsPage() {
                               {product.status === "active" ? "Deactivate" : "Activate"}
                             </Button>
                           </div>
+                          {product.shopifyProductId && product.printifyProductId ? (
+                            <EditColours apiBase={`/api/appai/design-products/${product.id}`} />
+                          ) : null}
                           <div className="flex gap-2">
                             <Button
                               variant="outline"

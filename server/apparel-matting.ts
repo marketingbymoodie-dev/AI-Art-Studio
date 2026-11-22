@@ -3,6 +3,8 @@
  * Replicate saliency removal is optional fallback only (see processApparelMotif).
  */
 
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import sharp from "sharp";
 import {
   removeBackground,
@@ -19,6 +21,7 @@ import {
   GRAPHICS_CHROMA_STYLE_BY_ID,
   GRAPHICS_CHROMA_STYLE_BY_NAME,
 } from "@shared/graphics-chroma-prompts";
+import { isFloatingCatalogStyle } from "@shared/styleCatalog";
 
 export {
   APPAREL_CHROMA_STYLE_BY_NAME,
@@ -130,10 +133,16 @@ const WHITE_BG_PATTERNS: RegExp[] = [
 export function resolveIsApparelGeneration(
   productType?: { designerType?: string | null; isAllOverPrint?: boolean | null } | null,
   styleCategory?: string | null,
+  style?: { outputMode?: string | null; catalogSlug?: string | null },
 ): boolean {
   const styleCat = (styleCategory || "all").toLowerCase();
   const designerType = (productType?.designerType || "").toLowerCase();
 
+  const isApparelProduct =
+    designerType === "apparel" || designerType === "all-over-print";
+  // Floating on decor uses composite fill, not garment matting.
+  if (isFloatingCatalogStyle(style) && !isApparelProduct) return false;
+  if (isFloatingCatalogStyle(style)) return true;
   if (styleCat === "apparel" || styleCat === "graphics") return true;
   if (designerType === "apparel") return true;
 
@@ -662,7 +671,9 @@ export async function removeChromaKeyBackground(
     );
   }
 
-  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink)
+  // Pass B: corner-detected background — only when AI used a white/grey canvas (not hot pink).
+  // Follow-up (out of scope here): B has no connectivity / min-region guard, so isolated
+  // interior pixels that happen to match the corner colour can be punched as holes.
 
   let cornerRemoved = 0;
   if (cornerIsLightCanvas) {
@@ -681,10 +692,13 @@ export async function removeChromaKeyBackground(
   const cornerRemovedPct = (cornerRemoved / total) * 100;
   console.log(`[Chroma Key] Corner pass (rgb ${avgR},${avgG},${avgB}): ${cornerRemovedPct.toFixed(1)}%`);
 
-  // Pass C: connectivity-only white/grey mat removal (border + keyed background)
+  // Pass C: connectivity-only white/grey mat removal (border + keyed background).
+  // Purpose: rescue failed white/grey canvases. On a genuine magenta plate, A/A2/F
+  // already removed the key — seeding this flood from that transparency eats bright
+  // metal/white subject that touches the plate (bird-head hole). Skip when magenta.
   let whiteKeyRemoved = 0;
   let borderFloodRemoved = 0;
-  if (borderFloodFill && allowWhiteKey) {
+  if (borderFloodFill && allowWhiteKey && !cornerIsMagentaCanvas) {
     borderFloodRemoved = applyFloodFillLightMatFromBackground(
       pixels,
       source,
@@ -805,6 +819,7 @@ function despeckleAlpha(
   height: number,
   channels: number,
   minIslandPixels: number,
+  fillTransparentIslands = true,
 ): void {
   const total = width * height;
   const visited = new Uint8Array(total);
@@ -844,6 +859,7 @@ function despeckleAlpha(
     }
 
     if (component.length < minIslandPixels) {
+      if (!isOpaque && !fillTransparentIslands) continue;
       for (const p of component) {
         const idx = p * channels;
         if (isOpaque) {
@@ -859,7 +875,7 @@ function despeckleAlpha(
 /** Deterministic flat-graphic cleanup after chroma keying. */
 export async function cleanupFlatGraphicAlpha(
   buffer: Buffer,
-  opts?: { bgRemovalSensitivity?: number; erodeAfterCleanup?: boolean },
+  opts?: { bgRemovalSensitivity?: number; erodeAfterCleanup?: boolean; preserveEnclosedHoles?: boolean },
 ): Promise<Buffer> {
   const { data, info } = await sharp(buffer)
     .ensureAlpha()
@@ -880,7 +896,7 @@ export async function cleanupFlatGraphicAlpha(
     px[i + 3] = px[i + 3] < 128 ? 0 : 255;
   }
 
-  despeckleAlpha(px, info.width, info.height, ch, 12);
+  despeckleAlpha(px, info.width, info.height, ch, 12, opts?.preserveEnclosedHoles !== true);
 
   let out = await sharp(px, {
     raw: { width: info.width, height: info.height, channels: ch },
@@ -1058,20 +1074,33 @@ async function vectorizeWithNeplex(
   buffer: Buffer,
   canvasCorner?: CanvasCornerRgb | null,
 ): Promise<Buffer> {
-  const { vectorize, ColorMode, Hierarchical, PathSimplifyMode } = await import("@neplex/vectorizer");
+  // Resolve from app root — import.meta.url is empty in the CJS production bundle.
+  const requireNeplex = createRequire(join(process.cwd(), "package.json"));
+  const { vectorizeSync } = requireNeplex("@neplex/vectorizer") as {
+    vectorizeSync: (source: Buffer, config: Record<string, number>) => string;
+  };
   const opaquePlate = await prepareOpaquePlateForVectorize(buffer);
 
-  const svg = await vectorize(opaquePlate, {
-    colorMode: ColorMode.Color,
+  // NAPI enums on @neplex/vectorizer@0.1.0 are empty at runtime — pass
+  // numeric discriminants: Color=0, Cutout=1, Spline=2.
+  const svg = vectorizeSync(opaquePlate, {
+    colorMode: 0,
     colorPrecision: 6,
-    filterSpeckle: 2,
-    cornerThreshold: 80,
-    hierarchical: Hierarchical.Stacked,
-    mode: PathSimplifyMode.Spline,
-    pathPrecision: 4,
+    filterSpeckle: 0,
+    cornerThreshold: 60,
+    hierarchical: 1,
+    mode: 2,
+    pathPrecision: 8,
+    layerDifference: 16,
+    lengthThreshold: 4,
+    maxIterations: 10,
+    spliceThreshold: 45,
   });
+  if (!svg) {
+    throw new Error("Neplex returned no SVG");
+  }
 
-  return sanitizeVectorSvgConnected(Buffer.from(svg), buffer, { canvasCorner });
+  return sanitizeVectorSvgConnected(Buffer.from(String(svg)), buffer, { canvasCorner });
 }
 
 /** Reject SVG when interior whites (eyes, teeth) were lost during tracing. */
@@ -1164,9 +1193,10 @@ async function acceptVectorizedOrFallback(
 
 export async function maybeVectorizeFlatGraphic(
   buffer: Buffer,
-  opts?: { canvasCorner?: CanvasCornerRgb | null },
+  opts?: { canvasCorner?: CanvasCornerRgb | null; enabled?: boolean },
 ): Promise<VectorizeFlatGraphicResult> {
-  if (process.env.APPAREL_VECTORIZE !== "true") {
+  const enabled = opts?.enabled === true || process.env.APPAREL_VECTORIZE === "true";
+  if (!enabled) {
     return { buffer, mimeType: "image/png" };
   }
 
@@ -1327,7 +1357,8 @@ export async function processApparelMotif(
 
   buffer = await cleanupFlatGraphicAlpha(buffer, {
     bgRemovalSensitivity: opts.bgRemovalSensitivity,
-    erodeAfterCleanup: !usedMlFallback,
+    // 1px erode eats 2–4px text stems before the tracer sees them.
+    erodeAfterCleanup: !usedMlFallback && !opts.vectorize,
   });
 
   // Safety net: if corners still opaque after cleanup, run one more chroma sweep
@@ -1363,7 +1394,12 @@ export async function processApparelMotif(
 
   if (opts.vectorize || process.env.APPAREL_VECTORIZE === "true") {
     const vectorized = await maybeVectorizeFlatGraphic(buffer, {
-      canvasCorner: sourceCorner,
+      canvasCorner: {
+        r: sourceCorner.avgR,
+        g: sourceCorner.avgG,
+        b: sourceCorner.avgB,
+      },
+      enabled: true,
     });
     buffer = vectorized.buffer;
     mimeType = vectorized.mimeType;

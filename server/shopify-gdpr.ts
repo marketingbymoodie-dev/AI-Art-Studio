@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { pool } from "./db";
-import { hmacBase64MatchesAnySecret } from "./shopify-app-credentials";
+import { acceptShopifyWebhook } from "./shopify-webhook-auth";
 
 type ShopifyGdprCustomer = {
   id?: number | string;
@@ -16,18 +16,8 @@ type ShopifyGdprPayload = {
   data_request?: { id?: number | string };
 };
 
-function rawBodyForHmac(req: Request): Buffer {
-  const rawBody = (req as any).rawBody;
-  if (Buffer.isBuffer(rawBody)) return rawBody;
-  if (typeof rawBody === "string") return Buffer.from(rawBody, "utf8");
-  return Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-}
-
-function verifyShopifyWebhookHmac(req: Request): boolean {
-  const hmacHeader = req.headers["x-shopify-hmac-sha256"];
-  const hmac = Array.isArray(hmacHeader) ? hmacHeader[0] : hmacHeader;
-  if (!hmac) return false;
-  return hmacBase64MatchesAnySecret(rawBodyForHmac(req), hmac);
+function verifyShopifyWebhookHmac(req: Request): Promise<boolean> {
+  return acceptShopifyWebhook(req).then((matched) => matched != null);
 }
 
 function normalizeShopDomain(req: Request, payload: ShopifyGdprPayload): string {
@@ -210,8 +200,8 @@ async function redactShopData(shop: string): Promise<Record<string, number>> {
   }
 }
 
-function requireVerifiedWebhook(req: Request, res: Response): boolean {
-  if (verifyShopifyWebhookHmac(req)) return true;
+async function requireVerifiedWebhook(req: Request, res: Response): Promise<boolean> {
+  if (await verifyShopifyWebhookHmac(req)) return true;
   console.warn("[Shopify GDPR] invalid webhook HMAC", {
     topic: req.headers["x-shopify-topic"],
     shop: req.headers["x-shopify-shop-domain"],
@@ -222,7 +212,7 @@ function requireVerifiedWebhook(req: Request, res: Response): boolean {
 
 export function registerShopifyGdprRoutes(app: Express): void {
   app.post("/shopify/webhooks/customers-data-request", async (req: Request, res: Response) => {
-    if (!requireVerifiedWebhook(req, res)) return;
+    if (!(await requireVerifiedWebhook(req, res))) return;
     const payload = req.body as ShopifyGdprPayload;
     const shop = normalizeShopDomain(req, payload);
 
@@ -245,7 +235,7 @@ export function registerShopifyGdprRoutes(app: Express): void {
   });
 
   app.post("/shopify/webhooks/customers-redact", async (req: Request, res: Response) => {
-    if (!requireVerifiedWebhook(req, res)) return;
+    if (!(await requireVerifiedWebhook(req, res))) return;
     const payload = req.body as ShopifyGdprPayload;
     const shop = normalizeShopDomain(req, payload);
 
@@ -265,7 +255,7 @@ export function registerShopifyGdprRoutes(app: Express): void {
   });
 
   app.post("/shopify/webhooks/shop-redact", async (req: Request, res: Response) => {
-    if (!requireVerifiedWebhook(req, res)) return;
+    if (!(await requireVerifiedWebhook(req, res))) return;
     const payload = req.body as ShopifyGdprPayload;
     const shop = normalizeShopDomain(req, payload);
 

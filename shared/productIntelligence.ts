@@ -185,6 +185,15 @@ export function isVariantKeyAvailable(
   return status === "in_stock";
 }
 
+/** Mint-time backstop: only explicit Printify OOS. Missing/unknown/removed fail-open. */
+export function isVariantKeyExplicitlyOutOfStock(
+  map: VariantAvailabilityMap,
+  sizeId: string,
+  colorId: string,
+): boolean {
+  return map[`${sizeId}:${colorId}`] === "out_of_stock";
+}
+
 /** Units needed to cover a monthly subscription fee from per-sale profit. */
 export function subscriptionBreakEvenUnits(
   monthlyPlanUsd: number,

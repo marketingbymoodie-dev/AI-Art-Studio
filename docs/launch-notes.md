@@ -1,0 +1,51 @@
+# Launch notes
+
+Merchant- and operator-facing behaviour to state at launch, plus blockers that must close first.
+
+## Known behaviour
+
+- **Restocked colours take up to 24 hours to become buyable.** Printify has no stock webhook. The daily Product Intelligence sync (15 min after boot, then every 24 h) flips a blank back to in stock, which unlocks it on the storefront; the same run re-ingests that class's shipping table and reconciles delivery profiles, so the colour is selectable and deliverable together. No operator action. Stock-outs follow the same path: a colour Printify sells out can stay selectable for up to 24 h; resolve's 409 out-of-stock guard and Printify order rejection are the backstops in that window.
+
+## Blockers before production launch
+
+- **Canonical option IDs** — `docs/tickets/WP-canonical-option-ids.md`.
+- **Edit Variants PATCH does not touch Shopify** — `docs/tickets/WP-edit-variants-shopify-sync.md`.
+- **Merchant endpoint tenancy audit** (~4 days) — `docs/tickets/AUDIT-merchant-scoped-endpoint-tenancy.md`. About 350 routes. Two isolation gaps found in one day (fulfilment, then product-type PATCH) is the signal this is a launch blocker, not a background sweep. The product-type PATCH itself is `docs/tickets/BLOCKER-product-type-patch-tenancy.md`.
+- **Base products are buyable as blanks by direct URL** (2026-10-04): base products are `unlisted` (not in catalog, search or collections) but published to the Online Store, so `/products/<handle>` renders a working add-to-cart and `/cart/add.js` accepts base variant ids. Same code on production. Decision: keep published (Branch C needs the base addable) and gate checkout with the `appai-base-variant-guard` validation Function (fail-open, `blockOnFailure: false`), plus a UX redirect from the base product page to its customizer page. Built and on staging; not closed until proven on staging and fulfilment is shown to reject a forged design property (a fake `_design_id` passes the Function by design).
+- **Fulfilment does not reject forged design properties** (verified 2026-10-04, `server/flat-order-fulfillment.ts` `resolveDesignForOrderLine`). The checkout Function only checks a design property is present, so these reach `orders/paid`:
+  - **Fake id** (no such job) → line silently skipped: logged plus a `flat_order_submissions` row with `status: "skipped"`. No Shopify hold, tag or merchant notice; the order sits paid and unfulfilled until someone notices.
+  - **Real id from another shop or customer** → **fulfilled with that job's artwork**. `storage.getGenerationJob(id)` is a global primary-key lookup, `generation_jobs.shop` is never compared to the order's shop, and a line `_appai_job_id` overrides the shadow's own `published_products.design_id`. With auto-fulfil on (`FLAT_ORDER_FULFILLMENT_ENABLED=true`, `sendToProduction: true`), Printify produces someone else's design, billed to that product type's merchant.
+  - Containment: `FLAT_ORDER_FULFILLMENT_ENABLED` is unset on both Railway environments (checked 2026-10-04), so auto-fulfil cannot fire anywhere. **Do not set it in any environment running a build older than the fix below.**
+  - **Fix (2026-10-04, staging):** `checkFulfillmentTenancy` refuses a job whose `shop` is not the order's shop (creator platform rename aliases count as one shop), refuses a shadow row from another shop, and refuses live orders with no shop. A shadow or design-product variant keyed to a *different real job* than the line's `_appai_job_id` holds the line. Creator-cart shadows keyed by cart line id (not a job) can't vouch, so those fall back to the shop check. Every AppAI line not sent to Printify is recorded in `flat_order_submissions.metadata.needsAttention`, listed at `GET /api/platform/fulfillment-attention`, and the Shopify order gets tag `appai-needs-attention` plus an appended note. Tagging needs `write_orders`: staging TOML only; **production TOML needs it at go-live** (re-prompts merchants). Without the scope the flag records `missing-scope` and the admin list still shows the order. Tests: `server/flat-order-fulfillment.tenancy.test.ts` (cross-shop real job id regression).
+  - Residual (accepted conditionally, 2026-10-04): a forged `_appai_job_id` naming another real job **on the same shop** still prints that job's artwork when the line bought a plain base variant (no shadow to vouch). It stays within one merchant but can be another customer's design.
+    - **Trigger: must close before Branch C Phase 2 (base-first ATC) goes default-on**, not merely before launch. Base-first ATC makes "base variant, no shadow yet" the normal shape of every AppAI line, so the shadow can no longer vouch for most orders.
+    - **Job ids are obtainable by strangers — the gap is practical, not theoretical** (traced 2026-10-04). Generation job ids are UUIDs, not enumerable, but leak through:
+      - **The storefront page URL.** Closed on staging (verified 2026-10-04): opening a saved design, hard refresh, and product switch no longer write `loadDesignId` into the address bar. Reopen uses tab sessionStorage.
+      - **Ownership on restore.** `GET /api/storefront/generate/status`, `GET /api/storefront/shadow-variant/:jobId`, and `POST /api/storefront/resolve-design-variant` require the signed-in customer (identity token or proxy-signed Shopify customer) or the guest's browser session. Status returns that customer's wallet credit balance, so a bare job id is not enough. Resolve has `RESOLVE_OWNERSHIP_CHECK` (default on; set `false` to skip without a deploy). A guest who clears this browser, or opens the design on another device, cannot reload it. While they still have it, Share (under the preview, with a line of explanation when they are not signed in) copies a link in a separate id space. After the session is gone they see "This design isn't available in this browser" and the sign-in / Share instruction. Signed-in designs reopen from My Designs after sign-in.
+      - Also carry the job id, but only to the buyer or the merchant: `/cart.js` and order JSON (`_appai_job_id`, `_shadow_design_id`, `_aop_pl`), and merchant notification emails that loop all line properties. The customer-visible `Artwork` property is just "Custom AI Design".
+      - Do **not** carry it: the deliberate Share button (`?sharedDesignId=`, a separate id space), shadow product title/handle/tags on the current resolve path, and artwork/mockup storage paths. The exceptions are `lifestyle/<jobId>/` (admin) and `aop-line-snapshots/<jobId>/` (cart property).
+    - Closing the same-shop forged-id hole still needs a vouching record for base-variant lines (a server-issued signed line token, or the `shadow_mint_jobs` row from Phase 1), before Branch C Phase 2 goes default-on. The URL stamp and the three-route ownership check are in.
+  - Behaviour change vs `b98442bc` ("line job id over a shared shadow"): a shadow keyed to a different real job now holds the line instead of printing the line's job. Production check passed 2026-10-04: `shadow_variants` 181, `variants_shared_across_real_jobs` 0, `shadow_shop_differs_from_job_shop` 0, `shadow_key_not_a_job` 55. The 55 are all archived readable `_design_id` labels (newest 2026-07-31). No active rows, no cart-line keys, no orphan UUIDs. Staging's 4 non-job keys were the same class. The reversal is clear to ship. The check:
+    ```sql
+    with p as (
+      select shopify_variant_id v, split_part(design_id, '::', 1) job, shop
+        from published_products where shopify_variant_id is not null)
+    select
+      (select count(distinct v) from p) as shadow_variants,
+      (select count(*) from (
+         select p.v from p join generation_jobs j on j.id = p.job
+          group by p.v having count(distinct p.job) > 1) x) as variants_shared_across_real_jobs,
+      (select count(*) from p join generation_jobs j on j.id = p.job
+        where lower(j.shop) <> lower(p.shop)) as shadow_shop_differs_from_job_shop,
+      (select count(*) from p left join generation_jobs j on j.id = p.job
+        where j.id is null) as shadow_key_not_a_job;
+    ```
+    Expected: the middle two counts are 0. A non-zero `shadow_shop_differs_from_job_shop` made up only of the creator platform rename pair (`whi6jd-nv` ↔ `aiartstudio-creators`) is fine, because the tenancy check treats those as one shop.
+- **DECISION NEEDED — App Store listing vs checkout protection.** Shopify only runs a validation Function from a **public App Store app** on non-Plus plans; custom and unlisted apps need Shopify Plus. If AI Art Studio ships unlisted, every non-Plus merchant has **no** checkout protection against blank base-product orders. The redirect alone closes nothing (a hand-built `/cart/add.js` never loads the page). Options: list on the App Store; restrict to Plus; or accept the exposure and rely on fulfilment rejection only. Production TOML also needs `write_validations` at go-live, which re-prompts every installed merchant to approve scopes.
+
+## App Store review — scope justifications
+
+State these when listing; protected customer-data scopes need a stated reason.
+
+- **`write_orders`** (protected customer data): tagging orders that need operator attention. When an order contains AI Art Studio items the app could not send to the print provider (missing or invalid artwork, a design that fails the shop ownership check, a print-provider error), the app adds the tag `appai-needs-attention` and appends a note listing the affected items, so the merchant sees the order needs manual handling instead of it sitting paid and unfulfilled. The app reads only the order's existing note and tags, to avoid duplicate notes, and writes only that tag and note. It doesn't modify line items, prices, customers, fulfilment or payment state. Code: `server/fulfillment-attention.ts`.
+- **`write_validations`**: installs the app's checkout validation Function (`appai-base-variant-guard`). It blocks checkout of blank, undesigned base products that exist only to back the design studio. Fail-open (`blockOnFailure: false`). Code: `server/checkout-guard.ts`.

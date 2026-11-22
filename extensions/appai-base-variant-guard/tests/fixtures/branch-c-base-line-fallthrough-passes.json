@@ -1,0 +1,41 @@
+{
+  "payload": {
+    "export": "cart-validations-generate-run",
+    "target": "cart.validations.generate.run",
+    "input": {
+      "buyerJourney": {
+        "step": "CHECKOUT_COMPLETION"
+      },
+      "cart": {
+        "lines": [
+          {
+            "jobId": {
+              "value": "de6d5387-0523-4ace-a069-9e905d63144b"
+            },
+            "shadowDesignId": {
+              "value": "de6d5387-0523-4ace-a069-9e905d63144b::46345022898410::1tkfhx"
+            },
+            "designId": {
+              "value": "AI-7F3K"
+            },
+            "merchandise": {
+              "__typename": "ProductVariant",
+              "product": {
+                "isAppaiBase": true
+              }
+            }
+          }
+        ]
+      }
+    },
+    "output": {
+      "operations": [
+        {
+          "validationAdd": {
+            "errors": []
+          }
+        }
+      ]
+    }
+  }
+}

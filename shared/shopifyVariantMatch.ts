@@ -1,3 +1,6 @@
+import { normalizeApparelSizeId } from "./variantMapResolve";
+import { catalogHasPrintSides, variantServesPrintSides, type PrintSides } from "./printSides";
+
 /**
  * Match a Shopify variant catalog entry by human-readable size + color.
  * Used for storefront blank images (embed-design) so slash colorways like
@@ -13,7 +16,20 @@ export type ShopifyVariantMatchEntry = {
   title?: string | null;
   option1?: string | null;
   option2?: string | null;
+  option3?: string | null;
 };
+
+/**
+ * Keep only rows for one Print sides value. Catalogs without the option
+ * (legacy, Front-only) pass through unchanged.
+ */
+export function filterCatalogByPrintSides<T extends ShopifyVariantMatchEntry>(
+  catalog: T[],
+  sides: PrintSides = "front",
+): T[] {
+  if (!catalogHasPrintSides(catalog)) return catalog;
+  return catalog.filter((v) => variantServesPrintSides(v, sides));
+}
 
 /** Collapse spaces/underscores/hyphens and normalize slash spacing for comparison. */
 export function normalizeShopifyVariantToken(value: string): string {
@@ -35,7 +51,10 @@ export function shopifyColorTokensEqual(a: string, b: string): boolean {
   // "white_navy" vs "white/navy" after slash→underscore
   const aSlashAsUnderscore = na.replace(/\//g, "_");
   const bSlashAsUnderscore = nb.replace(/\//g, "_");
-  return aSlashAsUnderscore === bSlashAsUnderscore;
+  if (aSlashAsUnderscore === bSlashAsUnderscore) return true;
+  // Printify "Heather Grey" vs Shopify "Heather Gray"
+  const grey = (s: string) => s.replace(/gray/g, "grey");
+  return grey(aSlashAsUnderscore) === grey(bSlashAsUnderscore);
 }
 
 function sizeTokensMatch(a: string, b: string): boolean {
@@ -43,9 +62,11 @@ function sizeTokensMatch(a: string, b: string): boolean {
   const nb = normalizeShopifyVariantToken(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
-  // Allow "2xl" ↔ "xxl" style only via equality of compact forms; avoid loose includes
-  // that would match "s" inside "asphalt". Size names are short tokens.
-  return false;
+  // "XL" ↔ "X-Large" ↔ "x_large"; "2XL" ↔ "XXL". Do not substring-match
+  // ("s" must not hit "asphalt").
+  const ca = normalizeApparelSizeId(na);
+  const cb = normalizeApparelSizeId(nb);
+  return !!ca && ca === cb;
 }
 
 /** Match a Shopify option/title fragment to a frame colour id or display name. */
@@ -87,12 +108,14 @@ export function colorMatchesFrame(
  * When `hasColors` is true, size-only fallback is never used.
  */
 export function matchShopifyVariantBySizeColor(
-  catalog: ShopifyVariantMatchEntry[],
+  fullCatalog: ShopifyVariantMatchEntry[],
   sizeName: string,
   frameName: string,
   hasColors: boolean,
   frameColorId?: string,
+  sides: PrintSides = "front",
 ): string | null {
+  const catalog = filterCatalogByPrintSides(fullCatalog, sides);
   if (catalog.length === 0) return null;
 
   const sizeNorm = normalizeShopifyVariantToken(sizeName);
@@ -102,7 +125,9 @@ export function matchShopifyVariantBySizeColor(
     const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
     if (options.length === 0) return false;
 
-    let sizeMatch = !sizeNorm;
+    // Empty size is not a wildcard — otherwise Navy + no size picks the
+    // first catalog row (usually Small / the PDP default variant).
+    let sizeMatch = false;
     if (sizeNorm) {
       sizeMatch = options.some((opt) => sizeTokensMatch(opt, sizeName));
     }
@@ -119,7 +144,7 @@ export function matchShopifyVariantBySizeColor(
     if (!title.trim()) return false;
     const parts = title.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
 
-    let sizeMatch = !sizeNorm;
+    let sizeMatch = false;
     if (sizeNorm) {
       // Prefer last segment as size (Shopify often "Color / Size")
       const last = parts[parts.length - 1] || title;
@@ -158,4 +183,185 @@ export function matchShopifyVariantBySizeColor(
   }
 
   return match ? String(match.id) : null;
+}
+
+/**
+ * Last-resort title match when structured options missed.
+ * Prefers Color / Size (Shopify default) and the requested colour — never the
+ * first "XL / …" row, which is how Heather Grey $18.95 became Navy/Small $27.
+ */
+export function matchShopifyVariantBySizeTitle(
+  fullCatalog: ShopifyVariantMatchEntry[],
+  sizeName: string,
+  frameName?: string,
+  frameColorId?: string,
+  sides: PrintSides = "front",
+): string | null {
+  const catalog = filterCatalogByPrintSides(fullCatalog, sides);
+  const sizeNorm = normalizeShopifyVariantToken(sizeName);
+  if (!sizeNorm || catalog.length === 0) return null;
+
+  const sizeInTitle = (v: ShopifyVariantMatchEntry): boolean => {
+    const title = v.title || "";
+    if (!title.trim()) return false;
+    const parts = title.split(/\s*\/\s*/).map((p) => p.trim()).filter(Boolean);
+    const last = parts[parts.length - 1] || title;
+    return sizeTokensMatch(last, sizeName) || parts.some((p) => sizeTokensMatch(p, sizeName));
+  };
+
+  const candidates = catalog.filter(sizeInTitle);
+  if (candidates.length === 0) return null;
+
+  const wantsColor = !!(frameName?.trim() || frameColorId?.trim());
+  if (wantsColor) {
+    const colored = candidates.find((v) => {
+      const title = v.title || "";
+      const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
+      if (colorMatchesFrame(title, frameName || "", frameColorId)) return true;
+      return options.some((opt) => colorMatchesFrame(opt, frameName || "", frameColorId));
+    });
+    if (colored) return String(colored.id);
+    return null;
+  }
+
+  return String(candidates[0].id);
+}
+
+/** True when this Printify/frame colour appears on a minted Shopify catalog row. */
+export function frameColorIsOnShopifyCatalog(
+  catalog: ShopifyVariantMatchEntry[],
+  color: { id: string; name: string },
+): boolean {
+  if (!catalog.length) return false;
+  return catalog.some((v) => {
+    const options = [v.option1, v.option2].filter(Boolean).map((o) => String(o));
+    if (options.some((opt) => colorMatchesFrame(opt, color.name, color.id))) return true;
+    return !!(v.title && colorMatchesFrame(String(v.title), color.name, color.id));
+  });
+}
+
+/**
+ * Storefront colour dropdown source: minted Shopify variants only.
+ * Empty catalog → no colours (never fall back to intent / full Printify list).
+ */
+export function filterFrameColorsToShopifyCatalog<T extends { id: string; name: string }>(
+  frameColors: T[],
+  catalog: ShopifyVariantMatchEntry[] | null | undefined,
+): T[] {
+  if (!catalog || catalog.length === 0) return [];
+  return frameColors.filter((c) => frameColorIsOnShopifyCatalog(catalog, c));
+}
+
+/** Colour tokens from persist `shopifyVariantIds` keys (`Size:Color`). */
+export function colorTokensFromShopifyVariantIds(raw: unknown): string[] {
+  let map: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      map = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      map = {};
+    }
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    map = raw as Record<string, unknown>;
+  }
+  const out: string[] = [];
+  for (const key of Object.keys(map)) {
+    const colon = key.indexOf(":");
+    if (colon < 0) continue;
+    const color = key.slice(colon + 1).trim();
+    if (!color || color.toLowerCase() === "default") continue;
+    out.push(color);
+  }
+  return out;
+}
+
+/**
+ * Offer only colours that were minted on Shopify.
+ * Prefer a live catalog; otherwise `product_types.shopifyVariantIds`.
+ * Never fall back to selectedColorIds or the full Printify frameColors list.
+ */
+export function filterFrameColorsToMintedShopify<T extends { id: string; name: string }>(
+  frameColors: T[],
+  args: {
+    catalog?: ShopifyVariantMatchEntry[] | null;
+    shopifyVariantIds?: unknown;
+  },
+): T[] {
+  if (args.catalog && args.catalog.length > 0) {
+    return filterFrameColorsToShopifyCatalog(frameColors, args.catalog);
+  }
+  const tokens = colorTokensFromShopifyVariantIds(args.shopifyVariantIds);
+  if (tokens.length === 0) return [];
+  const synthetic: ShopifyVariantMatchEntry[] = tokens.map((name, i) => ({
+    id: i + 1,
+    title: name,
+    option1: null,
+    option2: name,
+  }));
+  return filterFrameColorsToShopifyCatalog(frameColors, synthetic);
+}
+
+/** Front-only catalog from persist `shopifyVariantIds` keys (`Size:Color`); never carries Front + Back ids. */
+export function catalogFromShopifyVariantIds(raw: unknown): ShopifyVariantMatchEntry[] {
+  let map: Record<string, unknown> = {};
+  if (typeof raw === "string") {
+    try {
+      map = JSON.parse(raw || "{}") as Record<string, unknown>;
+    } catch {
+      map = {};
+    }
+  } else if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    map = raw as Record<string, unknown>;
+  }
+  const out: ShopifyVariantMatchEntry[] = [];
+  let i = 0;
+  for (const key of Object.keys(map)) {
+    const colon = key.indexOf(":");
+    if (colon < 0) continue;
+    const size = key.slice(0, colon).trim();
+    const color = key.slice(colon + 1).trim();
+    if (!size) continue;
+    const id = map[key];
+    const hasColor = !!color && color.toLowerCase() !== "default";
+    out.push({
+      id: (typeof id === "string" || typeof id === "number") && id !== "" ? id : ++i,
+      title: hasColor ? `${color} / ${size}` : size,
+      option1: size,
+      option2: hasColor ? color : null,
+    });
+  }
+  return out;
+}
+
+/** Live Shopify rows, else persist `shopifyVariantIds`. Empty when neither exists. */
+export function resolveMintedShopifyCatalog(args: {
+  catalog?: ShopifyVariantMatchEntry[] | null;
+  shopifyVariantIds?: unknown;
+}): ShopifyVariantMatchEntry[] {
+  if (args.catalog && args.catalog.length > 0) return args.catalog;
+  return catalogFromShopifyVariantIds(args.shopifyVariantIds);
+}
+
+/**
+ * True when this exact size×colour exists on the minted Shopify catalog.
+ * Empty catalog or empty size → not minted (fail closed).
+ */
+export function comboIsMinted(
+  catalog: ShopifyVariantMatchEntry[] | null | undefined,
+  sizeName: string,
+  frameName: string,
+  frameColorId?: string,
+): boolean {
+  if (!catalog || catalog.length === 0) return false;
+  if (!String(sizeName || "").trim()) return false;
+  const hasColor = !!(frameName?.trim() || frameColorId?.trim());
+  return (
+    matchShopifyVariantBySizeColor(
+      catalog,
+      sizeName,
+      frameName,
+      hasColor,
+      frameColorId,
+    ) != null
+  );
 }

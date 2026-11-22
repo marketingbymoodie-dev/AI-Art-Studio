@@ -189,18 +189,19 @@ export default function ArtworkTransformOverlay({
   return (
     <div
       className="absolute inset-0 z-10"
-      data-appai-drag-surface
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
       <div
         className="absolute border-2 border-dashed border-primary/80 bg-primary/5 cursor-move"
+        data-appai-drag-surface
         style={{
           left: rect.left,
           top: rect.top,
           width: rect.width,
           height: rect.height,
+          touchAction: "none",
         }}
         onPointerDown={onPointerDown("move")}
       >

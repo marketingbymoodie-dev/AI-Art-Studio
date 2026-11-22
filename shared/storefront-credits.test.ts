@@ -4,10 +4,26 @@ import {
   pickStorefrontGenerationSpend,
   storefrontArtworksRemaining,
   storefrontCreditBreakdown,
+  storefrontPaidSpendable,
   storefrontShopFreeRemaining,
 } from "./storefront-credits";
 
 describe("storefront credit split + spend order", () => {
+  it("treats pack-only as spendable paid (0 free + 0 rewards + 1 pack)", () => {
+    const paid = storefrontPaidSpendable({ earnedCredits: 0, packCredits: 1 });
+    expect(paid).toBe(1);
+    expect(pickStorefrontGenerationSpend({ shopFreeRemaining: 0, paidCredits: paid })).toBe(
+      "customer_paid",
+    );
+    expect(
+      storefrontCreditBreakdown({
+        shopFreeRemaining: 0,
+        earnedCredits: 0,
+        packCredits: 1,
+      }).total,
+    ).toBe(1);
+  });
+
   it("uses this shop's free gens before paid credits", () => {
     expect(pickStorefrontGenerationSpend({ shopFreeRemaining: 2, paidCredits: 10 })).toBe(
       "customer_free",
@@ -39,16 +55,17 @@ describe("storefront credit split + spend order", () => {
     );
   });
 
-  it("treats unbucketed paid credits as shop rewards", () => {
+  it("does not treat an unbucketed paid total as spendable", () => {
     const b = storefrontCreditBreakdown({
       freeGenerationsUsed: 0,
       freeGenerationLimit: 2,
       paidCredits: 4,
     });
     expect(b.shopFreeRemaining).toBe(2);
-    expect(b.shopEarned).toBe(4);
+    expect(b.shopEarned).toBe(0);
     expect(b.pack).toBe(0);
-    expect(b.total).toBe(6);
+    expect(b.paidTotal).toBe(0);
+    expect(b.total).toBe(2);
   });
 
   it("allows a creator shop with zero free gens", () => {
@@ -61,6 +78,7 @@ describe("storefront credit split + spend order", () => {
     expect(
       storefrontArtworksRemaining({
         shopFreeRemaining: 0,
+        packCredits: 5,
         paidCredits: 5,
       }),
     ).toBe(5);

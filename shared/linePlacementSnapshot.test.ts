@@ -26,6 +26,21 @@ describe("flat line placement snapshot", () => {
     expect(decoded?.enabled.back).toBe(false);
   });
 
+  it("preserves independent front and back scales", () => {
+    const encoded = encodeFlatLinePlacement({
+      placements: {
+        front: { scale: 0.85, offsetX: 0, offsetY: 0 },
+        back: { scale: 1.2, offsetX: 0.1, offsetY: -0.05 },
+      },
+      enabled: { front: true, back: true },
+    });
+    const decoded = decodeFlatLinePlacement(encoded);
+    expect(decoded?.placements.front.scale).toBeCloseTo(0.85);
+    expect(decoded?.placements.back.scale).toBeCloseTo(1.2);
+    expect(decoded?.placements.back.offsetX).toBeCloseTo(0.1);
+    expect(decoded?.enabled.back).toBe(true);
+  });
+
   it("keeps two different snapshots distinct", () => {
     const a = encodeFlatLinePlacement({
       placements: { front: { scale: 1.4, offsetX: 0, offsetY: 0 } },
@@ -48,5 +63,17 @@ describe("tote line placement snapshot", () => {
     expect(decoded?.scale).toBeCloseTo(1.2);
     expect(decoded?.offsetX).toBeCloseTo(-0.2);
     expect(decoded?.offsetY).toBeCloseTo(0.2);
+    expect(decoded?.printBack).toBeUndefined();
+  });
+
+  it("freezes printBack=false so later job edits cannot enable the back panel", () => {
+    const encoded = encodeToteLinePlacement({ scale: 100, x: 50, y: 50, printBack: false });
+    const decoded = decodeToteLinePlacement(encoded);
+    expect(decoded?.printBack).toBe(false);
+  });
+
+  it("freezes printBack=true explicitly", () => {
+    const encoded = encodeToteLinePlacement({ scale: 100, x: 50, y: 50, printBack: true });
+    expect(decodeToteLinePlacement(encoded)?.printBack).toBe(true);
   });
 });

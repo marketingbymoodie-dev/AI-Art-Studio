@@ -23,8 +23,17 @@ import { normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "
 import {
   isCatalogSizeBlankBlueprint,
   printFileDimsForAspectRatio,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
 import {
+  featherMaskAlphaFromRgba,
+  maskAlphaLooksBinary,
+} from "@shared/maskFeather";
+import { expandTapestryMagentaMask } from "@shared/tapestryHarvestMagenta";
+import { isPrintSidesValue, variantServesPrintSides } from "@shared/printSides";
+import {
+  canonicalDecorSizeId,
+  decorSizeIdCandidates,
   extractDimensionalKey,
   frameColorsRedundantWithSizes,
   looksLikePhoneModelName,
@@ -46,7 +55,11 @@ import {
   shouldAllowFlatHarvest,
   shouldForceFlatTierDespiteProbe,
 } from "@shared/productLayoutPolicy";
-import { isPrintifyDecoratorUnavailableError } from "./printifyDecoratorErrors";
+import {
+  isPrintifyAuthError,
+  isPrintifyDecoratorUnavailableError,
+  isPrintifyShopAccessError,
+} from "./printifyDecoratorErrors";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 const POLL_INTERVAL_MS = 1500;
@@ -516,22 +529,35 @@ type MagentaAnalysis = {
 };
 
 /** Detect the #FF00FF print region: bounding box + pixel-exact silhouette (captures occlusion). */
-async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
+async function analyzeMagenta(
+  buffer: Buffer,
+  opts?: { expandTapestry?: boolean },
+): Promise<MagentaAnalysis> {
   const { data, info } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width, height, channels } = info;
   const maskRaw = Buffer.alloc(width * height * 4, 0);
   let minX = width, minY = height, maxX = -1, maxY = -1, count = 0;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = (y * width + x) * channels;
-      if (isMagenta(data[i], data[i + 1], data[i + 2])) {
-        count++;
-        const o = (y * width + x) * 4;
-        maskRaw[o] = 255; maskRaw[o + 1] = 255; maskRaw[o + 2] = 255; maskRaw[o + 3] = 255;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
+  if (opts?.expandTapestry) {
+    const expanded = expandTapestryMagentaMask(data, width, height, channels);
+    maskRaw.set(expanded.maskRaw);
+    count = expanded.count;
+    minX = expanded.minX;
+    minY = expanded.minY;
+    maxX = expanded.maxX;
+    maxY = expanded.maxY;
+  } else {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * channels;
+        if (isMagenta(data[i], data[i + 1], data[i + 2])) {
+          count++;
+          const o = (y * width + x) * 4;
+          maskRaw[o] = 255; maskRaw[o + 1] = 255; maskRaw[o + 2] = 255; maskRaw[o + 3] = 255;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
       }
     }
   }
@@ -552,6 +578,24 @@ async function analyzeMagenta(buffer: Buffer): Promise<MagentaAnalysis> {
 
 function rawToPng(raw: Buffer, width: number, height: number): Promise<Buffer> {
   return sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+}
+
+/**
+ * 241 only: soften the hard magenta silhouette so the droop edge is not
+ * stair-stepped. Hood / poster harvest stays binary (this is a no-op).
+ */
+function maybeFeatherTapestryMaskRaw(
+  blueprintId: number,
+  raw: Buffer,
+  width: number,
+  height: number,
+): Buffer {
+  if (!shouldProbeCatalogBlankGuide(blueprintId) || !(width > 0) || !(height > 0)) {
+    return raw;
+  }
+  const data = new Uint8ClampedArray(raw);
+  if (!maskAlphaLooksBinary(data, width, height)) return raw;
+  return Buffer.from(featherMaskAlphaFromRgba(data, width, height));
 }
 
 /**
@@ -766,6 +810,33 @@ function placeholderDimsForVariant(variant: any): Map<ViewName, { width: number;
   return map;
 }
 
+function catalogVariantSizeKey(variant: any): string | null {
+  const blobs = [
+    variant?.title,
+    variant?.sku,
+    JSON.stringify(variant?.options || {}),
+  ];
+  for (const b of blobs) {
+    const key = extractDimensionalKey(String(b || ""));
+    if (key) return key;
+  }
+  return null;
+}
+
+/** 241: each size has its own print-file dims — do not fall back to variants[0]. */
+function placeholderDimsForSizeKey(
+  variants: any[],
+  sizeKey: string,
+  fallback: Map<ViewName, { width: number; height: number }>,
+): Map<ViewName, { width: number; height: number }> {
+  for (const v of variants) {
+    if (catalogVariantSizeKey(v) !== sizeKey) continue;
+    const dims = placeholderDimsForVariant(v);
+    if (dims.size > 0) return dims;
+  }
+  return fallback;
+}
+
 function blankKeyMatchesManifest(manifest: FlatCalibrationManifest, key: string): boolean {
   const entry = manifest.blanks?.[key];
   return !!(entry?.front || entry?.back);
@@ -783,9 +854,13 @@ export function resolveFlatBlankColorId(
   const candidates: string[] = [];
 
   if (opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) {
+      candidates.push(`${sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${sizeId}`);
+    }
   }
-  if (opts.sizeId) candidates.push(opts.sizeId);
+  if (opts.sizeId) {
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) candidates.push(sizeId);
+  }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
 
   for (const id of candidates) {
@@ -798,11 +873,18 @@ export function resolveFlatBlankColorId(
 
   if (manifest.decorPerSize && opts.frameColorId) {
     const colorNorm = normalizeBlankKey(opts.frameColorId);
+    const wantedDim = opts.sizeId ? canonicalDecorSizeId(opts.sizeId) : null;
     for (const k of Object.keys(manifest.blanks || {})) {
       if (!blankKeyMatchesManifest(manifest, k)) continue;
       const kn = normalizeBlankKey(k);
       // normalizeBlankKey turns `16x20:white` into `16x20-white` — match `-color` suffix.
-      if (kn === colorNorm || kn.endsWith(`-${colorNorm}`)) return k;
+      if (kn !== colorNorm && !kn.endsWith(`-${colorNorm}`)) continue;
+      if (wantedDim) {
+        const keySize = k.includes(":") ? k.slice(0, k.indexOf(":")) : k;
+        const keyDim = extractDimensionalKey(keySize) || keySize;
+        if (keyDim !== wantedDim) continue;
+      }
+      return k;
     }
   }
 
@@ -823,8 +905,13 @@ export function resolveFlatBlankColorId(
       return k;
     }
   }
-  for (const k of Object.keys(manifest.blanks || {})) {
-    if (blankKeyMatchesManifest(manifest, k)) return k;
+  // decorPerSize must not fall through to another size's blank — that bakes
+  // the wrong print canvas (14×11 file on a 36×24 order).
+  const wantedDim = opts.sizeId ? canonicalDecorSizeId(opts.sizeId) : null;
+  if (!(manifest.decorPerSize && wantedDim)) {
+    for (const k of Object.keys(manifest.blanks || {})) {
+      if (blankKeyMatchesManifest(manifest, k)) return k;
+    }
   }
   return fallback;
 }
@@ -835,7 +922,7 @@ export function resolveFlatPrintFileDims(
   view: ViewName,
   opts: { sizeId?: string; frameColorId?: string; landscapeOrientation?: boolean },
 ): { width: number; height: number } | null {
-  // Wall decals / comforterters: harvest often stores one shared 2:3 printFileDims.
+  // Wall decals / comforter / indoor tapestry: harvest often stores one shared 2:3 printFileDims.
   // Axis-swapping that for landscape yields 3:2 — wrong for 24×18 (4:3). Prefer
   // the selected size's inch aspect so bake matches the storefront guide.
   if (isCatalogSizeBlankBlueprint(manifest.blueprintId) && opts.sizeId) {
@@ -1542,28 +1629,35 @@ export function buildHarvestColorsFromProductType(productType: {
   const apparelProduct = isApparelHarvestProduct(productType.designerType, sizes);
 
   // Tapestry / orientation products: harvest one blank per size (26×36 vs 36×26).
+  // Size ids may be `50-60` (hyphen) while catalogSizeKey is `50x60`.
+  const dimensionalCatalogKey = (size: { id?: string; name?: string }) =>
+    extractDimensionalKey(String(size.id || "")) ||
+    extractDimensionalKey(String(size.name || "")) ||
+    (String(size.id || "").match(/^(\d+)-(\d+)$/)
+      ? `${RegExp.$1}x${RegExp.$2}`
+      : null);
+  const allSizesDimensional =
+    sizes.length > 1 &&
+    sizes.every((s: any) => !!dimensionalCatalogKey(s));
   const orientationAsSize =
     !apparelProduct &&
-    sizes.length > 1 &&
-    frameColors.length > 0 &&
-    sizes.every(
-      (s: any) =>
-        !!extractDimensionalKey(String(s.id)) || !!extractDimensionalKey(String(s.name || "")),
-    ) &&
-    frameColorsRedundantWithSizes(
-      sizes.map((s: any) => ({
-        id: String(s.id),
-        name: String(s.name || s.id),
-        width: s.width,
-        height: s.height,
-      })),
-      frameColors.map((fc: any) => ({ id: String(fc.id), name: String(fc.name || fc.id) })),
-      "Option",
-    );
+    allSizesDimensional &&
+    (frameColors.length === 0 ||
+      frameColorsRedundantWithSizes(
+        sizes.map((s: any) => ({
+          id: String(s.id),
+          name: String(s.name || s.id),
+          width: s.width,
+          height: s.height,
+        })),
+        frameColors.map((fc: any) => ({ id: String(fc.id), name: String(fc.name || fc.id) })),
+        "Option",
+      ));
 
   if (orientationAsSize) {
     for (const size of sizes) {
       const sizeId = String(size.id);
+      const catalogKey = dimensionalCatalogKey(size) || sizeId;
       const matchedFc =
         frameColors.find((fc: any) => String(fc.id) === sizeId) ||
         frameColors.find(
@@ -1571,9 +1665,12 @@ export function buildHarvestColorsFromProductType(productType: {
             extractDimensionalKey(String(fc.id)) === extractDimensionalKey(sizeId) ||
             extractDimensionalKey(String(fc.name)) === extractDimensionalKey(String(size.name || sizeId)),
         );
-      const colorId = matchedFc ? String(matchedFc.id) : sizeId;
+      const colorId = matchedFc ? String(matchedFc.id) : frameColors.length === 0 ? "default" : sizeId;
       const variantId =
         resolveVariantIdForHarvest(variantMap, sizeId, colorId, {
+          allowSizeFallbackForColor: true,
+        }) ??
+        resolveVariantIdForHarvest(variantMap, sizeId, "default", {
           allowSizeFallbackForColor: true,
         }) ??
         resolveVariantIdForHarvest(variantMap, sizeId, sizeId, {
@@ -1581,8 +1678,8 @@ export function buildHarvestColorsFromProductType(productType: {
         });
       if (variantId == null) continue;
       pushColor({
-        id: sizeId,
-        name: size.name || sizeId,
+        id: catalogKey,
+        name: size.name || catalogKey,
         hex: matchedFc?.hex,
         variantId,
       });
@@ -1824,6 +1921,11 @@ async function harvestPerBlankGeometry(args: {
     const dims = variantPlaceholderDims.get(view);
     if (!vc || !dims) continue;
     try {
+      if (shouldProbeCatalogBlankGuide(blueprintId)) {
+        console.log(
+          `[flat-calibration] ${blueprintId} ${color.id}/${view} magenta probe ${dims.width}×${dims.height}`,
+        );
+      }
       const magId = await uploadImage(
         token,
         `reg-${safe}-${view}.png`,
@@ -1837,7 +1939,9 @@ async function harvestPerBlankGeometry(args: {
       const regMatch = pickView(regImages, view);
       if (!regMatch) continue;
       const regBuf = await downloadBuffer(regMatch.url);
-      const a = await analyzeMagenta(regBuf);
+      const a = await analyzeMagenta(regBuf, {
+        expandTapestry: shouldProbeCatalogBlankGuide(blueprintId),
+      });
       const geoDerived = geometryFromMagentaAnalysis(a, edgeWrap, dims);
       const calPaths = calibratorMode ? calibratorLayerPaths(storageKey, safe, view) : null;
 
@@ -1847,7 +1951,13 @@ async function harvestPerBlankGeometry(args: {
 
       let maskUrl: string | null = null;
       if (a.found) {
-        const maskPng = await rawToPng(geoDerived.maskRaw, geoDerived.mockupW, geoDerived.mockupH);
+        const maskRaw = maybeFeatherTapestryMaskRaw(
+          blueprintId,
+          geoDerived.maskRaw,
+          geoDerived.mockupW,
+          geoDerived.mockupH,
+        );
+        const maskPng = await rawToPng(maskRaw, geoDerived.mockupW, geoDerived.mockupH);
         const maskPath = calPaths
           ? calPaths.mask
           : `${storageKey}/mask-${safe}-${view}.png`;
@@ -1953,6 +2063,12 @@ export type HarvestOptions = {
    * after T Shirt and Sons harvested White/*).
    */
   skipBlankColorIds?: string[];
+  /**
+   * Restrict the per-blank pass to these ids (e.g. tapestry `50x60` probe).
+   * Matching uses extractDimensionalKey so `50''_x_60''` hits `50x60`.
+   * Stored geometryByBlank keys are rewritten to the dimensional catalogSizeKey.
+   */
+  onlyColorIds?: string[];
   /**
    * Multi-provider fill: harvest blank garment photos only — skip probe / reg /
    * shading. Those steps call shop create and fail with Printify 6002 for
@@ -2185,7 +2301,11 @@ export async function harvestBlanksFromShopifyProduct(args: {
       }
     }
     for (const v of variants) {
-      const opts = [v.option1, v.option2, v.option3, v.title].filter(Boolean).map(String);
+      if (!variantServesPrintSides(v, "front")) continue;
+      const opts = [v.option1, v.option2, v.option3, v.title]
+        .filter(Boolean)
+        .map(String)
+        .filter((o) => !isPrintSidesValue(o));
       if (opts.some((o) => optionMatchesColor(o, color)) || skuMatchesColor(String(v.sku || ""), color)) {
         push(v);
       }
@@ -3013,7 +3133,11 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
           createdProductIds,
         );
       } catch (e) {
-        console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, (e as Error).message);
+        const message = (e as Error).message || String(e);
+        console.warn(`[flat-calibration] probe failed for ${name}/${view}:`, message);
+        // Auth or shop-access failures are not a curved garment. Rethrow so
+        // canonical harvest can try the next shop or Printify account.
+        if (isPrintifyAuthError(message) || isPrintifyShopAccessError(message)) throw e;
       }
     }
     const tiers = Object.values(probes).map((p) => p!.tier);
@@ -3065,12 +3189,20 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       if (!match) continue;
       const buf = await downloadBuffer(match.url);
       if (calibratorMode) regImageByView[view] = buf;
-      const a = await analyzeMagenta(buf);
+      const a = await analyzeMagenta(buf, {
+        expandTapestry: shouldProbeCatalogBlankGuide(blueprintId),
+      });
       maskByView[view] = a;
       const geo = geometryFromMagentaAnalysis(a, edgeWrapProduct, placeholderDims.get(view));
       let maskUrl: string | null = null;
       if (a.found) {
-        const maskPng = await rawToPng(geo.maskRaw, geo.mockupW, geo.mockupH);
+        const maskRaw = maybeFeatherTapestryMaskRaw(
+          blueprintId,
+          geo.maskRaw,
+          geo.mockupW,
+          geo.mockupH,
+        );
+        const maskPng = await rawToPng(maskRaw, geo.mockupW, geo.mockupH);
         maskUrl = await uploadToFlatCalibrationBucket(`${storageKey}/mask-${view}.png`, maskPng, "image/png");
         if (calibratorMode) {
           await uploadToFlatCalibrationBucket(
@@ -3162,6 +3294,27 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
                   }
                 : null,
           });
+    if (opts.onlyColorIds && opts.onlyColorIds.length > 0) {
+      const colorSizeKey = (id: string, name?: string) =>
+        extractDimensionalKey(id) ||
+        extractDimensionalKey(name || "") ||
+        (id.match(/^(\d+)-(\d+)$/) ? `${id.split("-")[0]}x${id.split("-")[1]}` : id);
+      const wanted = new Set(
+        opts.onlyColorIds.map((id) => colorSizeKey(String(id))),
+      );
+      colors = colors
+        .filter((c) => {
+          const dim = colorSizeKey(c.id, c.name);
+          return wanted.has(dim) || wanted.has(c.id);
+        })
+        .map((c) => {
+          const dim = colorSizeKey(c.id, c.name);
+          return wanted.has(dim) ? { ...c, id: dim } : c;
+        });
+      console.log(
+        `[flat-calibration] ${name}: onlyColorIds → ${colors.map((c) => c.id).join(", ") || "(none)"}`,
+      );
+    }
     if (skipBlankKeys.size > 0) {
       const before = colors.length;
       colors = colors.filter(
@@ -3221,9 +3374,16 @@ export async function harvestFlatCalibration(opts: HarvestOptions): Promise<Harv
       // variants[0]) which is correct for per-model geometry: all phone-case
       // models share the same print-area dimensions within a blueprint.
       const variant = variants.find((v) => v.id === color.variantId);
-      const variantDims = placeholderDimsForVariant(variant).size > 0
-        ? placeholderDimsForVariant(variant)
-        : placeholderDims;
+      const fromId = placeholderDimsForVariant(variant);
+      const variantDims = shouldProbeCatalogBlankGuide(blueprintId)
+        ? placeholderDimsForSizeKey(
+            variants,
+            color.id,
+            fromId.size > 0 ? fromId : placeholderDims,
+          )
+        : fromId.size > 0
+          ? fromId
+          : placeholderDims;
       let perBlankGeo: Partial<Record<ViewName, NonNullable<FlatCalibrationManifest["geometryByBlank"]>[string][ViewName]>> | null = null;
       const perBlank = needsPerBlankGeometry(color, edgeWrapProduct, decorPerSize);
       if (perBlank && variantDims.size > 0) {

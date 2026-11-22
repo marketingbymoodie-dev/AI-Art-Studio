@@ -86,6 +86,37 @@ describe("resolveIsApparelGeneration", () => {
       true,
     );
   });
+
+  it("does not plate decor or category=all on framed/poster products", () => {
+    expect(resolveIsApparelGeneration({ designerType: "framed-print" }, "decor")).toBe(false);
+    expect(resolveIsApparelGeneration({ designerType: "framed-print" }, "all")).toBe(false);
+    expect(resolveIsApparelGeneration({ designerType: "generic" }, "all")).toBe(false);
+  });
+
+  it("floating keepers on decor use fill (not garment matting); apparel stays isolated", () => {
+    expect(
+      resolveIsApparelGeneration({ designerType: "generic" }, "all", {
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
+      }),
+    ).toBe(false);
+    expect(
+      resolveIsApparelGeneration({ designerType: "framed-print" }, "all", {
+        catalogSlug: "graphics-centered-graphic",
+      }),
+    ).toBe(false);
+    expect(
+      resolveIsApparelGeneration({ designerType: "apparel" }, "all", {
+        catalogSlug: "centered-graphic",
+        outputMode: "floating",
+      }),
+    ).toBe(true);
+    expect(
+      resolveIsApparelGeneration({ designerType: "framed-print" }, "all", {
+        catalogSlug: "minimal-line",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("sanitizeApparelStylePrefix", () => {
@@ -123,7 +154,7 @@ describe("resolveApparelStylePrefix", () => {
       "Illustrated character on white card background",
     );
     expect(out.toLowerCase()).toContain("#ff00ff");
-    expect(out.toLowerCase()).toContain("do not use solid hot pink");
+    expect(out.toLowerCase()).toContain("illustrated character motif");
     expect(out.toLowerCase()).not.toContain("white card");
   });
 });
@@ -159,7 +190,9 @@ describe("removeChromaKeyBackground", () => {
     expect(await alphaAt(buffer, 32, 32)).toBeGreaterThan(200);
   });
 
-  it("removes white mat on pink canvas via connected flood", async () => {
+  it("does not flood an inset white mat on a magenta canvas (Pass C skipped)", async () => {
+    // Tradeoff of skipping Pass C on magenta: an inset white card around the
+    // subject is no longer eaten via the keyed plate. Pink plate still goes.
     const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
       const inWhiteMat = x >= 20 && x <= 60 && y >= 20 && y <= 60;
       const inArt = (x - 40) ** 2 + (y - 40) ** 2 <= 8 ** 2;
@@ -179,9 +212,29 @@ describe("removeChromaKeyBackground", () => {
     });
 
     const { buffer } = await removeChromaKeyBackground(src, { allowWhiteKey: true });
-    expect(await alphaAt(buffer, 25, 25)).toBe(0);
+    expect(await alphaAt(buffer, 25, 25)).toBeGreaterThan(200);
     expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
     expect(await alphaAt(buffer, 2, 2)).toBe(0);
+  });
+
+  it("still removes genuine white background when corners are a light canvas", async () => {
+    const src = await rgbaBuffer(80, 80, (x, y, row, o) => {
+      const inArt = (x - 40) ** 2 + (y - 40) ** 2 <= 8 ** 2;
+      if (inArt) {
+        row[o] = 30;
+        row[o + 1] = 30;
+        row[o + 2] = 180;
+      } else {
+        row[o] = 250;
+        row[o + 1] = 250;
+        row[o + 2] = 250;
+      }
+    });
+
+    const { buffer } = await removeChromaKeyBackground(src, { allowWhiteKey: true });
+    expect(await alphaAt(buffer, 2, 2)).toBe(0);
+    expect(await alphaAt(buffer, 25, 25)).toBe(0);
+    expect(await alphaAt(buffer, 40, 40)).toBeGreaterThan(200);
   });
 
   it("preserves internal white teeth and eyes on magenta canvas", async () => {

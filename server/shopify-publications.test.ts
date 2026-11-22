@@ -3,8 +3,12 @@ import {
   creatorMerchandiseMissingMessage,
   isCheckoutPublication,
   isMerchandiseMissingError,
+  isOnlineStorePublication,
   isPosPublication,
+  isStorefrontLiveStatus,
   partitionPublications,
+  productIsOnOnlineStore,
+  productIsStorefrontLive,
 } from "./shopify-publications";
 
 describe("publication classification", () => {
@@ -14,6 +18,12 @@ describe("publication classification", () => {
     expect(isCheckoutPublication("Hydrogen")).toBe(true);
     expect(isCheckoutPublication("AI Art Studio (Staging)")).toBe(true);
     expect(isCheckoutPublication("Storefront API")).toBe(true);
+  });
+
+  it("identifies the Online Store publication by exact name", () => {
+    expect(isOnlineStorePublication("Online Store")).toBe(true);
+    expect(isOnlineStorePublication("online store")).toBe(true);
+    expect(isOnlineStorePublication("AI Art Studio (Staging)")).toBe(false);
   });
 
   it("treats Point of Sale as POS-only", () => {
@@ -35,6 +45,84 @@ describe("publication classification", () => {
       "Headless",
     ]);
     expect(pos.map((c) => c.name)).toEqual(["Point of Sale"]);
+  });
+});
+
+describe("productIsOnOnlineStore", () => {
+  it("treats publishedOnPublication as already listed", () => {
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: true,
+        status: "UNLISTED",
+      }),
+    ).toBe(true);
+  });
+
+  it("falls back to resourcePublications named Online Store", () => {
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: false,
+        resourcePublications: {
+          edges: [
+            {
+              node: {
+                isPublished: true,
+                publication: { name: "Online Store" },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false when Online Store is missing or unpublished", () => {
+    expect(productIsOnOnlineStore(null)).toBe(false);
+    expect(
+      productIsOnOnlineStore({
+        publishedOnPublication: false,
+        resourcePublications: {
+          edges: [
+            {
+              node: {
+                isPublished: true,
+                publication: { name: "Point of Sale" },
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("productIsStorefrontLive", () => {
+  it("rejects DRAFT even when already on Online Store", () => {
+    expect(isStorefrontLiveStatus("DRAFT")).toBe(false);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "DRAFT",
+        publishedAt: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts UNLISTED or ACTIVE with Online Store membership", () => {
+    expect(isStorefrontLiveStatus("UNLISTED")).toBe(true);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "UNLISTED",
+        publishedAt: "2026-09-14T00:00:00Z",
+      }),
+    ).toBe(true);
+    expect(
+      productIsStorefrontLive({
+        publishedOnPublication: true,
+        status: "ACTIVE",
+      }),
+    ).toBe(true);
   });
 });
 

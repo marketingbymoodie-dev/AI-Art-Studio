@@ -1,8 +1,8 @@
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { ProductAdapter, ControlsProps, MockupProps } from "../BaseDesigner";
 import { ZoomControls } from "../ZoomControls";
 import { SafeZoneMask } from "../SafeZoneMask";
+import { SizeSelector } from "../SizeSelector";
+import { FrameColorSelector } from "../FrameColorSelector";
 import type { ImageTransform } from "../types";
 
 function FramedPrintControls({
@@ -12,44 +12,31 @@ function FramedPrintControls({
   setSelectedVariant,
   sizes,
   variants,
+  mintedCatalog,
 }: ControlsProps) {
+  const sizeName = sizes.find((s) => s.id === selectedSize)?.name;
+  const color = variants.find((c) => c.id === selectedVariant);
   return (
     <div className="flex flex-col gap-4">
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Print Size</Label>
-        <Select value={selectedSize} onValueChange={setSelectedSize}>
-          <SelectTrigger data-testid="select-size">
-            <SelectValue placeholder="Select size" />
-          </SelectTrigger>
-          <SelectContent>
-            {sizes.map((size) => (
-              <SelectItem key={size.id} value={size.id}>
-                {size.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm font-medium">Frame Color</Label>
-        <div className="flex gap-2 flex-wrap">
-          {variants.map((color) => (
-            <button
-              key={color.id}
-              onClick={() => setSelectedVariant(color.id)}
-              className={`w-8 h-8 rounded-full border-2 transition-all ${
-                selectedVariant === color.id
-                  ? "ring-2 ring-primary ring-offset-2"
-                  : "hover:scale-110"
-              }`}
-              style={{ backgroundColor: color.hex }}
-              title={color.name}
-              data-testid={`button-frame-${color.id}`}
-            />
-          ))}
-        </div>
-      </div>
+      <SizeSelector
+        sizes={sizes}
+        selectedSize={selectedSize}
+        onSizeChange={setSelectedSize}
+        label="Print Size"
+        mintedCatalog={mintedCatalog}
+        selectedColorName={color?.name}
+        selectedColorId={color?.id}
+      />
+      {variants.length > 0 && (
+        <FrameColorSelector
+          frameColors={variants}
+          selectedFrameColor={selectedVariant}
+          onFrameColorChange={setSelectedVariant}
+          colorLabel="Frame Color"
+          mintedCatalog={mintedCatalog}
+          selectedSizeName={sizeName}
+        />
+      )}
     </div>
   );
 }

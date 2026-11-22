@@ -3,14 +3,40 @@ import {
   expandHoodPanelImageIdsWithSiblingFallback,
   expandPanelImageIdsWithCollarAliases,
   expandPanelImageIdsWithPocketAliases,
+  isDegeneratePocketPrintDims,
   isPocketLikePrintifyPosition,
+  buildPocketWindowOnFrontCanvas,
+  canvasSpacePocketCoverSize,
+  computeZipPocketSeamPinX,
+  intersectRectWithCanvas,
+  mapMockupPointToFrontCanvas,
   pocketOverlayRectOnFrontPanel,
+  applyFinishedPocketSampleToBbox,
+  applyPocketAuthoredSampleToBbox,
+  applyPulloverPocketSampleWindow,
+  applyPocketLiveSampleToBbox,
+  applyPocketSourceInsetToBbox,
+  applyPocketSourceScaleToBbox,
+  applyPocketSourceScaleXToBbox,
+  applyZipPocketSampleToBbox,
+  ZIP_POCKET_UP_FRAC,
+  ZIP_POCKET_ZIPPER_INSET_FRAC,
+  pocketRawTopPastMural,
+  pocketSampleInsetMockupY,
+  POCKET_WINDOW_OFFSET_Y,
+  POCKET_WINDOW_SCALE,
+  POCKET_SOURCE_INSET_CANVAS_REF_H,
+  pocketPlacementBiasIsNonzero,
+  pocketPrintHostPanelKey,
+  templateHasNonzeroFrontBakeMismatchRisk,
+  templateHasNonzeroPocketPlacementBias,
+  zipPocketSeamSide,
   resolvePocketFallbackImageId,
   resolvePrintifyPanelImageId,
   shouldExportPulloverPocketAsPrintifyPanel,
   shouldMergePulloverPocketForPrintify,
 } from "./pulloverPocketPrintMerge";
-import { PULOVER_HOODIE_BLUEPRINT_ID } from "./hoodieTemplate";
+import { PULOVER_HOODIE_BLUEPRINT_ID, ZIP_HOODIE_BLUEPRINT_ID } from "./hoodieTemplate";
 
 describe("shouldExportPulloverPocketAsPrintifyPanel", () => {
   it("exports for pullover when pockets are on", () => {
@@ -118,5 +144,463 @@ describe("pocketOverlayRectOnFrontPanel", () => {
     expect(dest.y).toBeCloseTo(700);
     expect(dest.width).toBeCloseTo(400);
     expect(dest.height).toBeCloseTo(240);
+  });
+});
+
+describe("buildPocketWindowOnFrontCanvas", () => {
+  const frontBb = { x: 100, y: 50, width: 400, height: 500 };
+  const pocketBb = { x: 200, y: 400, width: 150, height: 100 };
+
+  it("locks canvas-space aspect to the resolved pocket dims (not a hardcoded zip ratio)", () => {
+    const aspect = 1375 / 1430;
+    const win = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+    });
+    expect(win).not.toBeNull();
+    expect(win!.width / win!.height).toBeCloseTo(aspect, 5);
+    const pulloverAspect = 4200 / 2550;
+    const pullover = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: pulloverAspect,
+    });
+    expect(pullover!.width / pullover!.height).toBeCloseTo(pulloverAspect, 5);
+  });
+
+  it("does not let the anisotropic map set width and height independently", () => {
+    const aspect = 1375 / 1430;
+    const win = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: { x: 513.23, y: 310.15, width: 206.37, height: 517.79 },
+      pocketMaskBb: { x: 513.59, y: 635.3, width: 150.27, height: 187.85 },
+      frontCanvasW: 1622,
+      frontCanvasH: 3200,
+      pocketAspect: aspect,
+    });
+    expect(win).not.toBeNull();
+    expect(win!.width / win!.height).toBeCloseTo(aspect, 5);
+    expect(win!.width / win!.height).not.toBeCloseTo(aspect * (1622 / 206.37) / (3200 / 517.79), 2);
+  });
+
+  it("centers on the mapped pocket center and applies scale / canvas offsets", () => {
+    const aspect = 2;
+    const base = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      scale: 1,
+      offsetY: 0,
+    });
+    const zoomed = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      scale: 1.25,
+      offsetY: 0,
+    });
+    expect(zoomed!.width).toBeCloseTo(base!.width * 1.25);
+    expect(zoomed!.height).toBeCloseTo(base!.height * 1.25);
+    expect(zoomed!.x + zoomed!.width / 2).toBeCloseTo(base!.x + base!.width / 2);
+    expect(zoomed!.y + zoomed!.height / 2).toBeCloseTo(base!.y + base!.height / 2);
+    const center = mapMockupPointToFrontCanvas(
+      frontBb,
+      { x: pocketBb.x + pocketBb.width / 2, y: pocketBb.y + pocketBb.height / 2 },
+      800,
+      1000,
+    );
+    expect(base!.x + base!.width / 2).toBeCloseTo(center!.x);
+    expect(base!.y + base!.height / 2).toBeCloseTo(center!.y);
+    const nudged = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontBb,
+      pocketMaskBb: pocketBb,
+      frontCanvasW: 800,
+      frontCanvasH: 1000,
+      pocketAspect: aspect,
+      scale: 1,
+      offsetX: 12,
+      offsetY: -8,
+    });
+    expect(nudged!.x).toBeCloseTo(base!.x + 12);
+    expect(nudged!.y).toBeCloseTo(base!.y - 8);
+  });
+
+  it("returns null for degenerate aspect instead of inventing a fallback", () => {
+    expect(
+      buildPocketWindowOnFrontCanvas({
+        frontMaskBb: frontBb,
+        pocketMaskBb: pocketBb,
+        frontCanvasW: 800,
+        frontCanvasH: 1000,
+        pocketAspect: 0,
+      }),
+    ).toBeNull();
+    expect(isDegeneratePocketPrintDims(null)).toBe(true);
+    expect(isDegeneratePocketPrintDims({ width: 1375, height: 0 })).toBe(true);
+    expect(isDegeneratePocketPrintDims({ width: 1375, height: 1430 })).toBe(false);
+    expect(canvasSpacePocketCoverSize(100, 100, 0)).toBeNull();
+  });
+
+  it("maps zip/pullover pocket keys to the host front bake", () => {
+    expect(pocketPrintHostPanelKey("pocket_left")).toBe("front_left");
+    expect(pocketPrintHostPanelKey("pocket_right")).toBe("front_right");
+    expect(pocketPrintHostPanelKey("front_pocket")).toBe("front");
+    expect(pocketPrintHostPanelKey("back")).toBeNull();
+  });
+
+  it("pins zip inner edges to the canvas-mapped zip line, then stays on the host canvas", () => {
+    const pocketLeft = { x: 513.59, y: 635.3, width: 150.27, height: 187.85 };
+    const pocketRight = { x: 348.21, y: 635.69, width: 154.99, height: 187.64 };
+    const pinX = computeZipPocketSeamPinX(pocketLeft, pocketRight);
+    expect(pinX).toBeCloseTo((513.59 + 348.21 + 154.99) / 2, 5);
+    expect(zipPocketSeamSide("pocket_left")).toBe("left");
+    expect(zipPocketSeamSide("pocket_right")).toBe("right");
+    expect(zipPocketSeamSide("front_pocket")).toBeNull();
+
+    const frontLeft = { x: 513.23, y: 310.15, width: 206.37, height: 517.79 };
+    const frontRight = { x: 292.86, y: 311.12, width: 210.54, height: 516.78 };
+    const aspect = 1375 / 1430;
+    const leftWin = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontLeft,
+      pocketMaskBb: pocketLeft,
+      frontCanvasW: 1622,
+      frontCanvasH: 3200,
+      pocketAspect: aspect,
+      seamSide: "left",
+      seamPinX: pinX,
+    });
+    const rightWin = buildPocketWindowOnFrontCanvas({
+      frontMaskBb: frontRight,
+      pocketMaskBb: pocketRight,
+      frontCanvasW: 1622,
+      frontCanvasH: 3200,
+      pocketAspect: aspect,
+      seamSide: "right",
+      seamPinX: pinX,
+    });
+    expect(leftWin).not.toBeNull();
+    expect(rightWin).not.toBeNull();
+    expect(leftWin!.width / leftWin!.height).toBeCloseTo(aspect, 5);
+    expect(rightWin!.width / rightWin!.height).toBeCloseTo(aspect, 5);
+    expect(leftWin!.x).toBeGreaterThanOrEqual(-1e-6);
+    expect(leftWin!.x + leftWin!.width).toBeLessThanOrEqual(1622 + 1e-6);
+    expect(rightWin!.x).toBeGreaterThanOrEqual(-1e-6);
+    expect(rightWin!.x + rightWin!.width).toBeLessThanOrEqual(1622 + 1e-6);
+    const leftPin = mapMockupPointToFrontCanvas(
+      frontLeft,
+      { x: pinX!, y: pocketLeft.y },
+      1622,
+      3200,
+    );
+    expect(leftPin!.x).toBeLessThan(0);
+    expect(leftWin!.x).toBeCloseTo(0, 5);
+  });
+
+  it("returns null when the mapped window misses the host canvas", () => {
+    expect(
+      buildPocketWindowOnFrontCanvas({
+        frontMaskBb: { x: 100, y: 50, width: 400, height: 500 },
+        pocketMaskBb: { x: 200, y: 400, width: 150, height: 100 },
+        frontCanvasW: 800,
+        frontCanvasH: 1000,
+        pocketAspect: 2,
+        offsetX: 5000,
+      }),
+    ).toBeNull();
+    expect(intersectRectWithCanvas({ x: -10, y: 0, width: 5, height: 10 }, 100, 100)).toBeNull();
+    expect(intersectRectWithCanvas({ x: -10, y: 0, width: 40, height: 10 }, 100, 100)).toEqual({
+      x: 0,
+      y: 0,
+      width: 30,
+      height: 10,
+    });
+  });
+
+  it("detects chest bias / seamAllowance bake-mismatch risk", () => {
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0.02,
+          lockedRatio: null,
+          enabled: true,
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      templateHasNonzeroFrontBakeMismatchRisk([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front_left", "front_right"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+          panelPlacementBias: { chest: { offsetXPercent: 1, offsetYPercent: 0 } },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("detects nonzero pocket placement bias", () => {
+    expect(pocketPlacementBiasIsNonzero({ offsetXPercent: 0, offsetYPercent: 0 })).toBe(false);
+    expect(pocketPlacementBiasIsNonzero({ offsetXPercent: 0, offsetYPercent: 1 })).toBe(true);
+    expect(
+      templateHasNonzeroPocketPlacementBias([
+        {
+          id: "front-body",
+          name: "Front body",
+          panelKeys: ["front"],
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0 },
+            back: { scale: 1, offsetX: 0, offsetY: 0 },
+          },
+          seamAllowance: 0,
+          lockedRatio: null,
+          enabled: true,
+          panelPlacementBias: { pocket: { offsetXPercent: 0, offsetYPercent: 2 } },
+        },
+      ]),
+    ).toBe(true);
+  });
+});
+
+describe("pocket source inset (sewn fold)", () => {
+  it("converts POCKET_WINDOW_OFFSET_Y canvas px into a mockup-Y shift up", () => {
+    expect(POCKET_WINDOW_OFFSET_Y).toBe(-100);
+    const dy = pocketSampleInsetMockupY(524.93);
+    expect(dy).toBeCloseTo((-100 * 524.93) / POCKET_SOURCE_INSET_CANVAS_REF_H, 5);
+    expect(dy).toBeLessThan(0);
+    const shifted = applyPocketSourceInsetToBbox(
+      { x: 343.83, y: 635.48, width: 318.81, height: 193.44 },
+      524.93,
+    );
+    expect(shifted.y).toBeCloseTo(635.48 + dy, 5);
+    expect(shifted.x).toBe(343.83);
+  });
+
+  it("insets pullover pocket to the finished per-edge shape and zip up by pocket height", () => {
+    const grey = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
+    const finished = applyFinishedPocketSampleToBbox(grey);
+    expect(finished.width).toBeCloseTo(318.81, 1);
+    expect(finished.height).toBeCloseTo(181.62, 1);
+    expect(finished.x).toBeCloseTo(343.83, 1);
+    expect(finished.y).toBeCloseTo(635.48, 1);
+    const pullover = applyPocketLiveSampleToBbox(grey, 524.93, "front_pocket", {
+      y: 0,
+      height: 2000,
+    });
+    expect(pullover).toEqual(finished);
+    const zipLeft = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left");
+    expect(zipLeft).toEqual(applyZipPocketSampleToBbox(grey, "pocket_left"));
+    expect(zipLeft.y).toBeCloseTo(grey.y - grey.height * ZIP_POCKET_UP_FRAC, 5);
+    expect(zipLeft.width).toBeCloseTo(grey.width * (1 - ZIP_POCKET_ZIPPER_INSET_FRAC), 5);
+    expect(zipLeft.x).toBe(grey.x);
+    const zipRight = applyZipPocketSampleToBbox(grey, "pocket_right");
+    expect(zipRight.x).toBeCloseTo(grey.x + grey.width * ZIP_POCKET_ZIPPER_INSET_FRAC, 5);
+    expect(zipRight.y).toBeCloseTo(zipLeft.y, 5);
+  });
+
+  it("skips finished inset when the raw pocket top is already past the mural", () => {
+    const bb = { x: 343.83, y: 635.48, width: 318.81, height: 193.44 };
+    expect(pocketRawTopPastMural(635.48, -49.785, 635.341)).toBe(true);
+    const skipped = applyPocketLiveSampleToBbox(bb, 524.93, "front_pocket", {
+      y: -49.785,
+      height: 635.341,
+    });
+    expect(skipped).toEqual(bb);
+    expect(pocketRawTopPastMural(400, -49.785, 635.341)).toBe(false);
+    const finished = applyPocketLiveSampleToBbox(
+      { x: 100, y: 400, width: 200, height: 100 },
+      524.93,
+      "front_pocket",
+      { y: -49.785, height: 635.341 },
+    );
+    expect(finished).toEqual(applyFinishedPocketSampleToBbox({ x: 100, y: 400, width: 200, height: 100 }));
+  });
+
+  it("applies pullover pocket offset/scale after the finished inset, not before", () => {
+    const grey = { x: 100, y: 200, width: 200, height: 100 };
+    const finished = applyFinishedPocketSampleToBbox(grey);
+    const after = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "front_pocket",
+      null,
+      { offsetX: 10, offsetY: -4, scale: 1 },
+      PULOVER_HOODIE_BLUEPRINT_ID,
+    );
+    expect(after.width).toBeCloseTo(finished.width, 5);
+    expect(after.height).toBeCloseTo(finished.height, 5);
+    expect(after.x).toBeCloseTo(finished.x + 10, 5);
+    expect(after.y).toBeCloseTo(finished.y - 4, 5);
+    expect(POCKET_WINDOW_OFFSET_Y).toBe(-100);
+    const zipBase = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_left");
+    const zip = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "pocket_left",
+      null,
+      { offsetX: 0, offsetY: -4, scale: 1.2 },
+      ZIP_HOODIE_BLUEPRINT_ID,
+    );
+    const zipAuthored = applyPocketAuthoredSampleToBbox(zipBase, {
+      offsetX: 0,
+      offsetY: -4,
+      scale: 1.2,
+    });
+    expect(zip.y).toBeCloseTo(zipAuthored.y, 5);
+    expect(zip.width).toBeCloseTo(zipAuthored.width, 5);
+    const zipRightBase = applyPocketLiveSampleToBbox(grey, 524.93, "pocket_right");
+    const zipRight = applyPulloverPocketSampleWindow(
+      grey,
+      524.93,
+      "pocket_right",
+      null,
+      { offsetX: 0, offsetY: -4, scale: 1.2 },
+      ZIP_HOODIE_BLUEPRINT_ID,
+    );
+    expect(zipRight).toEqual(
+      applyPocketAuthoredSampleToBbox(zipRightBase, {
+        offsetX: 0,
+        offsetY: -4,
+        scale: 1.2,
+      }),
+    );
+  });
+});
+
+/**
+ * Direction of the pocket sample-window scale. The sample window is INVERSE to
+ * on-garment art size: a larger window samples more source art into the same
+ * panel, so the printed art comes out smaller. `scale` therefore divides, so
+ * the field reads intuitively everywhere (scale > 1 = bigger art on the
+ * garment), matching the group Scale control and the slider labels.
+ *
+ * These assertions exist because nothing else pins the direction: the zip
+ * wiring tests above compare applyPulloverPocketSampleWindow against
+ * applyPocketAuthoredSampleToBbox, and both sides call this same function, so
+ * they stay green whichever way the operator points. Without the cases below a
+ * silent re-inversion would ship undetected.
+ */
+describe("applyPocketSourceScaleToBbox direction + centring", () => {
+  const base = { x: 0, y: 0, width: 100, height: 100 };
+
+  it("scale > 1 SHRINKS the sample window (enlarges printed art)", () => {
+    expect(applyPocketSourceScaleToBbox(base, 2)).toEqual({
+      x: 25,
+      y: 25,
+      width: 50,
+      height: 50,
+    });
+  });
+
+  it("scale < 1 GROWS the sample window (shrinks printed art)", () => {
+    expect(applyPocketSourceScaleToBbox(base, 0.5)).toEqual({
+      x: -50,
+      y: -50,
+      width: 200,
+      height: 200,
+    });
+  });
+
+  it("scales about the rect centre, not a corner", () => {
+    const centre = (b: { x: number; y: number; width: number; height: number }) => ({
+      cx: b.x + b.width / 2,
+      cy: b.y + b.height / 2,
+    });
+    const offset = { x: 40, y: 120, width: 60, height: 80 };
+    for (const scale of [2, 0.5, 1.2, 0.8]) {
+      const out = applyPocketSourceScaleToBbox(offset, scale);
+      expect(centre(out).cx).toBeCloseTo(centre(offset).cx, 10);
+      expect(centre(out).cy).toBeCloseTo(centre(offset).cy, 10);
+      expect(out.width).toBeCloseTo(offset.width / scale, 10);
+      expect(out.height).toBeCloseTo(offset.height / scale, 10);
+    }
+  });
+
+  it("is a no-op at scale 1 and for non-positive scale", () => {
+    expect(applyPocketSourceScaleToBbox(base, 1)).toBe(base);
+    expect(applyPocketSourceScaleToBbox(base, 0)).toBe(base);
+    expect(applyPocketSourceScaleToBbox(base, -2)).toBe(base);
+  });
+
+  it("preserves sibling fields on the passed bbox", () => {
+    const tagged = { ...base, position: "pocket_left" as const };
+    expect(applyPocketSourceScaleToBbox(tagged, 2).position).toBe("pocket_left");
+  });
+});
+
+/**
+ * scaleX is the pocketPrint width-only correction (Printify squeezes the
+ * pullover pocket horizontally more than the body). It must never touch y or
+ * height — a uniform-scale regression would move the pocket vertically.
+ */
+describe("applyPocketSourceScaleXToBbox (width-only)", () => {
+  const base = { x: 40, y: 120, width: 60, height: 80 };
+
+  it("scaleX > 1 narrows the window about its centre x; y and height untouched", () => {
+    const out = applyPocketSourceScaleXToBbox(base, 1.176);
+    expect(out.width).toBeCloseTo(60 / 1.176, 10);
+    expect(out.x + out.width / 2).toBeCloseTo(base.x + base.width / 2, 10);
+    expect(out.y).toBe(base.y);
+    expect(out.height).toBe(base.height);
+  });
+
+  it("is a no-op at 1 and for non-positive values", () => {
+    expect(applyPocketSourceScaleXToBbox(base, 1)).toBe(base);
+    expect(applyPocketSourceScaleXToBbox(base, 0)).toBe(base);
+    expect(applyPocketSourceScaleXToBbox(base, -2)).toBe(base);
+  });
+
+  it("applyPocketAuthoredSampleToBbox: absent scaleX is byte-identical to before", () => {
+    const bias = { offsetX: 3.3, offsetY: -17.5, scale: 1 };
+    expect(applyPocketAuthoredSampleToBbox(base, bias)).toEqual({
+      ...base,
+      x: base.x + 3.3,
+      y: base.y - 17.5,
+    });
+  });
+
+  it("applyPocketAuthoredSampleToBbox: scaleX narrows about centre, then offsets shift", () => {
+    const out = applyPocketAuthoredSampleToBbox(base, { offsetX: 3.3, offsetY: -17.5, scaleX: 1.176 });
+    expect(out.width).toBeCloseTo(60 / 1.176, 10);
+    expect(out.x + out.width / 2).toBeCloseTo(base.x + base.width / 2 + 3.3, 10);
+    expect(out.y).toBeCloseTo(base.y - 17.5, 10);
+    expect(out.height).toBe(base.height);
   });
 });

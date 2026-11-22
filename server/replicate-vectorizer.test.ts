@@ -142,6 +142,38 @@ describe("Recraft vectorizer client", () => {
     expect(plateColors.has("#E614E1")).toBe(false);
   });
 
+  it("classifyPlateColorsByConnectivity punches enclosed tight plate colour (letter counters)", async () => {
+    const sharp = (await import("sharp")).default;
+    const { classifyPlateColorsByConnectivity } = await import("./replicate-vectorizer");
+
+    const width = 60;
+    const height = 60;
+    const raw = new Uint8Array(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const inRing = x >= 18 && x < 42 && y >= 18 && y < 42;
+        const inCounter = x >= 24 && x < 36 && y >= 24 && y < 36;
+        if (inRing && !inCounter) {
+          raw[idx] = 20;
+          raw[idx + 1] = 20;
+          raw[idx + 2] = 20;
+        } else {
+          raw[idx] = 255;
+          raw[idx + 1] = 0;
+          raw[idx + 2] = 255;
+        }
+        raw[idx + 3] = 255;
+      }
+    }
+    const raster = await sharp(Buffer.from(raw), { raw: { width, height, channels: 4 } })
+      .png()
+      .toBuffer();
+
+    const plateColors = await classifyPlateColorsByConnectivity(raster, ["#FF00FF"]);
+    expect(plateColors.has("#FF00FF")).toBe(true);
+  });
+
   it("sanitizeVectorSvgConnected strips border-connected plate but keeps enclosed hot-pink design fill", async () => {
     const sharp = (await import("sharp")).default;
     const { sanitizeVectorSvgConnected } = await import("./replicate-vectorizer");
@@ -321,6 +353,78 @@ describe("Recraft vectorizer client", () => {
 
     const count = await countOpaqueWhereSourceTransparent(source, raster);
     expect(count).toBeGreaterThan(1000);
+  });
+
+  it("dropNearKeySvgShapes removes plate and soft-edge magenta fills and keeps violet", async () => {
+    const { countNearKeySvgFills, dropNearKeySvgShapes } = await import("./replicate-vectorizer");
+    const raw = Buffer.from(
+      "<svg>" +
+        '<path fill="rgb(229,14,223)" d="M0 0"/>' +
+        '<path fill="rgb(195,49,175)" d="M1 1"/>' +
+        '<path fill="#000000" d="M2 2"/>' +
+        '<path fill="#800080" d="M3 3"/>' +
+        '<path fill="#C800FF" d="M4 4"/>' +
+        '<g fill="#FF00FF"><path d="M5 5"/></g>' +
+        "</svg>",
+    );
+    expect(countNearKeySvgFills(raw)).toBe(2);
+    const cleaned = dropNearKeySvgShapes(raw).toString("utf8");
+    expect(cleaned).not.toContain("rgb(229,14,223)");
+    expect(cleaned).not.toContain("rgb(195,49,175)");
+    expect(cleaned).not.toContain("#FF00FF");
+    expect(cleaned).toContain('fill="#000000"');
+    expect(cleaned).toContain('fill="#800080"');
+    expect(cleaned).toContain('fill="#C800FF"');
+    expect(countNearKeySvgFills(Buffer.from(cleaned))).toBe(0);
+  });
+
+  it("punchEnclosedCounters cuts a fill-none counter out of the solid glyph", async () => {
+    const sharp = (await import("sharp")).default;
+    const { punchEnclosedCounters } = await import("./replicate-vectorizer");
+    const width = 40;
+    const height = 40;
+    const raw = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const ring = x >= 8 && x < 32 && y >= 8 && y < 32;
+        const hole = x >= 16 && x < 24 && y >= 16 && y < 24;
+        raw[i + 3] = ring && !hole ? 255 : 0;
+      }
+    }
+    const source = await sharp(raw, { raw: { width, height, channels: 4 } }).png().toBuffer();
+    const svg = Buffer.from(
+      '<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">' +
+        '<path fill="rgb(10,30,20)" d="M8 8 L32 8 L32 32 L8 32 Z"/>' +
+        '<path fill="none" d="M16 16 L24 16 L24 24 L16 24 Z"/>' +
+        "</svg>",
+    );
+    const punched = (await punchEnclosedCounters(svg, source)).toString("utf8");
+    expect(punched.match(/<path\b/g)).toHaveLength(1);
+    expect(punched).toContain('fill-rule="evenodd"');
+    const raster = await sharp(Buffer.from(punched)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const alpha = (x: number, y: number) => {
+      const sx = Math.round(x * raster.info.width / width);
+      const sy = Math.round(y * raster.info.height / height);
+      return raster.data[(sy * raster.info.width + sx) * raster.info.channels + 3];
+    };
+    expect(alpha(20, 20)).toBe(0);
+    expect(alpha(10, 20)).toBeGreaterThan(200);
+  });
+
+  it("leaves a fill-none path alone when the source has no enclosed hole there", async () => {
+    const sharp = (await import("sharp")).default;
+    const { punchEnclosedCounters } = await import("./replicate-vectorizer");
+    const source = await sharp({
+      create: { width: 40, height: 40, channels: 4, background: { r: 10, g: 30, b: 20, alpha: 1 } },
+    }).png().toBuffer();
+    const svg = Buffer.from(
+      '<svg viewBox="0 0 40 40"><path fill="rgb(10,30,20)" d="M8 8 L32 8 L32 32 L8 32 Z"/>' +
+        '<path fill="none" d="M16 16 L24 16 L24 24 L16 24 Z"/></svg>',
+    );
+    const punched = (await punchEnclosedCounters(svg, source)).toString("utf8");
+    expect(punched.match(/<path\b/g)).toHaveLength(2);
+    expect(punched).not.toContain("evenodd");
   });
 });
 

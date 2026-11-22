@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Loader2, Upload, X } from "lucide-react";
+import { apiFetch } from "@/lib/queryClient";
 
 async function uploadImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) {
@@ -16,7 +17,9 @@ async function uploadImage(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
-  const res = await fetch("/api/uploads/upload", {
+  // apiFetch carries both credentials this component runs under: the App Bridge
+  // session token in platform admin, and the creator cookie in the Creator Portal.
+  const res = await apiFetch("/api/uploads/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dataUrl, name: file.name }),

@@ -43,6 +43,8 @@ type CostsResponse = {
   printifyVariantLabels: Record<string, string>;
   costsByNormalizedLabel?: Record<string, number>;
   costsBothByNormalizedLabel?: Record<string, number>;
+  variantKeyCosts?: Record<string, number>;
+  variantKeyCostsBoth?: Record<string, number>;
   supportsBothSides?: boolean;
   cached: boolean;
 };
@@ -58,12 +60,14 @@ function lookupVariantCostCents(
   shopifyCosts: Record<string, number> | undefined,
   byLabel: Record<string, number> | undefined,
   printifyVariantLabels: Record<string, string> | undefined,
+  variantKeyCosts?: Record<string, number>,
 ): number | undefined {
   return resolveVariantCostCents(v, {
     costs,
     shopifyVariantCosts: shopifyCosts,
     costsByNormalizedLabel: byLabel,
     printifyVariantLabels,
+    variantKeyCosts,
   });
 }
 
@@ -74,6 +78,8 @@ export type ResyncPricesDialogProps = {
   productTypeId: number;
   /** When set, POST to customizer-pages sync endpoint */
   customizerPageId?: string;
+  /** Current compare-at editor. Omitted uses the value already stored on the product type. */
+  compareAtBySize?: Record<string, string>;
   onSuccess?: () => void;
 };
 
@@ -83,6 +89,7 @@ export default function ResyncPricesDialog({
   title,
   productTypeId,
   customizerPageId,
+  compareAtBySize,
   onSuccess,
 }: ResyncPricesDialogProps) {
   const { toast } = useToast();
@@ -174,6 +181,7 @@ export default function ResyncPricesDialog({
         costsData.shopifyVariantCosts,
         costsData.costsByNormalizedLabel,
         costsData.printifyVariantLabels,
+        costsData.variantKeyCosts,
       );
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
@@ -192,6 +200,7 @@ export default function ResyncPricesDialog({
         costsData.shopifyVariantCostsBoth,
         costsData.costsBothByNormalizedLabel,
         costsData.printifyVariantLabels,
+        costsData.variantKeyCostsBoth,
       );
       if (costCents == null) continue;
       const raw = (costCents / 100) * (1 + markupPercent / 100);
@@ -219,6 +228,7 @@ export default function ResyncPricesDialog({
             costsData?.shopifyVariantCosts,
             costsData?.costsByNormalizedLabel,
             costsData?.printifyVariantLabels,
+            costsData?.variantKeyCosts,
           ) != null
         );
       }),
@@ -402,6 +412,7 @@ export default function ResyncPricesDialog({
       const res = await apiRequest("POST", endpoint, {
         variantPrices: prices,
         ...(pricesBoth ? { variantPricesBoth: pricesBoth } : {}),
+        ...(compareAtBySize ? { compareAtBySize } : {}),
         defaultMarkupPercent: markupPercent,
       });
       const data = await res.json();

@@ -13,11 +13,27 @@ import {
   BOMBER_PATTERN_SLEEVES_PRINT_TILE_SCALE,
   BOMBER_SLEEVES_PREVIEW_PLACEMENT_SCALE,
   bomberPatternPrintTileScaleForPanel,
+  BEANIE_BLUEPRINT_ID,
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
   PULOVER_HOODIE_BLUEPRINT_ID,
+  PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+  PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+  PULLOVER_FRONT_BODY_PLACE_SCALE,
+  PULLOVER_HOOD_PLACE_OFFSET_X,
+  PULLOVER_HOOD_PLACE_OFFSET_Y,
+  PULLOVER_HOOD_PLACE_SCALE,
+  PULLOVER_POCKET_SAMPLE_OFFSET_X,
+  PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+  PULLOVER_POCKET_SAMPLE_SCALE,
+  PULLOVER_FRONT_NECK_GREY_BLEED_FRAC,
+  PULLOVER_HOOD_NECK_GREY_BLEED_FRAC,
+  applyPulloverNeckSeamBleedToBbox,
+  PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT,
   LEGGINGS_CASUAL_BLUEPRINT_ID,
   LEGGINGS_CAPRI_BLUEPRINT_ID,
   SWEATSHIRT_BLUEPRINT_ID,
   ZIP_HOODIE_BLUEPRINT_ID,
+  ZIP_FRONT_SEAM_ALLOWANCE,
   PILLOW_WRAP_BLUEPRINT_ID,
   FAUX_SUEDE_PILLOW_WRAP_BLUEPRINT_ID,
   BODY_PILLOW_WRAP_BLUEPRINT_ID,
@@ -33,10 +49,13 @@ import {
   designGroupsForBlueprint,
   drawMockupImageInCanvas,
   hoodiePanelKeyToPrintifyPosition,
+  isBeanieBlueprint,
+  flatArtFitForBlueprint,
   isBomberJacketBlueprint,
   isValidAopTemplateSlug,
   normalizeAopTemplateSlugInput,
   MAX_MESH_COLS,
+  MAX_MESH_ROWS,
   defaultPlacerEditorForBlueprint,
   defaultPrintFileLayoutForBlueprint,
   resolvePlacerEditor,
@@ -48,7 +67,9 @@ import {
   isPillowWrapTemplate,
   migrateSweatshirtDesignGroups,
   mockupDrawRect,
+  IDENTITY_TRANSFORM_2D,
   normalizeHoodieTemplate,
+  restorePulloverFrontSleeveSourceRects,
   panelsEligibleForView,
   SWEATSHIRT_BODY_PREVIEW_PLACEMENT_SCALE,
   SWEATSHIRT_TRIM_PANEL_KEYS,
@@ -334,12 +355,568 @@ describe("pullover hoodie panel keys (bp 450)", () => {
     expect(groups.find((g) => g.id === "trim")?.panelKeys).toEqual(["waistband"]);
   });
 
+  it("seeds pullover front-body + hood as independent Printify compose constants", () => {
+    const groups = defaultPulloverDesignGroups();
+    const front = groups.find((g) => g.id === "front-body")!.placement.front;
+    const hood = groups.find((g) => g.id === "hood")!.placement.front;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(PULLOVER_FRONT_BODY_PLACE_SCALE).toBe(1.4519);
+    expect(PULLOVER_HOOD_PLACE_SCALE).toBe(2.1574);
+    expect(PULLOVER_HOOD_PLACE_OFFSET_X).toBe(-0.8055);
+    expect(PULLOVER_HOOD_PLACE_OFFSET_Y).toBe(168.6471);
+    expect(groups.find((g) => g.id === "hood")!.seamAllowance).toBe(0.08);
+    expect(groups.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+    });
+    expect(groups.find((g) => g.id === "back-body")!.placement.front.scale).toBe(1);
+    expect(groups.find((g) => g.id === "back-body")!.placement.front.offsetY).toBe(0);
+  });
+
+  it("normalizeHoodieTemplate heals stale pullover front/hood framing, not zip", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-framing-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const staleGroups = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body" || g.id === "hood") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: staleGroups });
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
+    const back = healed.designGroups!.find((g) => g.id === "back-body")!.placement;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toEqual({
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: PULLOVER_POCKET_SAMPLE_OFFSET_X,
+      offsetY: PULLOVER_POCKET_SAMPLE_OFFSET_Y,
+      scale: PULLOVER_POCKET_SAMPLE_SCALE,
+    });
+    expect(back.front.scale).toBe(1);
+    expect(back.front.offsetY).toBe(0);
+    expect(back.back.scale).toBe(1);
+
+    const zip = createFreshAopTemplate({
+      name: "zip-framing-untouched",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    const zipStale = {
+      ...zip,
+      designGroups: zip.designGroups!.map((g) => {
+        if (g.id === "front-body") {
+          return {
+            ...g,
+            placement: {
+              front: { scale: 1.05, offsetX: 0, offsetY: -278.85, rotationDeg: 0 },
+              back: { ...g.placement.back },
+            },
+          };
+        }
+        if (g.id === "hood") {
+          return {
+            ...g,
+            placement: {
+              front: { scale: 1.49, offsetX: 0, offsetY: 59, rotationDeg: 0 },
+              back: { ...g.placement.back },
+            },
+          };
+        }
+        return g;
+      }),
+    };
+    const zipNorm = normalizeHoodieTemplate(zipStale);
+    expect(zipNorm.designGroups!.find((g) => g.id === "front-body")!.placement.front).toEqual(
+      zipStale.designGroups!.find((g) => g.id === "front-body")!.placement.front,
+    );
+    expect(zipNorm.designGroups!.find((g) => g.id === "hood")!.placement.front).toEqual(
+      zipStale.designGroups!.find((g) => g.id === "hood")!.placement.front,
+    );
+  });
+
+  it("normalizeHoodieTemplate stamps zip front-body zipper seam, not pullover numbers", () => {
+    const zip = createFreshAopTemplate({
+      name: "zip-front-seam",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    expect(zip.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(
+      ZIP_FRONT_SEAM_ALLOWANCE,
+    );
+    const stale = {
+      ...zip,
+      designGroups: zip.designGroups!.map((g) =>
+        g.id === "front-body" ? { ...g, seamAllowance: 0.06 } : g,
+      ),
+    };
+    const healed = normalizeHoodieTemplate(stale);
+    expect(healed.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(
+      ZIP_FRONT_SEAM_ALLOWANCE,
+    );
+    expect(healed.designGroups!.find((g) => g.id === "hood")!.seamAllowance).toBe(0);
+    const pullover = createFreshAopTemplate({
+      name: "pullover-no-zip-seam",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    expect(pullover.designGroups!.find((g) => g.id === "front-body")!.seamAllowance).toBe(0);
+  });
+
+  it("heals front offsetX when scale and offsetY already match", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-offsetx-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const partial = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          panelPlacementBias: {
+            pocket: {
+              offsetXPercent: 9.7,
+              offsetYPercent: -2.4,
+            },
+          },
+          placement: {
+            front: {
+              scale: 1.210335,
+              offsetX: 0,
+              offsetY: -304.439,
+              rotationDeg: 0,
+            },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: partial });
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.placement.front.offsetX,
+    ).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    // Placement is still healed (above), but the POCKET BIAS survives: the
+    // load-time stamp no longer resets it, so a calibrated display pocket
+    // value reaches the render instead of being reverted.
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket,
+    ).toEqual({ offsetXPercent: 9.7, offsetYPercent: -2.4 });
+  });
+
+  it("heals the previous Preview Studio operator seeds to the current defaults", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-prev-operator-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const stale = pullover.designGroups!.map((g) => {
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1.2103, offsetX: -4.721, offsetY: -65.1539, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+          panelPlacementBias: {
+            pocket: {
+              offsetXPercent: 0,
+              offsetYPercent: 0,
+              offsetX: 0,
+              offsetY: 5,
+              scale: 1,
+            },
+          },
+        };
+      }
+      if (g.id === "hood") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1.3611, offsetX: 0, offsetY: 218.0846, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: stale });
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    // Pocket bias is carried through the placement heal, not reset.
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.scale,
+    ).toBe(1);
+  });
+
+  it("stamps operator defaults even when the published template is authored", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-authored-survive",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const authoredHood = {
+      scale: 1.11,
+      offsetX: 12,
+      offsetY: 34,
+      rotationDeg: 0,
+    };
+    const authoredFront = {
+      scale: 1.33,
+      offsetX: -9,
+      offsetY: -40,
+      rotationDeg: 5,
+    };
+    const authoredPocket = {
+      offsetXPercent: 0,
+      offsetYPercent: 0,
+      offsetX: 5,
+      offsetY: -7,
+      scale: 1.05,
+    };
+    const groups = pullover.designGroups!.map((g) => {
+      if (g.id === "hood") {
+        return {
+          ...g,
+          placementAuthored: true,
+          placement: { front: authoredHood, back: { ...g.placement.back } },
+        };
+      }
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          placementAuthored: true,
+          panelKeys: ["front"],
+          panelPlacementBias: { pocket: authoredPocket },
+          placement: { front: authoredFront, back: { ...g.placement.back } },
+        };
+      }
+      if (g.id === "trim") {
+        return { ...g, panelKeys: ["waistband", "front_pocket"] };
+      }
+      return g;
+    });
+    const once = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
+    const twice = normalizeHoodieTemplate(once);
+    const hood = twice.designGroups!.find((g) => g.id === "hood")!;
+    const front = twice.designGroups!.find((g) => g.id === "front-body")!;
+    expect(hood.placement.front.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.placement.front.offsetX).toBe(PULLOVER_HOOD_PLACE_OFFSET_X);
+    expect(hood.placement.front.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(front.placement.front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.placement.front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.placement.front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    // Placement defaults are stamped even over an authored template, but the
+    // authored POCKET bias survives both normalize passes — that separation is
+    // what makes display pocket calibration possible at all.
+    expect(front.panelPlacementBias?.pocket).toEqual(authoredPocket);
+    expect(front.panelKeys).toContain("front_pocket");
+  });
+
+  it("heals unauthored 1/0/0 but holds an authored hood without touching front", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-partial-authored",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const authoredHood = {
+      scale: 1.08,
+      offsetX: 3,
+      offsetY: 22,
+      rotationDeg: 0,
+    };
+    const groups = pullover.designGroups!.map((g) => {
+      if (g.id === "hood") {
+        return {
+          ...g,
+          placementAuthored: true,
+          placement: { front: authoredHood, back: { ...g.placement.back } },
+        };
+      }
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          placement: {
+            front: { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
+    const again = normalizeHoodieTemplate(healed);
+    expect(again.designGroups!.find((g) => g.id === "hood")!.placement.front.scale).toBe(
+      PULLOVER_HOOD_PLACE_SCALE,
+    );
+    expect(again.designGroups!.find((g) => g.id === "hood")!.placement.front.offsetY).toBe(
+      PULLOVER_HOOD_PLACE_OFFSET_Y,
+    );
+    const front = again.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetX).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_X);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    expect(again.designGroups!.find((g) => g.id === "front-body")!.placementAuthored).toBeUndefined();
+  });
+
+  it("stamps operator pocket / rotation over leftover published numbers", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-pocket-bias-keep",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const groups = pullover.designGroups!.map((g) => {
+      if (g.id !== "front-body") return g;
+      return {
+        ...g,
+        panelPlacementBias: {
+          pocket: { offsetXPercent: 0, offsetYPercent: 0, offsetX: 8, offsetY: -3, scale: 1.2 },
+        },
+        placement: {
+          front: {
+            scale: PULLOVER_FRONT_BODY_PLACE_SCALE,
+            offsetX: PULLOVER_FRONT_BODY_PLACE_OFFSET_X,
+            offsetY: PULLOVER_FRONT_BODY_PLACE_OFFSET_Y,
+            rotationDeg: 4,
+          },
+          back: { ...g.placement.back },
+        },
+      };
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!;
+    expect(front.placement.front.rotationDeg).toBe(0);
+    expect(front.placement.front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    // Rotation/placement are stamped; the pocket bias is NOT. An authored
+    // pocket calibration must reach the render untouched.
+    expect(front.panelPlacementBias?.pocket).toEqual({
+      offsetXPercent: 0, offsetYPercent: 0, offsetX: 8, offsetY: -3, scale: 1.2,
+    });
+  });
+
+  it("overwrites the leftover Preview Studio session (hood Y 91 / scale 1.25)", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-session-91",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const leftover = pullover.designGroups!.map((g) => {
+      if (g.id === "hood") {
+        return {
+          ...g,
+          placementAuthored: true,
+          placement: {
+            front: { scale: 1.2485, offsetX: 0, offsetY: 91.1801, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+        };
+      }
+      if (g.id === "front-body") {
+        return {
+          ...g,
+          placementAuthored: true,
+          placement: {
+            front: { scale: 0.8402, offsetX: 0, offsetY: -233.2996, rotationDeg: 0 },
+            back: { ...g.placement.back },
+          },
+          panelPlacementBias: {
+            pocket: { offsetXPercent: 0, offsetYPercent: 0, offsetX: 0, offsetY: 0, scale: 1 },
+          },
+        };
+      }
+      return g;
+    });
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: leftover });
+    const hood = healed.designGroups!.find((g) => g.id === "hood")!.placement.front;
+    const front = healed.designGroups!.find((g) => g.id === "front-body")!.placement.front;
+    expect(hood.scale).toBe(PULLOVER_HOOD_PLACE_SCALE);
+    expect(hood.offsetY).toBe(PULLOVER_HOOD_PLACE_OFFSET_Y);
+    expect(front.scale).toBe(PULLOVER_FRONT_BODY_PLACE_SCALE);
+    expect(front.offsetY).toBe(PULLOVER_FRONT_BODY_PLACE_OFFSET_Y);
+    // The leftover session's placement is overwritten, but its pocket bias
+    // survives — placement seeding and pocket calibration are now separate.
+    expect(
+      healed.designGroups!.find((g) => g.id === "front-body")!.panelPlacementBias?.pocket?.scale,
+    ).toBe(1);
+  });
+
+  it("heals a zero hood seam allowance so L/R do not share the centre mural", () => {
+    const pullover = createFreshAopTemplate({
+      name: "pullover-hood-seam-heal",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const groups = pullover.designGroups!.map((g) =>
+      g.id === "hood" ? { ...g, seamAllowance: 0 } : g,
+    );
+    const healed = normalizeHoodieTemplate({ ...pullover, designGroups: groups });
+    expect(healed.designGroups!.find((g) => g.id === "hood")!.seamAllowance).toBe(0.08);
+  });
+
+  it("expands pullover hood-bottom and front-top sample AABBs into the grey", () => {
+    const hood = { x: 10, y: 98.13, width: 100, height: 266.75 };
+    const bledHood = applyPulloverNeckSeamBleedToBbox(hood, "left_hood", PULOVER_HOODIE_BLUEPRINT_ID);
+    expect(bledHood.y).toBe(98.13);
+    expect(bledHood.height).toBeCloseTo(266.75 * (1 + PULLOVER_HOOD_NECK_GREY_BLEED_FRAC), 5);
+    expect(bledHood.height - hood.height).toBeCloseTo(14, 1);
+    const front = { x: 0, y: 309.86, width: 428.35, height: 524.93 };
+    const bledFront = applyPulloverNeckSeamBleedToBbox(front, "front", PULOVER_HOODIE_BLUEPRINT_ID);
+    expect(bledFront.y).toBeCloseTo(309.86 - 16.33, 1);
+    expect(bledFront.height).toBeCloseTo(524.93 * (1 + PULLOVER_FRONT_NECK_GREY_BLEED_FRAC), 5);
+    expect(applyPulloverNeckSeamBleedToBbox(hood, "left_hood", ZIP_HOODIE_BLUEPRINT_ID)).toEqual(hood);
+    expect(applyPulloverNeckSeamBleedToBbox(front, "front_pocket", PULOVER_HOODIE_BLUEPRINT_ID)).toEqual(
+      front,
+    );
+  });
+
   it("designGroupsForBlueprint picks pullover defaults for 450", () => {
     const groups = designGroupsForBlueprint(PULOVER_HOODIE_BLUEPRINT_ID);
     expect(groups.find((g) => g.id === "front-body")?.panelKeys).toEqual([
       "front",
       "front_pocket",
     ]);
+  });
+
+  it("fills missing pullover front left and right sleeve sourceRects (bp 450)", () => {
+    const sleeve = (
+      view: "front" | "back",
+      panelKey: "left_sleeve" | "right_sleeve",
+      sourceRect: { x: number; y: number; width: number; height: number } | null,
+    ) => ({
+      id: `lyr_${view}_${panelKey}`,
+      view,
+      panelKey,
+      kind: "panel" as const,
+      name: panelKey,
+      visible: true,
+      locked: false,
+      zIndex: 1,
+      opacity: 1,
+      blendMode: "normal" as const,
+      maskPath: "",
+      cornerPins: null,
+      mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, sourceRect),
+      transform: { ...IDENTITY_TRANSFORM_2D },
+      productionPanelAssignment: null,
+      productionPanelSrc: null,
+      isExclusion: false,
+    });
+    const raw = createFreshAopTemplate({
+      name: "pullover-sleeve-sr-test",
+      blueprintId: PULOVER_HOODIE_BLUEPRINT_ID,
+    });
+    const stale = {
+      ...raw,
+      views: {
+        front: {
+          ...raw.views.front,
+          layers: [
+            sleeve("front", "left_sleeve", null),
+            sleeve("front", "right_sleeve", null),
+          ],
+        },
+        back: {
+          ...raw.views.back,
+          layers: [
+            sleeve("back", "left_sleeve", { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT }),
+            sleeve("back", "right_sleeve", { ...PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT }),
+          ],
+        },
+      },
+    };
+    const normalized = normalizeHoodieTemplate(stale);
+    const frontRight = normalized.views.front.layers.find((l) => l.panelKey === "right_sleeve");
+    const frontLeft = normalized.views.front.layers.find((l) => l.panelKey === "left_sleeve");
+    const backRight = normalized.views.back.layers.find((l) => l.panelKey === "right_sleeve");
+    const backLeft = normalized.views.back.layers.find((l) => l.panelKey === "left_sleeve");
+    expect(frontRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(frontLeft?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(backRight?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(backLeft?.mesh?.sourceRect).toEqual(PULLOVER_SLEEVE_CALIBRATION_SOURCE_RECT);
+    expect(frontLeft?.mesh?.targetPoints).toEqual(stale.views.front.layers[0].mesh?.targetPoints);
+    expect(frontRight?.mesh?.targetPoints).toEqual(stale.views.front.layers[1].mesh?.targetPoints);
+    expect(backLeft?.mesh?.targetPoints).toEqual(stale.views.back.layers[0].mesh?.targetPoints);
+    expect(backRight?.mesh?.targetPoints).toEqual(stale.views.back.layers[1].mesh?.targetPoints);
+  });
+
+  it("does not rewrite zip 451 sleeve sourceRects", () => {
+    const raw = createFreshAopTemplate({
+      name: "zip-sleeve-sr-test",
+      blueprintId: ZIP_HOODIE_BLUEPRINT_ID,
+    });
+    const withSleeve = {
+      ...raw,
+      views: {
+        ...raw.views,
+        front: {
+          ...raw.views.front,
+          layers: [
+            {
+              id: "lyr_zip_front_left",
+              view: "front" as const,
+              panelKey: "left_sleeve" as const,
+              kind: "panel" as const,
+              name: "left_sleeve",
+              visible: true,
+              locked: false,
+              zIndex: 1,
+              opacity: 1,
+              blendMode: "normal" as const,
+              maskPath: "",
+              cornerPins: null,
+              mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, null),
+              transform: { ...IDENTITY_TRANSFORM_2D },
+              productionPanelAssignment: null,
+              productionPanelSrc: null,
+              isExclusion: false,
+            },
+            {
+              id: "lyr_zip_front_right",
+              view: "front" as const,
+              panelKey: "right_sleeve" as const,
+              kind: "panel" as const,
+              name: "right_sleeve",
+              visible: true,
+              locked: false,
+              zIndex: 1,
+              opacity: 1,
+              blendMode: "normal" as const,
+              maskPath: "",
+              cornerPins: null,
+              mesh: createDefaultMesh({ x: 0, y: 0, width: 80, height: 200 }, 4, 4, null),
+              transform: { ...IDENTITY_TRANSFORM_2D },
+              productionPanelAssignment: null,
+              productionPanelSrc: null,
+              isExclusion: false,
+            },
+          ],
+        },
+      },
+    };
+    expect(restorePulloverFrontSleeveSourceRects(withSleeve)).toBe(withSleeve);
+    const zipNorm = normalizeHoodieTemplate(withSleeve);
+    expect(zipNorm.views.front.layers[0].mesh?.sourceRect).toBeNull();
+    expect(zipNorm.views.front.layers[1].mesh?.sourceRect).toBeNull();
   });
 
   it("normalizeHoodieTemplate migrates stale pullover templates with front_pocket in trim", () => {
@@ -547,6 +1124,21 @@ describe("bomber jacket blueprint", () => {
   });
 });
 
+describe("beanie blueprint 576", () => {
+  it("is keyed to Printify baby beanie only — preview scale is 1.15", () => {
+    expect(BEANIE_BLUEPRINT_ID).toBe(576);
+    expect(BEANIE_PREVIEW_PLACEMENT_SCALE).toBe(1.15);
+    expect(isBeanieBlueprint(576)).toBe(true);
+    expect(isBeanieBlueprint(450)).toBe(false);
+    expect(isBeanieBlueprint(241)).toBe(false);
+    expect(isBeanieBlueprint(null)).toBe(false);
+    expect(flatArtFitForBlueprint(576)).toBe("contain");
+    expect(flatArtFitForBlueprint(241)).toBe("contain");
+    expect(flatArtFitForBlueprint(759)).toBe("contain");
+    expect(flatArtFitForBlueprint(450)).toBe("cover");
+  });
+});
+
 describe("hoodiePanelKeyToPrintifyPosition", () => {
   it("maps cuff and collar keys to Printify placeholder names", () => {
     expect(hoodiePanelKeyToPrintifyPosition("left_cuff")).toBe("left_cuff_panel");
@@ -585,12 +1177,26 @@ describe("hoodiePanelKeyToPrintifyPosition", () => {
 });
 
 describe("mesh grid limits", () => {
-  it("allows up to 24 columns for wide collar strips", () => {
-    expect(MAX_MESH_COLS).toBe(24);
+  it("allows up to 40 columns for high-curvature products", () => {
+    expect(MAX_MESH_COLS).toBe(40);
     const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 10 }, 24, 3);
     expect(mesh.cols).toBe(24);
     expect(mesh.rows).toBe(3);
     expect(mesh.targetPoints).toHaveLength(72);
+  });
+
+  it("allows up to 40 rows for high-curvature products", () => {
+    expect(MAX_MESH_ROWS).toBe(40);
+    const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 200 }, 3, 40);
+    expect(mesh.cols).toBe(3);
+    expect(mesh.rows).toBe(40);
+    expect(mesh.targetPoints).toHaveLength(120);
+  });
+
+  it("clamps requests above the ceiling instead of honouring them", () => {
+    const mesh = createDefaultMesh({ x: 0, y: 0, width: 100, height: 100 }, 99, 99);
+    expect(mesh.cols).toBe(MAX_MESH_COLS);
+    expect(mesh.rows).toBe(MAX_MESH_ROWS);
   });
 });
 
@@ -628,6 +1234,18 @@ describe("front-body panel placement bias", () => {
       offsetYPercent: -1.5,
     });
     expect(resolveFrontBodyPanelBias(group, "back")).toBeNull();
+  });
+
+  it("carries pocket scaleX through the merge; override wins; absent stays absent", () => {
+    expect(
+      mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.1 }, { scaleX: 1.176 }),
+    ).toEqual({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.176 });
+    expect(
+      mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scaleX: 1.176 }, { offsetY: -17.5 }),
+    ).toEqual({ offsetXPercent: 0, offsetYPercent: 0, offsetY: -17.5, scaleX: 1.176 });
+    expect(
+      "scaleX" in mergePanelPlacementBiasPercent({ offsetXPercent: 0, offsetYPercent: 0, scale: 1 }, null),
+    ).toBe(false);
   });
 
   it("falls back to zero bias when group has no stored defaults", () => {

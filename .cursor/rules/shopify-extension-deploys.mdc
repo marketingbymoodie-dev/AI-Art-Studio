@@ -1,0 +1,42 @@
+---
+description: List every Shopify app extension deploy at the end of a task. Do not mark a production promotion complete while an app deploy is still outstanding.
+alwaysApply: true
+---
+
+# Shopify extension deploys
+
+This repo has several Shopify app configs:
+
+- Public production app — `shopify.app.production.toml`
+- Staging app — `shopify.app.staging.toml` (and `shopify.app.toml`, the same staging app)
+- Petposterous custom app — `shopify.app.petposterous.toml`
+- Creators app — `shopify.app.creators.toml`
+
+At the end of every task, state **Extensions changed: yes** or **Extensions changed: no**. When yes, name which of these changed:
+
+- theme app extension
+- checkout UI
+- variant guard function
+
+When extensions changed, list the exact deploy command for every app config:
+
+```bash
+npx shopify app deploy --config staging --allow-updates
+npx shopify app deploy --allow-updates
+npx shopify app deploy --config production --allow-updates
+npx shopify app deploy --config petposterous --allow-updates
+npx shopify app deploy --config creators --allow-updates
+```
+
+Never mark a production promotion complete until the extension deploys for all affected apps are done, or listed as pending. Petposterous is one of those apps.
+
+While Petposterous runs on the staging backend, any push to `staging` reaches the Petposterous store immediately.
+
+When **Extensions changed: yes** and that change is pushed to `staging`, run the Petposterous extension deploy yourself and report the released version name:
+
+```bash
+Set-Location c:\Users\young\AppAI\appai-pod-shipping-map
+npx shopify app deploy --config petposterous --allow-updates
+```
+
+If the Shopify CLI needs a login or a prompt you cannot answer, stop and tell the user the exact command to run. Never answer yes to “Ready to set this feature live for merchants?”. Do not merge or push `production`, and do not run a production Shopify deploy, unless the user has already said to go live in a separate message.

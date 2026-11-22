@@ -49,4 +49,24 @@ describe("fetchPrintifyProviderVariantsDual", () => {
     expect(dual.variants).toEqual([{ id: 10 }]);
     expect(dual.inStockVariantIds).toEqual([10]);
   });
+
+  it("retries a 429 then accepts the catalog", async () => {
+    const calls = new Map<string, number>();
+    const fetchFn = vi.fn(async (url: string) => {
+      const n = (calls.get(url) || 0) + 1;
+      calls.set(url, n);
+      if (n === 1) return { ok: false, status: 429, json: async () => ({}) } as Response;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ variants: [{ id: 7 }] }),
+      } as Response;
+    });
+    const dual = await fetchPrintifyProviderVariantsDual(79, 99, "token", {
+      fetchFn: fetchFn as any,
+      sleep: async () => {},
+    });
+    expect(dual.inStockVariantIds).toEqual([7]);
+    expect(fetchFn.mock.calls.length).toBe(4);
+  });
 });

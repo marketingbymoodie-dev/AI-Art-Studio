@@ -12,6 +12,17 @@ export {
   NO_HOT_PINK_IN_DESIGN,
 } from "./apparel-chroma-prompts";
 import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "./apparel-chroma-prompts";
+import { literalUserSlotSchema } from "./promptLayers";
+import { QUOTES_PLACEHOLDER, QUOTES_TREATMENTS } from "./quotesStyle";
+import {
+  ART_STYLE_VERBATIM_PLACEHOLDER,
+  MINIMAL_LINE_DECOR_STYLE,
+  ONE_COLOR_PRINT_STYLE,
+  PLAYFUL_CARTOON_STYLE,
+  RETRO_SUNSET_STACK_STYLE,
+  VINTAGE_PRINT_STYLE,
+} from "./catalogArtStyles";
+import type { CatalogueConceptGeneration } from "./catalogueConcept";
 
 // Customer table extending auth users with credits
 export const customers = pgTable("customers", {
@@ -127,7 +138,13 @@ export const insertRewardLadderRungSchema = createInsertSchema(rewardLadderRungs
 export type RewardLadderRung = typeof rewardLadderRungs.$inferSelect;
 export type InsertRewardLadderRung = z.infer<typeof insertRewardLadderRungSchema>;
 
-/** Idempotent grant of a Reward Ladder rung to a customer (or anon identity). */
+/**
+ * Reward Ladder grants.
+ * Intended uniqueness (see server/migrations/reward-grants-repeatable-rungs.sql — not auto-run):
+ *   email_signup / other: UNIQUE (shop, customer_id, rung_key)
+ *   share_design / purchase_threshold: UNIQUE (shop, customer_id, rung_key, related_entity_id)
+ * Drizzle still declares the old once-per-rung index so `drizzle-kit push` does not drop it first.
+ */
 export const rewardGrants = pgTable("reward_grants", {
   id: serial("id").primaryKey(),
   shop: text("shop").notNull(),
@@ -162,6 +179,8 @@ export const merchants = pgTable("merchants", {
   monthlyGenerationLimit: integer("monthly_generation_limit").notNull().default(100),
   generationsThisMonth: integer("generations_this_month").notNull().default(0),
   brandingSettings: json("branding_settings"),
+  /** Merchant own-key entitlement — reserved, not read anywhere yet. */
+  canUseOwnApiKeys: boolean("can_use_own_api_keys").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -179,6 +198,13 @@ export const shopifyInstallations = pgTable("shopify_installations", {
   /** When refreshToken expires (typically ~90 days). */
   refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
   scope: text("scope"),
+  /** Which Shopify app minted this shop's token: primary | creators | petposterous. Null until the first verified install or webhook. */
+  shopifyApp: text("shopify_app"),
+  /** Null until a merchant chooses. Petposterous is turned on by the startup fill. */
+  sizeFinderGuaranteeEnabled: boolean("size_finder_guarantee_enabled"),
+  sizeFinderGuaranteeTitle: text("size_finder_guarantee_title"),
+  sizeFinderGuaranteeDetail: text("size_finder_guarantee_detail"),
+  sizeFinderGuaranteeUrl: text("size_finder_guarantee_url"),
   status: text("status").notNull().default("active"),
   installedAt: timestamp("installed_at").defaultNow().notNull(),
   uninstalledAt: timestamp("uninstalled_at"),
@@ -238,6 +264,27 @@ export const shopifyInstallations = pgTable("shopify_installations", {
    * enforcement uses this stamp until the shop re-subscribes.
    */
   pricingVersion: integer("pricing_version").default(0),
+  /**
+   * Merchant storefront theme snapshot (computed styles from the live theme).
+   * Captured by the theme embed and applied on the top-level mobile designer.
+   */
+  themeSnapshot: jsonb("theme_snapshot").$type<Record<string, string> | null>(),
+  /**
+   * Add-to-cart architecture kill switch (`shared/atcMode.ts`).
+   * shadow-direct = today's synchronous resolve; base-first = Branch C; no-shadow = Branch B.
+   */
+  atcMode: text("atc_mode").notNull().default("shadow-direct"),
+  /**
+   * Per-shop override for the active-design-product cap (see
+   * PLAN_DESIGN_PRODUCT_LIMITS). Null (default) means "use the plan tier".
+   * -1 means unlimited (used for owner / demo / long-horizon beta shops that
+   * shouldn't be constrained by a merchant-facing tier). A positive integer
+   * sets an explicit per-shop cap (e.g. 100 for a beta tester). Only the
+   * platform operator should write this; getEffectiveDesignProductLimit in
+   * server/customizer-plans.ts is the single reader so every caller (promote,
+   * design-products PATCH) honours it uniformly.
+   */
+  designProductLimitOverride: integer("design_product_limit_override"),
 });
 
 /** Versioned SaaS plan catalogue (commit ≠ activate). */
@@ -463,6 +510,107 @@ export const insertGenerationLogSchema = createInsertSchema(generationLogs).omit
 export type GenerationLog = typeof generationLogs.$inferSelect;
 export type InsertGenerationLog = z.infer<typeof insertGenerationLogSchema>;
 
+// Per-generation provider telemetry (server-only; never serialized to clients).
+// No prompts, punchlines, pet names, reference URLs, emails or credentials.
+// job_id joins to generation_jobs / _appai_job_id cart property for save → cart → purchase.
+export const generationEvents = pgTable("generation_events", {
+  id: serial("id").primaryKey(),
+  kind: text("kind").notNull(),
+  jobId: varchar("job_id"),
+  merchantId: varchar("merchant_id"),
+  shopDomain: text("shop_domain"),
+  route: text("route"),
+  experienceProfile: text("experience_profile"),
+  stylePack: text("style_pack"),
+  styleSlug: text("style_slug"),
+  productFamily: text("product_family"),
+  visualSystem: text("visual_system"),
+  conceptFramework: text("concept_framework"),
+  provider: text("provider"),
+  credentialScope: text("credential_scope"),
+  credentialRef: text("credential_ref"),
+  model: text("model"),
+  quality: text("quality"),
+  size: text("size"),
+  transparent: boolean("transparent"),
+  transparentFraction: decimal("transparent_fraction", { precision: 6, scale: 4 }),
+  attempts: integer("attempts"),
+  durationMs: integer("duration_ms"),
+  usage: jsonb("usage"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 6 }),
+  providerRequestId: text("provider_request_id"),
+  providerMime: text("provider_mime"),
+  success: boolean("success").notNull(),
+  errorCategory: text("error_category"),
+  endUserHash: text("end_user_hash"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export type InsertGenerationEvent = typeof generationEvents.$inferInsert;
+
+// Staging-only render probe results (QA tooling; never written in production).
+// Verbatim probes store a prompt id + length only. Style-example batches also
+// store the composed prompt and the pinned concept so a set can be regenerated.
+// Images live in a private bucket.
+export const renderProbeResults = pgTable("render_probe_results", {
+  id: serial("id").primaryKey(),
+  experiment: text("experiment").notNull(),
+  promptId: text("prompt_id").notNull(),
+  promptChars: integer("prompt_chars"),
+  run: integer("run"),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  rendererId: text("renderer_id"),
+  aspectRatio: text("aspect_ratio"),
+  imageSize: text("image_size"),
+  width: integer("width"),
+  height: integer("height"),
+  mimeType: text("mime_type"),
+  providerMs: integer("provider_ms"),
+  totalMs: integer("total_ms"),
+  usage: jsonb("usage"),
+  thoughtsTokens: integer("thoughts_tokens"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 6 }),
+  edges: jsonb("edges"),
+  providerRequestId: text("provider_request_id"),
+  storagePath: text("storage_path"),
+  success: boolean("success").notNull(),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  /** style-batch:<id> rows. Null on verbatim probes. */
+  batchId: text("batch_id"),
+  visualSystem: text("visual_system"),
+  conceptFramework: text("concept_framework"),
+  composedPrompt: text("composed_prompt"),
+  credentialRef: text("credential_ref"),
+  route: text("route"),
+  referencePhotoId: text("reference_photo_id"),
+  behavior: text("behavior"),
+  productFamily: text("product_family"),
+  conceptSnapshot: jsonb("concept_snapshot"),
+});
+
+// Encrypted provider API keys (operator-entered). Only scope "platform" is used today;
+// "shop" + shopId are reserved for merchant own-key mode. Unique live-ref index lives in
+// server/migrations/startup.ts (expression + partial index).
+export const providerCredentials = pgTable("provider_credentials", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  scope: text("scope").notNull().default("platform"),
+  shopId: varchar("shop_id"),
+  credentialRef: text("credential_ref").notNull(),
+  /** AES-256-GCM ciphertext only (server/credential-crypto.ts). */
+  encryptedKey: text("encrypted_key").notNull(),
+  lastFour: text("last_four").notNull(),
+  /** active | invalid | unchecked | disabled */
+  status: text("status").notNull().default("unchecked"),
+  lastValidatedAt: timestamp("last_validated_at"),
+  lastValidationError: text("last_validation_error"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type ProviderCredentialRow = typeof providerCredentials.$inferSelect;
+
 // Coupon codes for credits
 export const coupons = pgTable("coupons", {
   id: serial("id").primaryKey(),
@@ -504,6 +652,8 @@ export const stylePresets = pgTable("style_presets", {
   id: serial("id").primaryKey(),
   merchantId: varchar("merchant_id").notNull(),
   name: text("name").notNull(),
+  /** Stable catalog identity (STYLE_PRESETS.id). Null = merchant-created custom style. */
+  catalogSlug: text("catalog_slug"),
   promptPrefix: text("prompt_prefix").notNull(),
   promptPrefixDark: text("prompt_prefix_dark"),
   category: text("category").notNull().default("all"),
@@ -514,9 +664,137 @@ export const stylePresets = pgTable("style_presets", {
   descriptionOptional: boolean("description_optional").notNull().default(false),
   /** merchant = Shopify app row; global/custom = creator-platform catalog eligibility. */
   creatorScope: text("creator_scope").notNull().default("merchant"),
+  /**
+   * Slot-composed base prompt. Null on every existing row and the version switch for the
+   * new composition path: null = legacy `promptPrefix` concatenation, byte-identical to
+   * today. `promptPrefix` / `promptPrefixDark` are frozen and never read or written here.
+   * Clearing this column reverts a style to legacy handling.
+   */
+  promptTemplate: text("prompt_template"),
+  /** APPAREL_TRANSPARENT | FULL_BLEED. Null = fall back to `category` behaviour. */
+  outputMode: text("output_mode"),
+  negativePrompt: text("negative_prompt"),
+  /** Per-style chroma plate colour. Null = global #FF00FF. */
+  chromaHex: text("chroma_hex"),
+  paletteMaxColors: integer("palette_max_colors"),
+  /** Max coverage before crackle risk. */
+  inkLoadCeilingPercent: integer("ink_load_ceiling_percent"),
+  /** Per-style override of the APPAREL_VECTORIZE env. Null = use env. */
+  vectorizeEnabled: boolean("vectorize_enabled"),
+  /** gpt-image-2 or null = current nano-banana. */
+  generationModel: text("generation_model"),
+  /** low (default) | medium | high | auto. Null = low for gpt-image-2. */
+  generationQuality: text("generation_quality"),
+  /** Supported ratios for full-bleed output. */
+  aspectRatios: jsonb("aspect_ratios"),
+  /** Slot definitions the customer fills. */
+  userSlotSchema: jsonb("user_slot_schema"),
+  /**
+   * Background picker + default fill. Null = inherit today's floating/product gate.
+   * These are the global style values; a later per-merchant override can sit on top.
+   */
+  backgroundSelectorEnabled: boolean("background_selector_enabled"),
+  /** "#RRGGBB" | "none" | null (inherit). */
+  defaultBackgroundColor: text("default_background_color"),
+  backgroundRequired: boolean("background_required"),
+  /** Null = standard. "pack_only" = only reachable through an assigned style pack (shared/stylePacks.ts). */
+  visibility: text("visibility"),
+  /** Declared customer inputs (StyleInputCapabilities). Null = legacy style, today's behaviour. */
+  inputCapabilities: jsonb("input_capabilities"),
+  /** Model on non-apparel (decor) products. Null = same as generation_model. */
+  generationModelDecor: text("generation_model_decor"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+/**
+ * Curated style set a store/page can expose (`customizer_pages.style_config`
+ * `{mode:"pack", packId}`). merchant_id null = platform pack, usable only by
+ * merchants listed in `style_pack_merchants`.
+ */
+export const stylePacks = pgTable(
+  "style_packs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    merchantId: varchar("merchant_id"),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** Code-level prompt profile (shared/stylePackProfiles.ts). Null = no pack layers. */
+    promptProfileKey: text("prompt_profile_key"),
+    isActive: boolean("is_active").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_packs_slug_idx").on(table.slug)],
+);
+
+/** Pack membership, keyed by catalog slug so one pack maps onto every merchant's own rows. */
+export const stylePackItems = pgTable(
+  "style_pack_items",
+  {
+    id: serial("id").primaryKey(),
+    packId: varchar("pack_id").notNull(),
+    catalogSlug: text("catalog_slug"),
+    /** Merchant custom styles (catalog_slug null). */
+    stylePresetId: integer("style_preset_id"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_pack_items_pack_idx").on(table.packId)],
+);
+
+/** Explicit assignment of a platform pack to a merchant. */
+export const stylePackMerchants = pgTable(
+  "style_pack_merchants",
+  {
+    id: serial("id").primaryKey(),
+    packId: varchar("pack_id").notNull(),
+    merchantId: varchar("merchant_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("style_pack_merchants_uidx").on(table.packId, table.merchantId)],
+);
+
+/**
+ * Store experience profile: how a store presents the shared customizer
+ * (brand, copy, extra creative controls). merchant_id null = platform profile,
+ * usable only by merchants in `experience_profile_merchants`. Config shape:
+ * shared/experienceProfile.ts.
+ */
+export const experienceProfiles = pgTable(
+  "experience_profiles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    merchantId: varchar("merchant_id"),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    stylePackId: varchar("style_pack_id"),
+    isActive: boolean("is_active").notNull().default(true),
+    config: jsonb("config"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("experience_profiles_slug_idx").on(table.slug)],
+);
+
+export const experienceProfileMerchants = pgTable(
+  "experience_profile_merchants",
+  {
+    id: serial("id").primaryKey(),
+    profileId: varchar("profile_id").notNull(),
+    merchantId: varchar("merchant_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("experience_profile_merchants_uidx").on(table.profileId, table.merchantId)],
+);
+
+export type ExperienceProfileRow = typeof experienceProfiles.$inferSelect;
+
+export type StylePack = typeof stylePacks.$inferSelect;
+export type StylePackItem = typeof stylePackItems.$inferSelect;
+export type StylePackMerchant = typeof stylePackMerchants.$inferSelect;
 
 export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
   id: true,
@@ -525,6 +803,84 @@ export const insertStylePresetSchema = createInsertSchema(stylePresets).omit({
 });
 export type StylePresetDB = typeof stylePresets.$inferSelect;
 export type InsertStylePreset = z.infer<typeof insertStylePresetSchema>;
+
+/** One-tap starting points for a style: a complete slot set, not a prompt fragment. */
+export const stylePromptSuggestions = pgTable(
+  "style_prompt_suggestions",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    stylePresetId: integer("style_preset_id").notNull(),
+    /** User-facing chip text. */
+    label: text("label").notNull(),
+    /** Complete slot set — one tap must yield a viable design. */
+    slotValues: jsonb("slot_values").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    timesUsed: integer("times_used").notNull().default(0),
+    timesPublished: integer("times_published").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("style_prompt_suggestions_style_idx").on(table.stylePresetId)],
+);
+
+export const insertStylePromptSuggestionSchema = createInsertSchema(stylePromptSuggestions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type StylePromptSuggestion = typeof stylePromptSuggestions.$inferSelect;
+export type InsertStylePromptSuggestion = z.infer<typeof insertStylePromptSuggestionSchema>;
+
+/** Reusable blocked-term sets. Separate table so one set can back several stores. */
+export const ipGuardrails = pgTable("ip_guardrails", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  /** String array — exact + fuzzy terms. */
+  blockedTerms: jsonb("blocked_terms").notNull().default(sql`'[]'::jsonb`),
+  /** Appended to every negative prompt in scope. */
+  negativeInjection: text("negative_injection"),
+  postGenOcrCheck: boolean("post_gen_ocr_check").notNull().default(false),
+  /** BLOCK | FLAG_FOR_REVIEW */
+  severity: text("severity").notNull().default("BLOCK"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertIpGuardrailSchema = createInsertSchema(ipGuardrails).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type IpGuardrail = typeof ipGuardrails.$inferSelect;
+export type InsertIpGuardrail = z.infer<typeof insertIpGuardrailSchema>;
+
+/** Per-creator niche storefront identity. `ipGuardrailId` points at ip_guardrails (no FK, repo convention). */
+export const nicheStoreConfigs = pgTable(
+  "niche_store_configs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    creatorId: varchar("creator_id").notNull(),
+    brandName: text("brand_name").notNull(),
+    niche: text("niche").notNull(),
+    voiceGuidelines: text("voice_guidelines"),
+    printedInUsa: boolean("printed_in_usa").notNull().default(false),
+    /** Badges, shipping copy, claims. */
+    trustConfig: jsonb("trust_config"),
+    ipGuardrailId: varchar("ip_guardrail_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("niche_store_configs_creator_uidx").on(table.creatorId)],
+);
+
+export const insertNicheStoreConfigSchema = createInsertSchema(nicheStoreConfigs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type NicheStoreConfig = typeof nicheStoreConfigs.$inferSelect;
+export type InsertNicheStoreConfig = z.infer<typeof insertNicheStoreConfigSchema>;
 
 // Product types for different customizable products (Framed Prints, Pillows, Mugs, etc.)
 export const productTypes = pgTable("product_types", {
@@ -558,6 +914,55 @@ export const productTypes = pgTable("product_types", {
   shopifyProductUrl: text("shopify_product_url"),
   shopifyShopDomain: text("shopify_shop_domain"), // Which shop this product was published to
   shopifyVariantIds: json("shopify_variant_ids"), // Maps size:color to Shopify variant ID
+  /** Print sides = "Front + Back" variant ids, keyed size:color like shopifyVariantIds (which holds Front). */
+  shopifyVariantIdsBoth: json("shopify_variant_ids_both"),
+  /**
+   * Operator override for the Print sides option. null = derived (on where
+   * front+back costs exist); false = off even with back costs.
+   */
+  printSidesEnabled: boolean("print_sides_enabled"),
+  /**
+   * Reserved per-type override. The column default stays "center". Catalogue
+   * Softstyle (blueprint 145) and Comfort Colors (blueprint 706), provider 99,
+   * stay top-anchored in placementForCatalogueType until an operator choice
+   * is stored here. A stored "center" is still the column default, so runtime
+   * does not treat it as that choice.
+   */
+  printVerticalAnchor: text("print_vertical_anchor").notNull().default("center"),
+  /**
+   * Maximum design size inside the front print area, in inches. Null means
+   * the art may fill the whole print area, unless the shop and blueprint are
+   * a catalogue shirt (145 or 706, provider 99), which uses that shirt's zone.
+   */
+  printChestWidthIn: decimal("print_chest_width_in", { precision: 5, scale: 2 }),
+  printChestHeightIn: decimal("print_chest_height_in", { precision: 5, scale: 2 }),
+  /**
+   * Words added to a design title when this type is published. Empty blocks
+   * publish. Null means the suggestion has not been stored yet.
+   */
+  listingGarmentWord: text("listing_garment_word"),
+  /** Leading-hyphen slug, or empty. Never a bare number — Shopify owns "-1". */
+  listingHandleSuffix: text("listing_handle_suffix"),
+  listingStyleLabel: text("listing_style_label"),
+  /** Short accordion lines, one sentence per line. Null until the cleaner has stored them. */
+  garmentComfortCopy: text("garment_comfort_copy"),
+  garmentDurabilityCopy: text("garment_durability_copy"),
+  /** tee | long-sleeve | sweatshirt. Null until inferred from the type name. */
+  garmentShape: text("garment_shape"),
+  /** Inches of ease for closer, relaxed, and oversized. Null uses the shape default. */
+  garmentFitEase: json("garment_fit_ease").$type<{ closer: number; relaxed: number; oversized: number }>(),
+  /** Garment measurements for the sizes this type sells. Null until a chart is copied. */
+  garmentMeasurements: json("garment_measurements").$type<{
+    model: string;
+    columns: Array<{ key: string; label: string; role: "chest" | "length" | "other" }>;
+    rows: Array<{ size: string; values: Record<string, number> }>;
+    toleranceNote: string;
+  }>(),
+  /**
+   * Colour-blank photographs and the colour list are read from this product
+   * type. Null means this type owns its blanks. Writes stay on the owner.
+   */
+  blankSourceProductTypeId: integer("blank_source_product_type_id"),
   lastPushedToShopify: timestamp("last_pushed_to_shopify"),
   printifyCosts: text("printify_costs").default("{}"),
   /**
@@ -566,6 +971,11 @@ export const productTypes = pgTable("product_types", {
    * variant price; this map is the surcharge tier used for “from $X” + live ATC.
    */
   variantPricesBoth: text("variant_prices_both").default("{}"),
+  /**
+   * Optional crossed-out price per size name, e.g. {"S":"34.95","2XL":"39.50"}.
+   * Null or {} means this type has no compare-at. Resync clears Shopify when a size is empty.
+   */
+  compareAtBySize: text("compare_at_by_size"),
   isAllOverPrint: boolean("is_all_over_print").notNull().default(false),
   placeholderPositions: text("placeholder_positions").default("[]"),
   /**
@@ -816,6 +1226,7 @@ export const designSkuMappings = pgTable("design_sku_mappings", {
   mockupUrl: text("mockup_url").notNull(),
   shadowShopifyProductId: text("shadow_shopify_product_id").notNull(),
   shadowShopifyVariantId: text("shadow_shopify_variant_id").notNull(),
+  cleanupStatus: text("cleanup_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   expiresAt: timestamp("expires_at").notNull(),
 });
@@ -847,6 +1258,16 @@ export const customizerPages = pgTable("customizer_pages", {
   productTypeId: integer("product_type_id"),       // links to our product type for generation
   /** JSON: { mode: "category", category } | { mode: "selected", presetIds[] } */
   styleConfig: json("style_config"),
+  /** Store experience profile (branding/copy/controls). Null = classic customizer. */
+  experienceProfileId: varchar("experience_profile_id"),
+  /**
+   * Regional sibling group link (PARKED design — docs/Shipping-rates-plan/
+   * regional-siblings-choice-and-slugs-design-notes.md §1). Pure linking
+   * metadata; resolution/redirect logic lands with Phase 4 geo-gating.
+   */
+  productGroupId: text("product_group_id"),
+  /** Intended zones for this sibling (e.g. ["AU"]) — human/ops metadata, never enforcement. */
+  intendedZones: jsonb("intended_zones").$type<string[]>(),
   /** preview = merchant-only draft; active = Live; disabled = off (settings retained). */
   status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -884,6 +1305,8 @@ export const generationJobs = pgTable("generation_jobs", {
   thumbnailUrl: text("thumbnail_url"),
   mockupUrls: json("mockup_urls"),              // Saved Printify mockup URLs (array of strings)
   designState: json("design_state"),             // Full design state snapshot (transform, size, color, preset)
+  /** Server-owned structured creative brief (style packs). Null on legacy generations. */
+  creativeBrief: jsonb("creative_brief"),
   designId: text("design_id"),
   errorMessage: text("error_message"),
   /** How merchant/customer billing applies on success: merchant | customer_paid | customer_free | session */
@@ -943,9 +1366,13 @@ export const publishedProducts = pgTable("published_products", {
   shopifyVariantId: text("shopify_variant_id").notNull(), // the purchasable variant for /cart/add.js
   shopifyProductHandle: text("shopify_product_handle"),
   baseVariantId: text("base_variant_id").notNull(), // the original base variant
-  status: text("status").notNull().default("active"), // active | archived
+  status: text("status").notNull().default("active"), // active | archived | skipped_not_shadow
   expiresAt: timestamp("expires_at"),                 // null = no expiry; set to 6h after creation, extended to 7d if added to cart
+  /** Shop-currency minor units added when this shadow was minted. Null on rows from before the surcharge. */
+  priceSurchargeCents: integer("price_surcharge_cents"),
   cartAddedAt: timestamp("cart_added_at"),             // set when customer adds to cart (used to extend expiry to 7d)
+  orderProtectedAt: timestamp("order_protected_at"),   // set on orders/paid; the reaper must not delete this shadow
+  readyAt: timestamp("ready_at"),                     // set when the shadow is purchasable and Ajax-visible
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -957,6 +1384,284 @@ export const insertPublishedProductSchema = createInsertSchema(publishedProducts
 });
 export type PublishedProduct = typeof publishedProducts.$inferSelect;
 export type InsertPublishedProduct = z.infer<typeof insertPublishedProductSchema>;
+
+/** Background mint queue for base-first ATC. One row per (shop, exact shadow key). */
+export const shadowMintJobs = pgTable("shadow_mint_jobs", {
+  id: serial("id").primaryKey(),
+  shop: text("shop").notNull(),
+  key: text("key").notNull(),
+  jobId: text("job_id").notNull(),
+  baseVariantId: text("base_variant_id").notNull(),
+  baseProductId: text("base_product_id").notNull(),
+  cfgSnapshot: jsonb("cfg_snapshot").notNull(),
+  mockupUrl: text("mockup_url").notNull(),
+  priceOverride: text("price_override"),
+  state: text("state").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
+  claimedAt: timestamp("claimed_at"),
+  readyAt: timestamp("ready_at"),
+  /** Set on every enqueue, including a reused row. created_at stays the first insert. */
+  enqueuedAt: timestamp("enqueued_at"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("shadow_mint_jobs_shop_key_uidx").on(table.shop, table.key),
+  index("shadow_mint_jobs_claim_idx").on(table.state, table.createdAt),
+]);
+
+/**
+ * One flywheel design. Recipe columns are required at insert.
+ * Title and description stay empty until approval. Dropped rows are kept.
+ */
+export const designCandidates = pgTable("design_candidates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  status: text("status").notNull().default("pending"),
+  /** generated | manual. Manual rows must not train the writer weights. */
+  source: text("source").notNull().default("generated"),
+  humourOperator: text("humour_operator").notNull(),
+  darknessLevel: integer("darkness_level").notNull(),
+  species: text("species").notNull(),
+  deviceStructure: text("device_structure").notNull(),
+  deviceText: text("device_text").notNull(),
+  funnyTruth: text("funny_truth").notNull(),
+  punchline: text("punchline").notNull().default(""),
+  artStyle: text("art_style").notNull(),
+  behaviour: text("behaviour").notNull(),
+  productFamily: text("product_family").notNull(),
+  credentialRef: text("credential_ref").notNull(),
+  renderProbeResultId: integer("render_probe_result_id"),
+  /** Source artwork in the mockup library. Set when the design is imported or uploaded. */
+  artworkPath: text("artwork_path"),
+  /** Stored print file. Set at approval. Null while the design is still pending. */
+  printFilePath: text("print_file_path"),
+  /** Scene chosen for this design. Re-approval reads this and does not pick another. */
+  panelId: text("panel_id"),
+  /** Colours the operator ticked. Promote publishes these and no others. */
+  selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>(),
+  /** Publish-to colour names per product type. Missing key means not saved yet. */
+  publishColorTicks: jsonb("publish_color_ticks").$type<Record<string, string[]>>(),
+  /** My Pet tick for the next publish. Null means still on, the same as an omitted publish. */
+  publishMyPetEnabled: boolean("publish_my_pet_enabled"),
+  title: text("title"),
+  description: text("description"),
+  dropReason: text("drop_reason"),
+  designProductId: varchar("design_product_id"),
+  shopifyProductId: text("shopify_product_id"),
+  /** Persistent Printify product. Retirement deletes this product. */
+  printifyProductId: text("printify_product_id"),
+  /** Concept-studio draws: prompt, look, and per-draw cost. Null on imported PNGs. */
+  generation: jsonb("generation").$type<CatalogueConceptGeneration>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  index("design_candidates_shop_status_idx").on(table.shopDomain, table.status),
+]);
+
+/** One catalogue-import drop. Rows stay here until each design is queued. */
+export const catalogueImportBatches = pgTable("catalogue_import_batches", {
+  id: varchar("id").primaryKey(),
+  shopDomain: text("shop_domain").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const catalogueImportRows = pgTable("catalogue_import_rows", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  batchId: varchar("batch_id").notNull(),
+  shopDomain: text("shop_domain").notNull(),
+  filename: text("filename").notNull(),
+  proposedFilename: text("proposed_filename"),
+  contentHash: text("content_hash"),
+  importStatus: text("import_status").notNull().default("drafted"),
+  failureReason: text("failure_reason"),
+  style: text("style").notNull().default(""),
+  species: text("species").notNull().default(""),
+  humourOperator: text("humour_operator").notNull().default(""),
+  truth: text("truth").notNull().default(""),
+  device: text("device").notNull().default(""),
+  exactWording: text("exact_wording").notNull().default(""),
+  source: text("source").notNull().default("draft"),
+  lowConfidence: jsonb("low_confidence").$type<{ style: boolean; humourOperator: boolean }>(),
+  selected: boolean("selected").notNull().default(true),
+  candidateId: varchar("candidate_id"),
+  rowNumber: integer("row_number").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("catalogue_import_rows_batch_file_uidx").on(table.batchId, table.filename),
+  index("catalogue_import_rows_shop_hash_idx").on(table.shopDomain, table.contentHash),
+]);
+
+/** One photograph: one scene (`panel_id`) and one garment colour. */
+export const mockupPanels = pgTable("mockup_panels", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  panelId: text("panel_id").notNull(),
+  productTypeId: integer("product_type_id").notNull(),
+  view: text("view").notNull().default("front"),
+  label: text("label").notNull(),
+  garmentColor: text("garment_color").notNull(),
+  garmentHex: text("garment_hex").notNull(),
+  kind: text("kind").notNull(),
+  storagePath: text("storage_path").notNull(),
+  maskPath: text("mask_path").notNull(),
+  maskSource: text("mask_source").notNull(),
+  width: integer("width").notNull(),
+  height: integer("height").notNull(),
+  printWidthOfH: decimal("print_width_of_h", { precision: 6, scale: 4 }).notNull().default("0.4415"),
+  printHeightOfH: decimal("print_height_of_h", { precision: 6, scale: 4 }).notNull().default("0.5041"),
+  printTopOfH: decimal("print_top_of_h", { precision: 6, scale: 4 }).notNull().default("0.2074"),
+  printRotationDeg: decimal("print_rotation_deg", { precision: 6, scale: 2 }).notNull().default("0"),
+  isDefault: boolean("is_default").notNull().default(false),
+  uploadedBy: text("uploaded_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("mockup_panels_type_view_idx").on(table.productTypeId, table.view, table.panelId),
+]);
+
+/** Operator colour list for the mockup library. Not a Shopify or Printify variant. */
+export const mockupLibraryColours = pgTable("mockup_library_colours", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  productTypeId: integer("product_type_id").notNull(),
+  name: text("name").notNull(),
+  printifyOptionId: integer("printify_option_id"),
+  printifyTitle: text("printify_title").notNull(),
+  hex: text("hex").notNull(),
+  finish: text("finish").notNull(),
+  /** Existing blank name to offer as a link. Never applied until the operator clicks. */
+  linkStoredName: text("link_stored_name"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  /** Off the grid, Studio, and the storefront until turned back on. The row stays. */
+  active: boolean("active").notNull().default(true),
+  /** Shopify colour taxonomy value, e.g. Green for Bay. Empty blocks publish. */
+  shopifyBaseColor: text("shopify_base_color"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("mockup_library_colours_type_name_uidx").on(table.productTypeId, table.name),
+]);
+
+/** Scene and ticked colours for a candidate, including the studio fixture that is not a design_candidates row yet. */
+export const catalogueCandidateChoices = pgTable("catalogue_candidate_choices", {
+  candidateId: text("candidate_id").primaryKey(),
+  panelId: text("panel_id"),
+  selectedColors: jsonb("selected_colors").$type<Array<{ name: string; hex: string }>>().notNull().default(sql`'[]'::jsonb`),
+  artworkPath: text("artwork_path"),
+  /** Composites stored at approval. Promote uploads these and does not render again. */
+  mockupImages: jsonb("mockup_images").$type<Array<{ name: string; hex: string; path: string }>>(),
+  shopifyProductId: text("shopify_product_id"),
+  printifyProductId: text("printify_product_id"),
+  approvedAt: timestamp("approved_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// My Pet — storefront pet-swap on a published Petposterous catalogue design. See
+// shared/myPetSettings.ts for the prompt/caps logic that reads/writes these rows.
+
+/** One row per shop. Seeded lazily with defaults on first read (see server/my-pet.ts). */
+export const myPetSettings = pgTable("my_pet_settings", {
+  shopDomain: text("shop_domain").primaryKey(),
+  basePrompt: text("base_prompt").notNull(),
+  /** { [artStyleId]: "tweak line" } — only non-blank styles are stored. */
+  styleTweaks: jsonb("style_tweaks").$type<Record<string, string>>().notNull().default(sql`'{}'::jsonb`),
+  capPerListing: integer("cap_per_listing").notNull().default(2),
+  capPerDay: integer("cap_per_day").notNull().default(20),
+  capEmailBonus: integer("cap_email_bonus").notNull().default(2),
+  /** Shop-currency minor units added to a new My Pet shadow. 0 leaves the catalogue price. */
+  surchargeCents: integer("surcharge_cents").notNull().default(0),
+  /**
+   * Per-call Replicate parameters for the pet-swap image edit (Sunburst).
+   * See shared/myPetSettings.ts → MyPetRenderParams. Defaults are the measured
+   * Sunburst medium / 1024×1536 / transparent / png-90 / moderation-low combo
+   * (~$0.05 and 20–25s per call). Editable on the admin settings page.
+   */
+  renderParams: jsonb("render_params")
+    .$type<{
+      quality: "low" | "medium" | "high";
+      background: "transparent" | "opaque";
+      size: string;
+      outputFormat: "png" | "jpeg" | "webp";
+      outputCompression: number;
+      moderation: "low" | "auto";
+    }>()
+    .notNull()
+    .default(
+      sql`'{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb`,
+    ),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+export type MyPetSettingsRow = typeof myPetSettings.$inferSelect;
+
+/** One uploaded shopper photo, keyed to their device cookie. Deleted after 7 days unless `orderId` is set. */
+export const myPetPetPhotos = pgTable("my_pet_pet_photos", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  /** Value of the signed device cookie — not a login identity. */
+  deviceKey: text("device_key").notNull(),
+  storagePath: text("storage_path").notNull(),
+  /** Set once the design carrying this photo is purchased — exempts the row from the 7-day sweep. */
+  orderId: text("order_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_pet_photos_device_idx").on(table.shopDomain, table.deviceKey),
+]);
+export type MyPetPetPhoto = typeof myPetPetPhotos.$inferSelect;
+
+/** One generated pet-swap render. Backs per-listing/per-day caps and the 30-day email-link preview. */
+export const myPetRenders = pgTable("my_pet_renders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  deviceKey: text("device_key").notNull(),
+  /** Caps combine cookie + IP (plan: "no login, cookie + IP") — this backs the IP-scoped half. */
+  clientIp: text("client_ip"),
+  shopifyProductId: text("shopify_product_id").notNull(),
+  candidateId: text("candidate_id").notNull(),
+  petPhotoId: varchar("pet_photo_id").notNull(),
+  /** Edited (non-print-ready) preview artwork — storage path, not a public URL. */
+  previewPath: text("preview_path").notNull(),
+  /** generationJobs.id for the lightweight job created for this render (shadow mint + fulfillment hook). */
+  jobId: varchar("job_id"),
+  colorId: text("color_id"),
+  sizeId: text("size_id"),
+  durationMs: integer("duration_ms"),
+  estimatedCostUsd: decimal("estimated_cost_usd", { precision: 10, scale: 4 }),
+  /** Replicate prediction id (same as createGptImage2Prediction's returned id). For support audit. */
+  replicatePredictionId: text("replicate_prediction_id"),
+  /** Direct link to Replicate's prediction page (urls.get). Clickable from Railway logs / admin. */
+  replicatePredictionUrl: text("replicate_prediction_url"),
+  /** Set when a Shopify order containing this render is paid. Enables order → render reverse lookup. */
+  shopifyOrderId: text("shopify_order_id"),
+  /** Human-readable order name ("#1234") — easier for merchants searching by what the customer quotes. */
+  shopifyOrderName: text("shopify_order_name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_renders_device_product_idx").on(table.shopDomain, table.deviceKey, table.shopifyProductId),
+  index("my_pet_renders_device_day_idx").on(table.shopDomain, table.deviceKey, table.createdAt),
+  index("my_pet_renders_ip_product_idx").on(table.shopDomain, table.clientIp, table.shopifyProductId),
+  index("my_pet_renders_ip_day_idx").on(table.shopDomain, table.clientIp, table.createdAt),
+  index("my_pet_renders_order_idx").on(table.shopDomain, table.shopifyOrderId),
+]);
+export type MyPetRender = typeof myPetRenders.$inferSelect;
+
+/** One email-save token. Grants the per-product email bonus and resolves the save-by-email link for 30 days. */
+export const myPetEmailCaptures = pgTable("my_pet_email_captures", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  shopDomain: text("shop_domain").notNull(),
+  deviceKey: text("device_key").notNull(),
+  shopifyProductId: text("shopify_product_id").notNull(),
+  renderId: varchar("render_id").notNull(),
+  email: text("email").notNull(),
+  marketingConsent: boolean("marketing_consent").notNull().default(false),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  resolvedAt: timestamp("resolved_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("my_pet_email_captures_device_product_idx").on(table.shopDomain, table.deviceKey, table.shopifyProductId),
+]);
+export type MyPetEmailCapture = typeof myPetEmailCaptures.$inferSelect;
 
 // Design Products — permanent, browsable Shopify products merchants publish from a saved
 // My Designs studio design (generationJobs row). Unlike publishedProducts/customizerDesigns
@@ -979,6 +1684,12 @@ export const designProducts = pgTable("design_products", {
   handle: text("handle"),
   title: text("title").notNull(),
   status: text("status").notNull().default("active"), // active | inactive
+  /** Storefront My Pet button. New rows default on. False hides the button. */
+  myPetEnabled: boolean("my_pet_enabled").notNull().default(true),
+  /** Legacy marker from the short-lived hoist of M to variant position 1. */
+  defaultSizeBackfilled: boolean("default_size_backfilled").notNull().default(false),
+  /** Size option values and variant positions are back in XS–3XL order. */
+  sizeOrderRestored: boolean("size_order_restored").notNull().default(false),
   /** { [shopifyVariantId]: { sizeId, colorId, printifyVariantId } } */
   variantMap: json("variant_map"),
   mockupUrls: json("mockup_urls"),
@@ -1049,6 +1760,10 @@ export const FRAME_COLORS = [
   { id: "white", name: "White", hex: "#f5f5f5" },
 ] as const;
 
+/** Treatment-only Opinionated sub-style. Intent to render words lives on the style layer. */
+export const OPINIONATED_TYPEWRITER_FRAGMENT =
+  "Typewriter lettering — monospaced characters with even mechanical spacing, struck-ink texture with slight uneven inking and small imperfections, as if typed on paper with an old manual typewriter.";
+
 // IMPORTANT: Style presets are categorized by product type
 // Decor styles create full-bleed, edge-to-edge artwork for prints and wall art
 // Apparel styles create centered graphics/motifs suitable for t-shirts, etc.
@@ -1058,10 +1773,17 @@ export const STYLE_PRESETS = [
   
   // Decor Artwork - Full-bleed styles for prints, posters, wall art
   { id: "royal-pet", name: "Royal Pet Portrait", promptPrefix: "Transform this pet into a regal royal portrait from the 1800s, dressed in elegant period clothing with an ornate aristocratic backdrop filling the entire canvas. The portrait should look like a classic oil painting of nobility with the background extending to all edges. Create full-bleed artwork of", category: "decor" },
-  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor" },
+  { id: "watercolor", name: "Watercolor", promptPrefix: "A beautiful full-bleed watercolor painting that fills the entire canvas edge-to-edge, with the colors and brushwork extending to all edges of", category: "decor", backgroundSelectorEnabled: true, defaultBackgroundColor: "#FFFFFF" },
   { id: "oil-painting", name: "Oil Painting", promptPrefix: "A classic full-bleed oil painting in the style of impressionism that fills the entire canvas with rich brushstrokes extending to all edges of", category: "decor" },
   { id: "pop-art", name: "Pop Art", promptPrefix: "A vibrant full-bleed pop art illustration in the style of Andy Warhol that fills the entire canvas with bold colors reaching all edges of", category: "decor" },
-  { id: "minimal-line", name: "Minimal Line Art", promptPrefix: "A minimalist full-bleed single-line art drawing with a complete background that extends to all edges of the canvas of", category: "decor" },
+  {
+    id: "minimal-line",
+    name: "Minimalist",
+    promptPrefix: MINIMAL_LINE_DECOR_STYLE,
+    category: "all",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
+  },
   { id: "abstract", name: "Abstract", promptPrefix: "A full-bleed abstract modern art piece with bold colors filling the entire canvas edge-to-edge representing", category: "decor" },
   { id: "vintage-poster", name: "Vintage Poster", promptPrefix: "A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of", category: "decor" },
   { id: "photorealistic", name: "Photorealistic", promptPrefix: "A photorealistic full-bleed high-quality image that fills the entire canvas with the scene extending to all edges of", category: "decor" },
@@ -1075,20 +1797,24 @@ export const STYLE_PRESETS = [
     promptPrefix: "",
     category: "apparel",
     promptPlaceholder: "Your prompt will have no base style applied. Describe your design freely...",
+    backgroundSelectorEnabled: true,
+    defaultBackgroundColor: "none",
   },
   {
     id: "pattern-maker",
     name: "Pattern Maker",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["pattern maker"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your pattern idea (e.g. tiny tacos and hot sauce bottles)",
   },
   {
     id: "opinionated",
-    name: "Opinionated",
+    name: "Opinionated Text",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.opinionated,
     category: "apparel",
-    promptPlaceholder: "State your opinion in up to 6 words, e.g. Dogs Are Better Than People, Pizza Fixes Everything, Mondays Should Be Illegal, Naps Over Small Talk, Cats Run This House",
+    promptPlaceholder: "Write your text here (up to 6 words)",
+    userSlotSchema: literalUserSlotSchema(6),
     options: {
       label: "Choose Layout",
       required: true,
@@ -1098,6 +1824,7 @@ export const STYLE_PRESETS = [
         { id: "street", name: "Street", promptFragment: "graffiti spray paint urban style, drip effects, raw street art typography", baseImageUrl: "" },
         { id: "minimal", name: "Minimal", promptFragment: "clean modern sans-serif, simple layout, balanced whitespace, understated elegance", baseImageUrl: "" },
         { id: "handwritten", name: "Handwritten", promptFragment: "casual hand-lettered script, organic brush strokes, personal handwriting feel", baseImageUrl: "" },
+        { id: "typewriter", name: "Typewriter", promptFragment: OPINIONATED_TYPEWRITER_FRAGMENT, baseImageUrl: "" },
       ],
     },
   },
@@ -1106,15 +1833,15 @@ export const STYLE_PRESETS = [
     name: "Quotes",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME.quotes,
     category: "apparel",
-    promptPlaceholder: "Enter your topic (e.g. life, cats, Monday mornings, coffee addiction)",
+    promptPlaceholder: QUOTES_PLACEHOLDER,
     options: {
       label: "Quote Style",
       required: true,
       choices: [
-        { id: "profound", name: "Profound", promptFragment: "a profound, thoughtful, deep quote on", baseImageUrl: "" },
-        { id: "quirky", name: "Quirky", promptFragment: "a quirky, offbeat, unexpected quote on", baseImageUrl: "" },
-        { id: "weird", name: "Weird", promptFragment: "a weird, absurd, surreal quote on", baseImageUrl: "" },
-        { id: "funny", name: "Funny", promptFragment: "a funny, humorous, comedic quote on", baseImageUrl: "" },
+        { id: "profound", name: "Profound", promptFragment: QUOTES_TREATMENTS.profound, baseImageUrl: "" },
+        { id: "quirky", name: "Quirky", promptFragment: QUOTES_TREATMENTS.quirky, baseImageUrl: "" },
+        { id: "weird", name: "Weird", promptFragment: QUOTES_TREATMENTS.weird, baseImageUrl: "" },
+        { id: "funny", name: "Funny", promptFragment: QUOTES_TREATMENTS.funny, baseImageUrl: "" },
       ],
     },
   },
@@ -1140,44 +1867,53 @@ export const STYLE_PRESETS = [
     id: "centered-graphic",
     name: "Centered Graphic",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["centered graphic"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your centered graphic (e.g. scary bear standing up, vintage skull, geometric wolf)",
   },
   {
     id: "illustrated-motif",
     name: "Illustrated Motif",
     promptPrefix: APPAREL_CHROMA_STYLE_BY_NAME["illustrated motif"],
-    category: "apparel",
+    category: "all",
+    outputMode: "floating",
     promptPlaceholder: "Describe your illustrated motif (e.g. scary grizzly bear standing up, retro robot, floral skull)",
   },
-
-  // Graphics — isolated motifs for blankets, totes, patterns (chroma + SVG pipeline)
   {
-    id: "graphics-centered-graphic",
-    name: "Centered Graphic (Graphics)",
-    promptPrefix:
-      "Centered flat vector illustration for large-format print, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of",
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your centered graphic (e.g. geometric wolf, vintage skull, botanical emblem)",
+    id: "vintage-print",
+    name: "Vintage Print",
+    promptPrefix: VINTAGE_PRINT_STYLE,
+    category: "all",
+    outputMode: "floating",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "medium",
   },
   {
-    id: "graphics-illustrated-motif",
-    name: "Illustrated Motif (Graphics)",
-    promptPrefix:
-      "Illustrated character motif for large-format print and patterns, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of",
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your illustrated motif (e.g. retro robot, floral skull, camping bear)",
+    id: "one-color-print",
+    name: "One-Color Print",
+    promptPrefix: ONE_COLOR_PRINT_STYLE,
+    category: "all",
+    outputMode: "floating",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
   },
   {
-    id: "graphics-pattern-maker",
-    name: "Pattern Maker (Graphics)",
-    promptPrefix:
-      "Seamless repeating pattern design for large-format products, tileable motif, clean vector shapes, flat colors (avoid white, light colors; DO NOT use solid hot pink (#FF00FF) or magenta in the design), high contrast, isolated on a solid hot pink (#FF00FF) background, no white mat, no rectangular frame. Create a repeating pattern of",
-    category: "graphics",
-    promptPlaceholder:
-      "Describe your pattern idea (e.g. tiny tacos, scattered leaves, geometric tiles)",
+    id: "retro-sunset-stack",
+    name: "Retro Sunset Stack",
+    promptPrefix: RETRO_SUNSET_STACK_STYLE,
+    category: "all",
+    outputMode: "floating",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "medium",
+  },
+  {
+    id: "playful-cartoon",
+    name: "Playful Cartoon",
+    promptPrefix: PLAYFUL_CARTOON_STYLE,
+    category: "all",
+    outputMode: "floating",
+    promptPlaceholder: ART_STYLE_VERBATIM_PLACEHOLDER,
+    generationQuality: "low",
   },
 
   // Decor Pet Portraits - Full-bleed scenic versions (no chroma key needed)
@@ -1200,6 +1936,32 @@ export const STYLE_PRESETS = [
     },
   },
 ] as const;
+
+export type StyleOptionsBlob = {
+  label?: string;
+  required?: boolean;
+  choices?: Array<{
+    id?: string;
+    name?: string;
+    promptFragment?: string;
+    baseImageUrl?: string;
+    baseImageUrls?: string[];
+  }>;
+};
+
+/** Keep merchant-saved options, append any catalog choices the DB row is missing (e.g. Typewriter). */
+export function mergeCatalogStyleOptions(
+  dbOptions: StyleOptionsBlob | null | undefined,
+  hardcodedOptions: StyleOptionsBlob | null | undefined,
+): StyleOptionsBlob | null {
+  if (!dbOptions) return hardcodedOptions ?? null;
+  const catalog = hardcodedOptions?.choices || [];
+  if (catalog.length === 0) return dbOptions;
+  const have = new Set((dbOptions.choices || []).map((c) => String(c?.id || "")));
+  const extras = catalog.filter((c) => c?.id && !have.has(String(c.id)));
+  if (extras.length === 0) return dbOptions;
+  return { ...dbOptions, choices: [...(dbOptions.choices || []), ...extras] };
+}
 
 export type PrintSize = typeof PRINT_SIZES[number];
 export type FrameColor = typeof FRAME_COLORS[number];
@@ -1356,6 +2118,10 @@ export const flatOrderSubmissions = pgTable("flat_order_submissions", {
   sentToProduction: boolean("sent_to_production").notNull().default(false),
   isTest: boolean("is_test").notNull().default(false),
   printFileUrls: jsonb("print_file_urls"),
+  /** Bucket paths for My Pet print files. Signed URLs are minted at submit time and are not stored. */
+  printFilePaths: jsonb("print_file_paths"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at"),
   error: text("error"),
   metadata: jsonb("metadata"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1607,6 +2373,37 @@ export const creatorCustomerEarned = pgTable(
     uniqueIndex("creator_customer_earned_uidx").on(table.creatorId, table.customerId),
   ],
 );
+
+/**
+ * AI lifestyle mockups ("See it worn", admin-only for now). One row per
+ * Replicate google/nano-banana generation; doubles as the per-(design + gender)
+ * cache, the re-roll/daily caps, and the per-call cost log.
+ */
+export const lifestyleMockups = pgTable(
+  "lifestyle_mockups",
+  {
+    id: serial("id").primaryKey(),
+    generationJobId: varchar("generation_job_id").notNull(),
+    gender: text("gender").notNull(),
+    garment: text("garment").notNull(),
+    status: text("status").notNull(),
+    imageUrl: text("image_url"),
+    prompt: text("prompt"),
+    setting: text("setting"),
+    seed: text("seed"),
+    predictionId: text("prediction_id"),
+    predictTimeSec: decimal("predict_time_sec", { precision: 10, scale: 3 }),
+    costUsd: decimal("cost_usd", { precision: 10, scale: 4 }),
+    error: text("error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => [
+    index("lifestyle_mockups_job_gender_idx").on(table.generationJobId, table.gender, table.createdAt),
+    index("lifestyle_mockups_created_idx").on(table.createdAt),
+  ],
+);
+export type LifestyleMockupRow = typeof lifestyleMockups.$inferSelect;
 
 export const creatorGenerationCosts = pgTable(
   "creator_generation_costs",
@@ -1996,3 +2793,374 @@ export const creatorCustomerShopVisits = pgTable(
 );
 
 export type CreatorCustomerShopVisit = typeof creatorCustomerShopVisits.$inferSelect;
+
+// ── Shipping Coverage Service (Printify table ingestion + geo-gating) ─────────
+// See docs/Shipping-rates-plan/shipping-rates-and-geo-gating-spec.md.
+// All money columns are USD cents (Printify v2 ceiling table). Standard tier only.
+
+/** One (blueprint, print provider) pair = one shipping class. */
+export const shippingClasses = pgTable(
+  "shipping_classes",
+  {
+    id: serial("id").primaryKey(),
+    blueprintId: integer("blueprint_id").notNull(),
+    providerId: integer("provider_id").notNull(),
+    name: text("name").notNull().default(""),
+    /** Printify shipping method actually ingested (e.g. "standard"). */
+    shippingMethod: text("shipping_method").notNull().default("standard"),
+    tableHash: text("table_hash"),
+    /**
+     * Cross-zone variant groups (JSON): [{ group: "g1", label: "11\" x 14\"…",
+     * printifyVariantIds: [..] }] sorted cheapest-first by US first-item rate.
+     * Two variants share a group iff their (first, additional) pair matches in
+     * EVERY zone of the table.
+     */
+    variantGroupsJson: text("variant_groups_json").notNull().default("[]"),
+    /** Manual per-class overrides for tier evaluation (null = platform defaults). */
+    absoluteCapCentsOverride: integer("absolute_cap_cents_override"),
+    typicalRetailCentsOverride: integer("typical_retail_cents_override"),
+    /**
+     * Per-class override of BandConfig.groupDeltaSplitThresholdCents (null =
+     * default 200). Interim merge lever for profile-budget pressure: raising it
+     * merges a class's per-group profiles into shared ones (cheaper on the
+     * 99-profile cap, worse tolerance). 493:36 (Framed Vertical, Choice) stays
+     * 6-way split by default — monitor mixed-size framed cart frequency
+     * post-launch before touching this.
+     */
+    groupDeltaSplitThresholdCents: integer("group_delta_split_threshold_cents"),
+    lastFetchedAt: timestamp("last_fetched_at"),
+    lastChangedAt: timestamp("last_changed_at"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_classes_bp_provider_uidx").on(table.blueprintId, table.providerId),
+  ],
+);
+
+export type ShippingClass = typeof shippingClasses.$inferSelect;
+
+/** Normalised per-zone per-variant-group rate with exclusion-tier verdict. */
+export const shippingRates = pgTable(
+  "shipping_rates",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    /** ISO 3166-1 alpha-2, or "ROW" for rest-of-world. */
+    countryCode: text("country_code").notNull(),
+    /** Cross-zone variant group key ("g1"…), never null — single-group classes use "g1". */
+    variantGroup: text("variant_group").notNull(),
+    firstItemCents: integer("first_item_cents").notNull(),
+    additionalCents: integer("additional_cents").notNull(),
+    currency: text("currency").notNull().default("USD"),
+    shippable: boolean("shippable").notNull().default(true),
+    /** normal | warned | excluded (spec 0.4 tiers). */
+    tier: text("tier").notNull().default("normal"),
+    /** Diagnostics: firstItem / typicalRetail in basis points; null when retail unknown. */
+    ratioBp: integer("ratio_bp"),
+    /** Typical retail used for the ratio (median group retail or COGS fallback). */
+    typicalRetailCents: integer("typical_retail_cents"),
+    /** Why this tier: threshold | absolute_cap | manual_block | manual_allow | no_retail. */
+    tierReason: text("tier_reason"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_rates_class_country_group_uidx").on(
+      table.shippingClassId,
+      table.countryCode,
+      table.variantGroup,
+    ),
+    index("shipping_rates_class_idx").on(table.shippingClassId),
+  ],
+);
+
+export type ShippingRate = typeof shippingRates.$inferSelect;
+
+/** Our catalogue variant → shipping class/group mapping (+ Phase 2 pseudo-weight). */
+export const variantShipping = pgTable(
+  "variant_shipping",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    productTypeId: integer("product_type_id").notNull(),
+    /** variantMap key on the product type, e.g. "sizeId:colorId". */
+    sizeColorKey: text("size_color_key").notNull(),
+    printifyVariantId: text("printify_variant_id").notNull(),
+    shopifyVariantId: text("shopify_variant_id"),
+    variantGroup: text("variant_group").notNull(),
+    /** Phase 2: additionalCents in the reference zone (1 gram = 1 cent). */
+    pseudoWeightGrams: integer("pseudo_weight_grams"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("variant_shipping_product_variant_uidx").on(
+      table.productTypeId,
+      table.printifyVariantId,
+    ),
+    index("variant_shipping_class_idx").on(table.shippingClassId),
+  ],
+);
+
+export type VariantShipping = typeof variantShipping.$inferSelect;
+
+/** Raw Printify table snapshots (one per hash change) for audit/replay. */
+export const shippingTableSnapshots = pgTable(
+  "shipping_table_snapshots",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    tableHash: text("table_hash").notNull(),
+    rawJson: text("raw_json").notNull(),
+    fetchedAt: timestamp("fetched_at").defaultNow().notNull(),
+  },
+  (table) => [index("shipping_table_snapshots_class_idx").on(table.shippingClassId, table.fetchedAt)],
+);
+
+export type ShippingTableSnapshot = typeof shippingTableSnapshots.$inferSelect;
+
+/** Audit log: every rate/zone/group/tier change from a sync (spec 0.1). */
+export const shippingRateAudit = pgTable(
+  "shipping_rate_audit",
+  {
+    id: serial("id").primaryKey(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    syncRunId: integer("sync_run_id"),
+    countryCode: text("country_code"),
+    variantGroup: text("variant_group"),
+    /** class_added | rate_changed | zone_added | zone_removed | grouping_changed | tier_changed */
+    changeType: text("change_type").notNull(),
+    oldValue: text("old_value"),
+    newValue: text("new_value"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [index("shipping_rate_audit_class_idx").on(table.shippingClassId, table.createdAt)],
+);
+
+export type ShippingRateAudit = typeof shippingRateAudit.$inferSelect;
+
+/** Manual per-class (or global, shippingClassId=0) country block/allow overrides. */
+export const shippingZoneRules = pgTable(
+  "shipping_zone_rules",
+  {
+    id: serial("id").primaryKey(),
+    /** 0 = applies to every class. */
+    shippingClassId: integer("shipping_class_id").notNull().default(0),
+    countryCode: text("country_code").notNull(),
+    /** block | allow — overrides tier thresholds in both directions. */
+    action: text("action").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_zone_rules_class_country_uidx").on(table.shippingClassId, table.countryCode),
+  ],
+);
+
+export type ShippingZoneRule = typeof shippingZoneRules.$inferSelect;
+
+/** Materialised coverage matrix: (product, country) → shippable/tier/from-price. */
+export const shippingCoverage = pgTable(
+  "shipping_coverage",
+  {
+    id: serial("id").primaryKey(),
+    productTypeId: integer("product_type_id").notNull(),
+    countryCode: text("country_code").notNull(),
+    shippable: boolean("shippable").notNull(),
+    /** normal | warned | excluded — best (least severe) tier among the product's shippable groups. */
+    tier: text("tier").notNull(),
+    /** "from $X" price: min first-item cents among the product's shippable groups. */
+    firstItemCents: integer("first_item_cents"),
+    additionalCents: integer("additional_cents"),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    tableHash: text("table_hash"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_coverage_product_country_uidx").on(table.productTypeId, table.countryCode),
+    index("shipping_coverage_country_idx").on(table.countryCode, table.shippable),
+  ],
+);
+
+export type ShippingCoverage = typeof shippingCoverage.$inferSelect;
+
+/**
+ * One shipping-tables sync run (nightly | boot | manual | seed).
+ * started_at and finished_at are `timestamp without time zone`. The skip guard
+ * does not read them; it compares platform_config ISO strings with Date.now().
+ * A reader in a non-UTC zone will treat these naive values as local time.
+ */
+export const shippingSyncRuns = pgTable("shipping_sync_runs", {
+  id: serial("id").primaryKey(),
+  source: text("source").notNull().default("manual"),
+  status: text("status").notNull().default("running"), // running | complete | failed
+  classesChecked: integer("classes_checked").notNull().default(0),
+  classesChanged: integer("classes_changed").notNull().default(0),
+  classesFailed: integer("classes_failed").notNull().default(0),
+  summaryJson: text("summary_json").notNull().default("{}"),
+  error: text("error"),
+  startedAt: timestamp("started_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+});
+
+export type ShippingSyncRun = typeof shippingSyncRuns.$inferSelect;
+
+// ── Phase 3: Shopify delivery-profile reconciler (per-shop) ──────────────────
+
+/** Per-shop shipping sync mode + reconcile bookkeeping. */
+export const shippingStoreSettings = pgTable(
+  "shipping_store_settings",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    /**
+     * off   → reconciler never applies (dry-run allowed); checkout unchanged.
+     * table → weight-banded delivery profiles managed by the reconciler.
+     * exact → CarrierService quotes (Exact Mode, later). Mutually exclusive
+     *         with table: table mode must not attach the carrier.
+     */
+    shippingMode: text("shipping_mode").notNull().default("off"),
+    /** When ON, reconciler writes pseudo-weights to app-created variants. */
+    manageVariantWeights: boolean("manage_variant_weights").notNull().default(true),
+    /** Per-shop re-validated rates-per-zone cap (scratch-profile probe on first apply). */
+    probedMaxRatesPerZone: integer("probed_max_rates_per_zone"),
+    probedAt: timestamp("probed_at"),
+    /**
+     * Pinned buffered USD→shop-unit FX rate (string decimal; "1" for USD).
+     * Pinned so daily FX noise does not rewrite every rate; re-pinned only
+     * when drift exceeds SHIPPING_FX_REPIN_DRIFT (default 7.5%).
+     */
+    pinnedFxRate: text("pinned_fx_rate"),
+    /** ISO-4217 the pin converts into (USD→this). Needed so rewards display can reuse the shop pin. */
+    pinnedFxCurrency: text("pinned_fx_currency"),
+    pinnedFxAt: timestamp("pinned_fx_at"),
+    lastReconcileAt: timestamp("last_reconcile_at"),
+    /** ok | error | partial */
+    lastReconcileStatus: text("last_reconcile_status"),
+    lastReconcileError: text("last_reconcile_error"),
+    lastReconcileSummaryJson: text("last_reconcile_summary_json").notNull().default("{}"),
+    /**
+     * $0 "Free Shipping" above an order subtotal, for the listed countries only.
+     * Off (the default) leaves desired state identical to the weight bands.
+     * Threshold is shop-currency minor units (7500 = 75.00). Countries are
+     * comma-separated ISO codes. The theme free-shipping bar is a separate
+     * theme setting and is not read from this row.
+     */
+    freeShippingEnabled: boolean("free_shipping_enabled").notNull().default(false),
+    freeShippingThresholdCents: integer("free_shipping_threshold_cents").notNull().default(7500),
+    /** Shop-currency minor units for the paid flat rate when the offer is on. */
+    freeShippingFlatCents: integer("free_shipping_flat_cents").notNull().default(495),
+    freeShippingCountries: text("free_shipping_countries").notNull().default("US"),
+    /** orders/paid submits this shop to Printify only when this is true AND FLAT_ORDER_FULFILLMENT_ENABLED=true. */
+    flatOrderFulfillmentEnabled: boolean("flat_order_fulfillment_enabled").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("shipping_store_settings_shop_uidx").on(table.shopDomain)],
+);
+
+export type ShippingStoreSettings = typeof shippingStoreSettings.$inferSelect;
+
+/** ID map: one app-owned Shopify delivery profile per (shop, profileKey). */
+export const shippingStoreProfiles = pgTable(
+  "shipping_store_profiles",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    /** Phase 2 profile key, e.g. "540:99#g4" or "6:99#all". */
+    profileKey: text("profile_key").notNull(),
+    shippingClassId: integer("shipping_class_id").notNull(),
+    /** null = shared "#all" profile. */
+    variantGroup: text("variant_group"),
+    shopifyProfileId: text("shopify_profile_id"),
+    shopifyLocationGroupId: text("shopify_location_group_id"),
+    /** Hash of the desired zones+rates+name; matching hash → zones/rates are a no-op. */
+    desiredHash: text("desired_hash"),
+    /** pending | synced | error */
+    status: text("status").notNull().default("pending"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_profiles_shop_key_uidx").on(table.shopDomain, table.profileKey),
+    index("shipping_store_profiles_shop_idx").on(table.shopDomain),
+  ],
+);
+
+export type ShippingStoreProfile = typeof shippingStoreProfiles.$inferSelect;
+
+/** ID map: zones inside an app-owned profile (collapsed country groups / ROW). */
+export const shippingStoreZones = pgTable(
+  "shipping_store_zones",
+  {
+    id: serial("id").primaryKey(),
+    storeProfileId: integer("store_profile_id").notNull(),
+    /** Stable key: "ROW", "BLOCKED", or sha1 of the sorted country list. */
+    zoneKey: text("zone_key").notNull(),
+    shopifyZoneId: text("shopify_zone_id"),
+    countriesJson: text("countries_json").notNull().default("[]"),
+    restOfWorld: boolean("rest_of_world").notNull().default(false),
+    /** Hash of the zone's rate list — skip method-definition writes when equal. */
+    desiredHash: text("desired_hash"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_zones_profile_key_uidx").on(table.storeProfileId, table.zoneKey),
+  ],
+);
+
+export type ShippingStoreZone = typeof shippingStoreZones.$inferSelect;
+
+/** ID map: weight-band method definitions inside a zone. */
+export const shippingStoreRates = pgTable(
+  "shipping_store_rates",
+  {
+    id: serial("id").primaryKey(),
+    storeZoneId: integer("store_zone_id").notNull(),
+    /** 0-based band index; the final open band is the highest index. */
+    bandIndex: integer("band_index").notNull(),
+    shopifyMethodDefinitionId: text("shopify_method_definition_id"),
+    lowerGrams: integer("lower_grams").notNull(),
+    /** null = unbounded open band. */
+    upperGrams: integer("upper_grams"),
+    /** Price in the SHOP's currency minor units (post-FX). */
+    priceCents: integer("price_cents").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_rates_zone_band_uidx").on(table.storeZoneId, table.bandIndex),
+  ],
+);
+
+export type ShippingStoreRate = typeof shippingStoreRates.$inferSelect;
+
+/**
+ * Variants the reconciler has associated into an app profile (base + shadow).
+ * Needed for GC / kill-switch dissociation and idempotent weight writes.
+ */
+export const shippingStoreVariants = pgTable(
+  "shipping_store_variants",
+  {
+    id: serial("id").primaryKey(),
+    shopDomain: text("shop_domain").notNull(),
+    storeProfileId: integer("store_profile_id").notNull(),
+    /** Numeric Shopify variant id (no gid prefix). */
+    shopifyVariantId: text("shopify_variant_id").notNull(),
+    /** base | shadow */
+    source: text("source").notNull().default("base"),
+    pseudoWeightGrams: integer("pseudo_weight_grams"),
+    weightWrittenAt: timestamp("weight_written_at"),
+    associatedAt: timestamp("associated_at"),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("shipping_store_variants_shop_variant_uidx").on(
+      table.shopDomain,
+      table.shopifyVariantId,
+    ),
+    index("shipping_store_variants_profile_idx").on(table.storeProfileId),
+  ],
+);
+
+export type ShippingStoreVariant = typeof shippingStoreVariants.$inferSelect;
