@@ -1,13 +1,16 @@
 /**
- * Who may publish a catalogue design on this backend.
+ * Who may publish or edit a catalogue design on this backend.
  * Staging keeps the demo shop and Petposterous. Production stays locked until
  * CATALOGUE_PUBLISH_ALLOWED_SHOPS is set, and then only those shops.
+ * Concept generation, blueprint import, and shell categories stay staging-only.
  */
 import { catalogueShopDomain, PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
 
 export const CATALOGUE_PUBLISH_ALLOWED_SHOPS_ENV = "CATALOGUE_PUBLISH_ALLOWED_SHOPS";
 export const CATALOGUE_PUBLISH_LOCKED_MESSAGE = "Catalogue publish is locked on this backend.";
 export const CATALOGUE_PUBLISH_SHOP_MESSAGE = "Catalogue publish is not available for this store.";
+export const CATALOGUE_STUDIO_LOCKED_MESSAGE = "Catalogue changes are locked on this backend.";
+export const CATALOGUE_STUDIO_SHOP_MESSAGE = "Catalogue changes are not available for this store.";
 
 export type CataloguePublishEnv = {
   RAILWAY_ENVIRONMENT_NAME?: string;
@@ -52,4 +55,14 @@ export function cataloguePublishBlockMessage(
   if (cataloguePublishAllowedForShop(shop, env)) return null;
   if (cataloguePublishLocked(env)) return CATALOGUE_PUBLISH_LOCKED_MESSAGE;
   return CATALOGUE_PUBLISH_SHOP_MESSAGE;
+}
+
+/** Import, drop, delete, My Pet, colour reorder, wording, and tick saves. */
+export function catalogueStudioBlockMessage(
+  shop: string | null | undefined,
+  env: CataloguePublishEnv = process.env,
+): string | null {
+  if (cataloguePublishAllowedForShop(shop, env)) return null;
+  if (cataloguePublishLocked(env)) return CATALOGUE_STUDIO_LOCKED_MESSAGE;
+  return CATALOGUE_STUDIO_SHOP_MESSAGE;
 }

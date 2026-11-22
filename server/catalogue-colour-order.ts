@@ -8,12 +8,13 @@ import {
   catalogueVariantPositions,
   sortCatalogueColours,
 } from "@shared/flywheelPromote";
+import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
+import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { designCandidates } from "@shared/schema";
 import { db } from "./db";
 import { storage } from "./storage";
 import { paceVendor, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
-const STAGING_SHOP = "ai-art-studio-staging.myshopify.com";
 const SHOPIFY_API = "2025-10";
 
 type OptionValue = { id: string; name: string };
@@ -53,17 +54,17 @@ function optionReorderInput(option: ProductOption): { id: string; values: Array<
   return { id: option.id, values: values.map((value) => ({ id: value.id })) };
 }
 
-export async function reorderStagingCatalogueColours(): Promise<Array<{
+export async function reorderCatalogueColours(shop: string): Promise<Array<{
   id: string;
   title: string;
   colours: string[];
   error: string;
 }>> {
-  if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-    throw new Error("Catalogue colour order is staging only.");
-  }
-  const installation = await storage.getShopifyInstallationByShop(STAGING_SHOP);
-  if (!installation?.accessToken) throw new Error("Staging Shopify token is not stored.");
+  const domain = catalogueShopDomain(shop);
+  const block = catalogueStudioBlockMessage(domain);
+  if (block || !domain) throw new Error(block || "Catalogue changes are not available for this store.");
+  const installation = await storage.getShopifyInstallationByShop(domain);
+  if (!installation?.accessToken) throw new Error("Shopify token is not stored for this store.");
   const rows = await db
     .select({
       id: designCandidates.shopifyProductId,
@@ -71,7 +72,7 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
     })
     .from(designCandidates)
     .where(and(
-      eq(designCandidates.shopDomain, STAGING_SHOP),
+      eq(designCandidates.shopDomain, domain),
       isNotNull(designCandidates.shopifyProductId),
       ne(designCandidates.shopifyProductId, ""),
     ));
@@ -82,7 +83,7 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
     if (!numeric) continue;
     const productGid = `gid://shopify/Product/${numeric}`;
     try {
-      const data = await adminGql(STAGING_SHOP, installation.accessToken, `
+      const data = await adminGql(domain, installation.accessToken, `
         query($id: ID!) {
           product(id: $id) {
             options { id name optionValues { id name } }
@@ -95,7 +96,7 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
       const options = (product.options || []) as ProductOption[];
       const colour = options.find((option) => /^colou?r$/i.test(option.name));
       if (!colour) throw new Error("No Color option");
-      const reordered = await adminGql(STAGING_SHOP, installation.accessToken, `
+      const reordered = await adminGql(domain, installation.accessToken, `
         mutation($productId: ID!, $options: [OptionReorderInput!]!) {
           productOptionsReorder(productId: $productId, options: $options) {
             userErrors { message }
@@ -115,7 +116,7 @@ export async function reorderStagingCatalogueColours(): Promise<Array<{
         colour: variant.selectedOptions.find((option) => /^colou?r$/i.test(option.name))?.value || "",
         size: variant.selectedOptions.find((option) => option.name.toLowerCase() === "size")?.value || "",
       })));
-      const moved = await adminGql(STAGING_SHOP, installation.accessToken, `
+      const moved = await adminGql(domain, installation.accessToken, `
         mutation($productId: ID!, $positions: [ProductVariantPositionInput!]!) {
           productVariantsBulkReorder(productId: $productId, positions: $positions) {
             userErrors { message }

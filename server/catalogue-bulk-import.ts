@@ -6,7 +6,8 @@
 import { createHash, randomUUID } from "crypto";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
 import { catalogueRowAttention, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
-import { catalogueShopAllowed, catalogueShopDomain } from "@shared/operatorCatalogue";
+import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
+import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
 import { db } from "./db";
 import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
@@ -41,11 +42,9 @@ export function decodeCataloguePng(filename: string, imageBase64: string): Buffe
 }
 
 export async function assertCatalogueImportShop(shop: string | null | undefined): Promise<string> {
-  if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-    throw new Error("Catalogue import is staging only.");
-  }
   const domain = catalogueShopDomain(shop);
-  if (!catalogueShopAllowed(domain)) throw new Error("Catalogue import is not available for this store.");
+  const block = catalogueStudioBlockMessage(domain);
+  if (block || !domain) throw new Error(block || "Catalogue changes are not available for this store.");
   const { storage } = await import("./storage");
   const installation = await storage.getShopifyInstallationByShop(domain);
   if (!installation?.accessToken || installation.status !== "active") {

@@ -36,7 +36,9 @@ import {
   cataloguePublishAllowedForShop,
   cataloguePublishBlockMessage,
   cataloguePublishLocked,
+  catalogueStudioBlockMessage,
   CATALOGUE_PUBLISH_LOCKED_MESSAGE,
+  CATALOGUE_STUDIO_SHOP_MESSAGE,
 } from "@shared/cataloguePublishAccess";
 import { parseCompareAtBySize } from "@shared/compareAtBySize";
 import { coloursStillOffered, filterPricesToSizes, offeredAxes } from "@shared/variantSelection";
@@ -241,6 +243,13 @@ async function resolveStudioCandidateId(value: unknown, requestShop: string | nu
   if ("error" in parsed || parsed.id) return parsed;
   const queue = await operatorQueue(requestShop);
   return { id: queue[0]?.id || PENDING_CANDIDATE.id };
+}
+
+function refuseStudioChange(res: Response, shop: string | null | undefined): boolean {
+  const block = catalogueStudioBlockMessage(shop);
+  if (!block) return false;
+  res.status(400).json({ error: block });
+  return true;
 }
 
 async function candidateIdFor(res: Response, value: unknown, requestShop: string | null | undefined): Promise<string | null> {
@@ -963,10 +972,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/drop", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue studio changes are staging only." });
-      return;
-    }
+    if (refuseStudioChange(res, req.shopDomain)) return;
     try {
       const reason = String(req.body?.dropReason || "").trim();
       if (!reason) {
@@ -1002,10 +1008,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/delete", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue studio changes are staging only." });
-      return;
-    }
+    if (refuseStudioChange(res, req.shopDomain)) return;
     try {
       const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
       if (!id) return;
@@ -1095,10 +1098,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/my-pet", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue studio changes are staging only." });
-      return;
-    }
+    if (refuseStudioChange(res, req.shopDomain)) return;
     const enabled = req.body?.enabled;
     const designProductId = String(req.body?.designProductId || "");
     if (typeof enabled !== "boolean" || !designProductId) {
@@ -1147,6 +1147,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/punchline", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
+    if (refuseStudioChange(res, req.shopDomain)) return;
     const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
     if (!id) return;
     if (id === PENDING_CANDIDATE.id) {
@@ -1175,6 +1176,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
   // Saved ticks for the next publish. A job already running keeps the recipe it started with.
   app.post("/api/platform/catalogue-studio/publish-setup", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
+    if (refuseStudioChange(res, req.shopDomain)) return;
     const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
     if (!id) return;
     if (id === PENDING_CANDIDATE.id) {
@@ -1348,17 +1350,15 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/reorder-colours", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue colour order is staging only." });
-      return;
-    }
+    if (refuseStudioChange(res, req.shopDomain)) return;
     try {
-      if (operatorCatalogueForShop(req.shopDomain).shop !== STAGING_SHOP) {
-        res.status(400).json({ error: "Colour reorder stays on the staging catalogue." });
+      const shop = catalogueShopDomain(req.shopDomain);
+      if (!shop) {
+        res.status(400).json({ error: CATALOGUE_STUDIO_SHOP_MESSAGE });
         return;
       }
-      const { reorderStagingCatalogueColours } = await import("../catalogue-colour-order");
-      const products = await reorderStagingCatalogueColours();
+      const { reorderCatalogueColours } = await import("../catalogue-colour-order");
+      const products = await reorderCatalogueColours(shop);
       res.json({ products });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
@@ -1414,10 +1414,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/candidates/import/draft", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    if (process.env.RAILWAY_ENVIRONMENT_NAME === "production") {
-      res.status(400).json({ error: "Catalogue import is staging only." });
-      return;
-    }
+    if (refuseStudioChange(res, req.shopDomain)) return;
     const started = Date.now();
     const shop = String(req.shopDomain || "");
     const filename = String(req.body?.filename || "image.png");
