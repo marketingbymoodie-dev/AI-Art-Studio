@@ -23,6 +23,7 @@ import {
   PRINTIFY_SHOP_ID,
   assertCopyTargets,
   isRoundOneDesign,
+  jsonParameter,
   remapIdKeys,
 } from "./petposterous-copy-lib";
 
@@ -69,9 +70,25 @@ async function writableColumns(source: Sql, dest: Sql, table: string): Promise<s
   return [...from].filter((column) => to.has(column) && !(SERIAL_TABLES.has(table) && column === "id"));
 }
 
+const jsonColumnCache = new Map<string, Set<string>>();
+
+async function jsonColumns(db: Sql, table: string): Promise<Set<string>> {
+  const cached = jsonColumnCache.get(table);
+  if (cached) return cached;
+  const result = await db.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1 AND udt_name IN ('json', 'jsonb')`,
+    [table],
+  );
+  const names = new Set(result.rows.map((row) => String(row.column_name)));
+  jsonColumnCache.set(table, names);
+  return names;
+}
+
 async function insertRow(db: Sql, table: string, row: Row, columns: string[]): Promise<Row> {
+  const json = await jsonColumns(db, table);
   const names = columns.filter((column) => Object.prototype.hasOwnProperty.call(row, column));
-  const values = names.map((column) => row[column]);
+  const values = names.map((column) => json.has(column) ? jsonParameter(row[column]) : row[column]);
   const sql = `INSERT INTO ${ident(table)} (${names.map(ident).join(", ")})
     VALUES (${names.map((_, index) => `$${index + 1}`).join(", ")}) RETURNING *`;
   const result = await db.query(sql, values);

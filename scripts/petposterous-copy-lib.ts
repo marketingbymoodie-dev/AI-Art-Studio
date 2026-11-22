@@ -98,6 +98,12 @@ export function remapTagCondition(condition: string, idMap: Record<string, numbe
   return mapped ? `aas-type-${mapped}` : condition;
 }
 
+/** JSON text for a parameter. node-pg would otherwise send arrays as Postgres array literals. */
+export function jsonParameter(value: unknown): unknown {
+  if (value == null) return null;
+  return JSON.stringify(value);
+}
+
 export function withoutSecrets(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {

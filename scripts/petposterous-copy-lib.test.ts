@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertCopyTargets,
   isRoundOneDesign,
+  jsonParameter,
   remapIdKeys,
   remapTagCondition,
   retagCatalogueTypeTags,
@@ -31,6 +32,13 @@ describe("petposterous copy guards", () => {
     expect(isRoundOneDesign({ shopify_product_id: "16470702325841", title: "ROUND ONE" })).toBe(true);
     expect(isRoundOneDesign({ shopify_product_id: "1", title: "Round One tee" })).toBe(true);
     expect(isRoundOneDesign({ shopify_product_id: "16484623319121", title: "Love What You've Done With The Place" })).toBe(false);
+  });
+
+  it("sends JSON columns as JSON text, including arrays", () => {
+    expect(jsonParameter(["Black", "White"])).toBe('["Black","White"]');
+    expect(jsonParameter({ "901": ["Black"] })).toBe('{"901":["Black"]}');
+    expect(jsonParameter("appai_discount")).toBe('"appai_discount"');
+    expect(jsonParameter(null)).toBeNull();
   });
 
   it("remaps type ids in ticks and tags", () => {
