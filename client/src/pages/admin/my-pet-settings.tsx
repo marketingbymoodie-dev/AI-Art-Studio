@@ -15,6 +15,7 @@ import {
   MY_PET_ART_STYLES,
   MY_PET_DEFAULT_RENDER_PARAMS,
   MY_PET_LOCKED_EXPRESSION_RULE,
+  MY_PET_LOCKED_IDENTITY_RULE,
   MY_PET_LOCKED_PRINT_RULES,
   MY_PET_SUNBURST_ESTIMATED_COST_USD,
   type MyPetArtStyle,
@@ -241,6 +242,16 @@ export default function MyPetSettingsPage() {
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{MY_PET_LOCKED_EXPRESSION_RULE}</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Identity and anatomy</CardTitle>
+                <CardDescription>Always sent. Locked — a saved base prompt cannot remove it.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{MY_PET_LOCKED_IDENTITY_RULE}</p>
               </CardContent>
             </Card>
 
