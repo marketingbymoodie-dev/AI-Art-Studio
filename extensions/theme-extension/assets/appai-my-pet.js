@@ -1060,12 +1060,101 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
   }
 
+  function isCartDrawerOpen() {
+    var selectors = [
+      'cart-drawer-component dialog[open]',
+      'cart-drawer dialog[open]',
+      'cart-notification dialog[open]',
+      'dialog[open][id*="cart" i]',
+      'cart-drawer[open]',
+      'cart-drawer.active',
+      'cart-drawer.is-open',
+      'cart-drawer-component[open]',
+      '.cart-drawer.active',
+      '.cart-drawer.is-open',
+      '#cart-drawer.active',
+      '#CartDrawer.active',
+      'cart-drawer-component:popover-open',
+      'cart-drawer:popover-open',
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      try { if (document.querySelector(selectors[i])) return true; } catch (e) {}
+    }
+    return false;
+  }
+
+  function sectionContainsOpenDrawer(name) {
+    if (!isCartDrawerOpen()) return false;
+    var target = document.getElementById('shopify-section-' + name);
+    if (!target) return false;
+    try {
+      return !!target.querySelector(
+        'dialog[open], cart-drawer[open], cart-drawer.active, cart-drawer.is-open, cart-drawer-component[open], cart-drawer-component:popover-open, cart-drawer:popover-open, .cart-drawer.active, .cart-drawer.is-open'
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function refreshCartCount() {
+    fetch('/cart.js', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (cart) {
+        if (!cart || typeof cart.item_count !== 'number') return;
+        var text = String(cart.item_count);
+        var nodes = document.querySelectorAll(
+          '.cart-bubble__text-count, .cart-count-bubble span[aria-hidden="true"], #cart-icon-bubble span[aria-hidden="true"], [data-cart-count], .cart-count, cart-icon span[aria-hidden="true"]'
+        );
+        for (var i = 0; i < nodes.length; i++) {
+          var el = nodes[i];
+          if (el.children && el.children.length) continue;
+          var current = (el.textContent || '').replace(/\s+/g, '');
+          if (current && !/^\d+$/.test(current)) continue;
+          el.textContent = text;
+        }
+        myPetLog(TAG, 'cart count', text);
+      })
+      .catch(function () {});
+  }
+
+  function openCartDrawerOnce() {
+    if (isCartDrawerOpen()) return;
+    var selectors = ['cart-drawer-component', 'cart-drawer', 'cart-notification'];
+    var methods = ['open', 'showDialog', 'showModal', 'show'];
+    for (var s = 0; s < selectors.length; s++) {
+      var nodes;
+      try { nodes = document.querySelectorAll(selectors[s]); } catch (e) { continue; }
+      for (var n = 0; n < nodes.length; n++) {
+        var el = nodes[n];
+        for (var m = 0; m < methods.length; m++) {
+          if (typeof el[methods[m]] === 'function') {
+            try { el[methods[m]].call(el); } catch (e2) {}
+            if (isCartDrawerOpen()) return;
+          }
+        }
+        var dialog = el.querySelector ? el.querySelector('dialog') : null;
+        if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
+          try { dialog.showModal(); } catch (e3) {
+            try { if (typeof dialog.show === 'function') dialog.show(); } catch (e4) {}
+          }
+          if (isCartDrawerOpen()) return;
+        }
+      }
+    }
+  }
+
+  var cartDrawerRefreshFlight = false;
   function refreshAndOpenCartDrawer() {
+    if (cartDrawerRefreshFlight) {
+      myPetLog(TAG, 'refreshAndOpenCartDrawer skipped — already running');
+      return;
+    }
+    cartDrawerRefreshFlight = true;
     myPetLog(TAG, 'refreshAndOpenCartDrawer start');
     discoverCartSections().then(function (available) {
       if (!available.length) {
         // Theme has none of our known sections — skip per-section fetches
-        // and fall straight to event dispatch + cart-toggle click below.
+        // and fall straight to the open-once path below.
         myPetLog(TAG, 'no known cart sections — skipping render fetches');
         return [];
       }
@@ -1077,8 +1166,19 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       .then(function (results) {
         var applied = [];
         results.forEach(function (r) {
-          if (r && r.html) { applySection(r.name, r.html); applied.push(r.name); }
-          else if (r) { myPetLog(TAG, 'section', r.name, 'empty/400 on refresh — skipped'); }
+          if (!r || !r.html) {
+            if (r) myPetLog(TAG, 'section', r.name, 'empty/400 on refresh — skipped');
+            return;
+          }
+          // The theme has already opened the drawer and rendered the new
+          // line. Replacing that section (often the header, which owns the
+          // drawer) mounts a closed copy. Leave the open drawer in place.
+          if (sectionContainsOpenDrawer(r.name)) {
+            myPetLog(TAG, 'section', r.name, 'skipped — open drawer');
+            return;
+          }
+          applySection(r.name, r.html);
+          applied.push(r.name);
         });
         myPetLog(TAG, 'sections applied:', applied);
       })
@@ -1086,76 +1186,27 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         console.warn(TAG, 'section fetch/apply failed:', err && err.message);
       })
       .then(function () {
-        // Fire the union of cart-updated event names different themes listen for.
+        refreshCartCount();
+        if (isCartDrawerOpen()) {
+          myPetLog(TAG, 'drawer already open — left it open');
+          cartDrawerRefreshFlight = false;
+          return;
+        }
+        // The header cart control is a toggle. Clicking it after the theme
+        // has opened the drawer closes it again, so open only through the
+        // drawer element itself.
         var EVENTS = [
           'cart:refresh', 'cart:updated', 'cart:update', 'cart:build',
           'cart:item-added', 'cart-updated', 'appai:cart-updated',
-          'ajaxProduct:added', 'product:added', 'cart:open',
-          // Horizon / Ritual-family add these
-          'cart:open-drawer', 'cart-drawer:open', 'cart:toggle',
+          'ajaxProduct:added', 'product:added',
+          'cart:open', 'cart:open-drawer', 'cart-drawer:open',
         ];
         for (var i = 0; i < EVENTS.length; i++) {
           try { document.dispatchEvent(new CustomEvent(EVENTS[i], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (e) {}
           try { window.dispatchEvent(new CustomEvent(EVENTS[i], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (e) {}
         }
-        // Try to open any cart-drawer custom element directly.
-        var DRAWER_SELECTORS = [
-          'cart-drawer-component', 'cart-drawer', 'cart-notification',
-          '[id*="CartDrawer"]', '[id*="cart-drawer"]',
-          // Native <dialog> inside a drawer wrapper (Horizon pattern)
-          'cart-drawer-component dialog', 'cart-drawer dialog',
-          'dialog[id*="cart" i]', 'dialog[aria-labelledby*="cart" i]',
-        ];
-        for (var d = 0; d < DRAWER_SELECTORS.length; d++) {
-          var nodes;
-          try { nodes = document.querySelectorAll(DRAWER_SELECTORS[d]); } catch (e) { continue; }
-          myPetLog(TAG, 'drawer selector', DRAWER_SELECTORS[d], 'matched', nodes.length, 'node(s)');
-          for (var n = 0; n < nodes.length; n++) {
-            var el = nodes[n];
-            var opened = false;
-            // Try every method name a theme might expose. First one that
-            // doesn't throw AND returns truthy or undefined wins.
-            var METHODS = ['showCartDrawer', 'openDrawer', 'openCart', 'open', 'show', 'showDialog', 'showModal'];
-            for (var m = 0; m < METHODS.length; m++) {
-              var fn = el[METHODS[m]];
-              if (typeof fn === 'function') {
-                try { fn.call(el); opened = true; myPetLog(TAG, 'drawer opened via', METHODS[m]); break; } catch (e) {}
-              }
-            }
-            if (!opened) {
-              // Attribute toggle as last resort.
-              try {
-                el.setAttribute('open', '');
-                el.setAttribute('aria-hidden', 'false');
-                el.removeAttribute('inert');
-                myPetLog(TAG, 'drawer opened via attribute toggle');
-              } catch (e) {}
-            }
-            // Also dispatch 'show' / 'open' directly on the element — some
-            // themes wire their drawer open to an element-level event rather
-            // than a method.
-            var ELEMENT_EVENTS = ['show', 'open', 'cart:open', 'cart:show'];
-            for (var e2 = 0; e2 < ELEMENT_EVENTS.length; e2++) {
-              try { el.dispatchEvent(new CustomEvent(ELEMENT_EVENTS[e2], { bubbles: true, detail: { source: 'appai-my-pet' } })); } catch (_) {}
-            }
-          }
-        }
-        // Last-ditch: simulate a click on the theme's cart-toggle button. Ritual
-        // and most Dawn descendants wire ATC → drawer through a hidden toggle
-        // the header surface shares.
-        var TOGGLE_SELECTORS = [
-          '[data-cart-drawer-toggle]', '[data-cart-drawer-open]',
-          'a[href="/cart"][aria-controls]', '[aria-controls*="cart-drawer" i]',
-          '[data-open-cart-drawer]', '.js-drawer-open-cart',
-        ];
-        for (var t = 0; t < TOGGLE_SELECTORS.length; t++) {
-          var toggle;
-          try { toggle = document.querySelector(TOGGLE_SELECTORS[t]); } catch (e) { continue; }
-          if (toggle && typeof toggle.click === 'function') {
-            myPetLog(TAG, 'clicking cart-toggle:', TOGGLE_SELECTORS[t]);
-            try { toggle.click(); break; } catch (e) {}
-          }
-        }
+        openCartDrawerOnce();
+        cartDrawerRefreshFlight = false;
       });
   }
 
