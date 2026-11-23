@@ -4,6 +4,7 @@ import {
   listingBody,
   listingHandle,
   listingTitle,
+  listingTitleCase,
   normaliseDesignName,
   normaliseHandleSuffix,
   openPublishTypeIds,
@@ -50,6 +51,9 @@ describe("listing copy", () => {
     }
     expect(normaliseDesignName("T-Shirt")).toBe("T-Shirt");
     expect(listingTitle("Husky — Collector's Card", "T-Shirt")).toBe("Husky — Collector's Card T-Shirt");
+    expect(listingTitle("throw me a frickin bone here", "T-Shirt")).toBe("Throw Me A Frickin Bone Here T-Shirt");
+    expect(listingTitle("THROW ME A FRICKIN BONE HERE", "t-shirt")).toBe("Throw Me A Frickin Bone Here T-Shirt");
+    expect(listingTitleCase("throw me a frickin bone here")).toBe("Throw Me A Frickin Bone Here");
     expect(listingHandle("Husky — Collector's Card T-Shirt", "")).toBe("husky-collector-s-card-t-shirt");
     expect(listingHandle("Husky -Collector's Card T-Shirt", "-softstyle")).toBe("husky-collector-s-card-t-shirt-softstyle");
     expect(normaliseHandleSuffix("-1")).toBeNull();
@@ -58,12 +62,18 @@ describe("listing copy", () => {
     expect(normaliseHandleSuffix("")).toBe("");
   });
 
-  it("puts the style label ahead of the shared description and the garment details", () => {
+  it("puts only the design backstory in the description", () => {
+    const blueprint = `<p>Comfort Colors introduces the “Comfort Colors 1717” garment-dyed t-shirt.</p><div>.:Heavyweight fabric</div><div>.:Relaxed fit</div><div>.:Pre-shrunk</div><div>.:Available in 62 colors</div><div>.:Sewn-in label</div>`;
+    expect(listingBody({
+      styleLabel: "Garment-Dyed Tee",
+      designDescription: "A chihuahua lies on a therapist's chaise longue.",
+      garmentDetails: blueprint,
+    })).toBe("<p>A chihuahua lies on a therapist's chaise longue.</p>");
     expect(listingBody({
       styleLabel: "Lighter Softstyle Tee",
       designDescription: "A husky on a card.",
       garmentDetails: "<p>100% cotton</p>",
-    })).toBe("<p><strong>Lighter Softstyle Tee</strong></p>\n<p>A husky on a card.</p>\n<p>100% cotton</p>");
+    })).toBe("<p>A husky on a card.</p>");
   });
 
   it("leaves a published type closed and keeps a type created later open", () => {

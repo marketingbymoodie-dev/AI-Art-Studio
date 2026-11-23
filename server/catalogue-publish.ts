@@ -193,10 +193,8 @@ export async function publishCatalogueCandidate(args: {
       name: productTypes.name,
       shop: productTypes.shopifyShopDomain,
       placeholderPositions: productTypes.placeholderPositions,
-      description: productTypes.description,
       listingGarmentWord: productTypes.listingGarmentWord,
       listingHandleSuffix: productTypes.listingHandleSuffix,
-      listingStyleLabel: productTypes.listingStyleLabel,
     })
     .from(productTypes)
     .where(eq(productTypes.id, garment.id))
@@ -432,12 +430,11 @@ export async function publishCatalogueCandidate(args: {
     throw new PublishRefusal([`${typeRow.name} has no garment word. Set it on the product type before publishing.`]);
   }
   title = normaliseDesignName(title);
+  // Shopify title only. The print file was already written from the artwork PNG.
   const composedTitle = listingTitle(title, garmentWord);
   const composedHandle = listingHandle(composedTitle, typeRow.listingHandleSuffix);
   const composedBody = listingBody({
-    styleLabel: typeRow.listingStyleLabel,
     designDescription: description,
-    garmentDetails: typeRow.description,
   });
   const storeMockups = (renderedMockups?.length ? renderedMockups : choice.mockupImages)
     .filter((image) => image.productTypeId === garment.id);

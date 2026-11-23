@@ -60,12 +60,23 @@ export function normaliseHandleSuffix(value: string | null | undefined): string 
   return `-${body}`;
 }
 
+/**
+ * First letter of each word, rest lower. A hyphen starts a new word, so
+ * "t-shirt" stays "T-Shirt". Apostrophes stay inside the word.
+ */
+export function listingTitleCase(value: string): string {
+  return value.replace(/\p{L}[\p{L}\p{N}'’]*/gu, (word) =>
+    word.charAt(0).toLocaleUpperCase() + word.slice(1).toLocaleLowerCase(),
+  );
+}
+
 export function listingTitle(designName: string, garmentWord: string): string {
   const name = normaliseDesignName(designName);
   const word = garmentWord.replace(/\s+/g, " ").trim();
-  if (!word) return name;
-  if (name.toLowerCase().endsWith(` ${word.toLowerCase()}`) || name.toLowerCase() === word.toLowerCase()) return name;
-  return `${name} ${word}`.trim();
+  const composed = !word || name.toLowerCase().endsWith(` ${word.toLowerCase()}`) || name.toLowerCase() === word.toLowerCase()
+    ? name
+    : `${name} ${word}`.trim();
+  return listingTitleCase(composed);
 }
 
 /** Title slug plus the type suffix. Never appends Shopify's "-1". */
@@ -86,20 +97,19 @@ function asHtml(value: string): string {
   return text.split(/\n{2,}/).map((part) => `<p>${escapeHtml(part).replace(/\n/g, "<br>")}</p>`).join("");
 }
 
-/** Style label, the shared design description, then this type's garment details. */
+/**
+ * The product description is the design's own backstory. The style label and
+ * the blueprint marketing paragraph stay off this tab; the short spec lives
+ * on the Premium Everyday Comfort accordion.
+ */
 export function listingBody(args: {
   styleLabel?: string | null;
   designDescription?: string | null;
   garmentDetails?: string | null;
 }): string {
-  const parts: string[] = [];
-  const label = String(args.styleLabel || "").trim();
-  if (label) parts.push(`<p><strong>${escapeHtml(label)}</strong></p>`);
-  const design = asHtml(String(args.designDescription || ""));
-  if (design) parts.push(design);
-  const details = asHtml(String(args.garmentDetails || ""));
-  if (details) parts.push(details);
-  return parts.join("\n");
+  void args.styleLabel;
+  void args.garmentDetails;
+  return asHtml(String(args.designDescription || ""));
 }
 
 /** Owned types stay open until this design has a listing on that type. A type added later is open. */
