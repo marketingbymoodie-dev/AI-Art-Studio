@@ -495,6 +495,8 @@ export type MyPetGenerateResult = {
    * which still has its own server-side cache lookup as a fallback).
    */
   previewUrlsByColor: Record<string, string>;
+  /** Every ticked colour for this shirt. The chosen one is in the map immediately. The rest fill in behind it. */
+  colourNames: string[];
 };
 
 export async function generateMyPetRender(args: {
@@ -678,70 +680,24 @@ export async function generateMyPetRender(args: {
   // chosen one from returning. Each entry we succeed in composing goes
   // straight into the server-side cache too, so a cross-session restore
   // path still hits CACHE HIT on recomposite.
-  const otherColors = myPetCompositeColours({ ...palette, requestedName: args.colorName }).filter(
+  const colourList = myPetCompositeColours({ ...palette, requestedName: args.colorName });
+  const otherColors = colourList.filter(
     (c) => c.name.trim().toLowerCase() !== color.name.trim().toLowerCase(),
-  );
-  const precomposeStarted = Date.now();
-  const otherResults = await Promise.allSettled(
-    otherColors.map(async (other) => {
-      const otherPath = previewPathFor(other.name);
-      const otherPathTail = otherPath.split("/").pop() || otherPath;
-      const existing = await myPetObjectExists(otherPath);
-      if (!existing) {
-        // STAGING-102 — per-colour diagnostic. designSrc MUST be editedPathTail
-        // (same file the chosen compose succeeded with). outputSrc is the
-        // per-colour sibling. The output MD5 after compose tells us whether
-        // every colour is producing different bytes (correct: each colour's
-        // garment differs) or identical bytes (bug: compose is using a stale
-        // input and ignoring the colour change).
-        console.log(
-          `[my-pet] pre-composite colour=${other.name} ` +
-            `designSrc=${editedPathTail} designMd5=${editedHash} ` +
-            `panelId=${panelId} outputSrc=${otherPathTail} ` +
-            `composeFn=renderCandidateOnPanel forceRecolour=false ` +
-            `steps=[loadPerColourBlank, overlayDesign, flatten]`,
-        );
-        const { png, source: otherMode } = await renderCandidateOnPanel({
-          productTypeId: productType.id,
-          typeName: productType.name,
-          panelId,
-          colorName: other.name,
-          colorHex: other.hex,
-          artworkPath: editedPath,
-        });
-        const outHash = createHash("md5").update(png).digest("hex").slice(0, 16);
-        console.log(
-          `[my-pet] pre-composite colour=${other.name} ` +
-            `mode=${otherMode} outputLen=${png.length} outputMd5=${outHash} ` +
-            `matchesChosenMd5=${outHash === chosenHash}`,
-        );
-        await putMyPetObject(otherPath, png, "image/png");
-      } else {
-        console.log(
-          `[my-pet] pre-composite colour=${other.name} ` +
-            `designSrc=${editedPathTail} outputSrc=${otherPathTail} CACHE HIT (skipped compose)`,
-        );
-      }
-      const url = await signedMyPetUrl(otherPath, STOREFRONT_PREVIEW_TTL_SECONDS);
-      return [other.name, url] as const;
-    }),
   );
   const previewUrlsByColor: Record<string, string> = {};
   rememberColourUrl(previewUrlsByColor, args.colorName, color, previewUrl);
-  let precomposeFailures = 0;
-  for (const r of otherResults) {
-    if (r.status === "fulfilled") {
-      previewUrlsByColor[r.value[0]] = r.value[1];
-    } else {
-      precomposeFailures += 1;
-      console.warn("[my-pet] pre-composite failed:", (r.reason as Error)?.message || r.reason);
-    }
-  }
-  console.log(
-    `[my-pet] generate pre-compose renderId=${renderId.slice(0, 8)} chosen=${color.name} ` +
-      `others=${otherColors.length} ok=${otherResults.length - precomposeFailures} ` +
-      `failed=${precomposeFailures} durationMs=${Date.now() - precomposeStarted}`,
-  );
+  const colourNames = colourList.map((entry) => entry.name);
+  queueColourPreviews({
+    renderId,
+    productTypeId: productType.id,
+    typeName: productType.name,
+    panelId,
+    editedPath,
+    editedPathTail,
+    editedHash,
+    chosenHash,
+    colors: otherColors,
+  });
 
   // Replicate's API does not return per-prediction token usage, so we record
   // a flat measured cost (see MY_PET_SUNBURST_ESTIMATED_COST_USD). Update that
@@ -824,7 +780,7 @@ export async function generateMyPetRender(args: {
       `chosenColor=${color.name} includedColours=[${Object.keys(previewUrlsByColor).join(",")}] ` +
       `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
-  return { renderId, jobId, previewUrl, colorName: color.name, previewUrlsByColor };
+  return { renderId, jobId, previewUrl, colorName: color.name, previewUrlsByColor, colourNames };
 }
 
 async function recordMyPetGenerationEvent(args: {
@@ -936,7 +892,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       } as any);
     }
     const afterJobUpdate = Date.now();
-    const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+    const collectedColours = await collectExistingPreviewUrlsByColor({
       shop: args.shop,
       renderId: render.id,
       candidateId: render.candidateId,
@@ -944,6 +900,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       chosenColorName: color.name,
       chosenPreviewPath: previewPath,
     });
+    const previewUrlsByColor = collectedColours.urls;
     console.log(
       `[my-pet] recomposite CACHE HIT renderId=${render.id.slice(0, 8)} color=${color.name} ` +
         `lookup=${afterLookup - started}ms sign=${afterSign - afterLookup}ms ` +
@@ -981,7 +938,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   }
   const afterJobUpdate = Date.now();
 
-  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+  const collectedColours = await collectExistingPreviewUrlsByColor({
     shop: args.shop,
     renderId: render.id,
     candidateId: render.candidateId,
@@ -989,6 +946,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     chosenColorName: color.name,
     chosenPreviewPath: previewPath,
   });
+  const previewUrlsByColor = collectedColours.urls;
   console.log(
     `[my-pet] recomposite FRESH renderId=${render.id.slice(0, 8)} color=${color.name} ` +
       `lookup=${afterLookup - started}ms compose=${afterCompose - afterLookup}ms ` +
@@ -1142,6 +1100,58 @@ export function myPetPreviewPathForColor(renderId: string, colorName: string): s
   return `my-pet/previews/${renderId}-${slug}.png`;
 }
 
+const colourPreviewWarm = new Set<string>();
+
+/** Compose the other ticked colours after the chosen one is already on screen. No extra image-model call. */
+function queueColourPreviews(args: {
+  renderId: string;
+  productTypeId: number;
+  typeName: string;
+  panelId: string;
+  editedPath: string;
+  editedPathTail: string;
+  editedHash: string;
+  chosenHash: string;
+  colors: MyPetColour[];
+}): void {
+  if (!args.colors.length || colourPreviewWarm.has(args.renderId)) return;
+  colourPreviewWarm.add(args.renderId);
+  const started = Date.now();
+  void Promise.allSettled(args.colors.map(async (other) => {
+    const otherPath = myPetPreviewPathForColor(args.renderId, other.name);
+    const otherPathTail = otherPath.split("/").pop() || otherPath;
+    const existing = await myPetObjectExists(otherPath);
+    if (!existing) {
+      const { png, source } = await renderCandidateOnPanel({
+        productTypeId: args.productTypeId,
+        typeName: args.typeName,
+        panelId: args.panelId,
+        colorName: other.name,
+        colorHex: other.hex,
+        artworkPath: args.editedPath,
+      });
+      const outHash = createHash("md5").update(png).digest("hex").slice(0, 16);
+      console.log(
+        `[my-pet] background colour=${other.name} mode=${source} outputMd5=${outHash} ` +
+          `matchesChosen=${outHash === args.chosenHash} outputSrc=${otherPathTail}`,
+      );
+      await putMyPetObject(otherPath, png, "image/png");
+    }
+  })).then((results) => {
+    const failed = results.filter((row) => row.status === "rejected").length;
+    for (const row of results) {
+      if (row.status === "rejected") console.warn("[my-pet] background colour failed:", (row.reason as Error)?.message || row.reason);
+    }
+    console.log(
+      `[my-pet] background colours ready renderId=${args.renderId.slice(0, 8)} ` +
+        `others=${args.colors.length} ok=${args.colors.length - failed} failed=${failed} ` +
+        `durationMs=${Date.now() - started}`,
+    );
+  }).finally(() => {
+    colourPreviewWarm.delete(args.renderId);
+  });
+}
+
 /**
  * STAGING-96 restore-path bug — generate returns the full
  * previewUrlsByColor map so the client seeds state.previewUrlByColor and
@@ -1174,8 +1184,10 @@ async function collectExistingPreviewUrlsByColor(args: {
   shopifyProductId: string | null;
   chosenColorName: string | null;
   chosenPreviewPath: string;
-}): Promise<Record<string, string>> {
+}): Promise<{ urls: Record<string, string>; colourNames: string[] }> {
   const map: Record<string, string> = {};
+  const colourNames: string[] = [];
+  if (args.chosenColorName) colourNames.push(args.chosenColorName);
   // Always include the chosen colour under its own name if we know it —
   // the main previewPath IS the chosen-colour composite, so no probe
   // needed and it's always present.
@@ -1192,7 +1204,7 @@ async function collectExistingPreviewUrlsByColor(args: {
   // Probe the remaining candidate colours against storage in parallel.
   try {
     const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId));
-    if (!candidate || candidate.shopDomain !== args.shop) return map;
+    if (!candidate || candidate.shopDomain !== args.shop) return { urls: map, colourNames };
     const storedColors = Array.isArray(candidate.selectedColors)
       ? (candidate.selectedColors as Array<{ name: string; hex: string }>)
       : [];
@@ -1204,10 +1216,30 @@ async function collectExistingPreviewUrlsByColor(args: {
         const panelId = await panelIdForProductType(productType.id, eligible.panelId);
         const palette = await myPetColourPalette(productType.id, panelId, eligible);
         const composable = myPetCompositeColours({ ...palette, requestedName: args.chosenColorName });
-        if (composable.length) names = composable.map((color) => color.name);
+        if (composable.length) {
+          names = composable.map((color) => color.name);
+          const missing = composable.filter((color) => {
+            const key = color.name.trim().toLowerCase();
+            return !Object.keys(map).some((have) => have.trim().toLowerCase() === key);
+          });
+          queueColourPreviews({
+            renderId: args.renderId,
+            productTypeId: productType.id,
+            typeName: productType.name,
+            panelId,
+            editedPath: `my-pet/edited/${args.renderId}.png`,
+            editedPathTail: `${args.renderId}.png`,
+            editedHash: "",
+            chosenHash: "",
+            colors: missing,
+          });
+        }
       } catch (err) {
         console.warn(`[my-pet] restore: type colour list failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
       }
+    }
+    for (const name of names) {
+      if (name && !colourNames.some((have) => have.trim().toLowerCase() === name.trim().toLowerCase())) colourNames.push(name);
     }
     const chosenLc = (args.chosenColorName || "").trim().toLowerCase();
     const others = names
@@ -1232,7 +1264,7 @@ async function collectExistingPreviewUrlsByColor(args: {
   } catch (err) {
     console.warn(`[my-pet] restore: candidate lookup failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
   }
-  return map;
+  return { urls: map, colourNames };
 }
 
 export async function resolveMyPetRenderById(args: {
@@ -1245,11 +1277,12 @@ export async function resolveMyPetRenderById(args: {
   previewUrl: string;
   colorName: string | null;
   previewUrlsByColor: Record<string, string>;
+  colourNames: string[];
 } | null> {
   const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
   if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) return null;
   const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
-  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+  const collectedColours = await collectExistingPreviewUrlsByColor({
     shop: args.shop,
     renderId: render.id,
     candidateId: render.candidateId,
@@ -1257,13 +1290,14 @@ export async function resolveMyPetRenderById(args: {
     chosenColorName: render.colorId,
     chosenPreviewPath: render.previewPath,
   });
+  const previewUrlsByColor = collectedColours.urls;
   console.log(
     `[my-pet] restore response renderId=${render.id.slice(0, 8)} ` +
       `chosenColor=${render.colorId || "?"} ` +
       `includedColours=[${Object.keys(previewUrlsByColor).join(",")}] ` +
       `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
-  return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId, previewUrlsByColor };
+  return { renderId: render.id, jobId: render.jobId, previewUrl, colorName: render.colorId, previewUrlsByColor, colourNames: collectedColours.colourNames };
 }
 
 /**
@@ -1530,7 +1564,7 @@ export async function resolveMyPetEmailToken(token: string): Promise<{
   // and rebuild the per-colour map so swatch clicks on the restored
   // product are CLIENT CACHE HITs instead of 4s /recomposite calls.
   const previewUrl = await signedMyPetUrl(render.previewPath, EMAIL_PREVIEW_RETENTION_MS / 1000);
-  const previewUrlsByColor = await collectExistingPreviewUrlsByColor({
+  const collectedColours = await collectExistingPreviewUrlsByColor({
     shop: render.shopDomain,
     renderId: render.id,
     candidateId: render.candidateId,
@@ -1538,6 +1572,7 @@ export async function resolveMyPetEmailToken(token: string): Promise<{
     chosenColorName: render.colorId,
     chosenPreviewPath: render.previewPath,
   });
+  const previewUrlsByColor = collectedColours.urls;
   console.log(
     `[my-pet] email-token restore renderId=${render.id.slice(0, 8)} ` +
       `chosenColor=${render.colorId || "?"} ` +

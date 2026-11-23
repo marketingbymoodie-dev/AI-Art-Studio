@@ -950,6 +950,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       'button.appai-atc-error > .appai-atc-face{height:auto;min-height:100%;bottom:auto;white-space:normal;background:#3d1212;color:#fff;}' +
       '.appai-atc-face--float{position:fixed;inset:auto;top:auto;right:auto;z-index:100000;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.7em;box-sizing:border-box;background:#3d1212;color:#fff;border-radius:8px;text-align:center;font:600 15px/1.3 system-ui,sans-serif;pointer-events:none;white-space:normal;}' +
       '.appai-my-pet-modal__body #appai-my-pet-status:empty{display:none;margin:0;}' +
+      '.appai-my-pet-hero-wait{position:absolute;left:50%;top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border:3px solid rgba(0,0,0,.15);border-top-color:#111;border-radius:50%;animation:appai-atc-spin .7s linear infinite;z-index:5;pointer-events:none;}' +
       '@media (prefers-reduced-motion:reduce){.appai-atc-spin{animation:none;opacity:.85;}}' +
       // Attempts remaining caption
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
@@ -3103,6 +3104,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           finishRestore(true);
           return;
         }
+        warmColourPreviews((res && res.colourNames) || Object.keys(state.previewUrlByColor || {}));
         waitForHero(activationUrl, fromCache);
       }
 
@@ -3153,6 +3155,99 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       if (!urls.length) return;
       myPetLog(TAG, 'design colours preloaded', urls.length);
       for (var i = 0; i < urls.length; i++) decodeHeroUrl(urls[i]);
+    }
+
+    function setHeroWaiting(on) {
+      var host = mediaHoldContainer(findVisibleHeroImg() || state.inlineHero);
+      if (!host) return;
+      if (host.style && getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      var spin = null;
+      var kids = host.children || [];
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].classList && kids[i].classList.contains('appai-my-pet-hero-wait')) spin = kids[i];
+      }
+      if (!on) {
+        if (spin) spin.remove();
+        return;
+      }
+      if (spin) return;
+      spin = document.createElement('div');
+      spin.className = 'appai-my-pet-hero-wait';
+      spin.setAttribute('aria-hidden', 'true');
+      host.appendChild(spin);
+    }
+
+    function colourReadyCount(names) {
+      var ready = 0;
+      for (var i = 0; i < names.length; i++) {
+        if (urlForColourMap(state.previewUrlByColor, names[i])) ready += 1;
+      }
+      return ready;
+    }
+
+    // Chosen colour is already on the hero. The other ticked colours arrive
+    // in the background. A swatch paints only when it is still the latest pick.
+    function warmColourPreviews(names) {
+      var list = [];
+      var seen = {};
+      var source = names || [];
+      for (var i = 0; i < source.length; i++) {
+        var name = String(source[i] || '').trim();
+        var key = name.toLowerCase();
+        if (!name || seen[key]) continue;
+        seen[key] = true;
+        list.push(name);
+      }
+      var chosenUrl = previewUrlForColour(state.selectedColour || '');
+      if (chosenUrl) decodeHeroUrl(chosenUrl);
+      preloadPreviewUrls(state.previewUrlByColor);
+      if (!list.length || !state.renderId) return;
+      var started = Date.now();
+      var tries = 0;
+      var renderId = state.renderId;
+      function paintLatestIfReady() {
+        var live = liveColourChoice();
+        if (!live.colour || !live.url) return;
+        if (state.selectedColour && !namesMatch(live.colour, state.selectedColour)) return;
+        setHeroWaiting(false);
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        if (hero && !heroShowsCustom(hero, live.url)) paintColourNow(live.colour, live.url);
+      }
+      function tick() {
+        if (state.renderId !== renderId) return;
+        var ready = colourReadyCount(list);
+        if (ready >= list.length) {
+          preloadPreviewUrls(state.previewUrlByColor);
+          paintLatestIfReady();
+          myPetLog(TAG, 'colours ready ' + ready + '/' + list.length + ' ms=' + (Date.now() - started));
+          return;
+        }
+        if (tries > 20) {
+          myPetLog(TAG, 'colours ready ' + ready + '/' + list.length + ' ms=' + (Date.now() - started) + ' stopped');
+          return;
+        }
+        tries += 1;
+        getJson('my-pet/resolve-render', { renderId: renderId }).then(function (res) {
+          if (state.renderId !== renderId || !res || !res.ok) return;
+          mergeColourMap(res.previewUrlsByColor);
+          if (res.colourNames && res.colourNames.length > list.length) {
+            for (var n = 0; n < res.colourNames.length; n++) {
+              var extra = String(res.colourNames[n] || '').trim();
+              if (extra && !seen[extra.toLowerCase()]) {
+                seen[extra.toLowerCase()] = true;
+                list.push(extra);
+              }
+            }
+          }
+          var chosen = state.selectedColour;
+          var chosenNow = chosen ? urlForColourMap(state.previewUrlByColor, chosen) : '';
+          if (chosenNow) decodeHeroUrl(chosenNow);
+          preloadPreviewUrls(state.previewUrlByColor);
+          paintLatestIfReady();
+          setTimeout(tick, 700);
+        }).catch(function () { setTimeout(tick, 700); });
+      }
+      setTimeout(tick, 400);
     }
 
     // STAGING-98 diagnostic — log each colour → url tail so a Black mockup
@@ -4036,6 +4131,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (legend) ctx += ' ' + String(legend.textContent || '').trim().toLowerCase();
       }
       ctx += ' ' + String(probed.name || '').toLowerCase();
+      ctx += ' ' + String(probed.getAttribute && probed.getAttribute('data-option-name') || '').toLowerCase();
       var isColor = ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
       var isSize = !isColor && ctx.indexOf('size') !== -1;
       if (!isColor && !isSize) return null;
@@ -5144,6 +5240,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (url) state.previewUrl = url;
         releaseHeroHold();
         if (intent.kind === 'color' && url && event.type === 'click') {
+          setHeroWaiting(false);
           var swapStarted = Date.now();
           state.colourPaintSeq = (state.colourPaintSeq || 0) + 1;
           state.colourPaint = { colour: colorName, url: url, started: swapStarted, seq: state.colourPaintSeq };
@@ -5165,7 +5262,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             state.colourPaint = null;
             state.colourTimeline = null;
           }, 6000);
-        } else if (intent.kind === 'color' && !url) {
+        }         else if (intent.kind === 'color' && !url) {
+          setHeroWaiting(true);
           swapInlineColor(colorName);
           if (event.type === 'click') {
             writeStoredVariantChoice(shopifyProductId, colorName, intent.sizeName || checkedProductOption('size') || '', 'colour-click');
@@ -6998,28 +7096,28 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       }
       var composeGen = state.renderGeneration || 0;
       var composeRender = state.renderId;
+      var composeSeq = state.colourSeq || 0;
+      setHeroWaiting(true);
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
-          // Issue 7 — re-check inlineApplied after the awaited round-trip
-          // so a revert that happened during /recomposite doesn't get
-          // undone by this late success writing back to the hero.
           if (!generationCurrent(composeGen, composeRender)) return;
-          if (res && res.ok && res.previewUrl && state.inlineApplied) {
-            state.previewUrl = res.previewUrl;
-            state.previewUrlByColor[colorName] = res.previewUrl;
-            mergeColourMap(res.previewUrlsByColor);
-            clearColourPending(res.colorName || colorName);
-            reassertColourPreview('recomposite', colorName, res.previewUrl);
-            // STAGING-100 — also apply to the per-variant slide for this
-            // colour so the carousel shows OUR image next time the theme
-            // scrolls to it (or now, if it's already the active slide).
-            var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
-            swapVariantSlides(singletonMap);
-            scheduleGallerySync('recomposite');
-            writeStoredRender(shopifyProductId, state.renderId, state.jobId);
-          }
+          if (!(res && res.ok && res.previewUrl)) return;
+          state.previewUrlByColor[colorName] = res.previewUrl;
+          mergeColourMap(res.previewUrlsByColor);
+          clearColourPending(res.colorName || colorName);
+          decodeHeroUrl(res.previewUrl);
+          if ((state.colourSeq || 0) !== composeSeq) return;
+          if (state.selectedColour && !namesMatch(state.selectedColour, colorName)) return;
+          if (!state.inlineApplied) return;
+          state.previewUrl = res.previewUrl;
+          setHeroWaiting(false);
+          reassertColourPreview('recomposite', colorName, res.previewUrl);
+          var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
+          swapVariantSlides(singletonMap);
+          scheduleGallerySync('recomposite');
+          writeStoredRender(shopifyProductId, state.renderId, state.jobId);
         })
-        .catch(function () { /* leave hero as-is */ });
+        .catch(function () { if ((state.colourSeq || 0) === composeSeq) setHeroWaiting(false); });
     }
 
     function inlineOn() {
@@ -8766,23 +8864,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             // keeps the decoded bytes around for the matching URL, so our
             // real <img> later reuses them.
             preloadPreviewUrls(state.previewUrlByColor);
-            // New render id is never in dismissedRenderIds — exit-intent will
-            // re-ask on this generation even if an earlier one was dismissed
-            // (bug 10: re-ask across different generations).
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
             probeCartForRender(genRes.renderId);
             picker.overlay.remove();
-            // Bugs 3 + 11 — await the refresh before opening the preview so
-            // the modal subtitle never renders the pre-generation count. The
-            // previous fire-and-forget refresh let the modal open ~300ms
-            // before perListingRemaining actually decremented.
             refreshCapStatus().then(function () {
-              // UX 7 inline mode: try to swap the PDP hero img in place,
-              // skipping the modal entirely. activateInlinePreview returns
-              // false when it can't find the hero image (e.g. unsupported
-              // theme), in which case the modal is the fall-back so the
-              // shopper still gets their preview + ATC.
-              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) return;
+              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) {
+                warmColourPreviews(genRes.colourNames);
+                return;
+              }
               openPreviewStep(genRes.previewUrl);
             });
           })
