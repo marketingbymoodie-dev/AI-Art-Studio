@@ -937,6 +937,20 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // Progress bar — indeterminate to determinate
       '.appai-progress{width:100%;height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:.6rem 0;}' +
       '.appai-progress>span{display:block;height:100%;background:#111;width:0;transition:width .6s linear;}' +
+      // Add to cart wait stays on the button. The old status line sat under
+      // the preview, so a tall "Your design" popup looked idle.
+      '@keyframes appai-atc-spin{to{transform:rotate(360deg)}}' +
+      '.appai-atc-spin{width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;flex:0 0 auto;animation:appai-atc-spin .7s linear infinite;}' +
+      'button.appai-atc-busy,button.appai-atc-done,button.appai-atc-error{position:relative !important;}' +
+      'button.appai-atc-busy:disabled,button.appai-atc-done:disabled,button.appai-atc-error:disabled{opacity:1 !important;}' +
+      'button.appai-atc-busy{cursor:wait !important;}' +
+      'button.appai-atc-busy > :not(.appai-atc-face),button.appai-atc-done > :not(.appai-atc-face),button.appai-atc-error > :not(.appai-atc-face){visibility:hidden !important;}' +
+      '.appai-atc-face{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.35em .7em;box-sizing:border-box;pointer-events:none;font:inherit;font-weight:600;line-height:1.25;text-align:center;border-radius:inherit;}' +
+      'button.appai-atc-error{overflow:visible !important;}' +
+      'button.appai-atc-error > .appai-atc-face{height:auto;min-height:100%;bottom:auto;white-space:normal;background:#3d1212;color:#fff;}' +
+      '.appai-atc-face--float{position:fixed;inset:auto;top:auto;right:auto;z-index:100000;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.7em;box-sizing:border-box;background:#3d1212;color:#fff;border-radius:8px;text-align:center;font:600 15px/1.3 system-ui,sans-serif;pointer-events:none;white-space:normal;}' +
+      '.appai-my-pet-modal__body #appai-my-pet-status:empty{display:none;margin:0;}' +
+      '@media (prefers-reduced-motion:reduce){.appai-atc-spin{animation:none;opacity:.85;}}' +
       // Attempts remaining caption
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
@@ -7614,8 +7628,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return node;
     }
 
-    function setPreparing(on) {
+    function themeAtcButtons() {
       var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button, .sticky-add-to-cart button');
+      var out = [];
       for (var i = 0; i < nodes.length; i++) {
         var btn = nodes[i];
         if (btn.closest && btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
@@ -7623,13 +7638,101 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var inSection = section && section.contains(btn);
         var inSticky = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) continue;
+        out.push(btn);
+      }
+      return out;
+    }
+
+    function atcKey(btn) {
+      var key = btn.getAttribute('data-appai-atc-key');
+      if (!key) {
+        key = 'b' + Math.random().toString(36).slice(2);
+        btn.setAttribute('data-appai-atc-key', key);
+      }
+      return key;
+    }
+
+    function clearAtcFace(btn) {
+      if (!btn) return;
+      var key = btn.getAttribute('data-appai-atc-key');
+      var face = btn.querySelector('.appai-atc-face');
+      if (face && face.parentNode) face.parentNode.removeChild(face);
+      if (key) {
+        var floated = document.querySelector('.appai-atc-face--float[data-appai-for="' + key + '"]');
+        if (floated && floated.parentNode) floated.parentNode.removeChild(floated);
+      }
+      btn.classList.remove('appai-atc-busy', 'appai-atc-done', 'appai-atc-error');
+      btn.removeAttribute('aria-busy');
+      if (btn.hasAttribute('data-appai-aria')) {
+        var prev = btn.getAttribute('data-appai-aria');
+        if (prev) btn.setAttribute('aria-label', prev);
+        else btn.removeAttribute('aria-label');
+        btn.removeAttribute('data-appai-aria');
+      }
+    }
+
+    // Cover the button in place. The original label stays in the layout so
+    // the control does not change size. Sticky-bar errors float just above
+    // the bar, because that bar sits on the bottom edge of the screen.
+    function showAtcFace(btn, mode, message) {
+      if (!btn) return;
+      clearAtcFace(btn);
+      var face = document.createElement('span');
+      face.className = 'appai-atc-face';
+      face.setAttribute('data-appai-for', atcKey(btn));
+      face.setAttribute('aria-hidden', 'true');
+      if (mode === 'busy') {
+        var spin = document.createElement('span');
+        spin.className = 'appai-atc-spin';
+        spin.setAttribute('aria-hidden', 'true');
+        face.appendChild(spin);
+      }
+      var text = document.createElement('span');
+      text.className = 'appai-atc-face__text';
+      text.textContent = message || '';
+      face.appendChild(text);
+      var stickyHost = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
+      var stickyRect = stickyHost ? btn.getBoundingClientRect() : null;
+      var stickyError = mode === 'error' && stickyRect && stickyRect.width > 0 && stickyRect.height > 0;
+      if (stickyError) {
+        face.classList.add('appai-atc-face--float');
+        document.body.appendChild(face);
+        face.style.left = Math.max(8, stickyRect.left) + 'px';
+        face.style.width = Math.max(120, stickyRect.width) + 'px';
+        face.style.bottom = (window.innerHeight - stickyRect.bottom) + 'px';
+        face.style.minHeight = stickyRect.height + 'px';
+      } else {
+        btn.appendChild(face);
+        if (mode !== 'error') {
+          var cs = window.getComputedStyle(btn);
+          var bg = cs.backgroundColor;
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') bg = '#111';
+          face.style.background = bg;
+          var color = cs.color;
+          if (!color || color === 'rgba(0, 0, 0, 0)' || color === bg) color = '#fff';
+          face.style.color = color;
+        }
+      }
+      btn.classList.remove('appai-atc-busy', 'appai-atc-done', 'appai-atc-error');
+      btn.classList.add(mode === 'error' ? 'appai-atc-error' : mode === 'done' ? 'appai-atc-done' : 'appai-atc-busy');
+      if (!btn.hasAttribute('data-appai-aria')) btn.setAttribute('data-appai-aria', btn.getAttribute('aria-label') || '');
+      btn.setAttribute('aria-label', message || '');
+      if (mode === 'busy') btn.setAttribute('aria-busy', 'true');
+      else btn.removeAttribute('aria-busy');
+    }
+
+    function setPreparing(on) {
+      var nodes = themeAtcButtons();
+      for (var i = 0; i < nodes.length; i++) {
+        var btn = nodes[i];
         if (on) {
-          addButtonLabel(btn, 'Preparing your design…');
+          showAtcFace(btn, 'busy', 'Preparing your design…');
           if (!btn.disabled) {
             btn.setAttribute('data-appai-preparing', '1');
             btn.disabled = true;
           }
         } else {
+          clearAtcFace(btn);
           if (btn.getAttribute('data-appai-preparing') === '1') {
             btn.disabled = false;
             btn.removeAttribute('data-appai-preparing');
@@ -8477,6 +8580,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.atcBusy = true;
       setPreparing(true);
       myPetLog(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
+      var failMessage = '';
       setTimeout(function () {
         prepareShadow('click')
           .then(function (entry) {
@@ -8488,15 +8592,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           })
           .catch(function (err) {
             console.warn(TAG, 'inline ATC failed:', err && err.message);
-            var retry = 'Couldn’t prepare your design. Try again.';
-            if (caption) caption.textContent = retry;
-            setTimeout(function () {
-              if (caption && caption.textContent === retry) caption.textContent = '';
-            }, 4000);
+            failMessage = (err && err.message) || 'Couldn’t prepare your design. Try again.';
+            if (caption) caption.textContent = failMessage;
           })
           .then(function () {
             state.atcBusy = false;
             setPreparing(false);
+            if (!failMessage) return;
+            var buttons = themeAtcButtons();
+            for (var i = 0; i < buttons.length; i++) showAtcFace(buttons[i], 'error', failMessage);
           });
       }, 0);
     }
@@ -8755,9 +8859,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         colorSwatchesHtml +
         sizeSwatchesHtml +
         '<button type="button" class="appai-primary" data-action="add-to-cart">Add to cart</button>' +
+        '<p id="appai-my-pet-status" class="appai-my-pet-msg" role="status" aria-live="polite"></p>' +
         '<button type="button" class="appai-secondary" data-action="change-photo">Try another photo</button>' +
-        attemptsHtml +
-        '<p id="appai-my-pet-status" class="appai-my-pet-msg"></p>';
+        attemptsHtml;
       paintPlus();
       body.querySelector('.appai-preview-img').addEventListener('click', function (e) {
         showZoom(e.currentTarget.src);
@@ -8802,7 +8906,12 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var size = state.swatchSize;
       if (window.__appaiRequireSize && !window.__appaiSizeChosen && !size && allSizeOptions(root).length > 1) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) status.textContent = 'Please choose a size';
+        if (atcBtn && atcBtn.classList.contains('appai-atc-error')) {
+          showAtcFace(atcBtn, 'error', 'Please choose a size');
+          if (status) status.textContent = '';
+        } else if (status) {
+          status.textContent = 'Please choose a size';
+        }
         return false;
       }
       // BUG A — null-tolerant. findExactVariant with (null, null) returns
@@ -8811,16 +8920,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var v = findExactVariant(root, color, size);
       if (!v) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) {
-          if (color && size) {
-            status.textContent = size + " isn't available in " + color + " — pick another combination.";
-          } else if (color) {
-            status.textContent = color + " isn't available right now.";
-          } else if (size) {
-            status.textContent = "Size " + size + " isn't available right now.";
-          } else {
-            status.textContent = "This product isn't available right now.";
-          }
+        var unavailable = "This product isn't available right now.";
+        if (color && size) unavailable = size + " isn't available in " + color + " — pick another combination.";
+        else if (color) unavailable = color + " isn't available right now.";
+        else if (size) unavailable = "Size " + size + " isn't available right now.";
+        if (atcBtn && atcBtn.classList.contains('appai-atc-error')) {
+          showAtcFace(atcBtn, 'error', unavailable);
+          if (status) status.textContent = '';
+        } else if (status) {
+          status.textContent = unavailable;
         }
         return false;
       }
@@ -8831,7 +8939,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         idInput.value = String(v.id);
         try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
       }
-      if (atcBtn) atcBtn.disabled = false;
+      if (atcBtn && !atcBtn.classList.contains('appai-atc-busy') && !atcBtn.classList.contains('appai-atc-done')) {
+        atcBtn.disabled = false;
+        if (atcBtn.classList.contains('appai-atc-error')) clearAtcFace(atcBtn);
+      }
       if (status && status.textContent && status.textContent.indexOf("isn't available") !== -1) status.textContent = '';
       return true;
     }
@@ -9026,7 +9137,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // "colour X isn't available" / "size Y isn't available" / "product
       // isn't available" message if we come back empty.
       if (window.__appaiRequireSize && !window.__appaiSizeChosen && !state.swatchSize && allSizeOptions(root).length > 1) {
-        if (status) status.textContent = 'Please choose a size';
+        if (status) status.textContent = '';
+        showAtcFace(btn, 'error', 'Please choose a size');
         if (btn) btn.disabled = false;
         return;
       }
@@ -9035,12 +9147,17 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         myPetLog(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
         showComboToast();
         checkComboAvailable(body);
+        var blocked = (status && status.textContent) || "That colour isn't available in this size.";
+        if (status) status.textContent = '';
+        showAtcFace(btn, 'error', blocked);
+        if (btn) btn.disabled = false;
         return;
       }
       var exactVariantId = String(exact.id);
 
+      showAtcFace(btn, 'busy', 'Preparing your design…');
       if (btn) btn.disabled = true;
-      if (status) status.textContent = 'Setting up your cart line…';
+      if (status) status.textContent = '';
       var modalColour = state.swatchColor || '';
       var modalSize = state.swatchSize || '';
       mockupForColour(modalColour)
@@ -9053,7 +9170,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           });
         })
         .then(function (res) {
-          if (status) status.textContent = 'Adding to cart…';
+          showAtcFace(btn, 'busy', 'Preparing your design…');
+          if (btn) btn.disabled = true;
           myPetLog(TAG, 'atc sentTail=' + srcTail(res.previewUrl), 'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl));
           // Issue 10: line-item properties that (a) let appai-cart-images.js
           // recognise this as an AppAI line and swap the thumbnail to the
@@ -9080,15 +9198,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         .then(function (added) {
           if (!added || !added.ok) throw new Error('Could not add to cart');
           markInCart(state.renderId);
-          if (status) {
-            status.innerHTML = 'Added to cart! <a href="/cart">View cart</a>';
-            // Queued — the modal is max-height:92vh; overflow:auto, so on
-            // tall content the status row can land below the fold. Scroll
-            // it into view so the shopper actually sees the confirmation
-            // (and the "View cart" link) rather than wondering if ATC
-            // succeeded.
-            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
-          }
+          showAtcFace(btn, 'done', 'Added to cart');
+          if (btn) btn.disabled = true;
+          if (status) status.innerHTML = '<a href="/cart">View cart</a>';
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
@@ -9096,11 +9208,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           noteCustomAddReturned();
         })
         .catch(function (err) {
+          var msg = err && err.message ? err.message : 'Could not add to cart. Please try again.';
+          showAtcFace(btn, 'error', msg);
           if (btn) btn.disabled = false;
-          if (status) {
-            status.textContent = err && err.message ? err.message : 'Could not add to cart. Please try again.';
-            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
-          }
+          if (status) status.textContent = '';
         });
     }
 
