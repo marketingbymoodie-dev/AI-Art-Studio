@@ -8,6 +8,8 @@ import { resubmitMyPetPrintify } from "../my-pet-printify-retry";
 import { clientIpFromReq } from "../creator-rate-limit";
 import { ensureMyPetDeviceKeyFromProxy } from "../my-pet-device";
 import {
+  MyPetBlankMissingError,
+  MY_PET_BLANK_MISSING_MESSAGE,
   MyPetCandidateIneligibleError,
   checkMyPetCap,
   generateMyPetRender,
@@ -22,6 +24,7 @@ import {
   resolveMyPetRenderById,
   sendMyPetEmailSave,
   startMyPetSweepInterval,
+  updateMyPetSelection,
   updateMyPetSettings,
   uploadMyPetPhoto,
 } from "../my-pet";
@@ -216,6 +219,16 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
         return res.json({ ok: false, code: "candidate_ineligible", error: err.message, deviceKey: signed });
       }
       const msg = String(err?.message || err);
+      if (err instanceof MyPetBlankMissingError || /has no produced colourway|has no white master/i.test(msg)) {
+        // 200 so the Shopify app proxy does not replace the JSON with an HTML error page.
+        console.warn("[my-pet] generate blank missing:", msg);
+        return res.json({
+          ok: false,
+          code: "blank_missing",
+          error: err instanceof MyPetBlankMissingError ? err.message : MY_PET_BLANK_MISSING_MESSAGE,
+          deviceKey: signed,
+        });
+      }
       const userFacing =
         msg.startsWith("Pet photo not found") ||
         msg.startsWith("Photo is too large") ||
@@ -243,7 +256,33 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
       const result = await recompositeMyPetRender({ shop, deviceKey, renderId: String(renderId), colorName: String(colorName) });
       res.json({ ok: true, ...result, deviceKey: signed });
     } catch (err: any) {
-      res.json({ ok: false, code: "recomposite_failed", error: err?.message || "Could not update colour", deviceKey: signed });
+      const msg = String(err?.message || err);
+      const blank = err instanceof MyPetBlankMissingError || /has no produced colourway|has no white master/i.test(msg);
+      res.json({
+        ok: false,
+        code: blank ? "blank_missing" : "recomposite_failed",
+        error: blank ? MY_PET_BLANK_MISSING_MESSAGE : (err?.message || "Could not update colour"),
+        deviceKey: signed,
+      });
+    }
+  });
+
+  app.post("/api/proxy/my-pet/selection", myPetProxyAuth, async (req: Request, res: Response) => {
+    const shop = (req as any).proxyShop as string;
+    const { renderId, colorName, sizeName } = req.body || {};
+    if (!shop || !renderId) return res.status(400).json({ error: "renderId is required" });
+    const { deviceKey, signed } = ensureMyPetDeviceKeyFromProxy(req, res);
+    try {
+      const result = await updateMyPetSelection({
+        shop,
+        deviceKey,
+        renderId: String(renderId),
+        colorName: colorName ? String(colorName) : null,
+        sizeName: sizeName ? String(sizeName) : null,
+      });
+      res.json({ ok: true, ...result, deviceKey: signed });
+    } catch (err: any) {
+      res.json({ ok: false, error: err?.message || "Could not save colour and size", deviceKey: signed });
     }
   });
 

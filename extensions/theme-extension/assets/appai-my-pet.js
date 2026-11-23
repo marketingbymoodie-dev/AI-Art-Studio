@@ -161,6 +161,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     writeStoredRecord(shopifyProductId, prev);
     myPetLog(TAG, 'design pref write render=' + prev.renderId +
       ' colour=' + colour + ' size=' + size + ' reason=' + (reason || ''));
+    postJson('my-pet/selection', {
+      renderId: prev.renderId,
+      colorName: colour,
+      sizeName: size,
+    }).catch(function () {});
   }
   // Make renderId active. Use its saved colour and size, or the pair on
   // screen when this design has never saved one. Returns the pair to select.
@@ -1966,16 +1971,20 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         frame.className = 'appai-my-pet-designs__frame';
         var shirt = shirtHex(savedChoice.colorName || item.colorName || '');
         frame.style.backgroundColor = shirt;
+        var savedMock = active
+          ? (urlForColourMap(state.previewUrlByColor, savedChoice.colorName || item.colorName || '') || '')
+          : '';
+        var thumbSrc = savedMock || item.thumbnailUrl || '';
         var img = document.createElement('img');
         img.alt = '';
-        assignImgSrc(img, item.thumbnailUrl || '');
+        assignImgSrc(img, thumbSrc);
         frame.appendChild(img);
         var zoom = document.createElement('span');
         zoom.className = 'appai-my-pet-designs__zoom';
         zoom.style.backgroundColor = shirt;
         var zoomImg = document.createElement('img');
         zoomImg.alt = '';
-        assignImgSrc(zoomImg, item.thumbnailUrl || '');
+        assignImgSrc(zoomImg, thumbSrc);
         zoom.appendChild(zoomImg);
         var title = document.createElement('span');
         title.className = 'appai-my-pet-designs__name';
@@ -7599,6 +7608,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       } catch (e) {}
     }
 
+    function refreshCartAfterAdd() {
+      if (state.cartRefreshTimer) return;
+      state.cartRefreshTimer = setTimeout(function () {
+        state.cartRefreshTimer = 0;
+        refreshAndOpenCartDrawer();
+      }, 80);
+    }
+
     function installCartAddInject() {
       if (state.cartAddInjected) return;
       state.cartAddInjected = true;
@@ -7739,7 +7756,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           var pending = origFetch.apply(this, arguments);
           if (already || !snap || !snap.id) return pending;
           return pending.then(function (res) {
-            if (res && res.ok) noteShadowCartAdded(knownShadowId(snap.id));
+            if (res && res.ok) {
+              var addedShadow = knownShadowId(snap.id);
+              noteShadowCartAdded(addedShadow);
+              if (addedShadow) refreshCartAfterAdd();
+            }
             if (!res || res.status !== 422 || state.shadowAddRetry) return res;
             return res.clone().json().then(function (json) {
               if (!staleVariantMessage(json)) return res;
@@ -7747,7 +7768,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
               state.shadowRetryVariant = '';
               return recoverStaleAdd(snap).then(function (retryRes) {
                 state.shadowAddRetry = false;
-                if (retryRes && retryRes.ok) noteShadowCartAdded(state.shadowRetryVariant);
+                if (retryRes && retryRes.ok) {
+                  noteShadowCartAdded(state.shadowRetryVariant);
+                  if (state.shadowRetryVariant) refreshCartAfterAdd();
+                }
                 return retryRes || res;
               }, function () {
                 state.shadowAddRetry = false;
@@ -7764,8 +7788,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         return origOpen.apply(this, arguments);
       };
       XMLHttpRequest.prototype.send = function (body) {
+        var xhr = this;
         try {
-          if (this.__appaiUrl && this.__appaiUrl.indexOf('/cart/add') !== -1) body = injectBody(body);
+          if (xhr.__appaiUrl && xhr.__appaiUrl.indexOf('/cart/add') !== -1) {
+            body = injectBody(body);
+            xhr.addEventListener('load', function () {
+              if (xhr.status >= 200 && xhr.status < 300 && state.atcClick && state.atcClick.shadowId) {
+                refreshCartAfterAdd();
+              }
+            });
+          }
         } catch (e) {}
         return origSend.call(this, body);
       };
@@ -8936,7 +8968,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
-          if (!added.themed) refreshAndOpenCartDrawer();
+          refreshCartAfterAdd();
           noteCustomAddReturned();
         })
         .catch(function (err) {
@@ -8963,11 +8995,18 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
      * mechanic (consent → +2 bonus) reads honestly at the cap-gate moment.
      */
     function selectedDesignPreview() {
-      var colour = currentInlineColour();
-      var key = colour ? canonicalPreviewColor(colour) : '';
-      var map = state.previewUrlByColor || {};
-      var url = (key && map[key]) || (colour && map[colour]) || state.previewUrl || '';
-      return { colour: key || colour || '', url: url };
+      var colour = state.selectedColour || state.holdColour || currentInlineColour() || '';
+      var url = urlForColourMap(state.previewUrlByColor, colour) || '';
+      if (!url) {
+        try {
+          var shown = shownCustomPreviewUrl();
+          if (shown) url = shown;
+        } catch (e) {}
+      }
+      if (!url) url = state.previewUrl || '';
+      var size = '';
+      try { size = currentSizeName() || state.swatchSize || ''; } catch (e2) {}
+      return { colour: colour, sizeName: size, url: url };
     }
 
     function maybePromptEmailSave(opts) {
@@ -8987,6 +9026,12 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       });
       var thumbHtml = selectedPreview.url
         ? '<img src="' + selectedPreview.url + '" class="appai-thumb" alt="Your design (tap to enlarge)" />'
+        : '';
+      var previewPair = [selectedPreview.colour, selectedPreview.sizeName].filter(Boolean).join(' · ');
+      var previewCaption = previewPair
+        ? '<p class="appai-my-pet-msg">' + previewPair.replace(/[&<>]/g, function (ch) {
+            return ch === '&' ? '&amp;' : (ch === '<' ? '&lt;' : '&gt;');
+          }) + '</p>'
         : '';
       // Save modal state machine:
       //   State A (no consent, under cap, exit-intent)       → "Save your design?" + opt-in checkbox
@@ -9056,6 +9101,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       modal.body.innerHTML =
         '<h3>' + headline + '</h3>' +
         thumbHtml +
+        previewCaption +
         '<p class="appai-my-pet-msg">' + bodyCopy + '</p>' +
         '<input type="email" placeholder="you@example.com" class="appai-my-pet-email" value="' + readStoredEmail().replace(/"/g, '&quot;') + '" />' +
         consentRowHtml +
