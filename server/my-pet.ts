@@ -291,6 +291,8 @@ function preferProducedSceneColours(rows: Array<{ name: string; hex: string; kin
 }
 
 async function myPetColourPalette(productTypeId: number, panelId: string, candidate: MyPetEligibleCandidate): Promise<MyPetColourPalette> {
+  const { blankLibraryTypeId } = await import("./colour-blanks");
+  const libraryId = await blankLibraryTypeId(productTypeId);
   const [sceneRows, libraryRows] = await Promise.all([
     db
       .select({
@@ -302,9 +304,13 @@ async function myPetColourPalette(productTypeId: number, panelId: string, candid
       .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, "front"), eq(mockupPanels.panelId, panelId)))
       .orderBy(desc(mockupPanels.createdAt)),
     db
-      .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
+      .select({
+        name: mockupLibraryColours.name,
+        hex: mockupLibraryColours.hex,
+        linkStoredName: mockupLibraryColours.linkStoredName,
+      })
       .from(mockupLibraryColours)
-      .where(and(eq(mockupLibraryColours.productTypeId, productTypeId), eq(mockupLibraryColours.active, true))),
+      .where(and(eq(mockupLibraryColours.productTypeId, libraryId), eq(mockupLibraryColours.active, true))),
   ]);
   return {
     publishTicks: candidate.publishColorTicks[String(productTypeId)] || [],
@@ -318,6 +324,8 @@ function rememberColourUrl(map: Record<string, string>, requestedName: string | 
   map[colour.name] = url;
   const requested = String(requestedName || "").trim();
   if (requested) map[requested] = url;
+  const alias = String(colour.linkStoredName || "").trim();
+  if (alias) map[alias] = url;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ export function chooseMyPetPanelId(
   return any[0] || null;
 }
 
-export type MyPetColour = { name: string; hex: string };
+export type MyPetColour = { name: string; hex: string; linkStoredName?: string | null };
 
 export type MyPetColourPalette = {
   requestedName?: string | null;
@@ -50,22 +50,54 @@ function sameColour(a: string, b: string): boolean {
 function namedHex(list: readonly MyPetColour[], name: string): MyPetColour | null {
   const hit = list.find((row) => sameColour(row.name, name) && cleanHex(row.hex));
   if (!hit) return null;
-  return { name: hit.name, hex: cleanHex(hit.hex) };
+  return { name: hit.name, hex: cleanHex(hit.hex), linkStoredName: hit.linkStoredName };
+}
+
+/** Library name and its stored photograph name. "Light grey" and "Sport Grey" are one colour. */
+function colourAliases(name: string, library: readonly MyPetColour[]): string[] {
+  const out: string[] = [];
+  const add = (value: string) => {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || out.some((row) => sameColour(row, trimmed))) return;
+    out.push(trimmed);
+  };
+  add(name);
+  for (const row of library) {
+    const link = String(row.linkStoredName || "").trim();
+    if (!link) continue;
+    if (sameColour(row.name, name) || sameColour(link, name)) {
+      add(row.name);
+      add(link);
+    }
+  }
+  return out;
+}
+
+function withAlias(colour: MyPetColour, library: readonly MyPetColour[]): MyPetColour {
+  const row = library.find((entry) => sameColour(entry.name, colour.name) || sameColour(String(entry.linkStoredName || ""), colour.name));
+  const link = String(row?.linkStoredName || "").trim();
+  const canonical = row && sameColour(row.name, colour.name) ? row.name : colour.name;
+  const alias = link && !sameColour(link, canonical) ? link : (row && !sameColour(row.name, canonical) ? row.name : "");
+  return alias ? { ...colour, name: canonical, linkStoredName: alias } : { ...colour, name: canonical };
 }
 
 /** Scene photo first, then this type's library hex, then a same-name tick. Never another colour. */
 export function resolveNamedMyPetColour(name: string, palette: MyPetColourPalette): MyPetColour | null {
   const wanted = String(name || "").trim();
   if (!wanted) return null;
-  const scene = namedHex(palette.sceneColours, wanted);
-  if (scene) return scene;
-  const library = namedHex(palette.libraryColours, wanted);
-  if (library) return library;
-  const tick = palette.publishTicks.find((row) => sameColour(row, wanted));
+  const names = colourAliases(wanted, palette.libraryColours);
+  const canonical = names.find((candidate) => palette.libraryColours.some((row) => sameColour(row.name, candidate))) || wanted;
+  const scene = namedHex(palette.sceneColours, canonical)
+    || names.map((candidate) => namedHex(palette.sceneColours, candidate)).find((hit) => hit);
+  if (scene) return withAlias({ ...scene, name: namedHex(palette.sceneColours, canonical)?.name || canonical }, palette.libraryColours);
+  const library = namedHex(palette.libraryColours, canonical)
+    || names.map((candidate) => namedHex(palette.libraryColours, candidate)).find((hit) => hit);
+  if (library) return withAlias(library, palette.libraryColours);
+  const tick = palette.publishTicks.find((row) => names.some((candidate) => sameColour(row, candidate)));
   if (!tick) return null;
-  const selected = namedHex(palette.selectedColors, tick);
+  const selected = namedHex(palette.selectedColors, tick) || names.map((candidate) => namedHex(palette.selectedColors, candidate)).find((hit) => hit);
   if (!selected) return null;
-  return { name: tick, hex: selected.hex };
+  return withAlias({ name: tick, hex: selected.hex }, palette.libraryColours);
 }
 
 /**

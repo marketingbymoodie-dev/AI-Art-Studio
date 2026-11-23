@@ -892,7 +892,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       '.appai-my-pet-modal{background:#fff;border-radius:8px;max-width:460px;width:100%;max-height:92vh;overflow:auto;position:relative;padding:1.5rem;}' +
       '.appai-my-pet-modal__close{position:absolute;top:0.5rem;right:0.75rem;background:none;border:none;font-size:1.5rem;cursor:pointer;line-height:1;z-index:2;}' +
       '.appai-my-pet-modal--locked .appai-my-pet-modal__close{display:none;}' +
-      '.appai-my-pet-modal__body img.appai-preview-img{width:100%;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
+      'html body .appai-my-pet-modal__body img.appai-preview-img{width:100% !important;height:auto !important;max-height:none !important;aspect-ratio:1024 / 1536 !important;object-fit:contain !important;object-position:center center !important;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
       // UX 5 — instant visual feedback the moment a colour swatch is tapped,
       // before the recomposite round-trip even starts.
       '.appai-my-pet-modal__body img.appai-preview-img.appai-swatch-loading{opacity:.6;cursor:wait;}' +
@@ -955,14 +955,18 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
-      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}';
+      'html body .appai-zoom-overlay > img.appai-zoom-img{width:auto !important;height:auto !important;max-width:95vw !important;max-height:95vh !important;aspect-ratio:1024 / 1536 !important;object-fit:contain !important;object-position:center center !important;display:block;}';
     document.head.appendChild(style);
   }
 
   function showZoom(src) {
     var z = document.createElement('div');
     z.className = 'appai-zoom-overlay';
-    z.innerHTML = '<img src="' + src + '" alt="Your design" />';
+    var img = document.createElement('img');
+    img.className = 'appai-zoom-img';
+    img.alt = 'Your design';
+    img.src = src;
+    z.appendChild(img);
     z.addEventListener('click', function () { z.remove(); });
     document.body.appendChild(z);
   }
@@ -1780,13 +1784,29 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       window.scrollTo(x, y);
       if (window.requestAnimationFrame) window.requestAnimationFrame(function () { window.scrollTo(x, y); });
     }
+    function colourNameKey(name) {
+      return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    // Softstyle stores the Sport Grey photograph as Light grey. Both names are one colour.
+    function colourAliasGroup(name) {
+      var key = colourNameKey(name);
+      if (key === 'sport grey' || key === 'light grey') return ['sport grey', 'light grey'];
+      return key ? [key] : [];
+    }
     function urlForColourMap(map, colour) {
       if (!map || !colour) return '';
       if (map[colour]) return map[colour];
-      var want = String(colour).trim().toLowerCase();
       var keys = Object.keys(map);
-      for (var i = 0; i < keys.length; i++) {
-        if (String(keys[i]).trim().toLowerCase() === want) return map[keys[i]] || '';
+      var groups = colourAliasGroup(colour);
+      var g;
+      var i;
+      for (g = 0; g < groups.length; g++) {
+        for (i = 0; i < keys.length; i++) {
+          if (colourNameKey(keys[i]) !== groups[g] || !map[keys[i]]) continue;
+          var requested = String(colour).trim();
+          if (requested && !map[requested]) map[requested] = map[keys[i]];
+          return map[keys[i]];
+        }
       }
       return '';
     }
@@ -3969,12 +3989,20 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function canonicalPreviewColor(raw) {
-      var want = String(raw || '').trim().toLowerCase();
+      var want = colourNameKey(raw);
       if (!want) return null;
       var map = state.previewUrlByColor || {};
       var keys = Object.keys(map);
-      for (var i = 0; i < keys.length; i++) {
-        if (String(keys[i]).trim().toLowerCase() === want) return keys[i];
+      var groups = colourAliasGroup(raw);
+      var g;
+      var i;
+      for (g = 0; g < groups.length; g++) {
+        for (i = 0; i < keys.length; i++) {
+          if (colourNameKey(keys[i]) !== groups[g]) continue;
+          var requested = String(raw).trim();
+          if (requested && map[keys[i]] && !map[requested]) map[requested] = map[keys[i]];
+          return keys[i];
+        }
       }
       return String(raw).trim();
     }
@@ -4319,10 +4347,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.designSwitchColour = null;
       state.designSwitchSize = null;
       myPetLog(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
-      var hero = resolveActiveHero(switchColour);
-      if (hero && state.inlineApplied && state.renderId) {
-        state.inlineHero = hero;
-        installHeroGuard(hero);
+      if (switchColour) noteColourSelection(switchColour, false);
+      var activationUrl = t.url || (switchColour ? previewUrlForColour(switchColour) : '') || state.previewUrl || '';
+      if (activationUrl && state.renderId && state.inlineApplied) {
+        if (!activateInlinePreview(activationUrl)) {
+          var hero = resolveActiveHero(switchColour);
+          if (hero) {
+            state.inlineHero = hero;
+            installHeroGuard(hero);
+          }
+        }
       }
       scheduleShadowWarm('design');
     }
@@ -4420,10 +4454,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function previewUrlForColour(colorName) {
-      if (colorName && state.previewUrlByColor && state.previewUrlByColor[colorName]) {
-        return state.previewUrlByColor[colorName];
-      }
-      return state.previewUrl || null;
+      var mapped = colorName ? urlForColourMap(state.previewUrlByColor, colorName) : '';
+      return mapped || state.previewUrl || null;
     }
 
     function looksLikeThumb(img) {
@@ -6563,12 +6595,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           if (state.heroAssertStop) return;
           var livePollNow = liveColourChoice();
           var pinnedNow = state.inlineHero;
-          if (pinnedNow && document.body.contains(pinnedNow) && pinnedNow.__appaiMyPetObserver) return;
           var freshLocked = findVisibleHeroImg();
-          if (!freshLocked || freshLocked === pinnedNow) return;
-          state.inlineHero = freshLocked;
-          if (livePollNow.url) reassertColourPreview('node-replaced', livePollNow.colour, livePollNow.url);
-          installHeroGuard(freshLocked);
+          if (freshLocked && freshLocked !== pinnedNow) {
+            state.inlineHero = freshLocked;
+            if (livePollNow.url) paintColourNow(livePollNow.colour, livePollNow.url);
+            installHeroGuard(freshLocked);
+            return;
+          }
+          if (pinnedNow && document.body.contains(pinnedNow) && pinnedNow.__appaiMyPetObserver) return;
           return;
         }
         var info = currentVariantInfo(root);
@@ -6747,11 +6781,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
               if (img.closest && img.closest('dialog, zoom-dialog')) continue;
               if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
               if (looksLikeThumb(img)) continue;
-              if (!isHeroCandidate(img)) continue;
+              if (!isHeroCandidate(img) && !unsizedGalleryHero(img)) continue;
               // Keep the outgoing hero visible. Point the guard at the new
               // node only — never opacity 0, never remove the old img.
               if (state.holdOldHero && img === state.holdOldHero) continue;
+              var liveHero = liveColourChoice();
               state.inlineHero = img;
+              if (liveHero.url) paintColourNow(liveHero.colour, liveHero.url);
               installHeroGuard(img);
             }
           }
@@ -6773,6 +6809,17 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var rect = img.getBoundingClientRect ? img.getBoundingClientRect() : null;
       if (rect && (rect.width < 160 || rect.height < 160)) return false;
       return true;
+    }
+
+    // A theme replacement inserts the new hero with no decoded size yet.
+    // isHeroCandidate skips that node, so the catalogue photo stays on screen.
+    function unsizedGalleryHero(img) {
+      if (!img || isHeroCandidate(img)) return false;
+      var gallery = mainMediaGallery();
+      if (!gallery || !gallery.contains || !gallery.contains(img)) return false;
+      if (img.closest && img.closest('slideshow-controls, slideshow-arrows, button, .thumbnail, .thumbnails')) return false;
+      var slide = img.closest ? img.closest('slideshow-slide, .product__media-item, [data-media-id]') : null;
+      return !!slide;
     }
 
     function installInlineVariantListeners() {
