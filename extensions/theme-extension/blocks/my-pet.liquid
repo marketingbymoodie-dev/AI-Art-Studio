@@ -27,7 +27,7 @@
 {% if show_my_pet %}
   {% assign button_label = block.settings.button_label | default: "My Pet" %}
   {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
-  {% assign preview_mode = block.settings.preview_mode | default: "modal" %}
+  {% assign preview_mode = block.settings.preview_mode | default: "inline" %}
 
   {%- capture color_swatches_json -%}[{%- assign swatch_comma = false -%}{%- for option in product.options_with_values -%}{%- assign option_name = option.name | downcase -%}{%- if option_name contains 'color' or option_name contains 'colour' -%}{%- for value in option.values -%}{%- if value.swatch.color != blank -%}{%- if swatch_comma -%},{%- endif -%}{"name":{{ value.name | json }},"hex":{{ value.swatch.color | json }}}{%- assign swatch_comma = true -%}{%- endif -%}{%- endfor -%}{%- endif -%}{%- endfor -%}]{%- endcapture -%}
   <div
@@ -92,12 +92,12 @@
       "type": "select",
       "id": "preview_mode",
       "label": "Preview mode",
-      "default": "modal",
+      "default": "inline",
       "options": [
-        { "value": "modal", "label": "Modal (default — opens in a popup)" },
-        { "value": "inline", "label": "Inline — swap product image (experimental)" }
+        { "value": "inline", "label": "On the product image (default)" },
+        { "value": "modal", "label": "Popup — Your design window" }
       ],
-      "info": "Inline mode replaces the product page's hero image with the generated preview, hooks into the theme's native colour/size swatches, and uses the theme's Add to cart button. If the hero image can't be found on your theme, the preview falls back to modal automatically."
+      "info": "On the product image closes the generate window and shows the design on the main photo. The page's own colour, size, and Add to cart stay in use. Popup keeps a separate Your design window with its own selectors. If the main photo cannot be found, the popup is used."
     }
   ]
 }

@@ -1331,12 +1331,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     var candidateId = root.getAttribute('data-candidate-id');
     var shopifyProductId = root.getAttribute('data-product-id');
     var pageUrl = root.getAttribute('data-page-url') || window.location.href;
-    // UX 7 — "modal" (default, legacy popup) or "inline" (Ritual-scoped
-    // experimental: replace the PDP hero img directly, use the theme's own
-    // native colour/size swatches instead of our custom modal swatches).
-    // If inline mode can't find the theme's hero image at generate time,
-    // activateInlinePreview returns false and the modal takes over.
-    var previewMode = (root.getAttribute('data-preview-mode') || 'modal').toLowerCase();
+    // "inline" paints the design on the product hero and uses the page's
+    // colour, size, and Add to cart. "modal" keeps the Your design popup.
+    // The block setting chooses. A missing setting follows inline. If the
+    // hero image cannot be found, the popup is still the fallback.
+    var previewMode = (root.getAttribute('data-preview-mode') || 'inline').toLowerCase();
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
     var designsBtn = root.querySelector('[data-appai-my-pet-designs]');
@@ -3122,9 +3121,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     })();
 
     // ─────────────────────────────────────────────────────────────────────
-    // UX 7 — inline preview mode (Ritual-scoped experimental)
-    //
-    // Flow:
+    // Inline preview: after generate, the upload window closes and the design
+    // is painted on the product hero. Colour, size, and Add to cart stay the
+    // page's own controls. The Your design popup remains the fallback when
+    // the block setting is "modal", or when the hero image cannot be found.
     //   generate success → activateInlinePreview(previewUrl)
     //     → find PDP hero <img> → swap src to preview
     //     → install native swatch watcher (variant form change → recomposite)

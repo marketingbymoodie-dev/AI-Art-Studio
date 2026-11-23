@@ -10,8 +10,22 @@ const RESOURCE_KEYS = new Set(["product", "featured_product", "collection", "fea
 const KEEP_HANDLES = new Set(["all", "frontpage"]);
 const KEEP_MENUS = new Set(["main-menu", "footer", "customer-account-main-menu", "legal"]);
 
+const PET_APP_BLOCK = "shopify://apps/ai-art-studio-petposterous/blocks/";
+const STAGE_APP_BLOCK = "shopify://apps/ai-art-studio-staging/blocks/";
+const PET_EXTENSION_ID = "01a1de52-0d89-736a-a806-0370d800c172";
+const STAGE_EXTENSION_ID = "019fc6d4-0850-772f-988a-e220912aad7f";
+
+function stagingAppBlock(value) {
+  if (!value.includes(PET_APP_BLOCK)) return value;
+  return value.replaceAll(PET_APP_BLOCK, STAGE_APP_BLOCK).replaceAll(PET_EXTENSION_ID, STAGE_EXTENSION_ID);
+}
+
 export function sanitizeThemeValue(value, trail, log, resources = new Set(), menus = new Set()) {
   if (typeof value === "string") {
+    if (value.includes(PET_APP_BLOCK)) {
+      log.push(`${trail} pointed an app block at the staging app`);
+      return stagingAppBlock(value);
+    }
     if (/h7epay-gh\.myshopify\.com/i.test(value)) {
       log.push(`${trail} cleared a live shop reference`);
       return "";
@@ -40,6 +54,14 @@ export function sanitizeThemeValue(value, trail, log, resources = new Set(), men
       continue;
     }
     out[key] = sanitizeThemeValue(child, here, log, resources, menus);
+  }
+  if (typeof out.type === "string" && out.type.includes("/blocks/my-pet/")) {
+    const settings = out.settings && typeof out.settings === "object" ? out.settings : {};
+    if (settings.preview_mode !== "inline") {
+      settings.preview_mode = "inline";
+      log.push(`${trail} my-pet preview set to the product image`);
+    }
+    out.settings = settings;
   }
   return out;
 }
