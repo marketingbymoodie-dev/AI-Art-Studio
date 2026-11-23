@@ -18,6 +18,7 @@ import {
   designProducts,
   generationEvents,
   generationJobs,
+  mockupPanels,
   myPetEmailCaptures,
   myPetPetPhotos,
   myPetRenders,
@@ -40,6 +41,7 @@ import {
   type MyPetSettings,
 } from "@shared/myPetSettings";
 import { db } from "./db";
+import { chooseMyPetPanelId } from "./my-pet-panel";
 import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
 import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from "./generation-providers";
 import { generationErrorCategory } from "./generation-events";
@@ -219,6 +221,38 @@ export type MyPetEligibleCandidate = {
 };
 
 export class MyPetCandidateIneligibleError extends Error {}
+
+/** The product type has no scene we can composite onto. Returned as HTTP 200. */
+export class MyPetBlankMissingError extends Error {
+  constructor(message = "This shirt doesn't have a mockup for that colour yet. Please try another colour.") {
+    super(message);
+    this.name = "MyPetBlankMissingError";
+  }
+}
+
+export const MY_PET_BLANK_MISSING_MESSAGE =
+  "This shirt doesn't have a mockup for that colour yet. Please try another colour.";
+
+/**
+ * The candidate's panel belongs to one product type. Use it only when this
+ * type has that scene; otherwise use this type's own default scene.
+ */
+export async function panelIdForProductType(productTypeId: number, candidatePanelId: string): Promise<string> {
+  const rows = await db
+    .select({
+      panelId: mockupPanels.panelId,
+      isDefault: mockupPanels.isDefault,
+      kind: mockupPanels.kind,
+    })
+    .from(mockupPanels)
+    .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, "front")));
+  const panelId = chooseMyPetPanelId(candidatePanelId, rows);
+  if (!panelId) throw new MyPetBlankMissingError();
+  if (panelId !== candidatePanelId) {
+    console.log(`[my-pet] panel for type ${productTypeId} candidate=${candidatePanelId} using=${panelId}`);
+  }
+  return panelId;
+}
 
 export async function getEligibleCandidateForMyPet(shop: string, candidateId: string): Promise<MyPetEligibleCandidate> {
   const [row] = await db.select().from(designCandidates).where(eq(designCandidates.id, candidateId));
@@ -530,6 +564,7 @@ export async function generateMyPetRender(args: {
   }
 
   const productType = await composeProductType(args.shop, args.shopifyProductId);
+  const panelId = await panelIdForProductType(productType.id, args.candidate.panelId);
   // STAGING-104 — reverted staging-103's forceRecolour workaround after an
   // offline trace proved the produced path on real staging data (render
   // 25a79e80 / candidate 07a0d57a) composites the Sunburst output correctly
@@ -545,14 +580,14 @@ export async function generateMyPetRender(args: {
   // appai-my-pet.js for the matching instrumentation on the client race.
   console.log(
     `[my-pet] pre-compose chosen start colour=${color.name} ` +
-      `designSrc=${editedPathTail} panelId=${args.candidate.panelId} ` +
+      `designSrc=${editedPathTail} panelId=${panelId} ` +
       `composeFn=renderCandidateOnPanel forceRecolour=false ` +
       `steps=[loadPerColourBlank, overlayDesign, flatten]`,
   );
   const { png: previewPng, source: chosenMode } = await renderCandidateOnPanel({
     productTypeId: productType.id,
     typeName: productType.name,
-    panelId: args.candidate.panelId,
+    panelId,
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedPath,
@@ -613,14 +648,14 @@ export async function generateMyPetRender(args: {
         console.log(
           `[my-pet] pre-composite colour=${other.name} ` +
             `designSrc=${editedPathTail} designMd5=${editedHash} ` +
-            `panelId=${args.candidate.panelId} outputSrc=${otherPathTail} ` +
+            `panelId=${panelId} outputSrc=${otherPathTail} ` +
             `composeFn=renderCandidateOnPanel forceRecolour=false ` +
             `steps=[loadPerColourBlank, overlayDesign, flatten]`,
         );
         const { png, source: otherMode } = await renderCandidateOnPanel({
           productTypeId: productType.id,
           typeName: productType.name,
-          panelId: args.candidate.panelId,
+          panelId,
           colorName: other.name,
           colorHex: other.hex,
           artworkPath: editedPath,
@@ -699,7 +734,7 @@ export async function generateMyPetRender(args: {
       colorName: color.name,
       colorHex: color.hex,
       sizeId: args.sizeId || null,
-      panelId: args.candidate.panelId,
+      panelId,
     },
     expiresAt: new Date(Date.now() + EMAIL_PREVIEW_RETENTION_MS),
   });
@@ -782,6 +817,35 @@ async function recordMyPetGenerationEvent(args: {
 // Recomposite on colour change — no model call
 // ─────────────────────────────────────────────────────────────────────────
 
+async function rememberRenderSelection(renderId: string, colorName: string | null, sizeName: string | null): Promise<void> {
+  const patch: { colorId?: string; sizeId?: string } = {};
+  const colour = String(colorName || "").trim();
+  const size = String(sizeName || "").trim();
+  if (colour) patch.colorId = colour;
+  if (size) patch.sizeId = size;
+  if (!patch.colorId && !patch.sizeId) return;
+  await db.update(myPetRenders).set(patch).where(eq(myPetRenders.id, renderId));
+}
+
+/** Persist the colour and size the shopper picked after generate. */
+export async function updateMyPetSelection(args: {
+  shop: string;
+  deviceKey: string;
+  renderId: string;
+  colorName?: string | null;
+  sizeName?: string | null;
+}): Promise<{ colorName: string | null; sizeName: string | null }> {
+  const [render] = await db.select().from(myPetRenders).where(eq(myPetRenders.id, args.renderId));
+  if (!render || render.shopDomain !== args.shop || render.deviceKey !== args.deviceKey) {
+    throw new Error("Design not found");
+  }
+  await rememberRenderSelection(render.id, args.colorName ?? null, args.sizeName ?? null);
+  return {
+    colorName: String(args.colorName || "").trim() || render.colorId,
+    sizeName: String(args.sizeName || "").trim() || render.sizeId,
+  };
+}
+
 export async function recompositeMyPetRender(args: { shop: string; deviceKey: string; renderId: string; colorName: string }): Promise<{ previewUrl: string; colorName: string; previewUrlsByColor: Record<string, string> }> {
   // UX 5: timing breakdown so a slow colour-swap smoke test tells us whether
   // the lag is compose, storage write, signing, or job update — not a guess.
@@ -831,10 +895,12 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
         `jobUpdate=${afterJobUpdate - afterSign}ms total=${afterJobUpdate - started}ms ` +
         `mapSize=${Object.keys(previewUrlsByColor).length}`,
     );
+    await rememberRenderSelection(render.id, color.name, null);
     return { previewUrl, colorName: color.name, previewUrlsByColor };
   }
 
   const productType = await composeProductType(args.shop, render.shopifyProductId);
+  const panelId = await panelIdForProductType(productType.id, candidate.panelId);
   // STAGING-104 — matches generate's revert of forceRecolour. Produced path
   // gives photorealistic per-colour panel photo output; the same code path
   // generate uses, so recomposite stays identity-equal (modulo signed URL
@@ -842,7 +908,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
   const { png } = await renderCandidateOnPanel({
     productTypeId: productType.id,
     typeName: productType.name,
-    panelId: candidate.panelId,
+    panelId,
     colorName: color.name,
     colorHex: color.hex,
     artworkPath: editedArtworkPath,
@@ -875,6 +941,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       `total=${afterJobUpdate - started}ms ` +
       `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
+  await rememberRenderSelection(render.id, color.name, null);
 
   return { previewUrl, colorName: color.name, previewUrlsByColor };
 }
@@ -1178,15 +1245,24 @@ export async function listMyPetRendersForDevice(args: {
     const exists = await myPetObjectExists(row.previewPath).catch(() => false);
     if (!exists) return null;
     try {
-      // The garment mockup makes the pet a few pixels tall. The edited
-      // artwork is the design itself; fall back to the mockup if it's gone.
+      // Show the mockup for the colour saved on the row. Fall back to the
+      // generate-time mockup, then the flat artwork.
+      let mockupPath = row.previewPath;
+      if (row.colorId) {
+        const colourPath = myPetPreviewPathForColor(row.id, row.colorId);
+        if (await myPetObjectExists(colourPath).catch(() => false)) mockupPath = colourPath;
+      }
       let thumbnailUrl: string;
       try {
-        thumbnailUrl = await signedLibraryUrl(`my-pet/edited/${row.id}.png`, STOREFRONT_PREVIEW_TTL_SECONDS);
+        thumbnailUrl = await signedMyPetUrl(mockupPath, STOREFRONT_PREVIEW_TTL_SECONDS);
       } catch {
-        thumbnailUrl = await signedMyPetThumbnail(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
+        try {
+          thumbnailUrl = await signedLibraryUrl(`my-pet/edited/${row.id}.png`, STOREFRONT_PREVIEW_TTL_SECONDS);
+        } catch {
+          thumbnailUrl = await signedMyPetThumbnail(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
+        }
       }
-      const heroUrl = await signedMyPetUrl(row.previewPath, STOREFRONT_PREVIEW_TTL_SECONDS);
+      const heroUrl = thumbnailUrl;
       return {
         renderId: row.id,
         jobId: row.jobId,
