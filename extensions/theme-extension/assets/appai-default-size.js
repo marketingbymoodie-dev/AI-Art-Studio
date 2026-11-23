@@ -8,14 +8,14 @@
  * so the next page is right before this script runs.
  *
  * Petposterous app listings are the exception. A fresh open leaves the
- * colour selected and no size selected. The theme still renders the
- * first variant and then checks that size (Small) when every size
- * button was left off, including after a colour change redraws the
- * picker. This script clears that size again, and keeps clearing it
- * until the shopper picks one. The hidden variant input stays so the
- * price still renders, and add-to-cart is refused until then. A URL
- * variant, a saved My Pet size, or Find my size's Use size button
- * still arrives already selected. Other shops keep the M default.
+ * colour selected and no size selected, including when the URL has
+ * ?variant=. That param still names the colour (and My Pet must not
+ * replace it). The theme checks Small for that colour. This script
+ * clears that size again, and keeps clearing it until the shopper
+ * picks one. The hidden variant input stays so the price still
+ * renders, and add-to-cart is refused until then. A saved My Pet size
+ * or Find my size's Use size button still arrives already selected.
+ * Other shops keep the M default.
  */
 (function () {
   if (typeof window.__appaiVariantOnLoad === 'undefined') {
@@ -705,13 +705,11 @@
   }
 
   function freshListingSkipsDefaultSize() {
-    return isPetposterous() && isAppListing() && !variantInUrl();
+    return isPetposterous() && isAppListing();
   }
 
   function start() {
-    if (isPetposterous() && isAppListing() && variantInUrl()) {
-      window.__appaiSizeChosen = true;
-    } else if (freshListingSkipsDefaultSize()) {
+    if (freshListingSkipsDefaultSize()) {
       function applyFreshListing() {
         if (window.__appaiSizeChosen) return;
         var picker = listingPicker();
