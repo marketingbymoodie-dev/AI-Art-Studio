@@ -801,6 +801,8 @@ export async function promoteCatalogueCandidate(args: {
     species: String(candidate!.species),
     humourOperator: String(candidate!.humourOperator),
     productTypeId: typeRow.id,
+    blueprintId: typeRow.printifyBlueprintId,
+    providerId: typeRow.printifyProviderId,
     myPetEnabled: args.myPetEnabled !== false,
   });
   const handle = String(args.listingHandle || "").trim() || slug(title) || "design";
