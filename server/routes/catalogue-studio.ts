@@ -28,7 +28,7 @@ import {
   catalogueShopAllowed,
   catalogueShopDomain,
   operatorCatalogueForShop,
-  PETPOSTEROUS_CATALOGUE_SHOP,
+  isolatedCatalogueShop,
   STAGING_CATALOGUE_SHOP,
 } from "@shared/operatorCatalogue";
 import { CATALOGUE_SHIRT_PROVIDER_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
@@ -205,14 +205,14 @@ async function candidateOwnedOrListed(
 ): Promise<boolean> {
   if (candidateVisibleToShop(requestShop, row.shopDomain)) return true;
   const profile = operatorCatalogueForShop(requestShop);
-  if (profile.shop !== PETPOSTEROUS_CATALOGUE_SHOP) return false;
+  if (!isolatedCatalogueShop(profile.shop)) return false;
   return (await listedCandidateIds(profile.shop)).includes(row.id);
 }
 
 async function operatorQueue(requestShop: string | null | undefined): Promise<Array<{ id: string; title: string }>> {
   const profile = operatorCatalogueForShop(requestShop);
   const { db } = await import("../db");
-  const listed = profile.shop === PETPOSTEROUS_CATALOGUE_SHOP ? await listedCandidateIds(profile.shop) : [];
+  const listed = isolatedCatalogueShop(profile.shop) ? await listedCandidateIds(profile.shop) : [];
   const ownWork = and(
     eq(designCandidates.shopDomain, profile.shop),
     isNotNull(designCandidates.artworkPath),

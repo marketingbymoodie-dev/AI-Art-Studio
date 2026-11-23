@@ -14,7 +14,7 @@ import {
   type GarmentMeasurements,
   type GarmentShape,
 } from "@shared/findMySize";
-import { catalogueShopAllowed } from "@shared/operatorCatalogue";
+import { catalogueShopAllowed, PETSTAGE_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import { designProducts, productTypes, shopifyInstallations } from "@shared/schema";
 import { db } from "./db";
 import { normalizeMyshopifyShopDomain } from "./shopDomain";
@@ -134,7 +134,26 @@ export async function backfillFindMySize(): Promise<{ charts: number; guarantee:
       isNull(shopifyInstallations.sizeFinderGuaranteeEnabled),
     ))
     .returning({ id: shopifyInstallations.id });
-  return { charts, guarantee: guarantee.length };
+  const petstage = await ensurePetstageGuarantee();
+  return { charts, guarantee: guarantee.length + petstage };
+}
+
+/** Pet Stage only. The refund link is this store, not the live Petposterous URL. */
+export async function ensurePetstageGuarantee(): Promise<number> {
+  const updated = await db
+    .update(shopifyInstallations)
+    .set({
+      sizeFinderGuaranteeEnabled: true,
+      sizeFinderGuaranteeTitle: PETPOSTEROUS_GUARANTEE.title,
+      sizeFinderGuaranteeDetail: PETPOSTEROUS_GUARANTEE.detail,
+      sizeFinderGuaranteeUrl: `https://${PETSTAGE_CATALOGUE_SHOP}/policies/refund-policy`,
+    })
+    .where(and(
+      eq(shopifyInstallations.shopDomain, PETSTAGE_CATALOGUE_SHOP),
+      isNull(shopifyInstallations.sizeFinderGuaranteeEnabled),
+    ))
+    .returning({ id: shopifyInstallations.id });
+  return updated.length;
 }
 
 async function typeById(id: number): Promise<StoredType | null> {

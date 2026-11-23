@@ -10,7 +10,7 @@ import {
   CATALOGUE_STUDIO_LOCKED_MESSAGE,
   CATALOGUE_STUDIO_SHOP_MESSAGE,
 } from "./cataloguePublishAccess";
-import { PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
+import { PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
 
 describe("catalogue publish allowlist", () => {
   it("keeps the first production boot locked when the shop list is unset", () => {
@@ -44,8 +44,10 @@ describe("catalogue publish allowlist", () => {
     expect(cataloguePublishAllowedShops(env)).toEqual([
       STAGING_CATALOGUE_SHOP,
       PETPOSTEROUS_CATALOGUE_SHOP,
+      PETSTAGE_CATALOGUE_SHOP,
     ]);
     expect(cataloguePublishAllowedForShop(STAGING_CATALOGUE_SHOP, env)).toBe(true);
+    expect(cataloguePublishAllowedForShop(PETSTAGE_CATALOGUE_SHOP, env)).toBe(true);
     expect(cataloguePublishBlockMessage("other-merchant.myshopify.com", env)).toBe(CATALOGUE_PUBLISH_SHOP_MESSAGE);
   });
 

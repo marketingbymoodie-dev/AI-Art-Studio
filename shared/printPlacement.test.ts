@@ -18,6 +18,7 @@ describe("print placement", () => {
 
   it("applies the chest placement to blueprint 145 and 706 on the catalogue shops", () => {
     expect(placementForCatalogueType({ shop: PETPOSTEROUS_CATALOGUE_SHOP, blueprintId: 145, providerId: 99 })).toEqual({ anchor: "top", mockupScale: 1 });
+    expect(placementForCatalogueType({ shop: "petstage.myshopify.com", blueprintId: 145, providerId: 99 })).toEqual({ anchor: "top", mockupScale: 1 });
     expect(placementForCatalogueType({ shop: STAGING_CATALOGUE_SHOP, blueprintId: 706, providerId: 99 })).toEqual({ anchor: "top", mockupScale: 1 });
     expect(placementForCatalogueType({ shop: null, blueprintId: 145, providerId: 99 })).toEqual({ anchor: "center", mockupScale: 0.85 });
     expect(placementForCatalogueType({ shop: "other-merchant.myshopify.com", blueprintId: 706, providerId: 99 })).toEqual({ anchor: "center", mockupScale: 0.85 });

@@ -14,7 +14,7 @@ import {
   type CatalogueConceptGeneration,
 } from "@shared/catalogueConcept";
 import { resolveStyleGenerationForProduct } from "@shared/decorBackgroundFill";
-import { PETPOSTEROUS_CATALOGUE_SHOP, operatorCatalogueForShop } from "@shared/operatorCatalogue";
+import { PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP, catalogueShopDomain } from "@shared/operatorCatalogue";
 import { PETPOSTEROUS_PACK_SLUG, PETPOSTEROUS_PROFILE_KEY, PETPOSTEROUS_PROMPT_PROFILE, PETPOSTEROUS_STYLES } from "@shared/packs/petposterous";
 import { petposterousLook } from "@shared/petposterousCreative";
 import { composeLayeredPrompt, wrapLayeredArtworkPrompt } from "@shared/promptLayers";
@@ -64,7 +64,8 @@ function clip(value: unknown, max: number): string {
 }
 
 export function catalogueConceptShopAllowed(shop: string | null | undefined): boolean {
-  return isOwnerShopDomain(shop) && operatorCatalogueForShop(shop).shop === PETPOSTEROUS_CATALOGUE_SHOP;
+  const domain = catalogueShopDomain(shop);
+  return isOwnerShopDomain(shop) && (domain === PETPOSTEROUS_CATALOGUE_SHOP || domain === PETSTAGE_CATALOGUE_SHOP);
 }
 
 export function parseCatalogueConceptInput(body: unknown): CatalogueConceptInput {
@@ -385,7 +386,7 @@ export async function createCatalogueConcepts(args: {
     throw new Error("Catalogue concept generation is staging only.");
   }
   if (!catalogueConceptShopAllowed(args.shop)) throw new Error("Concept generation is only available on Petposterous.");
-  const shop = PETPOSTEROUS_CATALOGUE_SHOP;
+  const shop = catalogueShopDomain(args.shop);
   const input = parseCatalogueConceptInput(args.body);
   return once(args.requestId, shop, async () => {
     const generationModel = await liveApparelGenerationModel();
@@ -462,7 +463,7 @@ export async function redrawCatalogueConcept(args: {
     throw new Error("Catalogue concept generation is staging only.");
   }
   if (!catalogueConceptShopAllowed(args.shop)) throw new Error("Concept generation is only available on Petposterous.");
-  const shop = PETPOSTEROUS_CATALOGUE_SHOP;
+  const shop = catalogueShopDomain(args.shop);
   return once(args.requestId, shop, async () => {
     const [row] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId)).limit(1);
     if (!row || row.shopDomain !== shop) throw new Error("That candidate is not stored.");

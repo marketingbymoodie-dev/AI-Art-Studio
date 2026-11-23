@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PETPOSTEROUS_CATALOGUE_SHOP,
+  PETSTAGE_CATALOGUE_SHOP,
   STAGING_CATALOGUE_SHOP,
   candidateVisibleToShop,
   catalogueShopAllowed,
@@ -14,6 +15,9 @@ describe("operatorCatalogueForShop", () => {
     });
     expect(operatorCatalogueForShop("https://h7epay-gh.myshopify.com/admin")).toEqual({
       shop: PETPOSTEROUS_CATALOGUE_SHOP,
+    });
+    expect(operatorCatalogueForShop("petstage")).toEqual({
+      shop: PETSTAGE_CATALOGUE_SHOP,
     });
   });
 
@@ -32,6 +36,7 @@ describe("operatorCatalogueForShop", () => {
     expect(candidateVisibleToShop(STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP)).toBe(false);
     expect(catalogueShopAllowed("other.myshopify.com")).toBe(false);
     expect(catalogueShopAllowed(PETPOSTEROUS_CATALOGUE_SHOP)).toBe(true);
+    expect(catalogueShopAllowed(PETSTAGE_CATALOGUE_SHOP)).toBe(true);
     expect(catalogueShopAllowed(STAGING_CATALOGUE_SHOP)).toBe(true);
     expect(catalogueShopAllowed(null)).toBe(false);
     expect(catalogueShopAllowed("")).toBe(false);

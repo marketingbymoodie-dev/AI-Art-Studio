@@ -10,6 +10,7 @@ import { normalizeMyshopifyShopDomain } from "./shopDomain";
 const BUILTIN_OWNER_SHOP_DOMAINS = [
   "aiartstudio-gizsmzs2.myshopify.com",
   "h7epay-gh.myshopify.com",
+  "petstage.myshopify.com",
 ] as const;
 
 function addShopDomains(into: Set<string>, raw?: string | null) {
