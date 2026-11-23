@@ -38,6 +38,14 @@ export const MY_PET_LOCKED_EXPRESSION_RULE =
   "Take only the pet's identity from the photo: breed shape, colours, markings, ears and fur. " +
   "Never copy the photo's expression or mood.";
 
+/**
+ * Always sent, after the editable base prompt. A saved base prompt cannot drop it.
+ * Same block for every design and both shirt types.
+ */
+export const MY_PET_LOCKED_IDENTITY_RULE =
+  "ONLY CHANGE THE PET'S IDENTITY: Replace only the animal's breed shape, coat colour, fur and markings with the pet in Image 2. Everything else in Image 1 stays untouched and pixel-faithful: the facial expression, eye direction and attitude; the pose and facing; anything the animal is wearing or holding (clothing, hats, collars, accessories); all props and scenery; all lettering (same words, font, stroke weight, size, spacing and position, never thickened or redrawn); colours, composition and framing. " +
+  "ANATOMY: Draw only the legs, paws, ears, eyes and tail that species really has, each joined naturally to the body. No extra, missing, fused, twisted or floating limbs.";
+
 /** Always appended last. Read-only on the settings page — not stored per shop. */
 export const MY_PET_LOCKED_PRINT_RULES =
   "Transparent background. No outline or stroke around text. No added text or watermarks. " +
@@ -181,8 +189,9 @@ export type CandidateDetailsForPrompt = {
 /**
  * Assemble the My Pet edit prompt for one design: base, then that design's
  * style tweak (if any and if it is non-blank), then the design's own stored
- * details, then the locked expression rule, then the locked print rules last.
- * Image 1 is the finished design, Image 2 is the shopper's pet photo.
+ * details, then the locked expression rule, the locked identity block, and
+ * the locked print rules last. Image 1 is the finished design, Image 2 is
+ * the shopper's pet photo. The locked blocks are not part of the saved base.
  */
 export function buildMyPetPrompt(
   settings: Pick<MyPetSettings, "basePrompt" | "styleTweaks">,
@@ -200,6 +209,7 @@ export function buildMyPetPrompt(
   if (candidate.punchline?.trim()) details.push(`Wording stays exactly: "${candidate.punchline.trim()}".`);
   if (details.length) lines.push(details.join(" "));
   lines.push(MY_PET_LOCKED_EXPRESSION_RULE);
+  lines.push(MY_PET_LOCKED_IDENTITY_RULE);
   lines.push(MY_PET_LOCKED_PRINT_RULES);
   return lines.join(" ");
 }

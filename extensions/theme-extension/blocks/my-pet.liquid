@@ -29,6 +29,7 @@
   {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
   {% assign preview_mode = block.settings.preview_mode | default: "modal" %}
 
+  {%- capture color_swatches_json -%}[{%- assign swatch_comma = false -%}{%- for option in product.options_with_values -%}{%- assign option_name = option.name | downcase -%}{%- if option_name contains 'color' or option_name contains 'colour' -%}{%- for value in option.values -%}{%- if value.swatch.color != blank -%}{%- if swatch_comma -%},{%- endif -%}{"name":{{ value.name | json }},"hex":{{ value.swatch.color | json }}}{%- assign swatch_comma = true -%}{%- endif -%}{%- endfor -%}{%- endif -%}{%- endfor -%}]{%- endcapture -%}
   <div
     class="appai-my-pet"
     id="appai-my-pet-{{ block.id }}"
@@ -36,6 +37,7 @@
     data-product-id="{{ product.id }}"
     data-shop-domain="{{ shop.permanent_domain }}"
     data-variants="{{ product.variants | json | escape }}"
+    data-color-swatches="{{ color_swatches_json | escape }}"
     data-option-names="{{ product.options_with_values | map: 'name' | join: '::' | escape }}"
     data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
     data-page-url="{{ shop.url }}{{ product.url }}"

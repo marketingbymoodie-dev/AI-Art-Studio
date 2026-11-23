@@ -933,6 +933,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       '.appai-my-pet-swatches{display:flex;flex-wrap:wrap;gap:.4em;justify-content:center;margin:.6rem 0;}' +
       '.appai-my-pet-swatches button{border:2px solid transparent;background:#f3f3f3;padding:.35em .7em;border-radius:999px;cursor:pointer;font-size:.85em;color:#222;}' +
       '.appai-my-pet-swatches button[aria-current="true"]{border-color:#111;background:#fff;}' +
+      '.appai-my-pet-swatches[data-group="color"] button[aria-current="true"]{background:var(--appai-swatch, #fff);color:var(--appai-swatch-text, #222);}' +
       // Progress bar — indeterminate to determinate
       '.appai-progress{width:100%;height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:.6rem 0;}' +
       '.appai-progress>span{display:block;height:100%;background:#111;width:0;transition:width .6s linear;}' +
@@ -1061,7 +1062,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
   }
 
   function isCartDrawerOpen() {
+    var published = document.querySelector('theme-drawer#cart-drawer');
+    if (published && (published.hasAttribute('open') || published.isOpen)) return true;
     var selectors = [
+      'theme-drawer#cart-drawer[open]',
       'cart-drawer-component dialog[open]',
       'cart-drawer dialog[open]',
       'cart-notification dialog[open]',
@@ -1089,21 +1093,21 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     if (!target) return false;
     try {
       return !!target.querySelector(
-        'dialog[open], cart-drawer[open], cart-drawer.active, cart-drawer.is-open, cart-drawer-component[open], cart-drawer-component:popover-open, cart-drawer:popover-open, .cart-drawer.active, .cart-drawer.is-open'
+        'theme-drawer[open], dialog[open], cart-drawer[open], cart-drawer.active, cart-drawer.is-open, cart-drawer-component[open], cart-drawer-component:popover-open, cart-drawer:popover-open, .cart-drawer.active, .cart-drawer.is-open'
       );
     } catch (e) {
       return false;
     }
   }
 
-  function refreshCartCount() {
+  function refreshCartCount(animate) {
     fetch('/cart.js', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (cart) {
         if (!cart || typeof cart.item_count !== 'number') return;
         var text = String(cart.item_count);
         var nodes = document.querySelectorAll(
-          '.cart-bubble__text-count, .cart-count-bubble span[aria-hidden="true"], #cart-icon-bubble span[aria-hidden="true"], [data-cart-count], .cart-count, cart-icon span[aria-hidden="true"]'
+          '.cart-bubble__text-count, .cart-count-bubble span[aria-hidden="true"], #cart-icon-bubble span[aria-hidden="true"], [data-cart-count], .cart-count, cart-icon [ref="cartBubbleCount"], cart-icon span[aria-hidden="true"]'
         );
         for (var i = 0; i < nodes.length; i++) {
           var el = nodes[i];
@@ -1112,13 +1116,47 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           if (current && !/^\d+$/.test(current)) continue;
           el.textContent = text;
         }
+        if (animate) notifyCartLinesAdded(cart.item_count);
         myPetLog(TAG, 'cart count', text);
       })
       .catch(function () {});
   }
 
+  function sectionIdOf(el) {
+    var section = el && el.closest ? el.closest('.shopify-section') : null;
+    if (!section || !section.id || section.id.indexOf('shopify-section-') !== 0) return '';
+    return section.id.slice('shopify-section-'.length);
+  }
+
+  function liveCartSectionIds() {
+    var ids = [];
+    function add(el) {
+      var id = sectionIdOf(el);
+      if (id && ids.indexOf(id) === -1) ids.push(id);
+    }
+    add(document.querySelector('theme-drawer#cart-drawer'));
+    add(document.querySelector('cart-icon'));
+    return ids;
+  }
+
+  function notifyCartLinesAdded(count) {
+    var event;
+    try { event = new CustomEvent('shopify:cart:lines-update', { bubbles: true }); } catch (e) { return; }
+    event.action = 'add';
+    event.promise = Promise.resolve({
+      cart: { totalQuantity: count },
+      detail: { itemCount: count, didError: false },
+    });
+    try { document.dispatchEvent(event); } catch (e2) {}
+  }
+
   function openCartDrawerOnce() {
     if (isCartDrawerOpen()) return;
+    var published = document.querySelector('theme-drawer#cart-drawer');
+    if (published && typeof published.open === 'function') {
+      try { published.open(); } catch (e) {}
+      if (isCartDrawerOpen()) return;
+    }
     var selectors = ['cart-drawer-component', 'cart-drawer', 'cart-notification'];
     var methods = ['open', 'showDialog', 'showModal', 'show'];
     for (var s = 0; s < selectors.length; s++) {
@@ -1150,9 +1188,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return;
     }
     cartDrawerRefreshFlight = true;
-    myPetLog(TAG, 'refreshAndOpenCartDrawer start');
+    var wasOpen = isCartDrawerOpen();
+    myPetLog(TAG, 'refreshAndOpenCartDrawer start', wasOpen ? 'already-open' : 'closed');
     discoverCartSections().then(function (available) {
-      if (!available.length) {
+      var names = available.slice();
+      var live = liveCartSectionIds();
+      for (var i = 0; i < live.length; i++) {
+        if (names.indexOf(live[i]) === -1) names.push(live[i]);
+      }
+      if (!names.length) {
         // Theme has none of our known sections — skip per-section fetches
         // and fall straight to the open-once path below.
         myPetLog(TAG, 'no known cart sections — skipping render fetches');
@@ -1161,7 +1205,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // One fetch per known-available section, in parallel. Independent
       // 400/404 handling per section means one bad one can't blank the
       // whole drawer refresh — a Ritual-safe replacement for the bulk call.
-      return Promise.all(available.map(fetchOneSection));
+      return Promise.all(names.map(fetchOneSection));
     })
       .then(function (results) {
         var applied = [];
@@ -1186,8 +1230,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         console.warn(TAG, 'section fetch/apply failed:', err && err.message);
       })
       .then(function () {
-        refreshCartCount();
-        if (isCartDrawerOpen()) {
+        refreshCartCount(!wasOpen);
+        if (wasOpen || isCartDrawerOpen()) {
           myPetLog(TAG, 'drawer already open — left it open');
           cartDrawerRefreshFlight = false;
           return;
@@ -6860,7 +6904,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         last = now;
         var liveForm = liveColourChoice();
         var paintColour = liveForm.colour || effectiveColor;
-        var expected = liveForm.url || state.previewUrlByColor[paintColour];
+        var expected = liveForm.url || urlForColourMap(state.previewUrlByColor, paintColour);
         if (expected) {
           myPetLog(TAG, 'inline form poll: CLIENT CACHE HIT', paintColour);
           state.previewUrl = expected;
@@ -6881,7 +6925,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // /recomposite from completing AFTER the shopper reverted and
       // overwriting the restored stock hero.
       if (!state.inlineHero || !state.renderId || !colorName || !state.inlineApplied) return;
-      var cached = state.previewUrlByColor[colorName];
+      var cached = urlForColourMap(state.previewUrlByColor, colorName);
       if (cached) {
         state.previewUrl = cached;
         reassertColourPreview('swap-inline', colorName, cached);
@@ -8636,6 +8680,34 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       watchVariantChange(modal.body);
     }
 
+    function colourSwatchHex(name) {
+      var want = String(name || '').trim().toLowerCase();
+      if (!want) return '';
+      try {
+        var rows = JSON.parse(root.getAttribute('data-color-swatches') || '[]');
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i] || String(rows[i].name || '').trim().toLowerCase() !== want) continue;
+          var hex = String(rows[i].hex || '').trim();
+          if (/^#?[0-9a-fA-F]{6}$/.test(hex)) return hex.charAt(0) === '#' ? hex : '#' + hex;
+        }
+      } catch (e) {}
+      var fromPage = '';
+      try { fromPage = shirtHex(name); } catch (e2) {}
+      if (fromPage && fromPage.toLowerCase() !== '#f3f3f3') return fromPage;
+      return '';
+    }
+
+    function colourPillStyle(name) {
+      var hex = colourSwatchHex(name);
+      if (!hex) return '';
+      var raw = hex.replace('#', '');
+      var r = parseInt(raw.slice(0, 2), 16);
+      var g = parseInt(raw.slice(2, 4), 16);
+      var b = parseInt(raw.slice(4, 6), 16);
+      var text = (r * 299 + g * 587 + b * 114) / 1000 > 160 ? '#222' : '#fff';
+      return ' style="background:' + hex + ';color:' + text + ';--appai-swatch:' + hex + ';--appai-swatch-text:' + text + '"';
+    }
+
     function renderPreviewBody(body, previewUrl) {
       var colors = allColorOptions(root);
       var sizes = allSizeOptions(root);
@@ -8653,6 +8725,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         for (var i = 0; i < colors.length; i++) {
           var isCurrentC = String(colors[i]) === String(state.swatchColor);
           colorSwatchesHtml += '<button type="button" data-action="swatch-color" data-color="' + colors[i].replace(/"/g, '&quot;') + '"' +
+            colourPillStyle(colors[i]) +
             (isCurrentC ? ' aria-current="true"' : '') + '>' + colors[i] + '</button>';
         }
         colorSwatchesHtml += '</div>';
@@ -8811,7 +8884,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
 
       // Bug A — client-side cache hit: repeat swap on a colour we've already
       // composited in this modal session is a zero-network, single-paint swap.
-      var cached = state.previewUrlByColor[colorName];
+      var cached = urlForColourMap(state.previewUrlByColor, colorName);
       if (cached && img) {
         assignImgSrc(img, cached);
         state.previewUrl = cached;

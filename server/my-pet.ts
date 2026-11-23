@@ -12,12 +12,14 @@
  */
 import { createHash, randomUUID } from "crypto";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { readPublishColorTicks } from "@shared/cataloguePublish";
 import { catalogueShopDomain, STAGING_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import {
   designCandidates,
   designProducts,
   generationEvents,
   generationJobs,
+  mockupLibraryColours,
   mockupPanels,
   myPetEmailCaptures,
   myPetPetPhotos,
@@ -41,7 +43,7 @@ import {
   type MyPetSettings,
 } from "@shared/myPetSettings";
 import { db } from "./db";
-import { chooseMyPetPanelId } from "./my-pet-panel";
+import { chooseMyPetPanelId, myPetCompositeColours, resolveMyPetCompositeColor, type MyPetColour, type MyPetColourPalette } from "./my-pet-panel";
 import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
 import { CREDENTIALS, REPLICATE_ROUTE_MODELS, readPlatformReplicateToken } from "./generation-providers";
 import { generationErrorCategory } from "./generation-events";
@@ -218,6 +220,7 @@ export type MyPetEligibleCandidate = {
   artworkPath: string;
   panelId: string;
   selectedColors: Array<{ name: string; hex: string }>;
+  publishColorTicks: Record<string, string[]>;
 };
 
 export class MyPetCandidateIneligibleError extends Error {}
@@ -272,13 +275,49 @@ export async function getEligibleCandidateForMyPet(shop: string, candidateId: st
     artworkPath: row.artworkPath,
     panelId: row.panelId,
     selectedColors: colors,
+    publishColorTicks: readPublishColorTicks(row.publishColorTicks),
   };
 }
 
-function resolveColorHex(candidate: MyPetEligibleCandidate, colorName: string | null | undefined): { name: string; hex: string } {
-  const wanted = String(colorName || "").trim().toLowerCase();
-  const match = wanted ? candidate.selectedColors.find((c) => c.name.trim().toLowerCase() === wanted) : undefined;
-  return match || candidate.selectedColors[0];
+function preferProducedSceneColours(rows: Array<{ name: string; hex: string; kind: string }>): MyPetColour[] {
+  const byName = new Map<string, { name: string; hex: string; kind: string }>();
+  for (const row of rows) {
+    const key = row.name.trim().toLowerCase();
+    if (!key) continue;
+    const prev = byName.get(key);
+    if (!prev || (prev.kind !== "produced" && row.kind === "produced")) byName.set(key, row);
+  }
+  return [...byName.values()].map((row) => ({ name: row.name, hex: row.hex }));
+}
+
+async function myPetColourPalette(productTypeId: number, panelId: string, candidate: MyPetEligibleCandidate): Promise<MyPetColourPalette> {
+  const [sceneRows, libraryRows] = await Promise.all([
+    db
+      .select({
+        name: mockupPanels.garmentColor,
+        hex: mockupPanels.garmentHex,
+        kind: mockupPanels.kind,
+      })
+      .from(mockupPanels)
+      .where(and(eq(mockupPanels.productTypeId, productTypeId), eq(mockupPanels.view, "front"), eq(mockupPanels.panelId, panelId)))
+      .orderBy(desc(mockupPanels.createdAt)),
+    db
+      .select({ name: mockupLibraryColours.name, hex: mockupLibraryColours.hex })
+      .from(mockupLibraryColours)
+      .where(and(eq(mockupLibraryColours.productTypeId, productTypeId), eq(mockupLibraryColours.active, true))),
+  ]);
+  return {
+    publishTicks: candidate.publishColorTicks[String(productTypeId)] || [],
+    sceneColours: preferProducedSceneColours(sceneRows),
+    libraryColours: libraryRows,
+    selectedColors: candidate.selectedColors,
+  };
+}
+
+function rememberColourUrl(map: Record<string, string>, requestedName: string | null | undefined, colour: MyPetColour, url: string) {
+  map[colour.name] = url;
+  const requested = String(requestedName || "").trim();
+  if (requested) map[requested] = url;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -465,7 +504,6 @@ export async function generateMyPetRender(args: {
     throw new Error("Pet photo not found — please upload again");
   }
   const settings = await getMyPetSettings(args.shop);
-  const color = resolveColorHex(args.candidate, args.colorName);
   const prompt = buildMyPetPrompt(settings, {
     species: args.candidate.species,
     artStyle: args.candidate.artStyle,
@@ -565,6 +603,9 @@ export async function generateMyPetRender(args: {
 
   const productType = await composeProductType(args.shop, args.shopifyProductId);
   const panelId = await panelIdForProductType(productType.id, args.candidate.panelId);
+  const palette = await myPetColourPalette(productType.id, panelId, args.candidate);
+  const color = resolveMyPetCompositeColor({ ...palette, requestedName: args.colorName });
+  if (!color) throw new MyPetBlankMissingError();
   // STAGING-104 — reverted staging-103's forceRecolour workaround after an
   // offline trace proved the produced path on real staging data (render
   // 25a79e80 / candidate 07a0d57a) composites the Sunburst output correctly
@@ -629,7 +670,7 @@ export async function generateMyPetRender(args: {
   // chosen one from returning. Each entry we succeed in composing goes
   // straight into the server-side cache too, so a cross-session restore
   // path still hits CACHE HIT on recomposite.
-  const otherColors = args.candidate.selectedColors.filter(
+  const otherColors = myPetCompositeColours({ ...palette, requestedName: args.colorName }).filter(
     (c) => c.name.trim().toLowerCase() !== color.name.trim().toLowerCase(),
   );
   const precomposeStarted = Date.now();
@@ -677,7 +718,8 @@ export async function generateMyPetRender(args: {
       return [other.name, url] as const;
     }),
   );
-  const previewUrlsByColor: Record<string, string> = { [color.name]: previewUrl };
+  const previewUrlsByColor: Record<string, string> = {};
+  rememberColourUrl(previewUrlsByColor, args.colorName, color, previewUrl);
   let precomposeFailures = 0;
   for (const r of otherResults) {
     if (r.status === "fulfilled") {
@@ -855,7 +897,11 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     throw new Error("Design not found");
   }
   const candidate = await getEligibleCandidateForMyPet(args.shop, render.candidateId);
-  const color = resolveColorHex(candidate, args.colorName);
+  const productType = await composeProductType(args.shop, render.shopifyProductId);
+  const panelId = await panelIdForProductType(productType.id, candidate.panelId);
+  const palette = await myPetColourPalette(productType.id, panelId, candidate);
+  const color = resolveMyPetCompositeColor({ ...palette, requestedName: args.colorName });
+  if (!color) throw new MyPetBlankMissingError();
   const job = render.jobId ? await storage.getGenerationJob(render.jobId) : undefined;
   const designState = (job?.designState as Record<string, unknown>) || {};
   const editedArtworkPath = String(designState.editedArtworkPath || "");
@@ -886,6 +932,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       shop: args.shop,
       renderId: render.id,
       candidateId: render.candidateId,
+      shopifyProductId: render.shopifyProductId,
       chosenColorName: color.name,
       chosenPreviewPath: previewPath,
     });
@@ -896,11 +943,10 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
         `mapSize=${Object.keys(previewUrlsByColor).length}`,
     );
     await rememberRenderSelection(render.id, color.name, null);
+    rememberColourUrl(previewUrlsByColor, args.colorName, color, previewUrl);
     return { previewUrl, colorName: color.name, previewUrlsByColor };
   }
 
-  const productType = await composeProductType(args.shop, render.shopifyProductId);
-  const panelId = await panelIdForProductType(productType.id, candidate.panelId);
   // STAGING-104 — matches generate's revert of forceRecolour. Produced path
   // gives photorealistic per-colour panel photo output; the same code path
   // generate uses, so recomposite stays identity-equal (modulo signed URL
@@ -931,6 +977,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
     shop: args.shop,
     renderId: render.id,
     candidateId: render.candidateId,
+    shopifyProductId: render.shopifyProductId,
     chosenColorName: color.name,
     chosenPreviewPath: previewPath,
   });
@@ -942,6 +989,7 @@ export async function recompositeMyPetRender(args: { shop: string; deviceKey: st
       `mapSize=${Object.keys(previewUrlsByColor).length}`,
   );
   await rememberRenderSelection(render.id, color.name, null);
+  rememberColourUrl(previewUrlsByColor, args.colorName, color, previewUrl);
 
   return { previewUrl, colorName: color.name, previewUrlsByColor };
 }
@@ -1115,6 +1163,7 @@ async function collectExistingPreviewUrlsByColor(args: {
   shop: string;
   renderId: string;
   candidateId: string;
+  shopifyProductId: string | null;
   chosenColorName: string | null;
   chosenPreviewPath: string;
 }): Promise<Record<string, string>> {
@@ -1136,11 +1185,26 @@ async function collectExistingPreviewUrlsByColor(args: {
   try {
     const [candidate] = await db.select().from(designCandidates).where(eq(designCandidates.id, args.candidateId));
     if (!candidate || candidate.shopDomain !== args.shop) return map;
-    const colors = Array.isArray(candidate.selectedColors)
+    const storedColors = Array.isArray(candidate.selectedColors)
       ? (candidate.selectedColors as Array<{ name: string; hex: string }>)
       : [];
+    let names = storedColors.map((color) => color.name);
+    if (args.shopifyProductId && candidate.panelId) {
+      try {
+        const eligible = await getEligibleCandidateForMyPet(args.shop, candidate.id);
+        const productType = await composeProductType(args.shop, args.shopifyProductId);
+        const panelId = await panelIdForProductType(productType.id, eligible.panelId);
+        const palette = await myPetColourPalette(productType.id, panelId, eligible);
+        const composable = myPetCompositeColours({ ...palette, requestedName: args.chosenColorName });
+        if (composable.length) names = composable.map((color) => color.name);
+      } catch (err) {
+        console.warn(`[my-pet] restore: type colour list failed for render ${args.renderId.slice(0, 8)}:`, (err as Error)?.message);
+      }
+    }
     const chosenLc = (args.chosenColorName || "").trim().toLowerCase();
-    const others = colors.filter((c) => c.name && c.name.trim().toLowerCase() !== chosenLc);
+    const others = names
+      .filter((name) => name && name.trim().toLowerCase() !== chosenLc)
+      .map((name) => ({ name }));
     const probed = await Promise.all(
       others.map(async (c) => {
         const path = myPetPreviewPathForColor(args.renderId, c.name);
@@ -1181,6 +1245,7 @@ export async function resolveMyPetRenderById(args: {
     shop: args.shop,
     renderId: render.id,
     candidateId: render.candidateId,
+    shopifyProductId: render.shopifyProductId,
     chosenColorName: render.colorId,
     chosenPreviewPath: render.previewPath,
   });
@@ -1461,6 +1526,7 @@ export async function resolveMyPetEmailToken(token: string): Promise<{
     shop: render.shopDomain,
     renderId: render.id,
     candidateId: render.candidateId,
+    shopifyProductId: render.shopifyProductId,
     chosenColorName: render.colorId,
     chosenPreviewPath: render.previewPath,
   });
