@@ -5,6 +5,7 @@ import {
   capRefusal,
   catalogueCollectionRules,
   catalogueListingTags,
+  comfortColorsTagForListing,
   myPetTagForListing,
   catalogueTags,
   catalogueTypeTag,
@@ -85,6 +86,25 @@ describe("flywheel promote decisions", () => {
       myPetEnabled: false,
     })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-81"]);
     expect(myPetTagForListing(["aas-studio-product", "aas-type-82"], true)).toEqual(["aas-studio-product", "aas-type-82"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 91,
+      blueprintId: 706,
+      providerId: 99,
+      myPetEnabled: true,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-91", "my-pet", "comfort-colors"]);
+    expect(catalogueListingTags({
+      artStyle: "woodcut",
+      species: "pug",
+      humourOperator: "pp-owner-vs-pet",
+      productTypeId: 90,
+      blueprintId: 145,
+      providerId: 99,
+    })).toEqual(["woodcut", "pug", "pp-owner-vs-pet", "aas-type-90"]);
+    expect(comfortColorsTagForListing(["aas-studio-product", "aas-type-91"], 706, 99)).toEqual(["aas-studio-product", "aas-type-91"]);
+    expect(comfortColorsTagForListing(["woodcut", "aas-type-91"], 706, 29)).toEqual(["woodcut", "aas-type-91"]);
     expect(catalogueCollectionRules(82)).toEqual({
       appliedDisjunctively: false,
       rules: [

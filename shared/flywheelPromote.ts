@@ -7,6 +7,7 @@
  * visibility of a shadow SKU.
  */
 import { printifyColorIdForMockup } from "./mockupBundle";
+import { CATALOGUE_SHIRT_PROVIDER_ID, COMFORT_COLORS_BLUEPRINT_ID } from "./printPlacement";
 import { slugPrintifyColorId } from "./printifyColorSlug";
 import { resolveVariantFromMap, type VariantMap } from "./variantMapResolve";
 
@@ -35,6 +36,9 @@ export const CATALOGUE_STUDIO_TAG = "aas-studio-product";
 /** Smart collection of designs whose My Pet switch is on. Never applied to a studio base. */
 export const MY_PET_TAG = "my-pet";
 
+/** Comfort Colors 1717 listings. Never applied to a studio base. */
+export const COMFORT_COLORS_TAG = "comfort-colors";
+
 /** Add or remove the My Pet tag. A studio base never receives it. */
 export function myPetTagForListing(tags: string[], enabled: boolean): string[] {
   const without = tags.filter((tag) => tag !== MY_PET_TAG);
@@ -49,20 +53,35 @@ export function catalogueTypeTag(productTypeId: number | null | undefined): stri
   return `aas-type-${id}`;
 }
 
+/** Add the Comfort Colors tag only for blueprint 706, provider 99. A studio base never receives it. */
+export function comfortColorsTagForListing(
+  tags: string[],
+  blueprintId: number | null | undefined,
+  providerId: number | null | undefined,
+): string[] {
+  const without = tags.filter((tag) => tag !== COMFORT_COLORS_TAG);
+  const comfort = Number(blueprintId) === COMFORT_COLORS_BLUEPRINT_ID
+    && Number(providerId) === CATALOGUE_SHIRT_PROVIDER_ID;
+  if (!comfort || without.includes(CATALOGUE_STUDIO_TAG)) return without;
+  return [...without, COMFORT_COLORS_TAG];
+}
+
 /** Style tags plus the shirt-type tag. Printify keeps catalogueTags only. */
 export function catalogueListingTags(row: {
   artStyle: string;
   species: string;
   humourOperator: string;
   productTypeId?: number | null;
+  blueprintId?: number | null;
+  providerId?: number | null;
   /** Omitted leaves the tag list alone. False removes my-pet. True adds it. */
   myPetEnabled?: boolean;
 }): string[] {
   const tags = catalogueTags(row);
   const typeTag = catalogueTypeTag(row.productTypeId);
   const list = typeTag ? [...tags, typeTag] : tags;
-  if (typeof row.myPetEnabled !== "boolean") return list;
-  return myPetTagForListing(list, row.myPetEnabled);
+  const withPet = typeof row.myPetEnabled !== "boolean" ? list : myPetTagForListing(list, row.myPetEnabled);
+  return comfortColorsTagForListing(withPet, row.blueprintId, row.providerId);
 }
 
 /** Smart-collection rules: this shirt type, and never an unlisted studio product. */
