@@ -18,8 +18,13 @@ import {
   type ShopifyAppCredentials,
 } from "./shopify-app-credentials";
 
-/** Refresh ~2 minutes before expiry to avoid mid-request 401s. */
-const REFRESH_SKEW_MS = 2 * 60 * 1000;
+/**
+ * Shopify expiring offline tokens last about an hour. Renew during the last
+ * 15 minutes so a quiet shop is refreshed before the next publish, not after
+ * Shopify has already rejected the access token.
+ */
+const REFRESH_SKEW_MS = 15 * 60 * 1000;
+const TOKEN_ALERT_GAP_MS = 6 * 60 * 60 * 1000;
 
 export type ShopifyOfflineTokenPayload = {
   access_token: string;
@@ -211,6 +216,67 @@ function coerceExpiryDate(value: Date | string | null | undefined): Date | null 
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/** A failed early refresh can still use the access token until its stored expiry. */
+export function keepUsableTokenAfterRefreshFailure(args: {
+  forceRefresh: boolean;
+  expiresAt: Date | string | null;
+  hasAccessToken: boolean;
+  now?: number;
+}): boolean {
+  if (args.forceRefresh || !args.hasAccessToken) return false;
+  const expires = coerceExpiryDate(args.expiresAt);
+  if (!expires) return false;
+  return expires.getTime() > (args.now ?? Date.now());
+}
+
+const tokenAlertAt = new Map<string, number>();
+
+async function alertTokenRefreshFailure(shop: string, installationId: number, error: string): Promise<void> {
+  const now = Date.now();
+  const previous = tokenAlertAt.get(shop) || 0;
+  if (now - previous < TOKEN_ALERT_GAP_MS) return;
+  tokenAlertAt.set(shop, now);
+  const safe = error.replace(/shpr\w+|shpc\w+|shpat\w+/gi, "[redacted]").slice(0, 300);
+  console.error(`[shopify-token] ALERT refresh failed for ${shop}: ${safe}`);
+  let emailSent = false;
+  const to = (process.env.FOUNDER_ALERT_EMAIL || process.env.OOS_REPORT_EMAIL || "").trim();
+  const resendKey = process.env.RESEND_API_KEY;
+  if (to && resendKey) {
+    try {
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: process.env.SUPPORT_EMAIL_FROM || process.env.RESEND_FROM || "AI Art Studio <onboarding@resend.dev>",
+          to,
+          subject: `[AppAI] Shopify token refresh failed · ${shop}`,
+          text: [
+            `${shop} could not refresh its Shopify Admin token.`,
+            "The app was not reinstalled.",
+            `Error: ${safe}`,
+          ].join("\n"),
+        }),
+      });
+      emailSent = resp.ok;
+      if (!resp.ok) console.error(`[shopify-token] alert email HTTP ${resp.status} for ${shop}`);
+    } catch (err: any) {
+      console.error(`[shopify-token] alert email failed for ${shop}:`, err?.message || err);
+    }
+  } else {
+    console.error(`[shopify-token] FOUNDER_ALERT_EMAIL or RESEND_API_KEY missing — refresh failure for ${shop} was not emailed`);
+  }
+  try {
+    await storage.insertFounderAlert({
+      installationId,
+      shopDomain: shop,
+      alertType: "shopify_token_refresh_failed",
+      emailSent,
+    });
+  } catch (err: any) {
+    console.error(`[shopify-token] founder alert row failed for ${shop}:`, err?.message || err);
+  }
+}
+
 function needsAccessRefresh(installation: ShopifyInstallation): boolean {
   const expiresAt = coerceExpiryDate(installation.accessTokenExpiresAt);
   if (!expiresAt) return false;
@@ -263,7 +329,23 @@ export type EnsureOfflineTokenOptions = {
  * Migrates legacy non-expiring tokens, refreshes expired expiring tokens, and
  * falls back to session-token exchange when the stored offline token is dead.
  */
+const offlineRefreshInflight = new Map<string, Promise<EnsureOfflineTokenResult>>();
+
 export async function ensureValidOfflineAccessToken(
+  installation: ShopifyInstallation,
+  options: EnsureOfflineTokenOptions = {},
+): Promise<EnsureOfflineTokenResult> {
+  const shop = installation.shopDomain;
+  const existing = offlineRefreshInflight.get(shop);
+  if (existing) return existing;
+  const run = refreshOneOfflineAccessToken(installation, options).finally(() => {
+    if (offlineRefreshInflight.get(shop) === run) offlineRefreshInflight.delete(shop);
+  });
+  offlineRefreshInflight.set(shop, run);
+  return run;
+}
+
+async function refreshOneOfflineAccessToken(
   installation: ShopifyInstallation,
   options: EnsureOfflineTokenOptions = {},
 ): Promise<EnsureOfflineTokenResult> {
@@ -319,7 +401,8 @@ export async function ensureValidOfflineAccessToken(
   }
 
   let refreshedThisCall = false;
-  if ((forceRefresh || needsAccessRefresh(current)) && hasRefreshToken(current)) {
+  const accessMissing = !current.accessToken || current.accessToken === "NEEDS_RECONNECT";
+  if ((forceRefresh || accessMissing || needsAccessRefresh(current)) && hasRefreshToken(current)) {
     console.log(`[shopify-token] Refreshing offline token for ${shop}${forceRefresh ? " (forced)" : ""}`);
     const refreshed = await refreshOfflineToken(shop, current.refreshToken!, current.shopifyApp);
     if (refreshed.ok) {
@@ -335,10 +418,20 @@ export async function ensureValidOfflineAccessToken(
       refreshedThisCall = true;
     } else {
       console.error(`[shopify-token] Refresh failed for ${shop}:`, refreshed.status, refreshed.error);
+      void alertTokenRefreshFailure(shop, current.id, `HTTP ${refreshed.status}: ${refreshed.error}`);
+      const refreshExpires = coerceExpiryDate(current.refreshTokenExpiresAt);
+      const refreshAlive = !refreshExpires || refreshExpires.getTime() > Date.now();
+      if (keepUsableTokenAfterRefreshFailure({
+        forceRefresh,
+        expiresAt: current.accessTokenExpiresAt,
+        hasAccessToken: !!current.accessToken && current.accessToken !== "NEEDS_RECONNECT",
+      })) {
+        return { ok: true, accessToken: current.accessToken, installation: current };
+      }
       if (!sessionToken) {
         return {
           ok: false,
-          needsReinstall: refreshed.status === 401 || refreshed.status === 403,
+          needsReinstall: !refreshAlive,
           error: `Failed to refresh offline token (${refreshed.status}): ${refreshed.error}`,
         };
       }
