@@ -1979,7 +1979,12 @@ function normalizeMyshopifyShopDomain(shop: string): string {
 async function getAuthorizedInstallation(shop: string) {
   const inst = await storage.getShopifyInstallationByShop(shop);
   if (!inst) return null;
-  if (inst.status === "active") return inst;
+  if (inst.refreshToken && inst.status !== "uninstalled") {
+    const ready = await ensureValidOfflineAccessToken(inst);
+    if (ready.ok) return ready.installation;
+    console.error(`[shopify-token] ${shop} not refreshed: ${ready.error}`);
+  }
+  if (inst.status === "active" && inst.accessToken && inst.accessToken !== "NEEDS_RECONNECT") return inst;
 
   // Status is stale — try to self-heal if a token is present.
   if (!inst.accessToken || inst.accessToken === "NEEDS_RECONNECT") {
@@ -14445,6 +14450,22 @@ ${orientationExtra}
   setInterval(() => {
     runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
   }, 60 * 60 * 1000);
+
+  // Expiring Shopify offline tokens last about an hour. Renew them before that,
+  // including while nobody is publishing. A failed refresh emails once per process
+  // and again after six hours. It does not reinstall the app.
+  if (process.env.NODE_ENV !== "test") {
+    setTimeout(() => {
+      import("./shopify-token-refresh-job")
+        .then((m) => m.refreshExpiringShopifyTokens())
+        .catch((e: Error) => console.error("[shopify-token] Startup refresh error:", e));
+    }, 20 * 1000);
+    setInterval(() => {
+      import("./shopify-token-refresh-job")
+        .then((m) => m.refreshExpiringShopifyTokens())
+        .catch((e: Error) => console.error("[shopify-token] Interval refresh error:", e));
+    }, 5 * 60 * 1000);
+  }
 
   // base-first mint queue. No-op while every shop stays on shadow-direct.
   if (process.env.NODE_ENV !== "test") {

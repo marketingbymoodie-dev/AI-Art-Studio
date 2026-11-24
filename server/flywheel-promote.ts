@@ -52,6 +52,7 @@ import {
   deleteProductRestCompat,
 } from "./shopify-product-graphql";
 import { storage } from "./storage";
+import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 import { paceVendor, shopifyGraphqlErrors, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
 const PRINTIFY_API = "https://api.printify.com/v1";
@@ -510,7 +511,12 @@ export async function promoteCatalogueCandidate(args: {
   if (!cataloguePublishAllowedForShop(shop) || !cataloguePublishAllowedForShop(candidate?.shopDomain || shop)) {
     throw new PromoteRefusal([CATALOGUE_PUBLISH_SHOP_MESSAGE]);
   }
-  const installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
+  let installation = shop ? await storage.getShopifyInstallationByShop(shop) : null;
+  if (installation?.refreshToken) {
+    const ready = await ensureValidOfflineAccessToken(installation);
+    if (ready.ok) installation = ready.installation;
+    else console.error(`[shopify-token] catalogue publish for ${shop} kept the stored token: ${ready.error}`);
+  }
   const { cataloguePrintifyMerchant } = await import("./operatorCatalogue");
   const merchant = await cataloguePrintifyMerchant(typeRow.merchantId, shop);
 

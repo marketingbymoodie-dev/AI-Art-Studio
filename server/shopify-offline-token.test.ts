@@ -1,5 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { offlineTokenFieldsFromPayload } from "./shopify-offline-token";
+import { keepUsableTokenAfterRefreshFailure, offlineTokenFieldsFromPayload } from "./shopify-offline-token";
+
+describe("keepUsableTokenAfterRefreshFailure", () => {
+  const now = Date.parse("2026-11-24T21:00:00Z");
+
+  it("keeps an access token that has not reached its stored expiry", () => {
+    expect(keepUsableTokenAfterRefreshFailure({
+      forceRefresh: false,
+      expiresAt: "2026-11-24T21:10:00Z",
+      hasAccessToken: true,
+      now,
+    })).toBe(true);
+  });
+
+  it("does not keep an expired token or a forced refresh", () => {
+    expect(keepUsableTokenAfterRefreshFailure({
+      forceRefresh: false,
+      expiresAt: "2026-11-24T20:00:00Z",
+      hasAccessToken: true,
+      now,
+    })).toBe(false);
+    expect(keepUsableTokenAfterRefreshFailure({
+      forceRefresh: true,
+      expiresAt: "2026-11-24T21:10:00Z",
+      hasAccessToken: true,
+      now,
+    })).toBe(false);
+  });
+});
 
 describe("offlineTokenFieldsFromPayload", () => {
   it("maps expiring offline token response fields", () => {
