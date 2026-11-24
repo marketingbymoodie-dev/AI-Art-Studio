@@ -4,7 +4,7 @@ Tick an item only when it is done. A production promotion does not start while a
 
 ## Petposterous launch
 
-- [ ] After the Petposterous promotion is on the production Railway backend, switch the Petposterous custom app off the staging backend. `shopify.app.petposterous.toml` still points `application_url`, the app proxy, and the auth redirect URLs at `https://ai-art-studio-staging.up.railway.app`. Move those to the production app URL (`https://appai-pod-production.up.railway.app` in `shopify.app.production.toml`), deploy that config, and confirm the Petposterous store is talking to production. Do this after the promotion, so the store is not pointed at production before that backend is ready.
+- [x] `shopify.app.petposterous.toml` points `application_url`, the app proxy, and the auth redirect URLs at `https://appai-pod-production.up.railway.app`. The Petposterous store uses that production backend.
 
 ## Commercial app launch (merchants)
 
