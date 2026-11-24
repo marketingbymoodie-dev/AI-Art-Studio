@@ -22,6 +22,16 @@ export function isCheckoutPublication(name: string): boolean {
   return !isPosPublication(name);
 }
 
+/** Shadow products sell through the theme cart. Every other channel stays off. */
+export function shadowPublicationPlan(publications: PublicationNode[]): {
+  onlineStore: PublicationNode | null;
+  others: PublicationNode[];
+} {
+  const onlineStore = publications.find((pub) => isOnlineStorePublication(pub.name)) || null;
+  const others = publications.filter((pub) => !onlineStore || pub.id !== onlineStore.id);
+  return { onlineStore, others };
+}
+
 export function partitionPublications(publications: PublicationNode[]): {
   checkout: PublicationNode[];
   pos: PublicationNode[];
@@ -142,9 +152,92 @@ async function adminGraphql<T>(
   }
 }
 
+async function listPublications(shop: string, accessToken: string): Promise<PublicationNode[]> {
+  const pubData = await adminGraphql<{
+    publications: { edges: Array<{ node: PublicationNode }> };
+  }>(shop, accessToken, `{ publications(first: 50) { edges { node { id name } } } }`);
+  return (pubData.publications?.edges || []).map((edge) => edge.node).filter((node) => node?.id);
+}
+
+async function unpublishOtherChannels(
+  shop: string,
+  accessToken: string,
+  productGid: string,
+  others: PublicationNode[],
+): Promise<string[]> {
+  const unpublished: string[] = [];
+  for (const channel of others) {
+    try {
+      await adminGraphql(
+        shop,
+        accessToken,
+        `mutation publishableUnpublish($id: ID!, $input: [PublicationInput!]!) {
+          publishableUnpublish(id: $id, input: $input) {
+            userErrors { message }
+          }
+        }`,
+        { id: productGid, input: [{ publicationId: channel.id }] },
+      );
+      unpublished.push(channel.name);
+    } catch (err: any) {
+      console.warn(
+        `[shopify-publications] unpublish ${channel.name} failed:`,
+        err?.message || err,
+      );
+    }
+  }
+  return unpublished;
+}
+
+/** Remove POS, Shop, and every channel that is not Online Store. Does not republish. */
+export async function unpublishShadowFromOtherChannels(
+  shop: string,
+  accessToken: string,
+  productId: string | number,
+): Promise<string[]> {
+  const numeric = String(productId).replace(/\D/g, "");
+  const { others } = shadowPublicationPlan(await listPublications(shop, accessToken));
+  return unpublishOtherChannels(shop, accessToken, `gid://shopify/Product/${numeric}`, others);
+}
+
+/** Online Store only. Point of Sale, Shop, and any other channel are removed. */
+export async function publishShadowToOnlineStoreOnly(
+  shop: string,
+  accessToken: string,
+  productId: string | number,
+): Promise<{ published: string[]; unpublished: string[] }> {
+  const numeric = String(productId).replace(/\D/g, "");
+  const productGid = `gid://shopify/Product/${numeric}`;
+  const { onlineStore, others } = shadowPublicationPlan(await listPublications(shop, accessToken));
+  const published: string[] = [];
+  const unpublished: string[] = [];
+  if (!onlineStore) {
+    throw new ShadowNotOnStorefrontError("Shop has no Online Store publication", numeric);
+  }
+  const result = await adminGraphql<{
+    publishablePublish: { userErrors: Array<{ message: string }> };
+  }>(
+    shop,
+    accessToken,
+    `mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        userErrors { message }
+      }
+    }`,
+    { id: productGid, input: [{ publicationId: onlineStore.id }] },
+  );
+  const errs = result.publishablePublish?.userErrors || [];
+  if (errs.length && !errs.some((err) => /already/i.test(err.message))) {
+    throw new Error(errs.map((err) => err.message).join("; ") || "Online Store publish failed");
+  }
+  published.push(onlineStore.name);
+  unpublished.push(...(await unpublishOtherChannels(shop, accessToken, productGid, others)));
+  return { published, unpublished };
+}
+
 /**
- * Publish a product to Online Store + Storefront API / custom-app channels.
- * Only unpublish from Point of Sale so shadows stay hidden from POS.
+ * Creator checkout still needs its custom-app channel.
+ * Storefront shadow products use publishShadowToOnlineStoreOnly instead.
  */
 export async function publishProductToCheckoutChannels(
   shop: string,
@@ -152,11 +245,7 @@ export async function publishProductToCheckoutChannels(
   productId: string | number,
 ): Promise<{ published: string[]; unpublished: string[] }> {
   const productGid = `gid://shopify/Product/${String(productId).replace(/\D/g, "")}`;
-  const pubData = await adminGraphql<{
-    publications: { edges: Array<{ node: PublicationNode }> };
-  }>(shop, accessToken, `{ publications(first: 50) { edges { node { id name } } } }`);
-
-  const nodes = (pubData.publications?.edges || []).map((e) => e.node);
+  const nodes = await listPublications(shop, accessToken);
   const { checkout, pos } = partitionPublications(nodes);
   const published: string[] = [];
   const unpublished: string[] = [];
@@ -368,8 +457,8 @@ async function repairShadowProductStatus(opts: {
 }
 
 /**
- * Publish to checkout channels and ASSERT the product is on Online Store.
- * If Admin already reports the product on Online Store, do not republish —
+ * Publish a shadow to Online Store only and remove every other channel.
+ * If Admin already reports the product on Online Store, do not republish it —
  * Ajax replica lag is a storefront poll, not another Admin write.
  */
 export async function ensureProductOnOnlineStore(opts: {
@@ -388,8 +477,9 @@ export async function ensureProductOnOnlineStore(opts: {
     productId,
   });
   if (before.live) {
+    const unpublished = await unpublishShadowFromOtherChannels(opts.shop, opts.accessToken, productId);
     console.log(
-      `[shopify-publications] Product ${productId} already live on Online Store (status=${before.status} publishedAt=${before.publishedAt}) — skip republish`,
+      `[shopify-publications] Product ${productId} already live on Online Store (status=${before.status}) — kept Online Store, removed ${unpublished.join(", ") || "no other channels"}`,
     );
     return { published: [], skipped: true };
   }
@@ -407,7 +497,7 @@ export async function ensureProductOnOnlineStore(opts: {
     });
   }
 
-  const published = await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
+  const published = await publishShadowToOnlineStoreOnly(opts.shop, opts.accessToken, productId);
   let after = await readProductOnlineStoreState({
     shop: opts.shop,
     accessToken: opts.accessToken,
@@ -426,7 +516,7 @@ export async function ensureProductOnOnlineStore(opts: {
         fromStatus: after.status,
       });
     }
-    await publishProductToCheckoutChannels(opts.shop, opts.accessToken, productId);
+    await publishShadowToOnlineStoreOnly(opts.shop, opts.accessToken, productId);
     after = await readProductOnlineStoreState({
       shop: opts.shop,
       accessToken: opts.accessToken,

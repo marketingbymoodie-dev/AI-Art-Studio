@@ -5,6 +5,7 @@ import {
   isMerchandiseMissingError,
   isOnlineStorePublication,
   isPosPublication,
+  shadowPublicationPlan,
   isStorefrontLiveStatus,
   partitionPublications,
   productIsOnOnlineStore,
@@ -45,6 +46,21 @@ describe("publication classification", () => {
       "Headless",
     ]);
     expect(pos.map((c) => c.name)).toEqual(["Point of Sale"]);
+  });
+
+  it("keeps a shadow on Online Store and drops POS, Shop, and other channels", () => {
+    const plan = shadowPublicationPlan([
+      { id: "1", name: "Online Store" },
+      { id: "2", name: "Point of Sale" },
+      { id: "3", name: "Shop" },
+      { id: "4", name: "AI Art Studio (Staging)" },
+    ]);
+    expect(plan.onlineStore?.name).toBe("Online Store");
+    expect(plan.others.map((channel) => channel.name)).toEqual([
+      "Point of Sale",
+      "Shop",
+      "AI Art Studio (Staging)",
+    ]);
   });
 });
 
