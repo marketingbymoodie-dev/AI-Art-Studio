@@ -193,9 +193,17 @@ export type CandidateDetailsForPrompt = {
  * the locked print rules last. Image 1 is the finished design, Image 2 is
  * the shopper's pet photo. The locked blocks are not part of the saved base.
  */
+export type MyPetPromptNotes = {
+  /** Cheap vision read of the shopper's photo. Empty when that pass did not run. */
+  petDescription?: string;
+  /** Stored pose of the original design. Empty when the design has no note yet. */
+  poseNote?: string;
+};
+
 export function buildMyPetPrompt(
   settings: Pick<MyPetSettings, "basePrompt" | "styleTweaks">,
   candidate: CandidateDetailsForPrompt,
+  notes?: MyPetPromptNotes,
 ): string {
   const lines: string[] = [];
   lines.push("Image 1 is the finished design. Image 2 is the shopper's pet.");
@@ -210,6 +218,18 @@ export function buildMyPetPrompt(
   if (details.length) lines.push(details.join(" "));
   lines.push(MY_PET_LOCKED_EXPRESSION_RULE);
   lines.push(MY_PET_LOCKED_IDENTITY_RULE);
+  const pose = notes?.poseNote?.trim() || "";
+  if (pose) {
+    lines.push(
+      `DESIGN POSE: ${pose} Draw only those visible parts, in the shopper's pet's colouring. Do not invent a head, leg, paw, ear, or tail that this pose says is hidden.`,
+    );
+  }
+  const pet = notes?.petDescription?.trim() || "";
+  if (pet) {
+    lines.push(
+      `SHOPPER'S PET: ${pet} Unseen parts, when the design pose shows them, follow this breed and coat. Do not copy the photo's expression.`,
+    );
+  }
   lines.push(MY_PET_LOCKED_PRINT_RULES);
   return lines.join(" ");
 }

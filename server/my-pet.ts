@@ -42,6 +42,7 @@ import {
   type MyPetRenderParams,
   type MyPetSettings,
 } from "@shared/myPetSettings";
+import { myPetQualityRetryAllowed, parsePetMask, type PetMask } from "@shared/myPetQuality";
 import { db } from "./db";
 import { chooseMyPetPanelId, myPetCompositeColours, resolveMyPetCompositeColor, type MyPetColour, type MyPetColourPalette } from "./my-pet-panel";
 import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
@@ -50,6 +51,7 @@ import { generationErrorCategory } from "./generation-events";
 import { readLibraryObject, renderCandidateOnPanel, signedLibraryUrl, softstyleType, writeLibraryObject } from "./mockup-library-store";
 import { decodeDataUrlOrBase64Image, getMyPetObject, myPetObjectExists, putMyPetObject, removeMyPetObjects, signedMyPetThumbnail, signedMyPetUrl } from "./my-pet-storage";
 import { renderReplicateImageEdit } from "./replit_integrations/image/client";
+import { checkMyPetEdit, describeShopperPet } from "./my-pet-quality";
 import { storage } from "./storage";
 
 // My Pet uses the shared Replicate account (REPLICATE_API_TOKEN) to call Sunburst
@@ -218,6 +220,8 @@ export type MyPetEligibleCandidate = {
   artStyle: string;
   punchline: string;
   artworkPath: string;
+  poseNote: string;
+  petMask: PetMask | null;
   panelId: string;
   selectedColors: Array<{ name: string; hex: string }>;
   publishColorTicks: Record<string, string[]>;
@@ -273,6 +277,8 @@ export async function getEligibleCandidateForMyPet(shop: string, candidateId: st
     artStyle: row.artStyle,
     punchline: row.punchline || "",
     artworkPath: row.artworkPath,
+    poseNote: row.poseNote || "",
+    petMask: parsePetMask(row.petMask),
     panelId: row.panelId,
     selectedColors: colors,
     publishColorTicks: readPublishColorTicks(row.publishColorTicks),
@@ -514,10 +520,30 @@ export async function generateMyPetRender(args: {
     throw new Error("Pet photo not found — please upload again");
   }
   const settings = await getMyPetSettings(args.shop);
+  let petDescription = "";
+  let visionCostUsd = 0;
+  let visionMs = 0;
+  let originalArt: Buffer | null = null;
+  try {
+    const [photoBuf, artworkBuf] = await Promise.all([
+      getMyPetObject(photo.storagePath),
+      readLibraryObject(args.candidate.artworkPath),
+    ]);
+    originalArt = artworkBuf;
+    const described = await describeShopperPet(photoBuf);
+    petDescription = described.description;
+    visionCostUsd += described.costUsd;
+    visionMs += described.durationMs;
+  } catch (err) {
+    console.warn(`[my-pet] pet description skipped: ${(err as Error)?.message}`);
+  }
   const prompt = buildMyPetPrompt(settings, {
     species: args.candidate.species,
     artStyle: args.candidate.artStyle,
     punchline: args.candidate.punchline,
+  }, {
+    petDescription,
+    poseNote: args.candidate.poseNote,
   });
   // Issue 5 (post-staging-93) — prompt diagnostic. getMyPetSettings has no
   // in-memory cache (fresh DB SELECT every call via rowToSettings), so a
@@ -571,7 +597,35 @@ export async function generateMyPetRender(args: {
 
   const renderId = randomUUID();
   const editedPath = `my-pet/edited/${renderId}.png`;
-  const editedBuf = Buffer.from(result.data, "base64");
+  let sunburstCalls = 1;
+  let editMs = result.durationMs;
+  let editedBuf = Buffer.from(result.data, "base64");
+  // The pet box is stored for the operator nudge. Pasting it back onto the
+  // original doubled the animal in the staging test, because the edit is not
+  // in the same pixels as the artwork. The shopper gets the edit itself.
+  if (originalArt) {
+    try {
+      const qa = await checkMyPetEdit(originalArt, editedBuf);
+      visionCostUsd += qa.costUsd;
+      visionMs += qa.durationMs;
+      console.log(`[my-pet] quality check pass=${qa.pass} checked=${qa.checked} reason=${JSON.stringify(qa.reason)}`);
+      if (myPetQualityRetryAllowed(qa.checked && !qa.pass, false)) {
+        const retry = await runMyPetImageEdit({
+          prompt: `${prompt} The previous attempt failed this check: ${qa.reason}. Correct only that.`,
+          designUrl,
+          petUrl,
+          renderParams,
+        });
+        sunburstCalls = 2;
+        editMs += retry.durationMs;
+        result = retry;
+        editedBuf = Buffer.from(retry.data, "base64");
+        console.log("[my-pet] quality retry used. The shopper is still charged for one generate.");
+      }
+    } catch (err) {
+      console.warn(`[my-pet] quality check skipped: ${(err as Error)?.message}`);
+    }
+  }
   await writeLibraryObject(editedPath, editedBuf, "image/png");
 
   // STAGING-102 — Craig reports every non-chosen colour composite shows the
@@ -702,11 +756,11 @@ export async function generateMyPetRender(args: {
   // Replicate's API does not return per-prediction token usage, so we record
   // a flat measured cost (see MY_PET_SUNBURST_ESTIMATED_COST_USD). Update that
   // constant if size/quality in MY_PET_DEFAULT_RENDER_PARAMS change.
-  const estimatedCostUsd = MY_PET_SUNBURST_ESTIMATED_COST_USD;
+  const estimatedCostUsd = sunburstCalls * MY_PET_SUNBURST_ESTIMATED_COST_USD + visionCostUsd;
   await recordMyPetGenerationEvent({
     shop: args.shop,
     success: true,
-    durationMs: result.durationMs,
+    durationMs: editMs + visionMs,
     estimatedCostUsd,
     model: MY_PET_REPLICATE_MODEL,
     quality: renderParams.quality,
@@ -757,7 +811,7 @@ export async function generateMyPetRender(args: {
     jobId,
     colorId: color.name,
     sizeId: args.sizeId || null,
-    durationMs: result.durationMs,
+    durationMs: editMs + visionMs,
     estimatedCostUsd: estimatedCostUsd != null ? String(estimatedCostUsd) : null,
     replicatePredictionId: result.providerRequestId,
     replicatePredictionUrl: result.providerRequestUrl,

@@ -67,6 +67,23 @@ describe("buildMyPetPrompt", () => {
     expect(prompt).not.toContain("Wording stays exactly");
   });
 
+  it("adds the design pose and the shopper's pet description before the print rules", () => {
+    const settings = defaultMyPetSettings("shop.myshopify.com");
+    const prompt = buildMyPetPrompt(
+      settings,
+      { species: "dog", artStyle: "woodcut", punchline: "Mystery Solved" },
+      {
+        poseNote: "Head inside the bag. Only two hind legs and a raised tail are visible.",
+        petDescription: "Bloodhound mix, heavy build, brown coat. The head is not in the photo.",
+      },
+    );
+    expect(prompt).toContain("DESIGN POSE: Head inside the bag.");
+    expect(prompt).toContain("SHOPPER'S PET: Bloodhound mix");
+    expect(prompt).toContain("Do not invent a head");
+    expect(prompt.indexOf("DESIGN POSE:")).toBeLessThan(prompt.lastIndexOf(MY_PET_LOCKED_PRINT_RULES));
+    expect(prompt.endsWith(MY_PET_LOCKED_PRINT_RULES)).toBe(true);
+  });
+
   it("falls back to the default base prompt when the stored one is blank", () => {
     const settings = defaultMyPetSettings("shop.myshopify.com");
     settings.basePrompt = "   ";

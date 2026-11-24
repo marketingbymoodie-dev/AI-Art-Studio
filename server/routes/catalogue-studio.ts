@@ -621,6 +621,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           funnyTruth: stored.funnyTruth,
           deviceText: stored.deviceText,
           punchline: stored.punchline || "",
+          poseNote: stored.poseNote || "",
+          petMask: stored.petMask || null,
           behaviour: stored.behaviour,
           deviceStructure: stored.deviceStructure,
           darknessLevel: stored.darknessLevel,
@@ -1168,6 +1170,40 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         eq(designCandidates.status, "pending"),
       ));
       res.json({ ok: true, punchline });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/pet-pose", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    if (refuseStudioChange(res, req.shopDomain)) return;
+    const id = await candidateIdFor(res, req.body?.candidateId, req.shopDomain);
+    if (!id) return;
+    if (id === PENDING_CANDIDATE.id) {
+      res.status(400).json({ error: "That design is not stored." });
+      return;
+    }
+    try {
+      const row = await readCandidateRow(id);
+      if (!row || row.status === "dropped") {
+        res.status(400).json({ error: "That design cannot be edited." });
+        return;
+      }
+      const poseNote = String(req.body?.poseNote ?? row.poseNote ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+      const { parsePetMask, withPetMaskNudge } = await import("@shared/myPetQuality");
+      const current = parsePetMask(row.petMask);
+      const petMask = current
+        ? withPetMaskNudge(current, {
+            nudgeX: Number(req.body?.nudgeX),
+            nudgeY: Number(req.body?.nudgeY),
+            nudgeW: Number(req.body?.nudgeW),
+            nudgeH: Number(req.body?.nudgeH),
+          })
+        : null;
+      const { db } = await import("../db");
+      await db.update(designCandidates).set({ poseNote, petMask, updatedAt: new Date() }).where(eq(designCandidates.id, id));
+      res.json({ ok: true, poseNote, petMask });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }

@@ -232,6 +232,14 @@ export async function publishCatalogueCandidate(args: {
   let choice = await readChoice(recipe.candidateId);
   const gaps = recipeGaps(recipe, stored.source);
   if (!String(choice.artworkPath || stored.artworkPath || "").trim()) gaps.push("Candidate artwork is not stored.");
+  if (args.myPetEnabled !== false && (work === "all" || work === "store") && String(choice.artworkPath || stored.artworkPath || "").trim()) {
+    try {
+      const { ensureMyPetPose } = await import("./my-pet-quality");
+      await ensureMyPetPose(recipe.candidateId);
+    } catch (err) {
+      console.warn(`[my-pet] pose note skipped: ${(err as Error)?.message}`);
+    }
+  }
   if ((work === "all" || work === "store") && recipe.panelId && recipe.selectedColors.length && !crossShop) {
     await saveChoice(recipe.candidateId, recipe.panelId, recipe.selectedColors);
     choice = await readChoice(recipe.candidateId);

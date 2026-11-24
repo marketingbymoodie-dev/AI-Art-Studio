@@ -78,6 +78,18 @@ type PendingCandidate = {
     funnyTruth: string;
     deviceText: string;
     punchline: string;
+    poseNote?: string;
+    petMask?: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      nudgeX: number;
+      nudgeY: number;
+      nudgeW: number;
+      nudgeH: number;
+      letteringOverlapsPet: boolean;
+    } | null;
     behaviour: string;
     deviceStructure: string;
     darknessLevel: number;
@@ -293,9 +305,16 @@ export default function CatalogueStudioPage() {
   const [truth, setTruth] = useState("");
   const [wording, setWording] = useState("Bed Etiquette");
   const [wordingNote, setWordingNote] = useState("");
+  const [poseNote, setPoseNote] = useState("");
+  const [poseStatus, setPoseStatus] = useState("");
+  const [nudgeX, setNudgeX] = useState("0");
+  const [nudgeY, setNudgeY] = useState("0");
+  const [nudgeW, setNudgeW] = useState("0");
+  const [nudgeH, setNudgeH] = useState("0");
   const wordingDirty = useRef(false);
   const wordingSaved = useRef<string | null>(null);
   const wordingCandidate = useRef("");
+  const poseCandidate = useRef("");
   const wordingRef = useRef(wording);
   const wordingSave = useRef<Promise<void>>(Promise.resolve());
   wordingRef.current = wording;
@@ -372,6 +391,16 @@ export default function CatalogueStudioPage() {
       setWordingNote("");
     } else if (!wordingDirty.current) {
       setWording(wordingSaved.current != null ? wordingSaved.current : serverWording);
+    }
+    if (poseCandidate.current !== candidate.data.id) {
+      poseCandidate.current = candidate.data.id;
+      setPoseNote(recipe.poseNote || "");
+      setPoseStatus("");
+      const mask = recipe.petMask;
+      setNudgeX(String(mask?.nudgeX ?? 0));
+      setNudgeY(String(mask?.nudgeY ?? 0));
+      setNudgeW(String(mask?.nudgeW ?? 0));
+      setNudgeH(String(mask?.nudgeH ?? 0));
     }
     setDevice(recipe.deviceText || "");
     setDeviceStructure(recipe.deviceStructure || "");
@@ -696,6 +725,24 @@ export default function CatalogueStudioPage() {
   const publishLabel = jobActive ? job?.label || "Queued" : "Promote and publish";
   const listedNames = (candidate.data?.publishTypes || []).filter((type) => type.published).map((type) => type.name);
   const openPublishTypes = (candidate.data?.publishTypes || []).filter((type) => !type.published);
+
+  async function savePose() {
+    const id = candidate.data?.id;
+    if (!id || candidate.data?.status === "dropped") return;
+    const res = await apiFetch("/api/platform/catalogue-studio/pet-pose", {
+      method: "POST",
+      body: JSON.stringify({
+        candidateId: id,
+        poseNote,
+        nudgeX: Number(nudgeX),
+        nudgeY: Number(nudgeY),
+        nudgeW: Number(nudgeW),
+        nudgeH: Number(nudgeH),
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    setPoseStatus(res.ok ? "Saved" : String(body.error || body.message || "Not saved"));
+  }
 
   async function saveWording() {
     const value = wordingRef.current;
@@ -1061,6 +1108,32 @@ export default function CatalogueStudioPage() {
                   onBlur={() => void saveWording()}
                 />
                 {wordingNote ? <p className="text-xs text-muted-foreground" data-testid="catalogue-studio-wording-note">{wordingNote}</p> : null}
+              </Field>
+              <Field label="Design pose">
+                <Textarea
+                  value={poseNote}
+                  data-testid="catalogue-studio-pose-note"
+                  onChange={(e) => setPoseNote(e.target.value)}
+                  onBlur={() => void savePose()}
+                  placeholder="Which body parts the design shows"
+                />
+                {candidate.data?.recipe?.petMask?.letteringOverlapsPet ? (
+                  <p className="text-xs text-muted-foreground" data-testid="catalogue-studio-lettering-overlap">
+                    Lettering sits on the pet, so that part is inside the mask and can still be redrawn.
+                  </p>
+                ) : null}
+                {poseStatus ? <p className="text-xs text-muted-foreground">{poseStatus}</p> : null}
+              </Field>
+              <Field label="Pet area nudge">
+                <div className="grid grid-cols-4 gap-2">
+                  <Input aria-label="Nudge left" value={nudgeX} onChange={(e) => setNudgeX(e.target.value)} onBlur={() => void savePose()} />
+                  <Input aria-label="Nudge up" value={nudgeY} onChange={(e) => setNudgeY(e.target.value)} onBlur={() => void savePose()} />
+                  <Input aria-label="Nudge width" value={nudgeW} onChange={(e) => setNudgeW(e.target.value)} onBlur={() => void savePose()} />
+                  <Input aria-label="Nudge height" value={nudgeH} onChange={(e) => setNudgeH(e.target.value)} onBlur={() => void savePose()} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Left, up, width, height, as fractions of the artwork. The detected pet box stays. This only moves it.
+                </p>
               </Field>
               <Field label="Device">
                 <Input value={device} onChange={(e) => setDevice(e.target.value)} placeholder="Not written" />

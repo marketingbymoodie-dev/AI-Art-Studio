@@ -1458,6 +1458,20 @@ export const designCandidates = pgTable("design_candidates", {
   printifyProductId: text("printify_product_id"),
   /** Concept-studio draws: prompt, look, and per-draw cost. Null on imported PNGs. */
   generation: jsonb("generation").$type<CatalogueConceptGeneration>(),
+  /** Which body parts the original design shows. Empty until publish or backfill. */
+  poseNote: text("pose_note").notNull().default(""),
+  /** Animal box in artwork space, plus the operator nudge. Null until detected. */
+  petMask: jsonb("pet_mask").$type<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    nudgeX: number;
+    nudgeY: number;
+    nudgeW: number;
+    nudgeH: number;
+    letteringOverlapsPet: boolean;
+  } | null>(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [

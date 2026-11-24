@@ -9,14 +9,16 @@ import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { PETPOSTEROUS_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import { MY_PET_SUNBURST_ESTIMATED_COST_USD, buildMyPetPrompt } from "@shared/myPetSettings";
+import { myPetQualityRetryAllowed } from "@shared/myPetQuality";
 import { parseCatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { designCandidates } from "@shared/schema";
 import { catalogueConceptShopAllowed } from "./catalogue-concept";
 import { db } from "./db";
 import { recordGenerationEvent } from "./generation-events";
 import { CREDENTIALS } from "./generation-providers";
-import { readChoice, removeLibraryObject, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
+import { readChoice, readLibraryObject, removeLibraryObject, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 import { getMyPetSettings, MY_PET_REPLICATE_MODEL, runMyPetImageEdit } from "./my-pet";
+import { checkMyPetEdit, describeShopperPet } from "./my-pet-quality";
 import { decodeDataUrlOrBase64Image } from "./my-pet-storage";
 
 const REMEMBER_MS = 15 * 60 * 1000;
@@ -120,10 +122,22 @@ async function runOne(args: {
   const contentType = photoContentType(photo);
   const photoPath = `catalogue-my-pet-test/photos/${randomUUID()}.png`;
   const settings = await getMyPetSettings(PETPOSTEROUS_CATALOGUE_SHOP);
+  let petDescription = "";
+  let visionCostUsd = 0;
+  try {
+    const described = await describeShopperPet(photo);
+    petDescription = described.description;
+    visionCostUsd += described.costUsd;
+  } catch (err) {
+    console.warn(`[my-pet] studio pet description skipped: ${(err as Error)?.message}`);
+  }
   const prompt = buildMyPetPrompt(settings, {
     species: row.species || "",
     artStyle: row.artStyle || "",
     punchline: row.punchline || "",
+  }, {
+    petDescription,
+    poseNote: row.poseNote || "",
   });
   const started = Date.now();
   let edited = "";
@@ -142,7 +156,21 @@ async function runOne(args: {
       petUrl: referencePet,
       renderParams: settings.renderParams,
     });
-    const png = Buffer.from(result.data, "base64");
+    let png = Buffer.from(result.data, "base64");
+    let sunburstCalls = 1;
+    const originalArt = await readLibraryObject(artworkPath);
+    const qa = await checkMyPetEdit(originalArt, png);
+    visionCostUsd += qa.costUsd;
+    if (myPetQualityRetryAllowed(qa.checked && !qa.pass, false)) {
+      const retry = await runMyPetImageEdit({
+        prompt: `${prompt} The previous attempt failed this check: ${qa.reason}. Correct only that.`,
+        designUrl: referenceDesign,
+        petUrl: referencePet,
+        renderParams: settings.renderParams,
+      });
+      sunburstCalls = 2;
+      png = Buffer.from(retry.data, "base64");
+    }
     if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50) throw new Error("The model did not return a PNG.");
     edited = `catalogue-my-pet-test/${randomUUID()}.png`;
     await writeLibraryObject(edited, png, "image/png");
@@ -167,12 +195,12 @@ async function runOne(args: {
           model: MY_PET_REPLICATE_MODEL,
           quality: settings.renderParams.quality,
           size: "estimated",
-          attempts: 1,
+          attempts: sunburstCalls,
           durationMs: result.durationMs,
           transparent: result.transparent,
           transparentFraction: result.transparentFraction,
           usage: null,
-          estimatedCostUsd: MY_PET_SUNBURST_ESTIMATED_COST_USD,
+          estimatedCostUsd: sunburstCalls * MY_PET_SUNBURST_ESTIMATED_COST_USD + visionCostUsd,
           providerRequestId: result.providerRequestId,
           providerMime: "image/png",
         },
@@ -182,7 +210,7 @@ async function runOne(args: {
       artworkPath: edited,
       prompt,
       model: MY_PET_REPLICATE_MODEL,
-      estimatedCostUsd: MY_PET_SUNBURST_ESTIMATED_COST_USD,
+      estimatedCostUsd: sunburstCalls * MY_PET_SUNBURST_ESTIMATED_COST_USD + visionCostUsd,
       actualCostUsd: null,
     };
   } catch (err) {

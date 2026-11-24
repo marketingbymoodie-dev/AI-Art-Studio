@@ -215,6 +215,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "design_candidates", column: "publish_color_ticks", type: "JSONB" },
   { table: "design_candidates", column: "publish_my_pet_enabled", type: "BOOLEAN" },
   { table: "design_candidates", column: "printify_product_id", type: "TEXT" },
+  { table: "design_candidates", column: "pose_note", type: "TEXT NOT NULL DEFAULT ''" },
+  { table: "design_candidates", column: "pet_mask", type: "JSONB" },
   { table: "catalogue_candidate_choices", column: "mockup_images", type: "JSONB" },
   { table: "catalogue_candidate_choices", column: "printify_product_id", type: "TEXT" },
   { table: "catalogue_candidate_choices", column: "shopify_product_id", type: "TEXT" },
