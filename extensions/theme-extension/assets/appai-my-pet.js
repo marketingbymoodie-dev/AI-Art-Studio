@@ -892,7 +892,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       '.appai-my-pet-modal{background:#fff;border-radius:8px;max-width:460px;width:100%;max-height:92vh;overflow:auto;position:relative;padding:1.5rem;}' +
       '.appai-my-pet-modal__close{position:absolute;top:0.5rem;right:0.75rem;background:none;border:none;font-size:1.5rem;cursor:pointer;line-height:1;z-index:2;}' +
       '.appai-my-pet-modal--locked .appai-my-pet-modal__close{display:none;}' +
-      '.appai-my-pet-modal__body img.appai-preview-img{width:100%;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
+      'html body .appai-my-pet-modal__body img.appai-preview-img{width:100% !important;height:auto !important;max-height:none !important;aspect-ratio:1024 / 1536 !important;object-fit:contain !important;object-position:center center !important;border-radius:6px;display:block;margin:0.75rem 0;cursor:zoom-in;transition:opacity .15s ease;}' +
       // UX 5 — instant visual feedback the moment a colour swatch is tapped,
       // before the recomposite round-trip even starts.
       '.appai-my-pet-modal__body img.appai-preview-img.appai-swatch-loading{opacity:.6;cursor:wait;}' +
@@ -937,18 +937,37 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // Progress bar — indeterminate to determinate
       '.appai-progress{width:100%;height:6px;background:#eee;border-radius:3px;overflow:hidden;margin:.6rem 0;}' +
       '.appai-progress>span{display:block;height:100%;background:#111;width:0;transition:width .6s linear;}' +
+      // Add to cart wait stays on the button. The old status line sat under
+      // the preview, so a tall "Your design" popup looked idle.
+      '@keyframes appai-atc-spin{to{transform:rotate(360deg)}}' +
+      '.appai-atc-spin{width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;flex:0 0 auto;animation:appai-atc-spin .7s linear infinite;}' +
+      'button.appai-atc-busy,button.appai-atc-done,button.appai-atc-error{position:relative !important;}' +
+      'button.appai-atc-busy:disabled,button.appai-atc-done:disabled,button.appai-atc-error:disabled{opacity:1 !important;}' +
+      'button.appai-atc-busy{cursor:wait !important;}' +
+      'button.appai-atc-busy > :not(.appai-atc-face),button.appai-atc-done > :not(.appai-atc-face),button.appai-atc-error > :not(.appai-atc-face){visibility:hidden !important;}' +
+      '.appai-atc-face{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.35em .7em;box-sizing:border-box;pointer-events:none;font:inherit;font-weight:600;line-height:1.25;text-align:center;border-radius:inherit;}' +
+      'button.appai-atc-error{overflow:visible !important;}' +
+      'button.appai-atc-error > .appai-atc-face{height:auto;min-height:100%;bottom:auto;white-space:normal;background:#3d1212;color:#fff;}' +
+      '.appai-atc-face--float{position:fixed;inset:auto;top:auto;right:auto;z-index:100000;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.7em;box-sizing:border-box;background:#3d1212;color:#fff;border-radius:8px;text-align:center;font:600 15px/1.3 system-ui,sans-serif;pointer-events:none;white-space:normal;}' +
+      '.appai-my-pet-modal__body #appai-my-pet-status:empty{display:none;margin:0;}' +
+      '.appai-my-pet-hero-wait{position:absolute;left:50%;top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border:3px solid rgba(0,0,0,.15);border-top-color:#111;border-radius:50%;animation:appai-atc-spin .7s linear infinite;z-index:5;pointer-events:none;}' +
+      '@media (prefers-reduced-motion:reduce){.appai-atc-spin{animation:none;opacity:.85;}}' +
       // Attempts remaining caption
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
       '.appai-zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100001;display:flex;align-items:center;justify-content:center;padding:1rem;cursor:zoom-out;}' +
-      '.appai-zoom-overlay img{max-width:95vw;max-height:95vh;display:block;}';
+      'html body .appai-zoom-overlay > img.appai-zoom-img{width:auto !important;height:auto !important;max-width:95vw !important;max-height:95vh !important;aspect-ratio:1024 / 1536 !important;object-fit:contain !important;object-position:center center !important;display:block;}';
     document.head.appendChild(style);
   }
 
   function showZoom(src) {
     var z = document.createElement('div');
     z.className = 'appai-zoom-overlay';
-    z.innerHTML = '<img src="' + src + '" alt="Your design" />';
+    var img = document.createElement('img');
+    img.className = 'appai-zoom-img';
+    img.alt = 'Your design';
+    img.src = src;
+    z.appendChild(img);
     z.addEventListener('click', function () { z.remove(); });
     document.body.appendChild(z);
   }
@@ -1313,12 +1332,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     var candidateId = root.getAttribute('data-candidate-id');
     var shopifyProductId = root.getAttribute('data-product-id');
     var pageUrl = root.getAttribute('data-page-url') || window.location.href;
-    // UX 7 — "modal" (default, legacy popup) or "inline" (Ritual-scoped
-    // experimental: replace the PDP hero img directly, use the theme's own
-    // native colour/size swatches instead of our custom modal swatches).
-    // If inline mode can't find the theme's hero image at generate time,
-    // activateInlinePreview returns false and the modal takes over.
-    var previewMode = (root.getAttribute('data-preview-mode') || 'modal').toLowerCase();
+    // "inline" paints the design on the product hero and uses the page's
+    // colour, size, and Add to cart. "modal" keeps the Your design popup.
+    // The block setting chooses. A missing setting follows inline. If the
+    // hero image cannot be found, the popup is still the fallback.
+    var previewMode = (root.getAttribute('data-preview-mode') || 'inline').toLowerCase();
     var openBtn = root.querySelector('[data-appai-my-pet-open]');
     var caption = root.querySelector('.appai-my-pet__caption');
     var designsBtn = root.querySelector('[data-appai-my-pet-designs]');
@@ -1766,13 +1784,29 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       window.scrollTo(x, y);
       if (window.requestAnimationFrame) window.requestAnimationFrame(function () { window.scrollTo(x, y); });
     }
+    function colourNameKey(name) {
+      return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    // Softstyle stores the Sport Grey photograph as Light grey. Both names are one colour.
+    function colourAliasGroup(name) {
+      var key = colourNameKey(name);
+      if (key === 'sport grey' || key === 'light grey') return ['sport grey', 'light grey'];
+      return key ? [key] : [];
+    }
     function urlForColourMap(map, colour) {
       if (!map || !colour) return '';
       if (map[colour]) return map[colour];
-      var want = String(colour).trim().toLowerCase();
       var keys = Object.keys(map);
-      for (var i = 0; i < keys.length; i++) {
-        if (String(keys[i]).trim().toLowerCase() === want) return map[keys[i]] || '';
+      var groups = colourAliasGroup(colour);
+      var g;
+      var i;
+      for (g = 0; g < groups.length; g++) {
+        for (i = 0; i < keys.length; i++) {
+          if (colourNameKey(keys[i]) !== groups[g] || !map[keys[i]]) continue;
+          var requested = String(colour).trim();
+          if (requested && !map[requested]) map[requested] = map[keys[i]];
+          return map[keys[i]];
+        }
       }
       return '';
     }
@@ -3070,6 +3104,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           finishRestore(true);
           return;
         }
+        warmColourPreviews((res && res.colourNames) || Object.keys(state.previewUrlByColor || {}));
         waitForHero(activationUrl, fromCache);
       }
 
@@ -3088,9 +3123,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     })();
 
     // ─────────────────────────────────────────────────────────────────────
-    // UX 7 — inline preview mode (Ritual-scoped experimental)
-    //
-    // Flow:
+    // Inline preview: after generate, the upload window closes and the design
+    // is painted on the product hero. Colour, size, and Add to cart stay the
+    // page's own controls. The Your design popup remains the fallback when
+    // the block setting is "modal", or when the hero image cannot be found.
     //   generate success → activateInlinePreview(previewUrl)
     //     → find PDP hero <img> → swap src to preview
     //     → install native swatch watcher (variant form change → recomposite)
@@ -3119,6 +3155,99 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       if (!urls.length) return;
       myPetLog(TAG, 'design colours preloaded', urls.length);
       for (var i = 0; i < urls.length; i++) decodeHeroUrl(urls[i]);
+    }
+
+    function setHeroWaiting(on) {
+      var host = mediaHoldContainer(findVisibleHeroImg() || state.inlineHero);
+      if (!host) return;
+      if (host.style && getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      var spin = null;
+      var kids = host.children || [];
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].classList && kids[i].classList.contains('appai-my-pet-hero-wait')) spin = kids[i];
+      }
+      if (!on) {
+        if (spin) spin.remove();
+        return;
+      }
+      if (spin) return;
+      spin = document.createElement('div');
+      spin.className = 'appai-my-pet-hero-wait';
+      spin.setAttribute('aria-hidden', 'true');
+      host.appendChild(spin);
+    }
+
+    function colourReadyCount(names) {
+      var ready = 0;
+      for (var i = 0; i < names.length; i++) {
+        if (urlForColourMap(state.previewUrlByColor, names[i])) ready += 1;
+      }
+      return ready;
+    }
+
+    // Chosen colour is already on the hero. The other ticked colours arrive
+    // in the background. A swatch paints only when it is still the latest pick.
+    function warmColourPreviews(names) {
+      var list = [];
+      var seen = {};
+      var source = names || [];
+      for (var i = 0; i < source.length; i++) {
+        var name = String(source[i] || '').trim();
+        var key = name.toLowerCase();
+        if (!name || seen[key]) continue;
+        seen[key] = true;
+        list.push(name);
+      }
+      var chosenUrl = previewUrlForColour(state.selectedColour || '');
+      if (chosenUrl) decodeHeroUrl(chosenUrl);
+      preloadPreviewUrls(state.previewUrlByColor);
+      if (!list.length || !state.renderId) return;
+      var started = Date.now();
+      var tries = 0;
+      var renderId = state.renderId;
+      function paintLatestIfReady() {
+        var live = liveColourChoice();
+        if (!live.colour || !live.url) return;
+        if (state.selectedColour && !namesMatch(live.colour, state.selectedColour)) return;
+        setHeroWaiting(false);
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        if (hero && !heroShowsCustom(hero, live.url)) paintColourNow(live.colour, live.url);
+      }
+      function tick() {
+        if (state.renderId !== renderId) return;
+        var ready = colourReadyCount(list);
+        if (ready >= list.length) {
+          preloadPreviewUrls(state.previewUrlByColor);
+          paintLatestIfReady();
+          myPetLog(TAG, 'colours ready ' + ready + '/' + list.length + ' ms=' + (Date.now() - started));
+          return;
+        }
+        if (tries > 20) {
+          myPetLog(TAG, 'colours ready ' + ready + '/' + list.length + ' ms=' + (Date.now() - started) + ' stopped');
+          return;
+        }
+        tries += 1;
+        getJson('my-pet/resolve-render', { renderId: renderId }).then(function (res) {
+          if (state.renderId !== renderId || !res || !res.ok) return;
+          mergeColourMap(res.previewUrlsByColor);
+          if (res.colourNames && res.colourNames.length > list.length) {
+            for (var n = 0; n < res.colourNames.length; n++) {
+              var extra = String(res.colourNames[n] || '').trim();
+              if (extra && !seen[extra.toLowerCase()]) {
+                seen[extra.toLowerCase()] = true;
+                list.push(extra);
+              }
+            }
+          }
+          var chosen = state.selectedColour;
+          var chosenNow = chosen ? urlForColourMap(state.previewUrlByColor, chosen) : '';
+          if (chosenNow) decodeHeroUrl(chosenNow);
+          preloadPreviewUrls(state.previewUrlByColor);
+          paintLatestIfReady();
+          setTimeout(tick, 700);
+        }).catch(function () { setTimeout(tick, 700); });
+      }
+      setTimeout(tick, 400);
     }
 
     // STAGING-98 diagnostic — log each colour → url tail so a Black mockup
@@ -3955,12 +4084,20 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function canonicalPreviewColor(raw) {
-      var want = String(raw || '').trim().toLowerCase();
+      var want = colourNameKey(raw);
       if (!want) return null;
       var map = state.previewUrlByColor || {};
       var keys = Object.keys(map);
-      for (var i = 0; i < keys.length; i++) {
-        if (String(keys[i]).trim().toLowerCase() === want) return keys[i];
+      var groups = colourAliasGroup(raw);
+      var g;
+      var i;
+      for (g = 0; g < groups.length; g++) {
+        for (i = 0; i < keys.length; i++) {
+          if (colourNameKey(keys[i]) !== groups[g]) continue;
+          var requested = String(raw).trim();
+          if (requested && map[keys[i]] && !map[requested]) map[requested] = map[keys[i]];
+          return keys[i];
+        }
       }
       return String(raw).trim();
     }
@@ -3994,6 +4131,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (legend) ctx += ' ' + String(legend.textContent || '').trim().toLowerCase();
       }
       ctx += ' ' + String(probed.name || '').toLowerCase();
+      ctx += ' ' + String(probed.getAttribute && probed.getAttribute('data-option-name') || '').toLowerCase();
       var isColor = ctx.indexOf('color') !== -1 || ctx.indexOf('colour') !== -1;
       var isSize = !isColor && ctx.indexOf('size') !== -1;
       if (!isColor && !isSize) return null;
@@ -4305,10 +4443,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.designSwitchColour = null;
       state.designSwitchSize = null;
       myPetLog(TAG, 'cover off reason=' + reason, 'elapsedMs=' + elapsed);
-      var hero = resolveActiveHero(switchColour);
-      if (hero && state.inlineApplied && state.renderId) {
-        state.inlineHero = hero;
-        installHeroGuard(hero);
+      if (switchColour) noteColourSelection(switchColour, false);
+      var activationUrl = t.url || (switchColour ? previewUrlForColour(switchColour) : '') || state.previewUrl || '';
+      if (activationUrl && state.renderId && state.inlineApplied) {
+        if (!activateInlinePreview(activationUrl)) {
+          var hero = resolveActiveHero(switchColour);
+          if (hero) {
+            state.inlineHero = hero;
+            installHeroGuard(hero);
+          }
+        }
       }
       scheduleShadowWarm('design');
     }
@@ -4406,10 +4550,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function previewUrlForColour(colorName) {
-      if (colorName && state.previewUrlByColor && state.previewUrlByColor[colorName]) {
-        return state.previewUrlByColor[colorName];
-      }
-      return state.previewUrl || null;
+      var mapped = colorName ? urlForColourMap(state.previewUrlByColor, colorName) : '';
+      return mapped || state.previewUrl || null;
     }
 
     function looksLikeThumb(img) {
@@ -5098,6 +5240,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (url) state.previewUrl = url;
         releaseHeroHold();
         if (intent.kind === 'color' && url && event.type === 'click') {
+          setHeroWaiting(false);
           var swapStarted = Date.now();
           state.colourPaintSeq = (state.colourPaintSeq || 0) + 1;
           state.colourPaint = { colour: colorName, url: url, started: swapStarted, seq: state.colourPaintSeq };
@@ -5119,7 +5262,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             state.colourPaint = null;
             state.colourTimeline = null;
           }, 6000);
-        } else if (intent.kind === 'color' && !url) {
+        }         else if (intent.kind === 'color' && !url) {
+          setHeroWaiting(true);
           swapInlineColor(colorName);
           if (event.type === 'click') {
             writeStoredVariantChoice(shopifyProductId, colorName, intent.sizeName || checkedProductOption('size') || '', 'colour-click');
@@ -6549,12 +6693,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           if (state.heroAssertStop) return;
           var livePollNow = liveColourChoice();
           var pinnedNow = state.inlineHero;
-          if (pinnedNow && document.body.contains(pinnedNow) && pinnedNow.__appaiMyPetObserver) return;
           var freshLocked = findVisibleHeroImg();
-          if (!freshLocked || freshLocked === pinnedNow) return;
-          state.inlineHero = freshLocked;
-          if (livePollNow.url) reassertColourPreview('node-replaced', livePollNow.colour, livePollNow.url);
-          installHeroGuard(freshLocked);
+          if (freshLocked && freshLocked !== pinnedNow) {
+            state.inlineHero = freshLocked;
+            if (livePollNow.url) paintColourNow(livePollNow.colour, livePollNow.url);
+            installHeroGuard(freshLocked);
+            return;
+          }
+          if (pinnedNow && document.body.contains(pinnedNow) && pinnedNow.__appaiMyPetObserver) return;
           return;
         }
         var info = currentVariantInfo(root);
@@ -6733,11 +6879,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
               if (img.closest && img.closest('dialog, zoom-dialog')) continue;
               if (img.classList && img.classList.contains('appai-my-pet-cover')) continue;
               if (looksLikeThumb(img)) continue;
-              if (!isHeroCandidate(img)) continue;
+              if (!isHeroCandidate(img) && !unsizedGalleryHero(img)) continue;
               // Keep the outgoing hero visible. Point the guard at the new
               // node only — never opacity 0, never remove the old img.
               if (state.holdOldHero && img === state.holdOldHero) continue;
+              var liveHero = liveColourChoice();
               state.inlineHero = img;
+              if (liveHero.url) paintColourNow(liveHero.colour, liveHero.url);
               installHeroGuard(img);
             }
           }
@@ -6759,6 +6907,17 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var rect = img.getBoundingClientRect ? img.getBoundingClientRect() : null;
       if (rect && (rect.width < 160 || rect.height < 160)) return false;
       return true;
+    }
+
+    // A theme replacement inserts the new hero with no decoded size yet.
+    // isHeroCandidate skips that node, so the catalogue photo stays on screen.
+    function unsizedGalleryHero(img) {
+      if (!img || isHeroCandidate(img)) return false;
+      var gallery = mainMediaGallery();
+      if (!gallery || !gallery.contains || !gallery.contains(img)) return false;
+      if (img.closest && img.closest('slideshow-controls, slideshow-arrows, button, .thumbnail, .thumbnails')) return false;
+      var slide = img.closest ? img.closest('slideshow-slide, .product__media-item, [data-media-id]') : null;
+      return !!slide;
     }
 
     function installInlineVariantListeners() {
@@ -6937,28 +7096,28 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       }
       var composeGen = state.renderGeneration || 0;
       var composeRender = state.renderId;
+      var composeSeq = state.colourSeq || 0;
+      setHeroWaiting(true);
       postJson('my-pet/recomposite', { renderId: state.renderId, colorName: colorName })
         .then(function (res) {
-          // Issue 7 — re-check inlineApplied after the awaited round-trip
-          // so a revert that happened during /recomposite doesn't get
-          // undone by this late success writing back to the hero.
           if (!generationCurrent(composeGen, composeRender)) return;
-          if (res && res.ok && res.previewUrl && state.inlineApplied) {
-            state.previewUrl = res.previewUrl;
-            state.previewUrlByColor[colorName] = res.previewUrl;
-            mergeColourMap(res.previewUrlsByColor);
-            clearColourPending(res.colorName || colorName);
-            reassertColourPreview('recomposite', colorName, res.previewUrl);
-            // STAGING-100 — also apply to the per-variant slide for this
-            // colour so the carousel shows OUR image next time the theme
-            // scrolls to it (or now, if it's already the active slide).
-            var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
-            swapVariantSlides(singletonMap);
-            scheduleGallerySync('recomposite');
-            writeStoredRender(shopifyProductId, state.renderId, state.jobId);
-          }
+          if (!(res && res.ok && res.previewUrl)) return;
+          state.previewUrlByColor[colorName] = res.previewUrl;
+          mergeColourMap(res.previewUrlsByColor);
+          clearColourPending(res.colorName || colorName);
+          decodeHeroUrl(res.previewUrl);
+          if ((state.colourSeq || 0) !== composeSeq) return;
+          if (state.selectedColour && !namesMatch(state.selectedColour, colorName)) return;
+          if (!state.inlineApplied) return;
+          state.previewUrl = res.previewUrl;
+          setHeroWaiting(false);
+          reassertColourPreview('recomposite', colorName, res.previewUrl);
+          var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
+          swapVariantSlides(singletonMap);
+          scheduleGallerySync('recomposite');
+          writeStoredRender(shopifyProductId, state.renderId, state.jobId);
         })
-        .catch(function () { /* leave hero as-is */ });
+        .catch(function () { if ((state.colourSeq || 0) === composeSeq) setHeroWaiting(false); });
     }
 
     function inlineOn() {
@@ -7614,8 +7773,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return node;
     }
 
-    function setPreparing(on) {
+    function themeAtcButtons() {
       var nodes = document.querySelectorAll('button[name="add"], button.product-form__submit, sticky-add-to-cart button, .sticky-add-to-cart button');
+      var out = [];
       for (var i = 0; i < nodes.length; i++) {
         var btn = nodes[i];
         if (btn.closest && btn.closest('product-recommendations, .product-recommendations, product-card, quick-add-modal, .quick-add-modal')) continue;
@@ -7623,13 +7783,101 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var inSection = section && section.contains(btn);
         var inSticky = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
         if (!inSection && !inSticky) continue;
+        out.push(btn);
+      }
+      return out;
+    }
+
+    function atcKey(btn) {
+      var key = btn.getAttribute('data-appai-atc-key');
+      if (!key) {
+        key = 'b' + Math.random().toString(36).slice(2);
+        btn.setAttribute('data-appai-atc-key', key);
+      }
+      return key;
+    }
+
+    function clearAtcFace(btn) {
+      if (!btn) return;
+      var key = btn.getAttribute('data-appai-atc-key');
+      var face = btn.querySelector('.appai-atc-face');
+      if (face && face.parentNode) face.parentNode.removeChild(face);
+      if (key) {
+        var floated = document.querySelector('.appai-atc-face--float[data-appai-for="' + key + '"]');
+        if (floated && floated.parentNode) floated.parentNode.removeChild(floated);
+      }
+      btn.classList.remove('appai-atc-busy', 'appai-atc-done', 'appai-atc-error');
+      btn.removeAttribute('aria-busy');
+      if (btn.hasAttribute('data-appai-aria')) {
+        var prev = btn.getAttribute('data-appai-aria');
+        if (prev) btn.setAttribute('aria-label', prev);
+        else btn.removeAttribute('aria-label');
+        btn.removeAttribute('data-appai-aria');
+      }
+    }
+
+    // Cover the button in place. The original label stays in the layout so
+    // the control does not change size. Sticky-bar errors float just above
+    // the bar, because that bar sits on the bottom edge of the screen.
+    function showAtcFace(btn, mode, message) {
+      if (!btn) return;
+      clearAtcFace(btn);
+      var face = document.createElement('span');
+      face.className = 'appai-atc-face';
+      face.setAttribute('data-appai-for', atcKey(btn));
+      face.setAttribute('aria-hidden', 'true');
+      if (mode === 'busy') {
+        var spin = document.createElement('span');
+        spin.className = 'appai-atc-spin';
+        spin.setAttribute('aria-hidden', 'true');
+        face.appendChild(spin);
+      }
+      var text = document.createElement('span');
+      text.className = 'appai-atc-face__text';
+      text.textContent = message || '';
+      face.appendChild(text);
+      var stickyHost = btn.closest && btn.closest('sticky-add-to-cart, .sticky-add-to-cart');
+      var stickyRect = stickyHost ? btn.getBoundingClientRect() : null;
+      var stickyError = mode === 'error' && stickyRect && stickyRect.width > 0 && stickyRect.height > 0;
+      if (stickyError) {
+        face.classList.add('appai-atc-face--float');
+        document.body.appendChild(face);
+        face.style.left = Math.max(8, stickyRect.left) + 'px';
+        face.style.width = Math.max(120, stickyRect.width) + 'px';
+        face.style.bottom = (window.innerHeight - stickyRect.bottom) + 'px';
+        face.style.minHeight = stickyRect.height + 'px';
+      } else {
+        btn.appendChild(face);
+        if (mode !== 'error') {
+          var cs = window.getComputedStyle(btn);
+          var bg = cs.backgroundColor;
+          if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') bg = '#111';
+          face.style.background = bg;
+          var color = cs.color;
+          if (!color || color === 'rgba(0, 0, 0, 0)' || color === bg) color = '#fff';
+          face.style.color = color;
+        }
+      }
+      btn.classList.remove('appai-atc-busy', 'appai-atc-done', 'appai-atc-error');
+      btn.classList.add(mode === 'error' ? 'appai-atc-error' : mode === 'done' ? 'appai-atc-done' : 'appai-atc-busy');
+      if (!btn.hasAttribute('data-appai-aria')) btn.setAttribute('data-appai-aria', btn.getAttribute('aria-label') || '');
+      btn.setAttribute('aria-label', message || '');
+      if (mode === 'busy') btn.setAttribute('aria-busy', 'true');
+      else btn.removeAttribute('aria-busy');
+    }
+
+    function setPreparing(on) {
+      var nodes = themeAtcButtons();
+      for (var i = 0; i < nodes.length; i++) {
+        var btn = nodes[i];
         if (on) {
-          addButtonLabel(btn, 'Preparing your design…');
+          showAtcFace(btn, 'busy', 'Preparing your design…');
           if (!btn.disabled) {
             btn.setAttribute('data-appai-preparing', '1');
             btn.disabled = true;
           }
         } else {
+          clearAtcFace(btn);
           if (btn.getAttribute('data-appai-preparing') === '1') {
             btn.disabled = false;
             btn.removeAttribute('data-appai-preparing');
@@ -8477,6 +8725,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.atcBusy = true;
       setPreparing(true);
       myPetLog(TAG, 'atc hold', 'catalog=' + sel.catalogId, 'colour=' + sel.colour, 'size=' + sel.sizeName);
+      var failMessage = '';
       setTimeout(function () {
         prepareShadow('click')
           .then(function (entry) {
@@ -8488,15 +8737,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           })
           .catch(function (err) {
             console.warn(TAG, 'inline ATC failed:', err && err.message);
-            var retry = 'Couldn’t prepare your design. Try again.';
-            if (caption) caption.textContent = retry;
-            setTimeout(function () {
-              if (caption && caption.textContent === retry) caption.textContent = '';
-            }, 4000);
+            failMessage = (err && err.message) || 'Couldn’t prepare your design. Try again.';
+            if (caption) caption.textContent = failMessage;
           })
           .then(function () {
             state.atcBusy = false;
             setPreparing(false);
+            if (!failMessage) return;
+            var buttons = themeAtcButtons();
+            for (var i = 0; i < buttons.length; i++) showAtcFace(buttons[i], 'error', failMessage);
           });
       }, 0);
     }
@@ -8615,23 +8864,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             // keeps the decoded bytes around for the matching URL, so our
             // real <img> later reuses them.
             preloadPreviewUrls(state.previewUrlByColor);
-            // New render id is never in dismissedRenderIds — exit-intent will
-            // re-ask on this generation even if an earlier one was dismissed
-            // (bug 10: re-ask across different generations).
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
             probeCartForRender(genRes.renderId);
             picker.overlay.remove();
-            // Bugs 3 + 11 — await the refresh before opening the preview so
-            // the modal subtitle never renders the pre-generation count. The
-            // previous fire-and-forget refresh let the modal open ~300ms
-            // before perListingRemaining actually decremented.
             refreshCapStatus().then(function () {
-              // UX 7 inline mode: try to swap the PDP hero img in place,
-              // skipping the modal entirely. activateInlinePreview returns
-              // false when it can't find the hero image (e.g. unsupported
-              // theme), in which case the modal is the fall-back so the
-              // shopper still gets their preview + ATC.
-              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) return;
+              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) {
+                warmColourPreviews(genRes.colourNames);
+                return;
+              }
               openPreviewStep(genRes.previewUrl);
             });
           })
@@ -8755,9 +8995,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         colorSwatchesHtml +
         sizeSwatchesHtml +
         '<button type="button" class="appai-primary" data-action="add-to-cart">Add to cart</button>' +
+        '<p id="appai-my-pet-status" class="appai-my-pet-msg" role="status" aria-live="polite"></p>' +
         '<button type="button" class="appai-secondary" data-action="change-photo">Try another photo</button>' +
-        attemptsHtml +
-        '<p id="appai-my-pet-status" class="appai-my-pet-msg"></p>';
+        attemptsHtml;
       paintPlus();
       body.querySelector('.appai-preview-img').addEventListener('click', function (e) {
         showZoom(e.currentTarget.src);
@@ -8802,7 +9042,12 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var size = state.swatchSize;
       if (window.__appaiRequireSize && !window.__appaiSizeChosen && !size && allSizeOptions(root).length > 1) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) status.textContent = 'Please choose a size';
+        if (atcBtn && atcBtn.classList.contains('appai-atc-error')) {
+          showAtcFace(atcBtn, 'error', 'Please choose a size');
+          if (status) status.textContent = '';
+        } else if (status) {
+          status.textContent = 'Please choose a size';
+        }
         return false;
       }
       // BUG A — null-tolerant. findExactVariant with (null, null) returns
@@ -8811,16 +9056,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var v = findExactVariant(root, color, size);
       if (!v) {
         if (atcBtn) atcBtn.disabled = true;
-        if (status) {
-          if (color && size) {
-            status.textContent = size + " isn't available in " + color + " — pick another combination.";
-          } else if (color) {
-            status.textContent = color + " isn't available right now.";
-          } else if (size) {
-            status.textContent = "Size " + size + " isn't available right now.";
-          } else {
-            status.textContent = "This product isn't available right now.";
-          }
+        var unavailable = "This product isn't available right now.";
+        if (color && size) unavailable = size + " isn't available in " + color + " — pick another combination.";
+        else if (color) unavailable = color + " isn't available right now.";
+        else if (size) unavailable = "Size " + size + " isn't available right now.";
+        if (atcBtn && atcBtn.classList.contains('appai-atc-error')) {
+          showAtcFace(atcBtn, 'error', unavailable);
+          if (status) status.textContent = '';
+        } else if (status) {
+          status.textContent = unavailable;
         }
         return false;
       }
@@ -8831,7 +9075,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         idInput.value = String(v.id);
         try { idInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
       }
-      if (atcBtn) atcBtn.disabled = false;
+      if (atcBtn && !atcBtn.classList.contains('appai-atc-busy') && !atcBtn.classList.contains('appai-atc-done')) {
+        atcBtn.disabled = false;
+        if (atcBtn.classList.contains('appai-atc-error')) clearAtcFace(atcBtn);
+      }
       if (status && status.textContent && status.textContent.indexOf("isn't available") !== -1) status.textContent = '';
       return true;
     }
@@ -9026,7 +9273,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       // "colour X isn't available" / "size Y isn't available" / "product
       // isn't available" message if we come back empty.
       if (window.__appaiRequireSize && !window.__appaiSizeChosen && !state.swatchSize && allSizeOptions(root).length > 1) {
-        if (status) status.textContent = 'Please choose a size';
+        if (status) status.textContent = '';
+        showAtcFace(btn, 'error', 'Please choose a size');
         if (btn) btn.disabled = false;
         return;
       }
@@ -9035,12 +9283,17 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         myPetLog(TAG, 'atc blocked unavailable colour=' + (state.swatchColor || '') + ' size=' + (state.swatchSize || ''));
         showComboToast();
         checkComboAvailable(body);
+        var blocked = (status && status.textContent) || "That colour isn't available in this size.";
+        if (status) status.textContent = '';
+        showAtcFace(btn, 'error', blocked);
+        if (btn) btn.disabled = false;
         return;
       }
       var exactVariantId = String(exact.id);
 
+      showAtcFace(btn, 'busy', 'Preparing your design…');
       if (btn) btn.disabled = true;
-      if (status) status.textContent = 'Setting up your cart line…';
+      if (status) status.textContent = '';
       var modalColour = state.swatchColor || '';
       var modalSize = state.swatchSize || '';
       mockupForColour(modalColour)
@@ -9053,7 +9306,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           });
         })
         .then(function (res) {
-          if (status) status.textContent = 'Adding to cart…';
+          showAtcFace(btn, 'busy', 'Preparing your design…');
+          if (btn) btn.disabled = true;
           myPetLog(TAG, 'atc sentTail=' + srcTail(res.previewUrl), 'shadowImageTail=' + srcTail(res.shadowImage || res.previewUrl));
           // Issue 10: line-item properties that (a) let appai-cart-images.js
           // recognise this as an AppAI line and swap the thumbnail to the
@@ -9080,15 +9334,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         .then(function (added) {
           if (!added || !added.ok) throw new Error('Could not add to cart');
           markInCart(state.renderId);
-          if (status) {
-            status.innerHTML = 'Added to cart! <a href="/cart">View cart</a>';
-            // Queued — the modal is max-height:92vh; overflow:auto, so on
-            // tall content the status row can land below the fold. Scroll
-            // it into view so the shopper actually sees the confirmation
-            // (and the "View cart" link) rather than wondering if ATC
-            // succeeded.
-            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
-          }
+          showAtcFace(btn, 'done', 'Added to cart');
+          if (btn) btn.disabled = true;
+          if (status) status.innerHTML = '<a href="/cart">View cart</a>';
           // Suppress the on-close email-save prompt once the shopper already
           // acted — they do not need to save a design they just added.
           markDismissed(state.renderId);
@@ -9096,11 +9344,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           noteCustomAddReturned();
         })
         .catch(function (err) {
+          var msg = err && err.message ? err.message : 'Could not add to cart. Please try again.';
+          showAtcFace(btn, 'error', msg);
           if (btn) btn.disabled = false;
-          if (status) {
-            status.textContent = err && err.message ? err.message : 'Could not add to cart. Please try again.';
-            try { status.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
-          }
+          if (status) status.textContent = '';
         });
     }
 

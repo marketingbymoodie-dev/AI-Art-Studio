@@ -60,6 +60,30 @@ describe("resolveMyPetCompositeColor", () => {
     expect(resolveMyPetCompositeColor(palette({ requestedName: "Bay" }))).toBeNull();
   });
 
+  it("treats Light grey as Sport Grey through the stored photograph name", () => {
+    const linked = palette({
+      requestedName: "Light Grey",
+      libraryColours: [{ name: "Sport Grey", hex: "CACACA", linkStoredName: "Light grey" }],
+    });
+    expect(resolveMyPetCompositeColor(linked)).toEqual({
+      name: "Sport Grey",
+      hex: "97999B",
+      linkStoredName: "Light grey",
+    });
+  });
+
+  it("uses the Sport Grey scene when the photograph is stored as Light grey", () => {
+    expect(resolveMyPetCompositeColor(palette({
+      requestedName: "Sport Grey",
+      sceneColours: [{ name: "Light grey", hex: "97999B" }],
+      libraryColours: [{ name: "Sport Grey", hex: "CACACA", linkStoredName: "Light grey" }],
+    }))).toEqual({
+      name: "Sport Grey",
+      hex: "97999B",
+      linkStoredName: "Light grey",
+    });
+  });
+
   it("uses this type's first tick when the shopper has not picked a colour", () => {
     expect(resolveMyPetCompositeColor(palette({
       requestedName: "",

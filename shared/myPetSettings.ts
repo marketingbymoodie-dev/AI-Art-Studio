@@ -225,6 +225,7 @@ export function buildMyPetPrompt(
 const BUILTIN_MY_PET_SETTINGS_SHOPS = [
   "ai-art-studio-staging.myshopify.com",
   "h7epay-gh.myshopify.com",
+  "petstage.myshopify.com",
 ] as const;
 
 export function collectMyPetSettingsShopDomains(env: Record<string, string | undefined> = process.env): Set<string> {

@@ -7,6 +7,8 @@
  */
 export const STAGING_CATALOGUE_SHOP = "ai-art-studio-staging.myshopify.com";
 export const PETPOSTEROUS_CATALOGUE_SHOP = "h7epay-gh.myshopify.com";
+/** Staging mirror of Petposterous. Never the live store. */
+export const PETSTAGE_CATALOGUE_SHOP = "petstage.myshopify.com";
 
 export type OperatorCatalogueProfile = {
   shop: string;
@@ -23,16 +25,20 @@ export function catalogueShopDomain(shop: string | null | undefined): string {
   return s;
 }
 
+/** Petposterous and its staging mirror each have their own rows. The demo shop does not. */
+export function isolatedCatalogueShop(shop: string | null | undefined): string | null {
+  const domain = catalogueShopDomain(shop);
+  if (domain === PETPOSTEROUS_CATALOGUE_SHOP || domain === PETSTAGE_CATALOGUE_SHOP) return domain;
+  return null;
+}
+
 export function operatorCatalogueForShop(shopDomain: string | null | undefined): OperatorCatalogueProfile {
-  if (catalogueShopDomain(shopDomain) === PETPOSTEROUS_CATALOGUE_SHOP) {
-    return { shop: PETPOSTEROUS_CATALOGUE_SHOP };
-  }
-  return { shop: STAGING_CATALOGUE_SHOP };
+  return { shop: isolatedCatalogueShop(shopDomain) || STAGING_CATALOGUE_SHOP };
 }
 
 export function catalogueShopAllowed(shop: string | null | undefined): boolean {
   const domain = catalogueShopDomain(shop);
-  return domain === STAGING_CATALOGUE_SHOP || domain === PETPOSTEROUS_CATALOGUE_SHOP;
+  return domain === STAGING_CATALOGUE_SHOP || isolatedCatalogueShop(domain) !== null;
 }
 
 /** A Petposterous session only sees Petposterous rows. Other operator sessions stay on staging. */

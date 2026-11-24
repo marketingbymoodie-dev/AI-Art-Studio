@@ -3,7 +3,7 @@
  * refuses. Sets Clothing Tops > T-Shirts on the staging base product only.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
+import { PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import { CATALOGUE_SHIRT_PROVIDER_ID, COMFORT_COLORS_BLUEPRINT_ID, SOFTSTYLE_BLUEPRINT_ID } from "@shared/printPlacement";
 import { customizerPages, productTypes } from "@shared/schema";
 import { db } from "./db";
@@ -104,7 +104,7 @@ export async function ensureCatalogueShellCategories(): Promise<void> {
     .where(and(
       eq(productTypes.printifyProviderId, CATALOGUE_SHIRT_PROVIDER_ID),
       inArray(productTypes.printifyBlueprintId, [SOFTSTYLE_BLUEPRINT_ID, COMFORT_COLORS_BLUEPRINT_ID]),
-      inArray(productTypes.shopifyShopDomain, [STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP]),
+      inArray(productTypes.shopifyShopDomain, [STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP]),
       eq(productTypes.isPlatformCatalogRef, false),
     ));
   const tokenByShop = new Map<string, string>();

@@ -300,14 +300,14 @@ const DATA_MIGRATIONS: string[] = [
    SET print_chest_width_in = 11, print_chest_height_in = 14
    WHERE printify_blueprint_id = 145
      AND printify_provider_id = 99
-     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com')
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com', 'petstage.myshopify.com')
      AND print_chest_width_in IS NULL
      AND print_chest_height_in IS NULL`,
   `UPDATE product_types
    SET print_chest_width_in = 14, print_chest_height_in = 14
    WHERE printify_blueprint_id = 706
      AND printify_provider_id = 99
-     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com')
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com', 'petstage.myshopify.com')
      AND print_chest_width_in IS NULL
      AND print_chest_height_in IS NULL`,
   // Staging demo Softstyle only. Petposterous shirts stay null so their

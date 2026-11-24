@@ -4,7 +4,7 @@
  * CATALOGUE_PUBLISH_ALLOWED_SHOPS is set, and then only those shops.
  * Concept generation, blueprint import, and shell categories stay staging-only.
  */
-import { catalogueShopDomain, PETPOSTEROUS_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
+import { catalogueShopDomain, PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP, STAGING_CATALOGUE_SHOP } from "./operatorCatalogue";
 
 export const CATALOGUE_PUBLISH_ALLOWED_SHOPS_ENV = "CATALOGUE_PUBLISH_ALLOWED_SHOPS";
 export const CATALOGUE_PUBLISH_LOCKED_MESSAGE = "Catalogue publish is locked on this backend.";
@@ -32,7 +32,7 @@ export function cataloguePublishAllowedShops(env: CataloguePublishEnv = process.
   if (env.RAILWAY_ENVIRONMENT_NAME === "production") {
     return parseCataloguePublishAllowlist(env.CATALOGUE_PUBLISH_ALLOWED_SHOPS);
   }
-  return [STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP];
+  return [STAGING_CATALOGUE_SHOP, PETPOSTEROUS_CATALOGUE_SHOP, PETSTAGE_CATALOGUE_SHOP];
 }
 
 export function cataloguePublishLocked(env: CataloguePublishEnv = process.env): boolean {

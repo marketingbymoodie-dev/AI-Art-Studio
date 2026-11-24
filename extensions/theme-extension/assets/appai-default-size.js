@@ -294,6 +294,7 @@
   }
 
   var PETPOSTEROUS_SHOP = 'h7epay-gh.myshopify.com';
+  var PETSTAGE_SHOP = 'petstage.myshopify.com';
 
   function shopDomain() {
     var root = document.getElementById('appai-root');
@@ -311,7 +312,7 @@
 
   function isPetposterous() {
     var shop = shopDomain();
-    return shop === PETPOSTEROUS_SHOP || shop === 'h7epay-gh';
+    return shop === PETPOSTEROUS_SHOP || shop === 'h7epay-gh' || shop === PETSTAGE_SHOP || shop === 'petstage';
   }
 
   function isAppListing() {

@@ -18,6 +18,7 @@
     "shopify:config:use:creators": "npx shopify app config use shopify.app.creators.toml",
     "shopify:dev:staging": "npm run ext:install && npx shopify app dev --config shopify.app.staging.toml",
     "shopify:deploy:staging": "npm run ext:parse-check && npm run ext:install && npx shopify app deploy --config shopify.app.staging.toml",
+    "theme:sync-petstage": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sync-petstage-theme.ps1",
     "shopify:deploy:production": "npm run ext:parse-check && npm run ext:install && npx shopify app deploy --config shopify.app.production.toml",
     "shopify:deploy:creators": "npm run ext:parse-check && npm run ext:install && npx shopify app deploy --config shopify.app.creators.toml",
     "aop:triangle:generate": "tsx scripts/generate-aop-triangle-calibration.ts",

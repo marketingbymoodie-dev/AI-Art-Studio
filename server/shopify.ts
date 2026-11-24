@@ -440,6 +440,10 @@ if (res.locals.shopify?.session?.shop) {
         console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ""}`);
       }
 
+      if (String(shop || "").trim().toLowerCase() === "petstage.myshopify.com") {
+        void import("./find-my-size").then(({ ensurePetstageGuarantee }) => ensurePetstageGuarantee());
+      }
+
       await registerCartScript(shop, access_token);
       void import("./garment-accordion-metafields").then(({ ensureGarmentAccordionDefinitions }) =>
         ensureGarmentAccordionDefinitions(shop, access_token),
