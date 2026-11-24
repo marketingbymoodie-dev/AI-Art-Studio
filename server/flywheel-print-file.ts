@@ -214,13 +214,20 @@ async function replicateJson(url: string, token: string, init: RequestInit = {})
   return json as ReplicatePrediction;
 }
 
-/** Real-ESRGAN x4plus, face enhancement off, then Lanczos to the print canvas. */
-async function upscaleForPrint(
+function upscalerErrorText(error: unknown): string {
+  if (!error) return "";
+  const text = typeof error === "string" ? error : JSON.stringify(error);
+  return text.replace(/https?:\/\/\S+/g, "").trim().slice(0, 180);
+}
+
+/** One Real-ESRGAN pass. A failed prediction is thrown with Replicate's reason. */
+async function upscaleOnce(
   source: Buffer,
   styleId: string,
   canvas: PrintCanvas,
   anchor: VerticalPrintAnchor,
-  chest?: ChestPrintZone,
+  chest: ChestPrintZone | undefined,
+  scale: 2 | 4,
 ): Promise<Buffer> {
   const token = readPlatformReplicateToken();
   const prediction = await replicateJson("https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions", token, {
@@ -228,7 +235,7 @@ async function upscaleForPrint(
     body: JSON.stringify({
       input: {
         image: `data:image/png;base64,${source.toString("base64")}`,
-        scale: 4,
+        scale,
         face_enhance: false,
       },
     }),
@@ -242,7 +249,10 @@ async function upscaleForPrint(
     await new Promise((resolve) => setTimeout(resolve, 1000));
     latest = await replicateJson(getUrl, token);
   }
-  if (latest.status !== "succeeded") throw new Error(`${styleId} print file failed: upscaler ${latest.status}`);
+  if (latest.status !== "succeeded") {
+    const detail = upscalerErrorText(latest.error);
+    throw new Error(`${styleId} print file failed: upscaler ${latest.status}${detail ? ` (${detail})` : ""}`);
+  }
   const billed = dollarsFromPrediction(latest);
   lastPrintBilling = billed == null
     ? { costUsd: REAL_ESRGAN_LIST_USD, estimated: true }
@@ -253,6 +263,39 @@ async function upscaleForPrint(
   const image = await fetch(url);
   if (!image.ok) throw new Error(`${styleId} print file failed: upscaler download HTTP ${image.status}`);
   return placeOnPrintCanvas(Buffer.from(await image.arrayBuffer()), canvas, anchor, chest);
+}
+
+let upscaleQueue: Promise<unknown> = Promise.resolve();
+
+/** One upscale at a time. Two shirts in one publish were filling the GPU and the second failed. */
+function enqueueUpscale<T>(run: () => Promise<T>): Promise<T> {
+  const next = upscaleQueue.then(run, run);
+  upscaleQueue = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+/** Real-ESRGAN, face enhancement off, then Lanczos to the print canvas. */
+async function upscaleForPrint(
+  source: Buffer,
+  styleId: string,
+  canvas: PrintCanvas,
+  anchor: VerticalPrintAnchor,
+  chest?: ChestPrintZone,
+): Promise<Buffer> {
+  return enqueueUpscale(async () => {
+    try {
+      return await upscaleOnce(source, styleId, canvas, anchor, chest, 4);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("upscaler failed")) throw err;
+      if (/out of memory/i.test(message)) {
+        console.warn(`[print-file] ${styleId} x4 ran out of GPU memory; retrying at x2`);
+        return upscaleOnce(source, styleId, canvas, anchor, chest, 2);
+      }
+      console.warn(`[print-file] ${styleId} upscaler failed once; retrying once`);
+      return upscaleOnce(source, styleId, canvas, anchor, chest, 4);
+    }
+  });
 }
 
 /**
