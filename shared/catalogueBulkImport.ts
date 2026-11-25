@@ -52,6 +52,8 @@ export type CatalogueImportRow = {
   importStatus?: CatalogueImportStatus;
   candidateId?: string;
   selected?: boolean;
+  /** Operator accepted the soft checks on this row. Hard blocks still apply. */
+  acknowledgedWarnings?: boolean;
 };
 
 export type CatalogueField = "filename" | "style" | "species" | "humourOperator" | "truth" | "device" | "exactWording";
@@ -265,6 +267,18 @@ function wordingKey(wording: string): string {
   return trimEdges(wording || "").replace(/\s+/g, " ").toLowerCase();
 }
 
+function speciesKey(species: string): string {
+  return trimEdges(species || "").replace(/\s+/g, " ").toLowerCase();
+}
+
+/** Blank species still matches, so an unfilled row cannot hide a duplicate. */
+function sameSpecies(left: { species: string }, right: { species: string }): boolean {
+  const a = speciesKey(left.species);
+  const b = speciesKey(right.species);
+  if (!a || !b) return true;
+  return a === b;
+}
+
 function fieldForIssue(message: string): CatalogueField {
   const text = message.toLowerCase();
   if (text.startsWith("style")) return "style";
@@ -310,13 +324,38 @@ export function catalogueRowAttention(row: CatalogueImportRow, peers: CatalogueI
   const samePicture = peers.find((peer) => {
     if (peer === row || peer.filename === row.filename) return false;
     if (hash && peer.contentHash === hash) return true;
-    return !!textKey && attentionTextKey(peer) === textKey;
+    return !!textKey && sameSpecies(row, peer) && attentionTextKey(peer) === textKey;
   });
   if (samePicture) notes.push({ tone: "warn", field: "filename", message: `possible duplicate — check (${samePicture.filename})` });
   const punchline = wordingKey(row.exactWording);
-  const sameWording = punchline ? peers.find((peer) => peer !== row && peer.filename !== row.filename && wordingKey(peer.exactWording) === punchline) : undefined;
+  const sameWording = punchline
+    ? peers.find((peer) => peer !== row && peer.filename !== row.filename && sameSpecies(row, peer) && wordingKey(peer.exactWording) === punchline)
+    : undefined;
   if (sameWording) notes.push({ tone: "warn", field: "exactWording", message: "possible duplicate — check" });
   return notes;
+}
+
+/** Soft checks stay visible. A confirmed row no longer counts them as blockers. */
+export function catalogueBlockingNotes(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): CatalogueAttention[] {
+  const notes = catalogueRowAttention(row, peers);
+  if (!row.acknowledgedWarnings) return notes;
+  return notes.filter((note) => note.tone === "block");
+}
+
+/** Why Create is not counting these rows. One line per remaining block. */
+export function catalogueCreateBlockers<T extends CatalogueImportRow & { draftState?: string }>(rows: T[]): string[] {
+  const reasons: string[] = [];
+  for (const row of rows) {
+    if (row.selected === false || row.importStatus === "queued") continue;
+    if (row.draftState === "waiting" || row.draftState === "drafting") {
+      reasons.push(`${row.filename}: still drafting`);
+      continue;
+    }
+    for (const note of catalogueBlockingNotes(row, rows)) {
+      reasons.push(`${row.filename}: ${note.message}`);
+    }
+  }
+  return reasons;
 }
 
 /** One bucket per row, so ready + need attention + failed + still drafting equals the table. */
@@ -334,7 +373,7 @@ export function catalogueReviewCounts<T extends CatalogueImportRow & { draftStat
       drafting += 1;
       continue;
     }
-    if (catalogueRowAttention(row, rows).length) attention += 1;
+    if (catalogueBlockingNotes(row, rows).length) attention += 1;
     else ready += 1;
   }
   return { ready, attention, failed, drafting, total: rows.length };
@@ -342,7 +381,7 @@ export function catalogueReviewCounts<T extends CatalogueImportRow & { draftStat
 
 export function catalogueAttentionRank(row: CatalogueImportRow, peers: CatalogueImportRow[] = []): number {
   if (row.importStatus === "failed" || row.failureReason) return 0;
-  const notes = catalogueRowAttention(row, peers);
+  const notes = catalogueBlockingNotes(row, peers);
   if (notes.some((note) => note.tone === "block")) return 1;
   if (notes.some((note) => note.tone === "warn")) return 2;
   return 3;
