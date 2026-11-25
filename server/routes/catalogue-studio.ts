@@ -20,6 +20,7 @@ import { planCatalogueImport, type CatalogueImportRow } from "@shared/catalogueB
 import { catalogueCandidateChoices, customizerPages, designCandidates, designProducts, mockupLibraryColours, productTypes } from "@shared/schema";
 import { catalogueSpend } from "../catalogue-publish";
 import { publishColorTickPatch, readPublishColorTicks, shopifyAdminProductUrl } from "@shared/cataloguePublish";
+import { catalogueDesignCanBeEdited } from "@shared/catalogueQueue";
 import { candidateCanBeDeleted, nextQueueId, sortOperatorQueue } from "../catalogue-queue";
 import { resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
 import { formatSizeRange, printableSizeNames, sortCatalogueColours } from "@shared/flywheelPromote";
@@ -189,13 +190,26 @@ async function readCandidateRow(id: string) {
   return row ?? null;
 }
 
-async function listedCandidateIds(shop: string): Promise<string[]> {
+async function catalogueProductLinks(shop: string): Promise<Array<{ jobId: string; shopifyProductId: string }>> {
   const { db } = await import("../db");
   const rows = await db
-    .select({ jobId: designProducts.jobId })
+    .select({ jobId: designProducts.jobId, shopifyProductId: designProducts.shopifyProductId })
     .from(designProducts)
     .where(and(eq(designProducts.shop, shop), isNotNull(designProducts.jobId)));
-  return rows.map((row) => String(row.jobId || "")).filter(Boolean);
+  return rows.map((row) => ({
+    jobId: String(row.jobId || ""),
+    shopifyProductId: String(row.shopifyProductId || "").trim(),
+  })).filter((row) => row.jobId);
+}
+
+async function listedCandidateIds(shop: string): Promise<string[]> {
+  return (await catalogueProductLinks(shop)).map((row) => row.jobId);
+}
+
+async function shopifyListedCandidateIds(shop: string): Promise<string[]> {
+  return (await catalogueProductLinks(shop))
+    .filter((row) => row.shopifyProductId)
+    .map((row) => row.jobId);
 }
 
 /** Petposterous can open a design that was published onto its shop. */
@@ -209,7 +223,7 @@ async function candidateOwnedOrListed(
   return (await listedCandidateIds(profile.shop)).includes(row.id);
 }
 
-async function operatorQueue(requestShop: string | null | undefined): Promise<Array<{ id: string; title: string }>> {
+async function operatorQueue(requestShop: string | null | undefined): Promise<Array<{ id: string; title: string; punchline: string }>> {
   const profile = operatorCatalogueForShop(requestShop);
   const { db } = await import("../db");
   const listed = isolatedCatalogueShop(profile.shop) ? await listedCandidateIds(profile.shop) : [];
@@ -232,10 +246,14 @@ async function operatorQueue(requestShop: string | null | undefined): Promise<Ar
     })
     .from(designCandidates)
     .where(listed.length ? or(ownWork, inArray(designCandidates.id, listed)) : ownWork);
-  return sortOperatorQueue(rows).map((row) => ({
-    id: row.id,
-    title: String(row.title || row.punchline || "").trim(),
-  }));
+  return sortOperatorQueue(rows).map((row) => {
+    const punchline = String(row.punchline || "").trim();
+    return {
+      id: row.id,
+      title: String(row.title || punchline).trim(),
+      punchline,
+    };
+  });
 }
 
 async function resolveStudioCandidateId(value: unknown, requestShop: string | null | undefined): Promise<{ id: string } | { error: string }> {
@@ -1138,7 +1156,12 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const { listCatalogueJobQueue } = await import("../catalogue-publish-jobs");
-      const queue = await listCatalogueJobQueue(await operatorQueue(req.shopDomain));
+      const profile = operatorCatalogueForShop(req.shopDomain);
+      const [open, listed] = await Promise.all([
+        operatorQueue(req.shopDomain),
+        profile.shop ? shopifyListedCandidateIds(profile.shop) : Promise.resolve([]),
+      ]);
+      const queue = await listCatalogueJobQueue(open, new Set(listed));
       res.json({ queue });
     } catch (e: any) {
       res.status(500).json({ error: String(e?.message || e) });
@@ -1156,8 +1179,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
     try {
       const row = await readCandidateRow(id);
-      if (!row || row.status !== "pending") {
-        res.status(400).json({ error: "Wording can be saved while the design is pending." });
+      if (!row || !catalogueDesignCanBeEdited(row.status)) {
+        res.status(400).json({ error: "Wording can be saved on a pending or published design." });
         return;
       }
       const punchline = String(req.body?.punchline ?? "");
@@ -1165,7 +1188,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       await db.update(designCandidates).set({ punchline, updatedAt: new Date() }).where(and(
         eq(designCandidates.id, id),
         eq(designCandidates.shopDomain, row.shopDomain),
-        eq(designCandidates.status, "pending"),
+        or(
+          eq(designCandidates.status, "pending"),
+          eq(designCandidates.status, "approved"),
+          eq(designCandidates.status, "promoted"),
+        ),
       ));
       res.json({ ok: true, punchline });
     } catch (e: any) {
@@ -1185,8 +1212,8 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     }
     try {
       const row = await readCandidateRow(id);
-      if (!row || row.status !== "pending") {
-        res.status(400).json({ error: "Publish choices can be saved while the design is pending." });
+      if (!row || !catalogueDesignCanBeEdited(row.status)) {
+        res.status(400).json({ error: "Publish choices can be saved on a pending or published design." });
         return;
       }
       const hasColours = Array.isArray(req.body?.colorNames);
@@ -1218,11 +1245,11 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       const updated = await pool.query(
         `UPDATE design_candidates
          SET ${sets.join(", ")}, updated_at = now()
-         WHERE id = $${values.length - 1} AND shop_domain = $${values.length} AND status = 'pending'`,
+         WHERE id = $${values.length - 1} AND shop_domain = $${values.length} AND status IN ('pending', 'approved', 'promoted')`,
         values,
       );
       if (!updated.rowCount) {
-        res.status(400).json({ error: "Publish choices can be saved while the design is pending." });
+        res.status(400).json({ error: "Publish choices can be saved on a pending or published design." });
         return;
       }
       const saved = await readCandidateRow(id);
