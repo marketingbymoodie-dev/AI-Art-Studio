@@ -2,6 +2,14 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { formatCatalogueSpend, publishColourNames } from "@shared/cataloguePublish";
+import {
+  catalogueDesignCanBeEdited,
+  catalogueQueueCounts,
+  catalogueQueuePage,
+  filterCatalogueQueue,
+  readCatalogueQueueTab,
+  type CatalogueQueueTab,
+} from "@shared/catalogueQueue";
 import { publishColourScene, resolvePublishPanelId } from "@shared/colourBlanks";
 import type { CatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { initialTickedColours, sortCatalogueColours } from "@shared/flywheelPromote";
@@ -181,7 +189,15 @@ const LOOKS = PETPOSTEROUS_VISUAL_SYSTEMS.filter((look) => look.compatibility.ap
 
 type Override = "rule" | "eligible" | "ineligible";
 
-type QueueRow = { id: string; title: string; phase: string; label: string; error: string };
+type QueueRow = {
+  id: string;
+  title: string;
+  punchline?: string;
+  phase: string;
+  label: string;
+  error: string;
+  done?: boolean;
+};
 
 const ACTIVE_JOB = new Set(["queued", "print", "listing", "mockups", "shopify"]);
 
@@ -349,6 +365,11 @@ export default function CatalogueStudioPage() {
   const [publishTicks, setPublishTicks] = useState<Record<number, boolean>>({});
   const [publishColours, setPublishColours] = useState<Record<number, string[]>>({});
   const [myPetEnabled, setMyPetEnabled] = useState(true);
+  const [queueTab, setQueueTab] = useState<CatalogueQueueTab>(() => readCatalogueQueueTab(
+    typeof window === "undefined" ? null : window.localStorage.getItem("catalogue-studio-queue-tab"),
+  ));
+  const [queueQuery, setQueueQuery] = useState("");
+  const [queuePage, setQueuePage] = useState(1);
   const publishSeed = useRef("");
   const publishSetupSave = useRef<Promise<void>>(Promise.resolve());
   const openCandidateRef = useRef("");
@@ -471,6 +492,11 @@ export default function CatalogueStudioPage() {
       return changed ? next : current;
     });
   }, [candidate.data?.id, candidate.data?.publishTypes, candidate.data?.publishPrefs]);
+
+  useEffect(() => {
+    if (!published.data?.designProductId || published.data.myPetEnabled == null) return;
+    setMyPetEnabled(published.data.myPetEnabled !== false);
+  }, [candidate.data?.id, published.data?.designProductId, published.data?.myPetEnabled]);
 
   const jobPhase = jobs.data?.queue.find((row) => row.id === candidate.data?.id)?.phase || "";
   const seenJobPhase = useRef("");
@@ -719,7 +745,14 @@ export default function CatalogueStudioPage() {
     </div>
   );
 
-  const queue = jobs.data?.queue ?? [];
+  const queue = (jobs.data?.queue ?? []).map((row) => ({
+    ...row,
+    punchline: row.punchline || "",
+    done: row.done ?? (row.phase === "done" || row.label === "Done"),
+  }));
+  const queueCounts = catalogueQueueCounts(queue);
+  const visibleQueue = filterCatalogueQueue(queue, queueTab, queueQuery);
+  const queueSlice = catalogueQueuePage(visibleQueue, queuePage);
   const job = queue.find((row) => row.id === candidate.data?.id);
   const jobActive = ACTIVE_JOB.has(job?.phase || "");
   const publishLabel = jobActive ? job?.label || "Queued" : "Promote and publish";
@@ -747,7 +780,7 @@ export default function CatalogueStudioPage() {
   async function saveWording() {
     const value = wordingRef.current;
     const id = candidate.data?.id;
-    if (!wordingDirty.current || !id || candidate.data?.status !== "pending") return;
+    if (!wordingDirty.current || !id || !catalogueDesignCanBeEdited(candidate.data?.status)) return;
     const run = wordingSave.current.catch(() => undefined).then(async () => {
       if (!wordingDirty.current || wordingRef.current !== value) return;
       const res = await apiFetch("/api/platform/catalogue-studio/punchline", {
@@ -769,7 +802,7 @@ export default function CatalogueStudioPage() {
   }
 
   function savePublishSetup(id: string, body: { productTypeId?: number; colorNames?: string[]; myPetEnabled?: boolean }) {
-    if (!id || candidate.data?.status !== "pending" || candidate.data?.id !== id) return;
+    if (!id || !catalogueDesignCanBeEdited(candidate.data?.status) || candidate.data?.id !== id) return;
     const run = publishSetupSave.current.catch(() => undefined).then(async () => {
       const res = await apiFetch("/api/platform/catalogue-studio/publish-setup", {
         method: "POST",
@@ -784,6 +817,38 @@ export default function CatalogueStudioPage() {
       setPublishNote("Saved");
     });
     publishSetupSave.current = run;
+  }
+
+  async function saveMyPet(next: boolean) {
+    setMyPetEnabled(next);
+    setPublishNote("");
+    const id = candidate.data?.id;
+    const designProductId = published.data?.designProductId;
+    if (designProductId) {
+      const res = await apiFetch("/api/platform/catalogue-studio/my-pet", {
+        method: "POST",
+        body: JSON.stringify({ designProductId, enabled: next }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPublishNote(String(body.error || body.message || "Not saved"));
+        return;
+      }
+      void published.refetch();
+    }
+    if (id && catalogueDesignCanBeEdited(candidate.data?.status)) {
+      savePublishSetup(id, { myPetEnabled: next });
+    }
+  }
+
+  function chooseQueueTab(next: CatalogueQueueTab) {
+    setQueueTab(next);
+    setQueuePage(1);
+    try {
+      window.localStorage.setItem("catalogue-studio-queue-tab", next);
+    } catch {
+      /* the queue still works if the browser refuses storage */
+    }
   }
 
   async function publishCandidate() {
@@ -1048,11 +1113,36 @@ export default function CatalogueStudioPage() {
               <p className="font-medium">Candidate {candidate.data?.id || "pending-bed-etiquette"}</p>
               <p>Status: {verdict}</p>
             </div>
-            <section className="space-y-1" data-testid="catalogue-studio-queue">
+            <section className="space-y-2" data-testid="catalogue-studio-queue">
+              <div className="flex flex-wrap gap-1" role="tablist" aria-label="Queue filter">
+                {(["pending", "done", "all"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={queueTab === tab}
+                    data-testid={`catalogue-queue-tab-${tab}`}
+                    className={`rounded-md border px-2 py-1 text-xs ${queueTab === tab ? "bg-muted font-medium" : ""}`}
+                    onClick={() => chooseQueueTab(tab)}
+                  >
+                    {tab === "pending" ? "Pending" : tab === "done" ? "Done" : "All"} ({queueCounts[tab]})
+                  </button>
+                ))}
+              </div>
+              <Input
+                value={queueQuery}
+                placeholder="Search title or wording"
+                aria-label="Search the queue"
+                data-testid="catalogue-queue-search"
+                onChange={(event) => {
+                  setQueueQuery(event.target.value);
+                  setQueuePage(1);
+                }}
+              />
               <h2 className="font-medium">Queue</h2>
-              {queue.length ? (
+              {queueSlice.rows.length ? (
                 <ul className="space-y-1">
-                  {queue.map((row) => (
+                  {queueSlice.rows.map((row) => (
                     <li key={row.id}>
                       <Link href={`/admin/catalogue-studio?candidate=${encodeURIComponent(row.id)}`} className="underline">
                         {row.title || row.id}
@@ -1062,8 +1152,15 @@ export default function CatalogueStudioPage() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-muted-foreground">No designs in the queue.</p>
+                <p className="text-muted-foreground">{queueQuery.trim() ? "No designs match." : "No designs in this tab."}</p>
               )}
+              {queueSlice.pages > 1 ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <button type="button" className="underline disabled:no-underline disabled:opacity-40" disabled={queueSlice.page <= 1} onClick={() => setQueuePage(queueSlice.page - 1)}>Previous</button>
+                  <span>{queueSlice.page} of {queueSlice.pages}</span>
+                  <button type="button" className="underline disabled:no-underline disabled:opacity-40" disabled={queueSlice.page >= queueSlice.pages} onClick={() => setQueuePage(queueSlice.page + 1)}>Next</button>
+                </div>
+              ) : null}
             </section>
 
             <section className="space-y-2">
@@ -1608,34 +1705,34 @@ export default function CatalogueStudioPage() {
                   )}
                 </div>
               ))}
-              {openPublishTypes.length && verdict !== "dropped" ? (
+              {verdict !== "dropped" && (openPublishTypes.length > 0 || published.data?.designProductId) ? (
                 <>
                   <label className="flex items-center text-sm" data-testid="catalogue-my-pet-enabled">
                     <input
                       type="checkbox"
                       className="mr-2"
                       checked={myPetEnabled}
-                      onChange={(event) => {
-                        const next = event.target.checked;
-                        setMyPetEnabled(next);
-                        setPublishNote("");
-                        const id = candidate.data?.id;
-                        if (id) savePublishSetup(id, { myPetEnabled: next });
-                      }}
+                      onChange={(event) => void saveMyPet(event.target.checked)}
                     />
                     My Pet enabled
                   </label>
                   {publishNote ? <p className="text-xs text-muted-foreground" data-testid="catalogue-studio-publish-setup-note">{publishNote}</p> : null}
-                  <p className="text-xs text-muted-foreground">Written to every listing in this publish. You can change it later on the Shopify product.</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={publishBusy || jobActive || !openPublishTypes.some((type) => publishTicks[type.id])}
-                    onClick={() => void publishCandidate()}
-                  >
-                    {publishLabel}
-                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    {published.data?.designProductId
+                      ? "Saved on this listing. A type that is not published yet uses the same choice."
+                      : "Written to every listing in this publish. You can change it later on the Shopify product."}
+                  </p>
                 </>
+              ) : null}
+              {openPublishTypes.length && verdict !== "dropped" ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={publishBusy || jobActive || !openPublishTypes.some((type) => publishTicks[type.id])}
+                  onClick={() => void publishCandidate()}
+                >
+                  {publishLabel}
+                </Button>
               ) : null}
               {publishError || (job?.phase === "failed" && (job.error || job.label)) ? (
                 <p className="whitespace-pre-wrap text-xs" data-testid="catalogue-studio-publish-error">

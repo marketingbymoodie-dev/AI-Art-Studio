@@ -4,7 +4,8 @@
  * only after that heartbeat is stale, then skips steps already stored.
  */
 import { cataloguePublishAllowedShops, CATALOGUE_PUBLISH_LOCKED_MESSAGE } from "@shared/cataloguePublishAccess";
-import { catalogueJobLabel, CATALOGUE_PUBLISH_HEARTBEAT_MS, CATALOGUE_PUBLISH_STALE_MS, type CatalogueJobPhase } from "@shared/cataloguePublish";
+import { catalogueQueueIsDone, catalogueQueueLabel } from "@shared/catalogueQueue";
+import { CATALOGUE_PUBLISH_HEARTBEAT_MS, CATALOGUE_PUBLISH_STALE_MS, type CatalogueJobPhase } from "@shared/cataloguePublish";
 import type { ApprovalRecipe } from "./catalogue-approval";
 import { publishCatalogueTargets, PublishRefusal, type CatalogueBatchResult } from "./catalogue-publish";
 import { pool } from "./db";
@@ -27,9 +28,11 @@ type JobRow = {
 export type CatalogueQueueEntry = {
   id: string;
   title: string;
+  punchline: string;
   phase: string;
   label: string;
   error: string;
+  done: boolean;
 };
 
 let tableReady: Promise<void> | null = null;
@@ -69,18 +72,29 @@ async function ensureJobsTable(): Promise<void> {
   await tableReady;
 }
 
-function entry(row: { id: string; title: string; phase: string; error: string }): CatalogueQueueEntry {
+function entry(row: {
+  id: string;
+  title: string;
+  punchline?: string;
+  phase: string;
+  error: string;
+  listed?: boolean;
+}): CatalogueQueueEntry {
+  const listed = Boolean(row.listed);
   return {
     id: row.id,
     title: row.title,
+    punchline: row.punchline || "",
     phase: row.phase,
-    label: catalogueJobLabel(row.phase, row.error),
+    label: catalogueQueueLabel(row.phase, row.error, listed),
     error: row.error || "",
+    done: catalogueQueueIsDone({ phase: row.phase, listed }),
   };
 }
 
 export async function listCatalogueJobQueue(
-  open: Array<{ id: string; title: string }>,
+  open: Array<{ id: string; title: string; punchline?: string }>,
+  listedIds: ReadonlySet<string> = new Set(),
 ): Promise<CatalogueQueueEntry[]> {
   await ensureJobsTable();
   const result = await pool.query<JobRow>(
@@ -95,8 +109,10 @@ export async function listCatalogueJobQueue(
     rows.push(entry({
       id: item.id,
       title: item.title || job?.title || item.id,
+      punchline: item.punchline,
       phase: job?.phase || "",
       error: job?.error || "",
+      listed: listedIds.has(item.id),
     }));
   }
   const cutoff = Date.now() - 12 * 60 * 60 * 1000;
@@ -109,6 +125,7 @@ export async function listCatalogueJobQueue(
       title: job.title || job.candidate_id,
       phase: job.phase,
       error: job.error || "",
+      listed: listedIds.has(job.candidate_id),
     }));
   }
   return rows;
