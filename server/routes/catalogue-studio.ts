@@ -1500,6 +1500,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
         failureReason: row.failureReason ? String(row.failureReason) : undefined,
         importStatus: row.importStatus === "failed" ? "failed" : row.importStatus === "queued" ? "queued" : "drafted",
         selected: row.selected !== false,
+        acknowledgedWarnings: row.acknowledgedWarnings === true,
       });
       res.json({ ok: true });
     } catch (e: any) {
@@ -1544,6 +1545,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
           exactWording: String(row?.exactWording || ""),
           source: row?.source === "csv" ? "csv" : "draft",
           lowConfidence: { style: false, humourOperator: false },
+          acknowledgedWarnings: row?.acknowledgedWarnings === true,
         }))
         : [];
       const result = await commitCatalogueImport({
@@ -1564,9 +1566,14 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
 
   app.post("/api/platform/catalogue-studio/candidates/import/abort", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
-    const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
-    await abortCatalogueImport(String(req.body?.batchId || ""), filenames);
-    res.json({ ok: true });
+    try {
+      const shop = await assertCatalogueImportShop(req.shopDomain);
+      const filenames = Array.isArray(req.body?.filenames) ? req.body.filenames.map((name: unknown) => String(name)) : [];
+      await abortCatalogueImport(shop, String(req.body?.batchId || ""), filenames);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e) });
+    }
   });
 
   app.get("/api/platform/catalogue-studio/design-colours", isAuthenticated, async (req: any, res: Response) => {

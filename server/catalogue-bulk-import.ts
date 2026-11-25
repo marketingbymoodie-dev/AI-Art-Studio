@@ -4,7 +4,7 @@
  * refused batch is removed.
  */
 import { createHash, randomUUID } from "crypto";
-import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { catalogueBlockingNotes, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
 import { catalogueShopDomain } from "@shared/operatorCatalogue";
@@ -85,8 +85,15 @@ export async function stageCataloguePng(batchId: string, filename: string, image
   return { hash };
 }
 
-export async function abortCatalogueImport(batchId: string, filenames: string[]): Promise<void> {
-  await removeStaged(batchId, filenames);
+export async function abortCatalogueImport(shop: string, batchId: string, filenames: string[]): Promise<void> {
+  const names = filenames.map((name) => name.trim()).filter(Boolean);
+  await removeStaged(batchId, names);
+  if (!batchIdOk(batchId) || !shop || !names.length) return;
+  await db.delete(catalogueImportRows).where(and(
+    eq(catalogueImportRows.shopDomain, shop),
+    eq(catalogueImportRows.batchId, batchId),
+    inArray(catalogueImportRows.filename, names),
+  ));
 }
 
 export async function ensureCatalogueImportBatch(shop: string, batchId: string): Promise<void> {
@@ -128,6 +135,7 @@ export async function upsertCatalogueImportRow(
     source: row.source ?? existing?.source ?? "draft",
     lowConfidence: row.lowConfidence ?? existing?.lowConfidence ?? { style: false, humourOperator: false },
     selected: row.selected ?? existing?.selected ?? true,
+    acknowledgedWarnings: row.acknowledgedWarnings ?? existing?.acknowledgedWarnings ?? false,
     candidateId: row.candidateId ?? existing?.candidateId ?? null,
     rowNumber: row.rowNumber ?? existing?.rowNumber ?? 0,
     updatedAt: now,
@@ -172,6 +180,7 @@ export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: 
         importStatus: row.importStatus as CatalogueImportRow["importStatus"],
         candidateId: row.candidateId || undefined,
         selected: row.selected,
+        acknowledgedWarnings: row.acknowledgedWarnings === true,
       })),
     };
   }

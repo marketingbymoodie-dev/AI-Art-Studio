@@ -1490,6 +1490,7 @@ export const catalogueImportRows = pgTable("catalogue_import_rows", {
   source: text("source").notNull().default("draft"),
   lowConfidence: jsonb("low_confidence").$type<{ style: boolean; humourOperator: boolean }>(),
   selected: boolean("selected").notNull().default(true),
+  acknowledgedWarnings: boolean("acknowledged_warnings").notNull().default(false),
   candidateId: varchar("candidate_id"),
   rowNumber: integer("row_number").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

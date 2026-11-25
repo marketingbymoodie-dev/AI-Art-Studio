@@ -5,7 +5,7 @@ import path from "path";
 import sharp from "sharp";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const calls: { url: string; body: { filenames?: string[]; filename?: string; rows?: { filename: string; exactWording?: string }[]; row?: { filename?: string; exactWording?: string } } }[] = [];
+const calls: { url: string; body: { filenames?: string[]; filename?: string; rows?: { filename: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string }[]; row?: { filename?: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string } } }[] = [];
 const commitFailures = vi.hoisted(() => ({ current: [] as string[] }));
 const draftFailure = vi.hoisted(() => ({ current: "" }));
 const draftFailuresFor = vi.hoisted(() => ({ current: [] as string[] }));
@@ -154,6 +154,7 @@ describe("catalogue import file inputs", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove extra.png" }));
     expect(screen.queryByText("extra.png")).toBeNull();
     expect(screen.getByText("boxer-a.png")).toBeTruthy();
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/abort") && call.body.filenames?.includes("extra.png"))).toBe(true));
   });
 
   it("shows a vision failure on the row instead of leaving it drafting", async () => {
@@ -299,5 +300,90 @@ describe("catalogue import file inputs", () => {
     await waitFor(() => expect(screen.getByText("boxer-a.png is not in the folder.")).toBeTruthy());
     expect(drafts().length).toBe(before);
     expect(drafts().some((call) => call.body.filename === "kept.png")).toBe(false);
+  });
+
+  function restoredRow(overrides: Record<string, unknown> = {}) {
+    return {
+      rowNumber: 1,
+      filename: "boxer-a.png",
+      style: "woodcut",
+      species: "dog",
+      humourOperator: "pp-sleep-warfare",
+      truth: "The dog is asleep.",
+      device: "The dog is drawn flat.",
+      exactWording: "BONE DUTY",
+      source: "draft",
+      lowConfidence: { style: false, humourOperator: false },
+      importStatus: "drafted",
+      selected: true,
+      ...overrides,
+    };
+  }
+
+  it("keeps Confirm checks after a reload when the image is already stored", async () => {
+    openBatch.current = { batchId: "batch-1", rows: [restoredRow({ acknowledgedWarnings: true, contentHash: "abc" })] };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByRole("button", { name: "Checks confirmed boxer-a.png" })).toBeTruthy();
+    const create = screen.getByRole("button", { name: /Create 1 pending candidate/ }) as HTMLButtonElement;
+    await waitFor(() => expect(create.disabled).toBe(false));
+  });
+
+  it("tells the operator to drop a PNG that a reload left behind", async () => {
+    openBatch.current = { batchId: "batch-1", rows: [restoredRow({ acknowledgedWarnings: true })] };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByText("Image missing — drop the PNG again")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Create 0 pending candidates/ }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("lets Confirm checks clear a signage failure so Create counts the stored image", async () => {
+    openBatch.current = {
+      batchId: "batch-1",
+      rows: [restoredRow({
+        importStatus: "failed",
+        failureReason: "boxer-a.png: contains text that may be background signage",
+        contentHash: "abc",
+      })],
+    };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByText("boxer-a.png: contains text that may be background signage")).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Create 0 pending candidates/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm checks boxer-a.png" }));
+    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    const saved = calls.filter((call) => call.url.endsWith("/row")).at(-1);
+    expect(saved?.body.row?.acknowledgedWarnings).toBe(true);
+    expect(saved?.body.row?.importStatus).toBe("drafted");
+  });
+
+  it("shows the server failure on the row when create is refused", async () => {
+    commitFailures.current = ["boxer-a.png: contains text that may be background signage"];
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png")]);
+    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(create);
+    expect((await screen.findByTestId("catalogue-bulk-import-error")).textContent).toContain("boxer-a.png: contains text that may be background signage");
+    expect(screen.getAllByText("boxer-a.png: contains text that may be background signage").length).toBeGreaterThan(0);
+  });
+
+  it("attaches a dropped PNG to the failed row instead of adding a second copy", async () => {
+    openBatch.current = {
+      batchId: "batch-1",
+      rows: [restoredRow({
+        exactWording: "Nap",
+        importStatus: "failed",
+        failureReason: "boxer-a.png is not in the folder.",
+      })],
+    };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByText("Image missing — drop the PNG again")).toBeTruthy();
+    const [, addInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(addInput, [png("boxer-a.png")]);
+    await waitFor(() => expect(screen.queryByText("Image missing — drop the PNG again")).toBeNull());
+    expect(screen.getAllByText("boxer-a.png")).toHaveLength(1);
+    expect(plans()).toHaveLength(0);
+    const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
   });
 });
