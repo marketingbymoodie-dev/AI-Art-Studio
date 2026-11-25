@@ -10,6 +10,7 @@ import { lookupShadowOrderHold } from "./shadow-reaper-guard";
 import { adminGraphql, shopToken } from "./checkout-guard";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
 import { shadowDeleteDecision, type LiveShadowProduct } from "./shadow-delete-guard";
+import { isShadowSweepReadOnlyShop, recordShadowSweepSuccess } from "./shadow-sweep-health";
 
 const LOOKUP_CHUNK = 40;
 
@@ -121,98 +122,107 @@ export async function runShadowProductCleanup(opts: ShadowCleanupOptions = {}): 
     if (only) expired = expired.filter((row) => only.has(numericId(row.shopifyProductId)));
     if (expired.length === 0) {
       console.log(`[ShadowProduct Cleanup] wouldDelete=0 skippedNotShadow=0 alreadyGone=0`);
-      return counts;
-    }
-    console.log(`[ShadowProduct Cleanup] Found ${expired.length} expired shadow products to clean up`);
+    } else {
+      console.log(`[ShadowProduct Cleanup] Found ${expired.length} expired shadow products to clean up`);
 
-    const byShop: Record<string, typeof expired> = {};
-    for (const row of expired) {
-      if (!byShop[row.shop]) byShop[row.shop] = [];
-      byShop[row.shop].push(row);
-    }
-
-    for (const shopDomain of Object.keys(byShop)) {
-      const rows = byShop[shopDomain];
-      let token: string;
-      try {
-        token = await usableToken(shopDomain);
-      } catch (err: any) {
-        console.error(`[ShadowProduct Cleanup] token unavailable for ${shopDomain}:`, err?.message || err);
-        counts.errors += rows.length;
-        continue;
-      }
-      const clearRows = [];
-      for (const row of rows) {
-        const hold = await lookupShadowOrderHold({
-          shop: shopDomain,
-          token,
-          variantId: row.shopifyVariantId,
-        });
-        if (hold !== "clear") {
-          if (hold === "hold") {
-            if (!opts.dryRun) await storage.protectShadowProductOrder(row.id);
-            console.log(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=order`);
-          } else {
-            console.warn(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=unverified`);
-          }
-          continue;
-        }
-        clearRows.push(row);
-      }
-      if (clearRows.length === 0) continue;
-
-      let live: Map<string, LiveShadowProduct | null>;
-      try {
-        live = await lookupProductsForShadowDelete(
-          shopDomain,
-          token,
-          clearRows.map((row) => row.shopifyProductId),
-        );
-      } catch (err: any) {
-        console.error(`[ShadowProduct Cleanup] product lookup failed for ${shopDomain}:`, err?.message || err);
-        counts.errors += clearRows.length;
-        continue;
+      const byShop: Record<string, typeof expired> = {};
+      for (const row of expired) {
+        if (!byShop[row.shop]) byShop[row.shop] = [];
+        byShop[row.shop].push(row);
       }
 
-      for (const row of clearRows) {
-        const id = numericId(row.shopifyProductId);
-        const product = live.get(id);
-        const decision = shadowDeleteDecision(product, { requireProductType: false });
-        if (decision === "skip" && product) {
-          logSkip("[ShadowProduct Cleanup]", row.id, product);
-          counts.skippedNotShadow++;
-          if (!opts.dryRun) await storage.updatePublishedProduct(row.id, { status: "skipped_not_shadow" });
+      for (const shopDomain of Object.keys(byShop)) {
+        const rows = byShop[shopDomain];
+        if (isShadowSweepReadOnlyShop(shopDomain)) {
+          console.log(`[ShadowProduct Cleanup] read-only shop=${shopDomain} expired=${rows.length} (left in place)`);
           continue;
         }
-        if (decision === "missing") {
-          counts.alreadyGone++;
-          if (!opts.dryRun) await storage.updatePublishedProduct(row.id, { status: "archived" });
-          continue;
-        }
-        if (opts.dryRun) {
-          counts.wouldDelete++;
-          continue;
-        }
+        let token: string;
         try {
-          const delRes = await deleteShopifyProduct(shopDomain, token, id);
-          if (delRes.ok || delRes.status === 404) {
-            await storage.updatePublishedProduct(row.id, { status: "archived" });
-            if (delRes.status === 404) counts.alreadyGone++;
-            else counts.deleted++;
-          } else {
-            const errText = await delRes.text();
-            console.warn(`[ShadowProduct Cleanup] Shopify DELETE failed (${delRes.status}) for product ${id}: ${errText.substring(0, 150)}`);
+          token = await usableToken(shopDomain);
+        } catch (err: any) {
+          console.error(`[ShadowProduct Cleanup] token unavailable for ${shopDomain}:`, err?.message || err);
+          counts.errors += rows.length;
+          continue;
+        }
+        const clearRows = [];
+        for (const row of rows) {
+          const hold = await lookupShadowOrderHold({
+            shop: shopDomain,
+            token,
+            variantId: row.shopifyVariantId,
+          });
+          if (hold !== "clear") {
+            if (hold === "hold") {
+              if (!opts.dryRun) await storage.protectShadowProductOrder(row.id);
+              console.log(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=order`);
+            } else {
+              console.warn(`[ShadowProduct Cleanup] kept variant=${row.shopifyVariantId} reason=unverified`);
+            }
+            continue;
+          }
+          clearRows.push(row);
+        }
+        if (clearRows.length === 0) continue;
+
+        let live: Map<string, LiveShadowProduct | null>;
+        try {
+          live = await lookupProductsForShadowDelete(
+            shopDomain,
+            token,
+            clearRows.map((row) => row.shopifyProductId),
+          );
+        } catch (err: any) {
+          console.error(`[ShadowProduct Cleanup] product lookup failed for ${shopDomain}:`, err?.message || err);
+          counts.errors += clearRows.length;
+          continue;
+        }
+
+        for (const row of clearRows) {
+          const id = numericId(row.shopifyProductId);
+          const product = live.get(id);
+          const decision = shadowDeleteDecision(product, { requireProductType: false });
+          if (decision === "skip" && product) {
+            logSkip("[ShadowProduct Cleanup]", row.id, product);
+            counts.skippedNotShadow++;
+            if (!opts.dryRun) await storage.updatePublishedProduct(row.id, { status: "skipped_not_shadow" });
+            continue;
+          }
+          if (decision === "missing") {
+            counts.alreadyGone++;
+            if (!opts.dryRun) await storage.updatePublishedProduct(row.id, { status: "archived" });
+            continue;
+          }
+          if (opts.dryRun) {
+            counts.wouldDelete++;
+            continue;
+          }
+          try {
+            const delRes = await deleteShopifyProduct(shopDomain, token, id);
+            if (delRes.ok || delRes.status === 404) {
+              await storage.updatePublishedProduct(row.id, { status: "archived" });
+              if (delRes.status === 404) counts.alreadyGone++;
+              else counts.deleted++;
+            } else {
+              const errText = await delRes.text();
+              console.warn(`[ShadowProduct Cleanup] Shopify DELETE failed (${delRes.status}) for product ${id}: ${errText.substring(0, 150)}`);
+              counts.errors++;
+            }
+          } catch (e: any) {
+            console.warn(`[ShadowProduct Cleanup] Error deleting product ${id}:`, e?.message);
             counts.errors++;
           }
-        } catch (e: any) {
-          console.warn(`[ShadowProduct Cleanup] Error deleting product ${id}:`, e?.message);
-          counts.errors++;
         }
       }
     }
   } catch (e: any) {
     console.error("[ShadowProduct Cleanup] Unexpected error:", e);
     counts.errors++;
+  }
+  if (!opts.dryRun && counts.errors === 0) {
+    await recordShadowSweepSuccess().catch((err: any) => {
+      console.error("[ShadowProduct Cleanup] could not record sweep success:", err?.message || err);
+    });
   }
   console.log(
     `[ShadowProduct Cleanup] wouldDelete=${counts.wouldDelete} skippedNotShadow=${counts.skippedNotShadow} alreadyGone=${counts.alreadyGone} deleted=${counts.deleted} errors=${counts.errors}`,
@@ -239,6 +249,10 @@ export async function runDesignSkuCleanup(opts: ShadowCleanupOptions = {}): Prom
 
     for (const shopDomain of Object.keys(byShop)) {
       const rows = byShop[shopDomain];
+      if (isShadowSweepReadOnlyShop(shopDomain)) {
+        console.log(`[Design SKU Cleanup] read-only shop=${shopDomain} expired=${rows.length} (left in place)`);
+        continue;
+      }
       let token: string;
       try {
         token = await usableToken(shopDomain);

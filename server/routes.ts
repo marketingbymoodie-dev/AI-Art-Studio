@@ -63,6 +63,7 @@ import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { protectShadowsOnPaidOrder } from "./shadow-reaper-guard";
 import { runDesignSkuCleanup, runShadowProductCleanup } from "./scheduled-shadow-cleanup";
+import { runShadowSweepHealthCheck } from "./shadow-sweep-health";
 import {
   hasPrintConfigSuffix,
   reusableShadowDesignId,
@@ -14446,9 +14447,16 @@ ${orientationExtra}
     res.json({ ok: true, ...result });
   });
 
-  // Auto-run shadow product cleanup every hour
+  // Auto-run shadow product cleanup every hour, then record whether the
+  // unpaid pile is growing or the sweep itself has gone quiet.
   setInterval(() => {
-    runShadowProductCleanup().catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e));
+    runShadowProductCleanup()
+      .catch((e: Error) => console.error("[ShadowProduct Cleanup] Interval error:", e))
+      .finally(() => {
+        runShadowSweepHealthCheck().catch((e: Error) =>
+          console.error("[ShadowSweepHealth] Interval error:", e),
+        );
+      });
   }, 60 * 60 * 1000);
 
   // Expiring Shopify offline tokens last about an hour. Renew them before that,
