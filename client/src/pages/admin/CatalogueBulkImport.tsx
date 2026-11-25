@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
 import {
   catalogueAttentionRank,
+  catalogueBlockingNotes,
+  catalogueCreateBlockers,
   catalogueReviewCounts,
   catalogueRowAttention,
   catalogueRowsToRetry,
@@ -268,6 +270,7 @@ export default function CatalogueBulkImportPage() {
       truth: row.truth,
       device: row.device,
       exactWording: row.exactWording,
+      acknowledgedWarnings: row.acknowledgedWarnings === true,
       source: row.source,
       lowConfidence: row.lowConfidence,
       proposedFilename: row.proposedFilename || "",
@@ -312,6 +315,7 @@ export default function CatalogueBulkImportPage() {
         humourOperator: changed("humourOperator") ? current.lowConfidence.humourOperator : incoming.lowConfidence.humourOperator,
       },
       selected: current.selected,
+      acknowledgedWarnings: current.acknowledgedWarnings,
     };
   }
 
@@ -565,6 +569,9 @@ export default function CatalogueBulkImportPage() {
       const next = { ...row, ...patch };
       if ("style" in patch) next.lowConfidence = { ...next.lowConfidence, style: false };
       if ("humourOperator" in patch) next.lowConfidence = { ...next.lowConfidence, humourOperator: false };
+      if (["style", "species", "humourOperator", "truth", "device", "exactWording"].some((key) => key in patch)) {
+        next.acknowledgedWarnings = false;
+      }
       changed = next;
       return next;
     }));
@@ -589,7 +596,7 @@ export default function CatalogueBulkImportPage() {
     return list.filter((row) => {
       if (!row.selected || row.importStatus === "queued" || row.importStatus === "failed" || row.draftState === "failed") return false;
       if (row.draftState === "waiting" || row.draftState === "drafting") return false;
-      return catalogueRowAttention(row, list).length === 0;
+      return catalogueBlockingNotes(row, list).length === 0;
     });
   }
 
@@ -699,6 +706,7 @@ export default function CatalogueBulkImportPage() {
   const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows) || a.rowNumber - b.rowNumber);
   const queueCount = readyRows(rows).length;
   const counts = catalogueReviewCounts(rows);
+  const blockers = [...failures, ...catalogueCreateBlockers(rows)];
   const ready = queueCount > 0 && !failures.length && !drafting && !created;
 
   return (
@@ -787,6 +795,8 @@ export default function CatalogueBulkImportPage() {
               <tbody>
                 {ordered.map((row) => {
                   const notes = catalogueRowAttention(row, rows);
+                  const blocking = catalogueBlockingNotes(row, rows);
+                  const softFlags = notes.some((note) => note.tone === "warn");
                   const styleUnsure = row.lowConfidence?.style && !row.style;
                   const humourUnsure = row.lowConfidence?.humourOperator && !row.humourOperator;
                   const locked = !!busy || row.draftState === "waiting" || row.draftState === "drafting";
@@ -813,11 +823,22 @@ export default function CatalogueBulkImportPage() {
                           <button type="button" className="underline" onClick={() => renameRow(row)}>Rename to {row.proposedFilename}</button>
                         ) : null}
                         <FieldReasons notes={notes} field="filename" />
+                        {softFlags ? (
+                          <button
+                            type="button"
+                            className="mt-1 underline"
+                            disabled={locked}
+                            aria-label={`${row.acknowledgedWarnings ? "Checks confirmed" : "Confirm checks"} ${row.filename}`}
+                            onClick={() => edit(row.filename, { acknowledgedWarnings: !row.acknowledgedWarnings })}
+                          >
+                            {row.acknowledgedWarnings ? "Checks confirmed" : "Confirm checks"}
+                          </button>
+                        ) : null}
                       </td>
                       <td className="min-w-36 py-2 pr-2">
                         <select
                           aria-label={`${row.filename} style`}
-                          className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "style")}
+                          className={fieldClass("h-8 w-full rounded border bg-background px-1", blocking, "style")}
                           value={STYLES.some((style) => style.id === row.style) ? row.style : ""}
                           disabled={locked}
                           onChange={(e) => edit(row.filename, { style: e.target.value })}
@@ -828,13 +849,13 @@ export default function CatalogueBulkImportPage() {
                         <FieldReasons notes={notes} field="style" />
                       </td>
                       <td className="min-w-36 py-2 pr-2">
-                        <input aria-label={`${row.filename} species`} className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "species")} value={row.species} disabled={locked} onChange={(e) => edit(row.filename, { species: e.target.value })} />
+                        <input aria-label={`${row.filename} species`} className={fieldClass("h-8 w-full rounded border bg-background px-1", blocking, "species")} value={row.species} disabled={locked} onChange={(e) => edit(row.filename, { species: e.target.value })} />
                         <FieldReasons notes={notes} field="species" />
                       </td>
                       <td className="min-w-36 py-2 pr-2">
                         <select
                           aria-label={`${row.filename} humour`}
-                          className={fieldClass("h-8 w-full rounded border bg-background px-1", notes, "humourOperator")}
+                          className={fieldClass("h-8 w-full rounded border bg-background px-1", blocking, "humourOperator")}
                           value={HUMOUR.includes(row.humourOperator) ? row.humourOperator : ""}
                           disabled={locked}
                           onChange={(e) => edit(row.filename, { humourOperator: e.target.value })}
@@ -845,15 +866,15 @@ export default function CatalogueBulkImportPage() {
                         <FieldReasons notes={notes} field="humourOperator" />
                       </td>
                       <td className="min-w-48 py-2 pr-2">
-                        <textarea aria-label={`${row.filename} truth`} className={fieldClass("w-full rounded border bg-background px-1", notes, "truth")} rows={2} value={row.truth} disabled={locked} onChange={(e) => edit(row.filename, { truth: e.target.value })} />
+                        <textarea aria-label={`${row.filename} truth`} className={fieldClass("w-full rounded border bg-background px-1", blocking, "truth")} rows={2} value={row.truth} disabled={locked} onChange={(e) => edit(row.filename, { truth: e.target.value })} />
                         <FieldReasons notes={notes} field="truth" />
                       </td>
                       <td className="min-w-48 py-2 pr-2">
-                        <textarea aria-label={`${row.filename} device`} className={fieldClass("w-full rounded border bg-background px-1", notes, "device")} rows={2} value={row.device} disabled={locked} onChange={(e) => edit(row.filename, { device: e.target.value })} />
+                        <textarea aria-label={`${row.filename} device`} className={fieldClass("w-full rounded border bg-background px-1", blocking, "device")} rows={2} value={row.device} disabled={locked} onChange={(e) => edit(row.filename, { device: e.target.value })} />
                         <FieldReasons notes={notes} field="device" />
                       </td>
                       <td className="min-w-56 py-2 pr-2">
-                        <textarea aria-label={`${row.filename} wording`} className={fieldClass("w-full rounded border bg-background px-1", notes, "exactWording")} rows={2} value={row.exactWording} disabled={locked} onChange={(e) => edit(row.filename, { exactWording: e.target.value })} />
+                        <textarea aria-label={`${row.filename} wording`} className={fieldClass("w-full rounded border bg-background px-1", blocking, "exactWording")} rows={2} value={row.exactWording} disabled={locked} onChange={(e) => edit(row.filename, { exactWording: e.target.value })} />
                         <FieldReasons notes={notes} field="exactWording" />
                       </td>
                       <td className="py-2">{typeof row.costUsd === "number" ? money(row.costUsd) : "—"}</td>
@@ -877,13 +898,14 @@ export default function CatalogueBulkImportPage() {
         ) : null}
         {error ? <p className="text-xs" data-testid="catalogue-bulk-import-error">{error}</p> : null}
         {rows.length && !created ? (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button type="button" size="sm" disabled={!!busy || !ready} onClick={() => void createBatch()}>
               Create {queueCount} pending {queueCount === 1 ? "candidate" : "candidates"}{draftRows.length ? ` · vision ${money(spent)}` : ""}
             </Button>
             {catalogueRowsToRetry(rows).some((row) => row.source === "draft") ? (
               <Button type="button" size="sm" variant="outline" disabled={!!busy || drafting} onClick={retryFailed}>Retry failed only</Button>
             ) : null}
+            {blockers.length ? <p className="text-xs" data-testid="catalogue-bulk-import-blockers">{blockers.join("; ")}</p> : null}
           </div>
         ) : null}
         {created ? (

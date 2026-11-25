@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOGUE_IMPORT_COLUMNS,
   catalogueAttentionRank,
+  catalogueBlockingNotes,
+  catalogueCreateBlockers,
   catalogueDraftCostUsd,
   catalogueReviewCounts,
   catalogueRowAttention,
@@ -212,6 +214,35 @@ describe("catalogue bulk import", () => {
       const note = catalogueRowAttention(row, rows).find((item) => item.field === "exactWording" && item.message === "possible duplicate — check");
       expect(note?.tone).toBe("warn");
     }
+  });
+
+  it("does not treat the same punchline on different breeds as a duplicate", () => {
+    const base = { style: "woodcut", humourOperator: "pp-sleep-warfare", source: "draft" as const, lowConfidence: { style: false, humourOperator: false }, truth: "the dog is on duty", device: "a dog with a bone", exactWording: "BONE DUTY" };
+    const rows: CatalogueImportRow[] = [
+      { ...base, rowNumber: 1, filename: "golden.png", species: "golden retriever" },
+      { ...base, rowNumber: 2, filename: "doberman.png", species: "doberman" },
+      { ...base, rowNumber: 3, filename: "labrador.png", species: "labrador" },
+    ];
+    for (const row of rows) {
+      const notes = catalogueRowAttention(row, rows);
+      expect(notes.some((note) => note.message.startsWith("possible duplicate"))).toBe(false);
+      expect(notes.some((note) => note.message === "contains text that may be background signage")).toBe(true);
+    }
+    expect(catalogueReviewCounts(rows)).toMatchObject({ ready: 0, attention: 3 });
+    const confirmed = rows.map((row) => ({ ...row, acknowledgedWarnings: true }));
+    expect(catalogueBlockingNotes(confirmed[0], confirmed)).toEqual([]);
+    expect(catalogueReviewCounts(confirmed)).toMatchObject({ ready: 3, attention: 0 });
+    expect(catalogueCreateBlockers(rows).join(" ")).toContain("contains text that may be background signage");
+    expect(catalogueCreateBlockers(confirmed)).toEqual([]);
+  });
+
+  it("still flags the same punchline when the breed is the same", () => {
+    const base = { style: "woodcut", species: "labrador", humourOperator: "pp-sleep-warfare", source: "draft" as const, lowConfidence: { style: false, humourOperator: false }, truth: "one", device: "two", exactWording: "BONE DUTY" };
+    const rows: CatalogueImportRow[] = [
+      { ...base, rowNumber: 1, filename: "a.png" },
+      { ...base, rowNumber: 2, filename: "b.png" },
+    ];
+    expect(catalogueRowAttention(rows[0], rows).some((note) => note.message === "possible duplicate — check")).toBe(true);
   });
 
   it("hints when wording includes signage and clears the hint when that text is removed", () => {

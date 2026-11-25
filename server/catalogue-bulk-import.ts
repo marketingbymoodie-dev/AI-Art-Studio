@@ -5,7 +5,7 @@
  */
 import { createHash, randomUUID } from "crypto";
 import { and, desc, eq, isNotNull, ne } from "drizzle-orm";
-import { catalogueRowAttention, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { catalogueBlockingNotes, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
 import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
@@ -215,7 +215,7 @@ export async function commitCatalogueImport(args: {
   let created = 0;
 
   for (const row of args.rows) {
-    const attention = catalogueRowAttention(row, args.rows);
+    const attention = catalogueBlockingNotes(row, args.rows);
     const named = review.failures.filter((failure) => failure.toLowerCase().includes(row.filename.toLowerCase()));
     if (attention.length || named.length) {
       const reason = named[0] || `${row.filename}: ${attention[0].message}`;

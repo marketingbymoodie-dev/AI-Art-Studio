@@ -185,7 +185,7 @@ describe("catalogue import file inputs", () => {
     render(<CatalogueBulkImportPage />);
     const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
     choose(folderInput, [png("boxer-a.png")]);
-    expect(await screen.findByText(/long for a shirt/)).toBeTruthy();
+    expect((await screen.findAllByText(/long for a shirt/)).length).toBeGreaterThan(0);
     const wording = screen.getByLabelText("boxer-a.png wording") as HTMLTextAreaElement;
     expect(wording.className).toContain("border-amber-700");
     expect(screen.getByTestId("catalogue-bulk-import-summary").textContent).toBe("1 row: 0 ready, 1 need attention, 0 failed");
@@ -218,6 +218,24 @@ describe("catalogue import file inputs", () => {
     fireEvent.change(wording, { target: { value: "I'm Hiring If You're Interested?" } });
     expect(screen.queryByText("contains text that may be background signage")).toBeTruthy();
     expect(screen.getAllByText("contains text that may be background signage")).toHaveLength(1);
+    expect(screen.getByTestId("catalogue-bulk-import-blockers").textContent).toContain("contains text that may be background signage");
+  });
+
+  it("lets a confirmed signage row join the queue and shows the block beside Create", async () => {
+    draftWording.current = "BONE DUTY";
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png"), png("boxer-b.png")]);
+    await waitFor(() => expect(screen.getAllByText("contains text that may be background signage")).toHaveLength(2));
+    const blocked = screen.getByRole("button", { name: /Create 0 pending candidates/ });
+    expect((blocked as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("catalogue-bulk-import-blockers").textContent).toContain("boxer-a.png: contains text that may be background signage");
+    expect(screen.getByTestId("catalogue-bulk-import-blockers").textContent).toContain("possible duplicate — check");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm checks boxer-a.png" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm checks boxer-b.png" }));
+    const create = await screen.findByRole("button", { name: /Create 2 pending candidates/ });
+    await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.queryByTestId("catalogue-bulk-import-blockers")).toBeNull();
   });
 
   it("retries a 401 on one file and still commits the next", async () => {
