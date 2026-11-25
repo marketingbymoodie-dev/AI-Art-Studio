@@ -260,6 +260,9 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "render_probe_results",      column: "behavior",                type: "TEXT" },
   { table: "render_probe_results",      column: "product_family",          type: "TEXT" },
   { table: "render_probe_results",      column: "concept_snapshot",        type: "JSONB" },
+  // Confirm checks on a catalogue import row. Soft warnings stay visible; this flag
+  // is what lets Create proceed after a reload.
+  { table: "catalogue_import_rows",     column: "acknowledged_warnings",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
@@ -2472,6 +2475,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "source" text NOT NULL DEFAULT 'draft',
         "low_confidence" jsonb,
         "selected" boolean NOT NULL DEFAULT true,
+        "acknowledged_warnings" boolean NOT NULL DEFAULT false,
         "candidate_id" varchar,
         "row_number" integer NOT NULL DEFAULT 0,
         "created_at" timestamp DEFAULT NOW() NOT NULL,

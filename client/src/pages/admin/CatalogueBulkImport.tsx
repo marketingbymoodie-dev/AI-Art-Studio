@@ -40,6 +40,7 @@ const STYLES = PETPOSTEROUS_ART_STYLE_LAUNCH.map((id) => {
 });
 const HUMOUR = Object.keys(PETPOSTEROUS_CONCEPT_FRAMEWORKS);
 const FLAGGED_FIELD = "border-amber-700 bg-amber-50";
+const IMAGE_MISSING = "Image missing — drop the PNG again";
 
 function notesFor(notes: CatalogueAttention[], field: CatalogueField): CatalogueAttention[] {
   return notes.filter((note) => note.field === field);
@@ -452,6 +453,48 @@ export default function CatalogueBulkImportPage() {
     filesRef.current = filesRef.current.filter((file) => file.name.toLowerCase() !== key);
     setFiles(filesRef.current);
     setFailures((prev) => prev.filter((failure) => !failure.toLowerCase().includes(key)));
+    if (batchIdRef.current) {
+      void apiFetch("/api/platform/catalogue-studio/candidates/import/abort", {
+        method: "POST",
+        body: JSON.stringify({ batchId: batchIdRef.current, filenames: [filename] }),
+      });
+    }
+  }
+
+  function pngInBrowser(filename: string): boolean {
+    return filesRef.current.some((file) => file.name.toLowerCase() === filename.toLowerCase());
+  }
+
+  function imageMissing(row: ReviewRow): boolean {
+    if (row.importStatus === "queued" || row.contentHash) return false;
+    if (row.draftState === "waiting" || row.draftState === "drafting") return false;
+    return !pngInBrowser(row.filename);
+  }
+
+  function attachDroppedPng(file: File) {
+    const name = basename((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
+    const key = name.toLowerCase();
+    const current = rowsRef.current.find((row) => row.filename.toLowerCase() === key && row.importStatus !== "queued");
+    const url = URL.createObjectURL(file);
+    if (!current) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    urlsRef.current = [...urlsRef.current, url];
+    filesRef.current = [...filesRef.current.filter((item) => item.name.toLowerCase() !== key), file];
+    setFiles(filesRef.current);
+    const needsDraft = current.source === "draft" && !current.style && !current.exactWording;
+    const revived: ReviewRow = {
+      ...current,
+      previewUrl: url,
+      importStatus: "drafted",
+      failureReason: "",
+      draftError: "",
+      draftState: needsDraft ? "waiting" : "done",
+    };
+    applyRows((prev) => prev.map((row) => row.filename.toLowerCase() === key && row.importStatus !== "queued" ? revived : row));
+    if (needsDraft) enqueueDrafts([revived]);
+    else void queueSave(revived);
   }
 
   async function takeFiles(list: File[] | FileList | null, mode: "replace" | "append") {
@@ -478,8 +521,22 @@ export default function CatalogueBulkImportPage() {
       const entries = entriesIn;
       const nameOf = (file: File) => basename((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name);
       const held = new Set(filesRef.current.map((file) => file.name.toLowerCase()));
-      const already = mode === "append" ? entries.filter((file) => /\.png$/i.test(nameOf(file)) && held.has(nameOf(file).toLowerCase())) : [];
-      const pngs = entries.filter((file) => /\.png$/i.test(nameOf(file)) && (mode === "replace" || !held.has(nameOf(file).toLowerCase())));
+      const existingRow = (file: File) => rowsRef.current.find((row) => row.filename.toLowerCase() === nameOf(file).toLowerCase());
+      const reviveFiles = mode === "append"
+        ? entries.filter((file) => {
+          const row = existingRow(file);
+          if (!/\.png$/i.test(nameOf(file)) || !row || row.importStatus === "queued") return false;
+          const heldFile = held.has(nameOf(file).toLowerCase());
+          if (!heldFile) return true;
+          return row.importStatus === "failed" || row.draftState === "failed" || !!row.failureReason;
+        })
+        : [];
+      const reviveNames = new Set(reviveFiles.map((file) => nameOf(file).toLowerCase()));
+      const existingNames = new Set(mode === "append" ? rowsRef.current.map((row) => row.filename.toLowerCase()) : []);
+      const already = mode === "append"
+        ? entries.filter((file) => /\.png$/i.test(nameOf(file)) && held.has(nameOf(file).toLowerCase()) && !reviveNames.has(nameOf(file).toLowerCase()))
+        : [];
+      const pngs = entries.filter((file) => /\.png$/i.test(nameOf(file)) && !reviveNames.has(nameOf(file).toLowerCase()) && !existingNames.has(nameOf(file).toLowerCase()) && (mode === "replace" || !held.has(nameOf(file).toLowerCase())));
       const csvs = entries.filter((file) => /\.csv$/i.test(nameOf(file)));
       const otherImages = entries.filter((file) => /\.(jpe?g|webp|gif)$/i.test(nameOf(file)));
       const local = otherImages.map((file) => `${nameOf(file)} is not a PNG.`);
@@ -494,6 +551,7 @@ export default function CatalogueBulkImportPage() {
         return;
       }
       if (!pngs.length) {
+        for (const file of reviveFiles) attachDroppedPng(file);
         if (notes.length) setError(notes.join(" "));
         return;
       }
@@ -551,6 +609,7 @@ export default function CatalogueBulkImportPage() {
         if (notes.length || loose.length) setError([...loose, ...notes].join(" "));
       }
       setBusy("");
+      for (const file of reviveFiles) attachDroppedPng(file);
       enqueueDrafts(next);
     } catch (e: any) {
       console.error("[catalogue-import] takeFiles failed", e);
@@ -571,6 +630,16 @@ export default function CatalogueBulkImportPage() {
       if ("humourOperator" in patch) next.lowConfidence = { ...next.lowConfidence, humourOperator: false };
       if (["style", "species", "humourOperator", "truth", "device", "exactWording"].some((key) => key in patch)) {
         next.acknowledgedWarnings = false;
+      }
+      if (patch.acknowledgedWarnings === true && next.importStatus !== "queued") {
+        const cleared = { ...next, importStatus: "drafted" as const, failureReason: "", draftError: "", draftState: "done" as const, acknowledgedWarnings: true };
+        const peers = rowsRef.current.map((item) => item.filename === next.filename ? cleared : item);
+        if (!catalogueBlockingNotes(cleared, peers).length) {
+          next.importStatus = "drafted";
+          next.failureReason = "";
+          next.draftError = "";
+          next.draftState = "done";
+        }
       }
       changed = next;
       return next;
@@ -594,6 +663,7 @@ export default function CatalogueBulkImportPage() {
 
   function readyRows(list: ReviewRow[] = rowsRef.current): ReviewRow[] {
     return list.filter((row) => {
+      if (imageMissing(row)) return false;
       if (!row.selected || row.importStatus === "queued" || row.importStatus === "failed" || row.draftState === "failed") return false;
       if (row.draftState === "waiting" || row.draftState === "drafting") return false;
       return catalogueBlockingNotes(row, list).length === 0;
@@ -673,8 +743,13 @@ export default function CatalogueBulkImportPage() {
       const messages = Array.isArray(body.failures) ? body.failures.map(String) : [];
       const queued = (Number(body.created) || 0) + (Number(body.reused) || 0);
       if (!res.ok || messages.length || queued !== toQueue.length) {
-        const shown = messages.length ? messages : [body.error || "Not every row was queued."];
+        const shown = messages.length ? messages : [body.error || body.message || "Not every row was queued."];
         console.error("[catalogue-import] commit failed", shown);
+        applyRows((prev) => prev.map((row) => {
+          const match = shown.find((message) => message.toLowerCase().includes(row.filename.toLowerCase()));
+          if (!match) return row;
+          return { ...row, importStatus: "failed", failureReason: match, draftError: match, draftState: "failed" };
+        }));
         setError([...shown, ...failedUploads.map((row) => row.failureReason || "")].filter(Boolean).join(" "));
         setCreated(null);
         return;
@@ -706,7 +781,8 @@ export default function CatalogueBulkImportPage() {
   const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows) || a.rowNumber - b.rowNumber);
   const queueCount = readyRows(rows).length;
   const counts = catalogueReviewCounts(rows);
-  const blockers = [...failures, ...catalogueCreateBlockers(rows)];
+  const missingNotes = rows.filter((row) => imageMissing(row)).map((row) => `${row.filename}: ${IMAGE_MISSING}`);
+  const blockers = [...failures, ...missingNotes, ...catalogueCreateBlockers(rows)];
   const ready = queueCount > 0 && !failures.length && !drafting && !created;
 
   return (
@@ -816,6 +892,7 @@ export default function CatalogueBulkImportPage() {
                         {row.previewUrl ? <img src={row.previewUrl} alt="" className="h-16 w-16 bg-[#808080] object-contain" /> : null}
                         <div>{row.filename}</div>
                         <div className="text-muted-foreground">{stateLabel}</div>
+                        {imageMissing(row) ? <p className="mt-1 whitespace-normal break-words">{IMAGE_MISSING}</p> : null}
                         {row.draftState === "failed" && row.source === "draft" && row.importStatus !== "queued" ? (
                           <button type="button" className="underline" onClick={() => void draftOne(row, generation.current)}>Retry this draft</button>
                         ) : null}
