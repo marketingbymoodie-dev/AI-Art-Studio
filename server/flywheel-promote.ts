@@ -653,6 +653,7 @@ export async function promoteCatalogueCandidate(args: {
   if (!merchant?.printifyApiToken || !merchant.printifyShopId) reasons.push("Printify is not connected on this product type.");
   if (!installation?.accessToken) reasons.push("Shopify is not connected for this shop.");
   if (!typeRow.printifyBlueprintId || !typeRow.printifyProviderId) reasons.push("This product type has no Printify blueprint.");
+  let brandVendor = "";
   if (installation?.accessToken && shop) {
     try {
       await adminGql(
@@ -660,10 +661,16 @@ export async function promoteCatalogueCandidate(args: {
         installation.accessToken,
         `query { metaobjects(type: "shopify--color-pattern", first: 1) { nodes { id } } }`,
       );
+      const named = await adminGql(shop, installation.accessToken, `query { shop { name } }`);
+      const { catalogueBrandVendor } = await import("@shared/listingCopy");
+      brandVendor = catalogueBrandVendor(named?.shop?.name, merchant?.storeName);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       reasons.push(/metaobject|Access denied/i.test(message) ? METAOBJECT_SCOPE_REFUSAL : message);
     }
+  }
+  if (installation?.accessToken && shop && !brandVendor && !reasons.length) {
+    reasons.push("This shop has no brand name to use as the product vendor.");
   }
   const { inactiveColourKeys } = await import("./colour-blanks");
   const { colourMatchKeys } = await import("@shared/colourBlanks");
@@ -919,7 +926,7 @@ export async function promoteCatalogueCandidate(args: {
   const input = buildProductSetInput({
     title,
     body_html: description,
-    vendor: merchant!.storeName || "Petposterous",
+    vendor: brandVendor,
     product_type: typeRow.name,
     status: shopifyStatus,
     tags: shopifyTags,

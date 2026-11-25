@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   comparePublishTiming,
   listingBody,
+  catalogueBrandVendor,
   listingHandle,
   listingTitle,
   listingTitleCase,
@@ -10,6 +11,20 @@ import {
   openPublishTypeIds,
   suggestListingCopy,
 } from "./listingCopy";
+
+describe("catalogue brand vendor", () => {
+  it("uses the shop name when the stored name is the myshopify domain", () => {
+    expect(catalogueBrandVendor("Petposterous", "h7epay-gh.myshopify.com")).toBe("Petposterous");
+  });
+
+  it("keeps a real stored name when the shop name is missing", () => {
+    expect(catalogueBrandVendor("", "Pet Stage")).toBe("Pet Stage");
+  });
+
+  it("returns nothing when both names are myshopify domains", () => {
+    expect(catalogueBrandVendor("petstage.myshopify.com", "h7epay-gh.myshopify.com")).toBe("");
+  });
+});
 
 describe("listing copy", () => {
   it("defaults a Softstyle blueprint to the tee word, suffix, and style label", () => {

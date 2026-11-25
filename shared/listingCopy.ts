@@ -70,6 +70,23 @@ export function listingTitleCase(value: string): string {
   );
 }
 
+const MYSHOPIFY_DOMAIN = /\.myshopify\.com$/i;
+
+/**
+ * Shopify's Vendor field. The shop's own name is the brand.
+ * A myshopify domain is the login, so it is never used here.
+ */
+export function catalogueBrandVendor(
+  shopName: string | null | undefined,
+  storedName?: string | null,
+): string {
+  const brand = String(shopName || "").replace(/\s+/g, " ").trim();
+  if (brand && !MYSHOPIFY_DOMAIN.test(brand)) return brand;
+  const stored = String(storedName || "").replace(/\s+/g, " ").trim();
+  if (stored && !MYSHOPIFY_DOMAIN.test(stored)) return stored;
+  return "";
+}
+
 export function listingTitle(designName: string, garmentWord: string): string {
   const name = normaliseDesignName(designName);
   const word = garmentWord.replace(/\s+/g, " ").trim();
