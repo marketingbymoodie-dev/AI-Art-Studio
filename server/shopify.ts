@@ -7,20 +7,32 @@ import {
   credentialsForInstallHint,
   getPrimaryShopifyCredentials,
   hasShopifyAppCredentials,
-  hmacBase64MatchesAnySecret,
   listShopifyAppCredentials,
   reinstallKeyForShop,
   verifyOAuthQueryHmac,
   verifyReinstallKey,
 } from "./shopify-app-credentials";
 import { ensureCreatorCheckoutWebhooks } from "./creator-checkout-webhooks";
+import { acceptShopifyWebhook } from "./shopify-webhook-auth";
 import {
   ensureShopifyCarrierService,
   parseCarrierRateRequest,
   quoteShopifyCarrierRates,
 } from "./printify-checkout-shipping";
 
-const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_shipping";
+// Must stay in sync with the scopes line in every shopify.app*.toml (managed
+// installs grant what the toml declares, not this list). Drift is checked at
+// startup and in the shipping reconciler pre-flight — see shopify-scope-drift.ts.
+export const SHOPIFY_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_locations,write_inventory,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping";
+
+/** Staging toml scopes. Used only when this process is the staging server, so a reinstall does not drop write_orders or write_validations. */
+const STAGING_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects";
+
+function oauthScopes(): string {
+  return String(process.env.RAILWAY_ENVIRONMENT_NAME || "").toLowerCase() === "staging"
+    ? STAGING_OAUTH_SCOPES
+    : SHOPIFY_SCOPES;
+}
 
 function primaryKey(): string {
   return getPrimaryShopifyCredentials()?.apiKey || "";
@@ -98,10 +110,17 @@ export function getAppUrl(): string {
 
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-/** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce). */
-export function createOAuthState(shop: string, secret = primarySecret()): string {
+/** Scopes the Petposterous custom app requests. Primary and creators keep oauthScopes(). */
+const PETPOSTEROUS_OAUTH_SCOPES = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects,write_app_proxy";
+
+function oauthScopesFor(label: string): string {
+  return label === "petposterous" ? PETPOSTEROUS_OAUTH_SCOPES : oauthScopes();
+}
+
+/** Cookie-independent CSRF token: HMAC(shop + timestamp + nonce + app). */
+export function createOAuthState(shop: string, secret = primarySecret(), appLabel?: string): string {
   const payload = Buffer.from(
-    JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex") }),
+    JSON.stringify({ s: shop, t: Date.now(), n: crypto.randomBytes(16).toString("hex"), a: appLabel || undefined }),
   ).toString("base64url");
   const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${sig}`;
@@ -141,6 +160,20 @@ function verifyOAuthStateAny(state: string | undefined, shop: string): boolean {
   return listShopifyAppCredentials().some((c) => verifyOAuthState(state, shop, c.apiSecret));
 }
 
+/** App label stamped into a state this process signed. Absent on older states. */
+export function oauthStateAppLabel(state: string | undefined): string | null {
+  if (!state) return null;
+  const lastDot = state.lastIndexOf(".");
+  if (lastDot <= 0) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(state.slice(0, lastDot), "base64url").toString("utf8")) as { a?: string };
+    const label = String(parsed.a || "").trim();
+    return label || null;
+  } catch {
+    return null;
+  }
+}
+
 function verifyHmac(query: Record<string, any>): boolean {
   return verifyOAuthQueryHmac(query);
 }
@@ -150,7 +183,7 @@ function isValidShopDomain(shop: string): boolean {
 }
 
 // Validate that an access token is still valid by making a simple API call
-export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; error?: string }> {
+export async function validateShopifyToken(shop: string, accessToken: string): Promise<{ valid: boolean; status: number; error?: string }> {
   try {
     const response = await fetch(
       `https://${shop}/admin/api/2025-10/shop.json`,
@@ -163,20 +196,20 @@ export async function validateShopifyToken(shop: string, accessToken: string): P
     );
     
     if (response.ok) {
-      return { valid: true };
+      return { valid: true, status: response.status };
     }
     
     if (response.status === 401) {
-      return { valid: false, error: "Token expired or revoked - reinstall required" };
+      return { valid: false, status: response.status, error: "Token expired or revoked - reinstall required" };
     }
     
     if (response.status === 403) {
-      return { valid: false, error: "Insufficient permissions - reinstall with updated scopes required" };
+      return { valid: false, status: response.status, error: "Insufficient permissions - reinstall with updated scopes required" };
     }
     
-    return { valid: false, error: `Unexpected status: ${response.status}` };
+    return { valid: false, status: response.status, error: `Unexpected status: ${response.status}` };
   } catch (error: any) {
-    return { valid: false, error: error.message || "Network error" };
+    return { valid: false, status: 0, error: error.message || "Network error" };
   }
 }
 
@@ -226,18 +259,15 @@ export async function shopifyApiCall(
 
 export function registerShopifyRoutes(app: Express): void {
   console.log(`[shopify] OAuth scopes configured: ${SHOPIFY_SCOPES}`);
+  // Startup drift check: server scope constant vs shopify.app*.toml declarations.
+  import("./shopify-scope-drift")
+    .then((m) => m.logScopeDriftReport(m.checkShopifyScopeDrift(SHOPIFY_SCOPES)))
+    .catch((e) => console.warn("[scope-drift] startup check failed:", e?.message || e));
   registerShopifyGdprRoutes(app);
 
   app.post("/shopify/carrier-service/rates", async (req: Request, res: Response) => {
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string;
     const shopHeader = req.headers["x-shopify-shop-domain"] as string;
-    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
-    const bodyBuf = Buffer.isBuffer(rawBody)
-      ? rawBody
-      : typeof rawBody === "string"
-        ? Buffer.from(rawBody, "utf8")
-        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
+    if (!(await acceptShopifyWebhook(req))) {
       return res.status(401).send("HMAC verification failed");
     }
     const parsed = parseCarrierRateRequest(req.body);
@@ -287,12 +317,12 @@ export function registerShopifyRoutes(app: Express): void {
     if (!creds) {
       return res.status(503).send("Shopify API credentials are not configured");
     }
-    const state = createOAuthState(shop, creds.apiSecret);
+    const state = createOAuthState(shop, creds.apiSecret, creds.label);
     const redirectUri = `${getAppUrl()}/shopify/callback`;
 
     const authUrl = `https://${shop}/admin/oauth/authorize?` +
       `client_id=${creds.apiKey}&` +
-      `scope=${SHOPIFY_SCOPES}&` +
+      `scope=${oauthScopesFor(creds.label)}&` +
       `redirect_uri=${encodeURIComponent(redirectUri)}&` +
       `state=${state}`;
 
@@ -348,7 +378,8 @@ if (res.locals.shopify?.session?.shop) {
 
     try {
       // Public apps require expiring offline tokens (expiring=1).
-      const tokenResult = await exchangeAuthorizationCode(shop, code);
+      const installedApp = oauthStateAppLabel(state);
+      const tokenResult = await exchangeAuthorizationCode(shop, code, installedApp);
       if (!tokenResult.ok) {
         console.error("Shopify token exchange failed:", tokenResult.status, tokenResult.error);
         return res.status(500).send("Failed to get access token from Shopify");
@@ -360,7 +391,7 @@ if (res.locals.shopify?.session?.shop) {
 
       console.log(`Shopify OAuth completed for ${shop}`);
       console.log(`Scopes granted: ${scope || "NONE"}`);
-      console.log(`Requested scopes were: ${SHOPIFY_SCOPES}`);
+      console.log(`Requested scopes were: ${oauthScopesFor(tokenResult.credentials.label)}`);
       console.log(
         `Token mode: ${fields.refreshToken ? "expiring offline" : "non-expiring offline (unexpected)"}`,
       );
@@ -380,6 +411,7 @@ if (res.locals.shopify?.session?.shop) {
           accessTokenExpiresAt: fields.accessTokenExpiresAt,
           refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
           scope,
+          shopifyApp: tokenResult.credentials.label,
           status: "active",
           installedAt: new Date(),
           uninstalledAt: null,
@@ -400,6 +432,7 @@ if (res.locals.shopify?.session?.shop) {
           accessTokenExpiresAt: fields.accessTokenExpiresAt,
           refreshTokenExpiresAt: fields.refreshTokenExpiresAt,
           scope,
+          shopifyApp: tokenResult.credentials.label,
           status: "active",
           installedAt: new Date(),
           merchantId: merchantId,
@@ -407,12 +440,20 @@ if (res.locals.shopify?.session?.shop) {
         console.log(`Created new installation for ${shop}${merchantId ? ` with merchant ${merchantId}` : ""}`);
       }
 
+      if (String(shop || "").trim().toLowerCase() === "petstage.myshopify.com") {
+        void import("./find-my-size").then(({ ensurePetstageGuarantee }) => ensurePetstageGuarantee());
+      }
+
       await registerCartScript(shop, access_token);
+      void import("./garment-accordion-metafields").then(({ ensureGarmentAccordionDefinitions }) =>
+        ensureGarmentAccordionDefinitions(shop, access_token),
+      ).catch((err) => console.warn("[garment-accordion] install:", err instanceof Error ? err.message : err));
       void ensureCreatorCheckoutWebhooks({ shop, accessToken: access_token }).catch((e: any) =>
         console.warn("[creator-webhooks] post-OAuth register failed:", e?.message || e),
       );
       void ensureShopifyCarrierService({ shop, accessToken: access_token }).then((r) => {
-        if (!r.ok) console.warn("[carrier-shipping] post-OAuth register:", r.reason);
+        if (r.intentionalSkip) console.log("[carrier-shipping] post-OAuth", r.reason);
+        else if (!r.ok) console.warn("[carrier-shipping] post-OAuth register:", r.reason);
         else console.log("[carrier-shipping] post-OAuth", r.reason, shop);
       });
 
@@ -471,17 +512,18 @@ if (res.locals.shopify?.session?.shop) {
       }
     }
 
-    // Check if the stored token is missing any required scopes.
-    // Note: Shopify's OAuth token response only lists write_ scopes; write_X implies read_X.
-    // So we expand the granted set: if write_X is present, treat read_X as also granted.
-    const REQUIRED_SCOPES = SHOPIFY_SCOPES.split(",").map(s => s.trim());
-    const grantedScopes = (installation.scope || "").split(",").map(s => s.trim());
+    // Petposterous declares write_app_proxy because it has an app proxy. The
+    // public and staging apps do not, so their status check stays on SHOPIFY_SCOPES.
+    const requiredCsv = installation.shopifyApp === "petposterous" ? PETPOSTEROUS_OAUTH_SCOPES : SHOPIFY_SCOPES;
+    const REQUIRED_SCOPES = requiredCsv.split(",").map(s => s.trim()).filter(Boolean);
+    const grantedScopes = (installation.scope || "").split(",").map(s => s.trim()).filter(Boolean);
     const expandedGranted = new Set(grantedScopes);
     for (const s of grantedScopes) {
       if (s.startsWith("write_")) expandedGranted.add(s.replace("write_", "read_"));
     }
     const missingScopes = REQUIRED_SCOPES.filter(s => !expandedGranted.has(s));
     const scopesMissing = missingScopes.length > 0;
+    const reinstallUrl = `/shopify/install?shop=${encodeURIComponent(shop)}${installation.shopifyApp === "petposterous" ? "&app=petposterous" : ""}`;
 
     res.json({
       installed: installation.status === "active" && tokenValid,
@@ -493,12 +535,11 @@ if (res.locals.shopify?.session?.shop) {
       installedAt: installation.installedAt,
       missingScopes: scopesMissing ? missingScopes : [],
       needsReinstall: !tokenValid || installation.status === "token_invalid" || scopesMissing,
-      reinstallUrl: `/shopify/install?shop=${encodeURIComponent(shop)}`
+      reinstallUrl,
     });
   });
 
   app.post("/shopify/webhooks/uninstall", async (req: Request, res: Response) => {
-    const hmacHeader = req.headers["x-shopify-hmac-sha256"] as string;
     const topic = req.headers["x-shopify-topic"] as string;
     const shop = req.headers["x-shopify-shop-domain"] as string;
 
@@ -506,13 +547,7 @@ if (res.locals.shopify?.session?.shop) {
       return res.status(200).send("OK");
     }
 
-    const rawBody = (req as { rawBody?: Buffer | string }).rawBody;
-    const bodyBuf = Buffer.isBuffer(rawBody)
-      ? rawBody
-      : typeof rawBody === "string"
-        ? Buffer.from(rawBody, "utf8")
-        : Buffer.from(JSON.stringify(req.body ?? {}), "utf8");
-    if (!hmacHeader || !hmacBase64MatchesAnySecret(bodyBuf, hmacHeader)) {
+    if (!(await acceptShopifyWebhook(req))) {
       return res.status(401).send("HMAC verification failed");
     }
 
@@ -528,20 +563,37 @@ if (res.locals.shopify?.session?.shop) {
         );
         return res.status(200).send("OK");
       }
-      // Stronger guard: if the stored token still works, the app was reinstalled
-      // and this webhook is stale (can arrive well after the 90s window).
-      if (
-        installation.accessToken &&
-        installation.accessToken !== "NEEDS_RECONNECT" &&
-        installation.status === "active"
-      ) {
-        const stillValid = await validateShopifyToken(shop, installation.accessToken);
-        if (stillValid.valid) {
-          console.warn(
-            `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
-          );
-          return res.status(200).send("OK");
-        }
+      // An expired offline token is not an uninstall. Refresh it first. Only a
+      // rejected refresh token, or a shop that still rejects the token after
+      // refresh, may delete the shipping maps.
+      const { ensureValidOfflineAccessToken } = await import("./shopify-offline-token");
+      const { decideUninstallCleanup } = await import("./uninstall-shipping-guard");
+      const tokenReady = await ensureValidOfflineAccessToken(installation);
+      let shopStatus: number | null = null;
+      if (tokenReady.ok) {
+        const stillValid = await validateShopifyToken(shop, tokenReady.accessToken);
+        shopStatus = stillValid.status;
+      }
+      const decision = decideUninstallCleanup({
+        tokenReady: tokenReady.ok,
+        needsReinstall: tokenReady.ok ? false : tokenReady.needsReinstall,
+        shopStatus,
+      });
+      if (decision === "skip") {
+        console.warn(
+          `[uninstall-webhook] Skipping stale uninstall for ${shop} — access token still valid (reinstalled)`,
+        );
+        return res.status(200).send("OK");
+      }
+      if (decision === "reauth") {
+        await storage.updateShopifyInstallation(installation.id, {
+          status: "token_invalid",
+          embedConfirmedAt: null,
+        });
+        console.warn(
+          `[uninstall-webhook] Not clearing shipping for ${shop} — token could not be confirmed revoked (${tokenReady.ok ? "shop status " + shopStatus : tokenReady.error})`,
+        );
+        return res.status(200).send("OK");
       }
       await storage.updateShopifyInstallation(installation.id, {
         status: "uninstalled",
@@ -549,6 +601,15 @@ if (res.locals.shopify?.session?.shop) {
         embedConfirmedAt: null,
       });
       console.log(`[uninstall-webhook] Marked ${shop} as uninstalled`);
+
+      // Confirmed uninstall: the token is revoked, so no Shopify calls — clear
+      // the delivery-profile ID map + flip mode off. Never block the webhook response.
+      import("./shipping-reconciler")
+        .then((m) => m.clearShopShippingState(shop))
+        .then(() => console.log(`[uninstall-webhook] Cleared shipping state for ${shop}`))
+        .catch((e) =>
+          console.error(`[uninstall-webhook] shipping cleanup failed for ${shop}:`, e?.message || e),
+        );
     }
 
     res.status(200).send("OK");

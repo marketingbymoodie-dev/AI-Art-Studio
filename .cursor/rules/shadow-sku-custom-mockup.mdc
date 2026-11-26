@@ -27,6 +27,7 @@ Per-design images in **cart and checkout** use a **dedicated Shopify variant** w
 - Uninstall **webhook** must not mark the shop uninstalled if OAuth **just** completed (see `shopify.ts` time guard).
 - Cart/checkout thumbnails come from the **shadow variant image** (HTTPS mockup at resolve time) — do not skip resolve when iframe only has the base variant.
 - AppAI cart lines must **not** navigate to the native/shadow PDP from image or title.
+- **Print-config snapshots:** ATC keys shadows as `jobId::variantId::cfgHash`. Same snapshot → qty increment. Different background / sides / placement → new line. Theme `findMatchingCartLine` must **not** merge on `_appai_job_id` alone. Do not fall back a cfg-keyed resolve to `job::variant` PreShadow. Editing does not mint shadows or fork jobs.
 
 ## Deploy note
 

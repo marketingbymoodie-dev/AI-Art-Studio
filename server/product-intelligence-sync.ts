@@ -24,6 +24,7 @@ import {
   summarizeVariantAvailability,
 } from "@shared/printifyAvailability";
 import { buildActivePrintifyVariantLabels } from "@shared/printifyVariantLabels";
+import { buildCostsByNormalizedLabel, buildVariantKeyCosts } from "@shared/printifyCostLabels";
 import {
   computeProductHealth,
   costChecksum,
@@ -457,11 +458,14 @@ export async function syncProductTypeIntelligence(
       marginBelowThreshold,
     });
 
-    const printifyCosts = serializePrintifyCostsCache(
-      Object.keys(bothCosts).length > 0
-        ? { front: frontCosts, both: bothCosts }
-        : frontCosts,
-    );
+    const persistCosts = Object.keys(frontCosts).length > 0;
+    const printifyCosts = persistCosts
+      ? serializePrintifyCostsCache(
+          Object.keys(bothCosts).length > 0
+            ? { front: frontCosts, both: bothCosts }
+            : frontCosts,
+        )
+      : undefined;
 
     await storage.updateProductType(pt.id, {
       pricingVersion: nextVersion,
@@ -469,7 +473,7 @@ export async function syncProductTypeIntelligence(
       productHealth: health,
       variantAvailability: JSON.stringify(availabilityMap),
       shippingSnapshot: JSON.stringify(shippingSnapshot),
-      printifyCosts,
+      ...(printifyCosts ? { printifyCosts } : {}),
       lastOosScanAt: new Date(),
       oosAvailableVariants: summary.availableSelected,
       oosTotalVariants: summary.totalSelected,
@@ -480,6 +484,13 @@ export async function syncProductTypeIntelligence(
         source: "product_sync",
       }),
     } as Partial<ProductType>);
+
+    try {
+      const { applyCatalogueInventoryPolicy } = await import("./catalogue-inventory-policy");
+      await applyCatalogueInventoryPolicy(pt.id);
+    } catch (policyErr: any) {
+      console.error(`${TAG} shopify policy update failed for product type ${pt.id}:`, policyErr?.message || policyErr);
+    }
 
     return {
       productTypeId: pt.id,
@@ -570,6 +581,38 @@ export async function backfillProductTypeFromCosts(pt: ProductType): Promise<num
     await storage.updateProductType(pt.id, { pricingVersion: 1 } as Partial<ProductType>);
   }
   return inserted;
+}
+
+async function refreshShippingForStockChanges(
+  pairs: Array<{ blueprintId: number; providerId: number }>,
+): Promise<void> {
+  try {
+    const { ingestShippingClass } = await import("./shipping-tables");
+    const { shippingClasses } = await import("@shared/schema");
+    let changed = 0;
+    for (const pair of pairs) {
+      const [cls] = await db
+        .select({ id: shippingClasses.id })
+        .from(shippingClasses)
+        .where(
+          and(
+            eq(shippingClasses.blueprintId, pair.blueprintId),
+            eq(shippingClasses.providerId, pair.providerId),
+          ),
+        )
+        .limit(1);
+      if (!cls) continue;
+      const result = await ingestShippingClass(pair);
+      if (result.status === "updated" || result.status === "created") changed++;
+    }
+    console.log(`${TAG} stock change → shipping tables refreshed: classes=${pairs.length} changed=${changed}`);
+    if (changed > 0) {
+      const { reconcileAllTableModeShops } = await import("./shipping-reconciler");
+      await reconcileAllTableModeShops("pi-stock-change");
+    }
+  } catch (e: any) {
+    console.error(`${TAG} stock-change shipping refresh failed:`, e?.message || e);
+  }
 }
 
 export async function runCatalogueProductSync(opts: {
@@ -717,6 +760,24 @@ export async function runCatalogueProductSync(opts: {
     `${TAG} run ${run.id} complete: products=${productsChecked} variants=${variantsChecked} priceΔ=${priceChanges} availΔ=${availabilityChanges} failures=${syncFailures}`,
   );
 
+  // Printify's shipping table lists only in-stock variants, so a restock (or a
+  // stock-out) also changes delivery-profile membership. Refresh those classes
+  // now so the storefront unlock and the shipping profile land together
+  // instead of up to a day apart on the separate tables-sync timer.
+  const changedPairs = new Map<string, { blueprintId: number; providerId: number }>();
+  for (const r of results) {
+    if (!r.ok || r.availabilityChanges <= 0) continue;
+    const pt = allPts.find((p) => p.id === r.productTypeId);
+    if (pt?.printifyBlueprintId == null || pt.printifyProviderId == null) continue;
+    changedPairs.set(`${pt.printifyBlueprintId}:${pt.printifyProviderId}`, {
+      blueprintId: pt.printifyBlueprintId,
+      providerId: pt.printifyProviderId,
+    });
+  }
+  if (changedPairs.size) {
+    void refreshShippingForStockChanges(Array.from(changedPairs.values()));
+  }
+
   return { ran: true, runId: run.id, results };
 }
 
@@ -863,6 +924,8 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
   printifyVariantLabels: Record<string, string>;
   costsByNormalizedLabel: Record<string, number>;
   costsBothByNormalizedLabel: Record<string, number>;
+  variantKeyCosts: Record<string, number>;
+  variantKeyCostsBoth: Record<string, number>;
   supportsBothSides: boolean;
   cached: boolean;
   source: "product_intelligence";
@@ -958,28 +1021,16 @@ export async function costsResponseFromProductIntelligence(productType: ProductT
     if (costsBoth[pvid] !== undefined) shopifyVariantCostsBoth[String(shopifyVid)] = costsBoth[pvid];
   }
 
-  const norm = (label: string) =>
-    label
-      .toLowerCase()
-      .replace(/\s*\/\s*/g, "/")
-      .replace(/\s+/g, " ")
-      .trim();
-  const costsByNormalizedLabel: Record<string, number> = {};
-  const costsBothByNormalizedLabel: Record<string, number> = {};
-  for (const [vid, label] of Object.entries(labels)) {
-    const key = norm(label);
-    if (costs[vid] != null) costsByNormalizedLabel[key] = costs[vid];
-    if (costsBoth[vid] != null) costsBothByNormalizedLabel[key] = costsBoth[vid];
-  }
-
   return {
     costs,
     costsBoth,
     shopifyVariantCosts,
     shopifyVariantCostsBoth,
     printifyVariantLabels: labels,
-    costsByNormalizedLabel,
-    costsBothByNormalizedLabel,
+    costsByNormalizedLabel: buildCostsByNormalizedLabel(costs, labels),
+    costsBothByNormalizedLabel: buildCostsByNormalizedLabel(costsBoth, labels),
+    variantKeyCosts: buildVariantKeyCosts(variantMap, costs),
+    variantKeyCostsBoth: buildVariantKeyCosts(variantMap, costsBoth),
     supportsBothSides: Object.keys(costsBoth).length > 0,
     cached: true,
     source: "product_intelligence",

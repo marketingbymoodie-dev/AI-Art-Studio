@@ -13,7 +13,6 @@ import {
 import { resolveVariantFromMap } from "@shared/variantMapResolve";
 import { isCreatorCreditPackLine } from "./creator-packs";
 import { isMerchantCreditPackLine } from "./merchant-packs";
-import { isCreatorPlatformShop } from "./creator-host";
 import {
   getCreatorPlatformShopCandidates,
   getCreatorPlatformShopDomain,
@@ -51,31 +50,53 @@ export function carrierServiceCallbackUrl(origin: string): string {
   return `${origin.replace(/\/$/, "")}/shopify/carrier-service/rates`;
 }
 
+export function carrierCallbackHost(origin: string): string {
+  return origin.replace(/^https?:\/\//, "").split("/")[0] || "";
+}
+
+/**
+ * Live creator checkout shops. A staging callback must not be written onto
+ * these. Do not key this off CREATOR_PLATFORM_SHOP_DOMAIN: that also named
+ * the staging shop, so staging could never register against its own host.
+ */
+export const LIVE_CREATOR_CHECKOUT_SHOPS = new Set([
+  "whi6jd-nv.myshopify.com",
+  "aiartstudio-creators.myshopify.com",
+]);
+
+export function isLiveCreatorCheckoutShop(shop: string): boolean {
+  return LIVE_CREATOR_CHECKOUT_SHOPS.has(normalizeMyshopifyShopDomain(shop));
+}
+
 export function canRegisterCarrierService(origin: string, shop: string): boolean {
-  const host = origin.replace(/^https?:\/\//, "").split("/")[0] || "";
+  const host = carrierCallbackHost(origin);
   if (!origin.startsWith("https://")) return false;
   if (!host || host === "localhost" || host.startsWith("127.")) return false;
-  if (isCreatorPlatformShop(shop) && /staging/i.test(host)) return false;
+  if (/staging/i.test(host) && isLiveCreatorCheckoutShop(shop)) return false;
   return true;
 }
 
-function printifyToken(): string {
-  return String(process.env.PRINTIFY_API_TOKEN || "").trim();
+export function carrierRegistrationSkipReason(origin: string, shop: string): string {
+  const host = carrierCallbackHost(origin) || "(unset)";
+  const shopLabel = normalizeMyshopifyShopDomain(shop) || shop || "(unset)";
+  if (/staging/i.test(host) && isLiveCreatorCheckoutShop(shop)) {
+    return `intentional skip: staging origin host ${host} will not register a carrier on live creator shop ${shopLabel}`;
+  }
+  return `intentional skip: origin host ${host} is not a registerable https callback for shop ${shopLabel}`;
 }
 
-async function printifyTokenForShop(shop: string): Promise<string> {
-  const envTok = printifyToken();
-  try {
-    const installation = await storage.getShopifyInstallationByShop(shop);
-    if (installation?.merchantId) {
-      const merchant = await storage.getMerchant(installation.merchantId);
-      const tok = String(merchant?.printifyApiToken || "").trim();
-      if (tok) return tok;
-    }
-  } catch {
-    /* fall through */
+/**
+ * Catalogue shipping (`/v2/catalog/.../shipping.json`) is global.
+ * The platform token only. A missing token fails the quote; a merchant token is not borrowed.
+ */
+export function platformCatalogueShippingToken(): string {
+  const token = String(process.env.PRINTIFY_API_TOKEN || "").trim();
+  if (!token) {
+    const message = "PRINTIFY_API_TOKEN is not set";
+    console.error(`[carrier-shipping] ${message}`);
+    throw new Error(message);
   }
-  return envTok;
+  return token;
 }
 
 export async function fetchPrintifyShippingTable(
@@ -96,7 +117,9 @@ export async function fetchPrintifyShippingTable(
     { headers },
   );
   if (!listResp.ok) {
-    throw new Error(`Printify shipping list ${listResp.status}`);
+    const message = `PRINTIFY_API_TOKEN rejected by Printify catalogue shipping.json: HTTP ${listResp.status}`;
+    console.error(`[carrier-shipping] ${message}`);
+    throw new Error(message);
   }
   const listData = (await listResp.json()) as { data?: Array<{ attributes?: { name?: string } }> };
   const tiers = (listData.data || []).map((m) => m.attributes?.name).filter(Boolean) as string[];
@@ -274,11 +297,7 @@ export async function quoteShopifyCarrierRates(params: {
   items: any[];
 }): Promise<ShopifyCarrierRate[]> {
   const shop = normalizeMyshopifyShopDomain(params.shop);
-  const token = await printifyTokenForShop(shop);
-  if (!token) {
-    console.warn("[carrier-shipping] no Printify token");
-    return [];
-  }
+  const token = platformCatalogueShippingToken();
 
   const physical: Array<{
     blueprintId: number;
@@ -586,14 +605,14 @@ async function restListCarriers(
 export async function ensureShopifyCarrierService(params: {
   shop: string;
   accessToken: string;
-}): Promise<{ ok: boolean; reason?: string }> {
+}): Promise<{ ok: boolean; reason?: string; intentionalSkip?: boolean }> {
   const shop = normalizeMyshopifyShopDomain(params.shop);
   const origin = String(process.env.APP_URL || process.env.PUBLIC_APP_URL || "")
     .trim()
     .replace(/\/$/, "");
   if (!shop || !params.accessToken) return { ok: false, reason: "missing shop or token" };
   if (!canRegisterCarrierService(origin, shop)) {
-    return { ok: false, reason: "origin not allowed for this shop" };
+    return { ok: false, intentionalSkip: true, reason: carrierRegistrationSkipReason(origin, shop) };
   }
   const callback = carrierServiceCallbackUrl(origin);
   const listed = await restListCarriers(shop, params.accessToken);
@@ -705,7 +724,11 @@ export async function ensureShopifyCarrierService(params: {
   return { ok: true, reason: `${action}; ${profiles}` };
 }
 
-export async function ensurePlatformCarrierService(): Promise<{ ok: boolean; reason?: string }> {
+export async function ensurePlatformCarrierService(): Promise<{
+  ok: boolean;
+  reason?: string;
+  intentionalSkip?: boolean;
+}> {
   if (!isCreatorMarketplaceEnabled()) return { ok: false, reason: "marketplace off" };
   const candidates = getCreatorPlatformShopCandidates()
     .map((s) => normalizeMyshopifyShopDomain(s))

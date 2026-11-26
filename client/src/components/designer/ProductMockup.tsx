@@ -56,6 +56,8 @@ interface ProductMockupProps {
    *  Use "contain" while browsing in the standard square window so tall
    *  phone-case / mug blanks are not cropped. */
   blankFit?: "cover" | "contain";
+  /** Live fill behind a transparent floating PNG (mug / non-flat decor). */
+  artworkBackgroundColor?: string | null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -96,9 +98,12 @@ function ensureStyles() {
 /* ─────────────────────────────────────────────────────────────────────────────
    GeneratingLoader — light base, dark rotating conic gradient + dark shimmer
    ───────────────────────────────────────────────────────────────────────────── */
+/** Hardcoded wait line — not an admin/env/theme setting. */
+const GENERATING_WAIT_LINE = { line1: "This may take", line2: "up to 60 seconds" };
+
 const GENERATING_MESSAGES = [
   { line1: "Generating", line2: "Artwork" },
-  { line1: "May take up", line2: "to 20 seconds..." },
+  GENERATING_WAIT_LINE,
   { line1: "Generating", line2: "Artwork" },
   { line1: "Almost", line2: "there..." },
 ];
@@ -110,12 +115,20 @@ const MOCKUP_WAIT_PHASES = [
   { at: 16000, text: "Almost Ready" },
 ];
 
-function GeneratingLoader({ isAop = false }: { isAop?: boolean }) {
+export function GeneratingLoader({
+  isAop = false,
+  headline,
+}: {
+  isAop?: boolean;
+  headline?: { line1: string; line2: string };
+}) {
   ensureStyles();
-  const messages = isAop
+  const messages = headline
+    ? [headline]
+    : isAop
     ? [
         { line1: "Generating", line2: "Artwork" },
-        { line1: "May take up", line2: "to 20 seconds..." },
+        GENERATING_WAIT_LINE,
         { line1: "Generating", line2: "Artwork" },
         { line1: "Rendering", line2: "Pattern Styles..." },
       ]
@@ -342,6 +355,7 @@ export function ProductMockup({
   initialPreviewUrl,
   mockupFit = "cover",
   blankFit,
+  artworkBackgroundColor = null,
 }: ProductMockupProps) {
   const displayUrl = mockupUrl ?? imageUrl;
 
@@ -592,17 +606,31 @@ export function ProductMockup({
           </>
         );
       }
+      const fillHex =
+        typeof artworkBackgroundColor === "string" &&
+        /^#[0-9a-fA-F]{6}$/.test(artworkBackgroundColor.trim())
+          ? artworkBackgroundColor.trim()
+          : null;
       return (
-        <img
-          src={displayUrl}
-          alt="Generated artwork"
-          className="absolute inset-0 w-full h-full object-contain"
-          style={artStyle}
-          draggable={false}
-          data-testid="img-generated"
-          onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
-          onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
-        />
+        <>
+          {fillHex && !mockupUrl ? (
+            <div
+              className="absolute inset-0"
+              style={{ ...artStyle, backgroundColor: fillHex }}
+              data-testid="decor-live-fill"
+            />
+          ) : null}
+          <img
+            src={displayUrl}
+            alt="Generated artwork"
+            className="absolute inset-0 w-full h-full object-contain"
+            style={artStyle}
+            draggable={false}
+            data-testid="img-generated"
+            onLoad={() => console.log("[ProductMockup] Image loaded successfully")}
+            onError={(e) => console.error("[ProductMockup] Image failed to load:", e)}
+          />
+        </>
       );
     }
 
@@ -728,11 +756,12 @@ export function ProductMockup({
     typeof document !== "undefined" &&
     document.documentElement.dataset.appaiEmbed === "true" &&
     document.documentElement.dataset.appaiMobileNativeScroll !== "true";
-  const touchAction: CSSProperties["touchAction"] = showTransformOverlay
-    ? "none"
-    : isDesktopEmbed
-      ? "auto"
-      : "pan-y";
+  // May 4: pan-y on the preview so empty garment scrolls. Jun 30: auto on
+  // desktop embed so Chrome does not consume wheel before parent forward.
+  // Never none on this box — none belongs on the artwork rect only.
+  const touchAction: CSSProperties["touchAction"] = isDesktopEmbed
+    ? "auto"
+    : "pan-y";
 
   const zoomOriginFromEvent = useCallback((clientX: number, clientY: number) => {
     const el = containerRef.current;

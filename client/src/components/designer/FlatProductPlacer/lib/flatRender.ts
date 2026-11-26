@@ -31,7 +31,21 @@
 
 import { drawMeshWarp } from "@/components/hoodie-template-mapper/lib/meshWarp";
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
-import type { MeshGrid, Pt } from "@shared/hoodieTemplate";
+import {
+  BEANIE_PREVIEW_PLACEMENT_SCALE,
+  flatArtFitForBlueprint,
+  isBeanieBlueprint,
+  type FlatArtFit,
+  type MeshGrid,
+  type Pt,
+} from "@shared/hoodieTemplate";
+import {
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  decalPreviewPlacementScale,
+  shouldProbeCatalogBlankGuide,
+  tapestryPreviewPlacementScale,
+} from "@shared/catalogSizeBlanks";
+import { isFlatToteBlueprint } from "@shared/productLayoutPolicy";
 import type {
   FlatTier,
   FlatViewCalibration,
@@ -39,8 +53,10 @@ import type {
 
 export type Rect = { x: number; y: number; width: number; height: number };
 
-/** Lowest allowed placement scale. */
+/** Lowest allowed placement scale (slider / drag). */
 export const FLAT_SCALE_MIN = 0.2;
+/** First-open contain-fit may go below the slider min so extreme aspects still fit. */
+export const FLAT_SCALE_FIT_FLOOR = 0.05;
 /** Apparel cap — baked print files honor this; Printify's own placement API still clamps at 1. */
 export const FLAT_SCALE_MAX = 1.5;
 /** Phone edge-wrap — zoom in to cover side strip + bleed. */
@@ -61,10 +77,11 @@ export function flatPlacementScaleMax(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
   fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
 }): number {
   if (opts.edgeWrapMode) return FLAT_SCALE_MAX_EDGE_WRAP;
   if (opts.decorMode) return FLAT_SCALE_MAX_DECOR;
-  if (opts.fabricWeave) return FLAT_SCALE_MAX_FABRIC;
+  if (opts.fabricWeave || opts.probeCatalogGuide) return FLAT_SCALE_MAX_FABRIC;
   return FLAT_SCALE_MAX;
 }
 
@@ -73,15 +90,116 @@ export function flatDefaultPlacementScale(opts: {
   edgeWrapMode?: boolean;
   decorMode?: boolean;
   fabricWeave?: boolean;
+  /** Blueprint 241: cover the mask AABB (do not use apparel 0.85). */
+  probeCatalogGuide?: boolean;
   /** Percent zoom used for decor / edge-wrap / fabric (e.g. 110). Ignored for apparel. */
   zoomPercent?: number;
+  /** 576: contain baseline at scale=1 (not apparel 0.85 cover). */
+  blueprintId?: number | null;
 }): number {
   const max = flatPlacementScaleMax(opts);
+  // 241: cover baseline in mask-AABB units — not apparel 85% and not contain-fit.
+  if (opts.probeCatalogGuide) return Math.min(max, 1);
+  // 576: scale=1 is already contain (full art). Cover-relative 0.85 would letterbox twice.
+  if (isBeanieBlueprint(opts.blueprintId)) return Math.min(max, 1);
   if (opts.edgeWrapMode || opts.decorMode || opts.fabricWeave) {
     const pct = typeof opts.zoomPercent === "number" ? opts.zoomPercent : 100;
     return Math.max(FLAT_SCALE_MIN, Math.min(max, pct / 100));
   }
   return Math.min(max, FLAT_APPAREL_DEFAULT_SCALE);
+}
+
+/**
+ * Apparel chest prints (DTG / non-bleed) get a first-open contain-fit into
+ * the dashed print guide. Decor / edge-wrap / tapestry (241 + 1649 weave)
+ * are meant to cover or bleed the print area — do not shrink those.
+ */
+export function flatShouldFitToSafeArea(opts: {
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
+  /** 576 uses contain as the draw baseline — skip cover-relative first-open fit. */
+  blueprintId?: number | null;
+}): boolean {
+  if (isBeanieBlueprint(opts.blueprintId)) return false;
+  return (
+    !opts.edgeWrapMode &&
+    !opts.decorMode &&
+    !opts.fabricWeave &&
+    !opts.probeCatalogGuide
+  );
+}
+
+/**
+ * Continuous front↔back scale copy (40a5a6c). Keep for flat totes; skip for
+ * locked DTG apparel so each face can scale independently.
+ */
+export function shouldSyncFlatFaceScale(opts: {
+  blueprintId?: number | null;
+  edgeWrapMode?: boolean;
+  decorMode?: boolean;
+  fabricWeave?: boolean;
+  probeCatalogGuide?: boolean;
+}): boolean {
+  if (isFlatToteBlueprint(opts.blueprintId)) return true;
+  return !flatShouldFitToSafeArea(opts);
+}
+
+/**
+ * Placement `scale` (cover baseline) that contain-fits the artwork box in
+ * `rect`. Matching aspects → 1; a mismatch is contain/cover (always ≤ 1).
+ */
+export function flatContainPlacementScale(
+  rect: Rect,
+  artW: number,
+  artH: number,
+  rotationDeg = 0,
+): number {
+  const aw = artW > 0 ? artW : 1;
+  const ah = artH > 0 ? artH : 1;
+  const rw = rect.width > 0 ? rect.width : 1;
+  const rh = rect.height > 0 ? rect.height : 1;
+  const cover = Math.max(rw / aw, rh / ah);
+  if (!(cover > 0) || !Number.isFinite(cover)) return 1;
+  let fit = Math.min(rw / aw, rh / ah) / cover;
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  if (deg % 180 !== 0) {
+    const rad = (deg * Math.PI) / 180;
+    const c = Math.abs(Math.cos(rad));
+    const s = Math.abs(Math.sin(rad));
+    const denomW = cover * (aw * c + ah * s);
+    const denomH = cover * (aw * s + ah * c);
+    if (denomW > 0) fit = Math.min(fit, rw / denomW);
+    if (denomH > 0) fit = Math.min(fit, rh / denomH);
+  }
+  if (!Number.isFinite(fit) || fit <= 0) return FLAT_SCALE_FIT_FLOOR;
+  return Math.max(FLAT_SCALE_FIT_FLOOR, Math.min(FLAT_SCALE_MAX, fit));
+}
+
+/**
+ * First-open fit: scale down (never up) so the artwork box sits inside `rect`,
+ * preserve aspect, center. Offsets from another product are cleared.
+ */
+export function flatFitPlacementToSafeArea(
+  rect: Rect,
+  artW: number,
+  artH: number,
+  current: ArtworkPlacement,
+): ArtworkPlacement {
+  const contain = flatContainPlacementScale(
+    rect,
+    artW,
+    artH,
+    current.rotationDeg,
+  );
+  const scale = Math.min(current.scale, contain);
+  return {
+    ...current,
+    scale: Math.max(FLAT_SCALE_FIT_FLOOR, scale),
+    offsetX: 0,
+    offsetY: 0,
+  };
 }
 
 /** Floor for the normalized shading multiply so artwork never goes fully black. */
@@ -130,7 +248,7 @@ export type FlatRenderInput = {
   mask: HTMLImageElement | null;
   /** Gray-pass shading map (used only when `view.shadingMode === "map"`). */
   shading: HTMLImageElement | null;
-  /** Customer artwork. `null` → render the plain blank. */
+  /** Customer artwork. `null` → no art on this face (fill still applies). */
   artwork: HTMLImageElement | null;
   view: FlatViewCalibration;
   placement: ArtworkPlacement;
@@ -142,8 +260,9 @@ export type FlatRenderInput = {
   /** Edge-print phone cases — placement uses full print bounds, not safe zone. */
   edgeWrapMode?: boolean;
   /**
-   * Phone cases: customer fill under artwork out to the blue dashed print
-   * canvas. When unset, preview keeps Printify grey guide chrome only.
+   * Customer fill under artwork. Phone cases: out to the blue dashed print
+   * canvas (grey chrome when unset). Decor / tote: both faces, even when
+   * that view's artwork is off — matches the bake.
    */
   printCanvasBackgroundColor?: string | null;
   /** Framed / decor — placement uses visible mat opening; scale may exceed 1. */
@@ -166,6 +285,18 @@ export type FlatRenderInput = {
    * Used when harvest only has one blank (canonical zip hoodie).
    */
   garmentColorHex?: string | null;
+  /**
+   * 241 preview only: multiply/overlay the catalog blank's fabric shading
+   * onto the composited art. Never used by `bakeFlatPrintFile`.
+   */
+  catalogBlankShade?: boolean;
+  /**
+   * Printify blueprint. Beanie 576 preview scale / mask-only clip are keyed
+   * here — bakeFlatPrintFile never receives this input.
+   */
+  blueprintId?: number | null;
+  /** 241 preview scale is per source model (both +15% today). */
+  generationModel?: string | null;
 };
 
 function parseCssHex(hex: string): { r: number; g: number; b: number } | null {
@@ -223,6 +354,42 @@ function imgDims(img: HTMLImageElement): { w: number; h: number } {
     w: img.naturalWidth || img.width,
     h: img.naturalHeight || img.height,
   };
+}
+
+/** Valid `#RRGGBB` print-canvas fill, or null. */
+export function parsePrintCanvasFillHex(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const hex = raw.trim();
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
+}
+
+/**
+ * Per-view print-canvas fill. Apparel (t-shirt etc.) must not paint fill on a
+ * face whose artwork is off — that would bake a garbage print file. Decor /
+ * tote / phone keep fill on a disabled face (print-on-back independent of bg).
+ */
+export function printCanvasFillForView(opts: {
+  backgroundColor: string | null | undefined;
+  enabled: boolean;
+  decorMode?: boolean;
+  edgeWrapMode?: boolean;
+}): string | null {
+  if (!opts.enabled && !opts.decorMode && !opts.edgeWrapMode) return null;
+  return parsePrintCanvasFillHex(opts.backgroundColor);
+}
+
+/**
+ * A view still composites a print layer when artwork is off but a fill hex
+ * is set (tote / pillow back with print-on-back disabled).
+ */
+export function flatViewPaintsPrintLayer(
+  artwork: HTMLImageElement | null,
+  printCanvasBackgroundColor?: string | null,
+): boolean {
+  if (parsePrintCanvasFillHex(printCanvasBackgroundColor)) return true;
+  if (!artwork) return false;
+  const { w, h } = imgDims(artwork);
+  return w > 0 && h > 0;
 }
 
 /** True when blank and mask share the same pixel coordinate space (±8%). */
@@ -708,6 +875,126 @@ export function flatArtContentSubRect(
   };
 }
 
+/**
+ * A point on the artwork's opaque footprint, in the artwork's own [0,1] image
+ * space. Transform-free by construction: the cache can never hold a stale
+ * rotation because it holds no rotation at all. Callers reproject through the
+ * live placement on every check.
+ */
+export type FlatNormPoint = { x: number; y: number };
+
+/**
+ * Occupancy resolution. At 128 one cell is ~0.8% of the artwork, which bounds
+ * the worst-case over-warn. Clamped to the pixel size for small images, where a
+ * finer grid than the source would leave unreachable cells looking empty.
+ */
+const OPAQUE_OUTLINE_GRID = 128;
+
+/** Matches flatArtContentFractionsCached: soft motif edges still paint, so they count. */
+const OPAQUE_OUTLINE_ALPHA = 1;
+
+/**
+ * Corners of the boundary cells of an alpha occupancy grid.
+ *
+ * Interior cells are dropped without losing correctness: the guide is a
+ * rectangle, i.e. an intersection of four half-planes, so any opaque pixel
+ * outside it can be reached by marching outward from a boundary cell that is
+ * also outside — moving away from a violated half-plane never re-enters it.
+ *
+ * Pure (no canvas) so it stays unit-testable under jsdom.
+ */
+export function flatOpaqueOutlineFromAlpha(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+): FlatNormPoint[] | null {
+  if (w <= 0 || h <= 0) return null;
+  const g = Math.max(8, Math.min(OPAQUE_OUTLINE_GRID, w, h));
+  const occupied = new Uint8Array(g * g);
+  let anyOpaque = false;
+  for (let y = 0; y < h; y++) {
+    const rowBase = y * w * 4;
+    const gyBase = Math.min(g - 1, ((y * g) / h) | 0) * g;
+    for (let x = 0; x < w; x++) {
+      if (data[rowBase + x * 4 + 3] > OPAQUE_OUTLINE_ALPHA) {
+        occupied[gyBase + Math.min(g - 1, ((x * g) / w) | 0)] = 1;
+        anyOpaque = true;
+      }
+    }
+  }
+  if (!anyOpaque) return null;
+
+  const seen = new Set<number>();
+  const points: FlatNormPoint[] = [];
+  for (let gy = 0; gy < g; gy++) {
+    for (let gx = 0; gx < g; gx++) {
+      if (!occupied[gy * g + gx]) continue;
+      const onBoundary =
+        gx === 0 ||
+        gy === 0 ||
+        gx === g - 1 ||
+        gy === g - 1 ||
+        !occupied[gy * g + gx - 1] ||
+        !occupied[gy * g + gx + 1] ||
+        !occupied[(gy - 1) * g + gx] ||
+        !occupied[(gy + 1) * g + gx];
+      if (!onBoundary) continue;
+      // All four corners, so the tested footprint covers each boundary cell
+      // whole: the grid can over-warn by at most one cell, never under-warn.
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dx = 0; dx <= 1; dx++) {
+          const key = (gy + dy) * (g + 1) + (gx + dx);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          points.push({ x: (gx + dx) / g, y: (gy + dy) / g });
+        }
+      }
+    }
+  }
+  return points.length ? points : null;
+}
+
+const artOpaqueOutlineCache = new WeakMap<
+  HTMLImageElement,
+  FlatNormPoint[] | null
+>();
+
+function readArtOpaqueOutline(
+  artwork: HTMLImageElement,
+): FlatNormPoint[] | null {
+  const w = artwork.naturalWidth || artwork.width;
+  const h = artwork.naturalHeight || artwork.height;
+  if (w <= 0 || h <= 0) return null;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(artwork, 0, 0, w, h);
+    return flatOpaqueOutlineFromAlpha(ctx.getImageData(0, 0, w, h).data, w, h);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cached opaque outline for an artwork image. Keying on the element is safe
+ * because loadFlatImage builds a fresh Image per URL and never re-points an
+ * existing one, so an element's pixels cannot change after load.
+ * Null when the pixels are unreadable (cross-origin without CORS).
+ */
+export function flatArtOpaqueOutlineCached(
+  artwork: HTMLImageElement,
+): FlatNormPoint[] | null {
+  if (artOpaqueOutlineCache.has(artwork)) {
+    return artOpaqueOutlineCache.get(artwork)!;
+  }
+  const outline = readArtOpaqueOutline(artwork);
+  artOpaqueOutlineCache.set(artwork, outline);
+  return outline;
+}
+
 /** Axis-aligned bounds of `rect` rotated `deg` degrees around (cx, cy). */
 export function flatRotatedAabbAround(
   rect: Rect,
@@ -752,10 +1039,11 @@ export function flatVisibleArtBoxAxisAligned(
   rect: Rect,
   placement: ArtworkPlacement,
   artwork: HTMLImageElement,
+  fit: FlatArtFit = "cover",
 ): Rect {
   const artW = artwork.naturalWidth || artwork.width || 1;
   const artH = artwork.naturalHeight || artwork.height || 1;
-  const fullBox = flatArtBox(rect, placement, artW, artH);
+  const fullBox = flatArtBox(rect, placement, artW, artH, fit);
   const content = flatArtContentFractionsCached(artwork);
   const sub = flatArtContentSubRect(fullBox, content);
   const deg = Number.isFinite(placement.rotationDeg)
@@ -780,13 +1068,18 @@ export function flatPlacementRectPx(
   mask: HTMLImageElement | null,
   canvasW: number,
   canvasH: number,
-  opts: { edgeWrapMode?: boolean; decorMode?: boolean },
+  opts: {
+    edgeWrapMode?: boolean;
+    decorMode?: boolean;
+    /** 759 only: never apply apparel 1.2 height boost (Preview Studio mask miss). */
+    skipApparelPrintGuideBoost?: boolean;
+  },
 ): Rect {
   if (opts.edgeWrapMode) {
     return flatPrintCanvasLayout(view).printCanvas;
   }
   const harvest = flatVisibleRectPx(view, canvasW, canvasH);
-  // Decor / wall-decal guides are mat openings — do not stretch to print AR.
+  // Decor mat openings — do not stretch to print AR.
   if (opts.decorMode) return harvest;
 
   if (mask) {
@@ -805,12 +1098,80 @@ export function flatPlacementRectPx(
     return harvest;
   }
 
+  // 759: Preview Studio can miss the size-keyed mask; do not inflate with
+  // apparel 1.2. 241 keeps the historical no-mask fallback.
+  if (opts.skipApparelPrintGuideBoost) return harvest;
+
   // No mask at all — clip is fillRect(rect), so the boosted rect stays WYSIWYG.
   return expandPrintGuideToPrintFileAspect(
     harvest,
     view.printFileDims,
     canvasW,
     canvasH,
+  );
+}
+
+function scaleRectFromCenter(rect: Rect, factor: number): Rect {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const w = rect.width * factor;
+  const h = rect.height * factor;
+  return { x: cx - w / 2, y: cy - h / 2, width: w, height: h };
+}
+
+/**
+ * Preview-only: grow 576's placement rect 15% so the editor matches Printify.
+ * Must not be used by `bakeFlatPrintFile` / `resolveFlatBakePlacementRect`.
+ */
+export function applyBeaniePreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+): Rect {
+  if (!isBeanieBlueprint(blueprintId)) return rect;
+  return scaleRectFromCenter(rect, BEANIE_PREVIEW_PLACEMENT_SCALE);
+}
+
+/**
+ * Preview-only: grow 241's placement rect so the editor matches Printify.
+ * Both models +15% (per-model hook kept). Bake must not call this.
+ */
+export function applyTapestryPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+  generationModel?: string | null,
+): Rect {
+  if (blueprintId !== CATALOG_SIZE_BLANK_BLUEPRINTS.indoorWallTapestry) return rect;
+  const factor = tapestryPreviewPlacementScale(generationModel);
+  if (factor === 1) return rect;
+  return scaleRectFromCenter(rect, factor);
+}
+
+/** Preview-only 759 bump (1.0 until a test order measures a mismatch). */
+export function applyDecalPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+  generationModel?: string | null,
+): Rect {
+  if (blueprintId !== CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals) return rect;
+  const factor = decalPreviewPlacementScale(generationModel);
+  if (factor === 1) return rect;
+  return scaleRectFromCenter(rect, factor);
+}
+
+/** Display-only rect bump (576 / 241 / 759). Bake must not call this. */
+export function applyFlatPreviewPlacementRect(
+  blueprintId: number | null | undefined,
+  rect: Rect,
+  generationModel?: string | null,
+): Rect {
+  return applyTapestryPreviewPlacementRect(
+    blueprintId,
+    applyDecalPreviewPlacementRect(
+      blueprintId,
+      applyBeaniePreviewPlacementRect(blueprintId, rect),
+      generationModel,
+    ),
+    generationModel,
   );
 }
 
@@ -844,19 +1205,22 @@ export function flatEdgeWrapViewportLayout(
 
 /**
  * Artwork bounding box (mockup px) for a given placement. Baseline (scale=1)
- * = the smallest uniform scale that fully COVERS the rect, so reducing scale
- * reveals garment at the edges (the coverage warning's trigger).
+ * = cover (fill+crop) unless `fit` is `"contain"` (576: fit-inside, no crop).
  */
 export function flatArtBox(
   rect: Rect,
   placement: ArtworkPlacement,
   artW: number,
   artH: number,
+  fit: FlatArtFit = "cover",
 ): Rect {
   const aspectSafeW = artW > 0 ? artW : 1;
   const aspectSafeH = artH > 0 ? artH : 1;
-  const cover = Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
-  const k = cover * placement.scale;
+  const baseline =
+    fit === "contain"
+      ? Math.min(rect.width / aspectSafeW, rect.height / aspectSafeH)
+      : Math.max(rect.width / aspectSafeW, rect.height / aspectSafeH);
+  const k = baseline * placement.scale;
   const drawW = aspectSafeW * k;
   const drawH = aspectSafeH * k;
   const cx = rect.x + rect.width * (0.5 + placement.offsetX);
@@ -873,8 +1237,9 @@ export function flatArtBoxAxisAligned(
   placement: ArtworkPlacement,
   artW: number,
   artH: number,
+  fit: FlatArtFit = "cover",
 ): Rect {
-  const box = flatArtBox(rect, placement, artW, artH);
+  const box = flatArtBox(rect, placement, artW, artH, fit);
   const deg = Number.isFinite(placement.rotationDeg) ? Number(placement.rotationDeg) : 0;
   if (!deg) return box;
   const cx = box.x + box.width / 2;
@@ -943,20 +1308,90 @@ export function flatOverflows(rect: Rect, box: Rect, slackPx = 1): boolean {
 }
 
 /**
+ * Sub-pixel slack. Art flush with the guide fills the print area exactly and
+ * loses nothing, so touching the line is not crossing it; the slack also keeps
+ * rotation rounding from flickering the banner on and off.
+ */
+export const FLAT_GUIDE_TOUCH_SLACK_PX = 0.5;
+
+/**
  * Apparel trim banner: opaque artwork vs the dashed print guide only.
  * Transparent PNG padding does not count. Ring/handles are UI chrome and must
- * not trigger the warning. Fires when any opaque edge touches or crosses the
- * guide (flush with the line = will be clipped).
+ * not trigger the warning. Strict — only art past the line warns.
  */
 export function flatApparelGuideTrimmed(guideRect: Rect, artBox: Rect): boolean {
-  // Sub-pixel tolerance so "comfortably inside" stays quiet; flush/touch warns.
-  const touchEps = 0.5;
+  const slack = FLAT_GUIDE_TOUCH_SLACK_PX;
   return (
-    artBox.x <= guideRect.x + touchEps ||
-    artBox.y <= guideRect.y + touchEps ||
-    artBox.x + artBox.width >= guideRect.x + guideRect.width - touchEps ||
-    artBox.y + artBox.height >= guideRect.y + guideRect.height - touchEps
+    artBox.x < guideRect.x - slack ||
+    artBox.y < guideRect.y - slack ||
+    artBox.x + artBox.width > guideRect.x + guideRect.width + slack ||
+    artBox.y + artBox.height > guideRect.y + guideRect.height + slack
   );
+}
+
+/**
+ * True when any outline point, reprojected through `fullBox` and `rotationDeg`,
+ * lands outside the guide. Pure: the caller supplies the transform-free outline
+ * so a rotated design is always tested at its current rotation, and the same
+ * rotation origin as drawFlatArtwork (the full box centre) is used.
+ */
+export function flatOpaqueOutlineTrimmed(
+  guideRect: Rect,
+  fullBox: Rect,
+  rotationDeg: number,
+  outline: FlatNormPoint[],
+): boolean {
+  const slack = FLAT_GUIDE_TOUCH_SLACK_PX;
+  const minX = guideRect.x - slack;
+  const minY = guideRect.y - slack;
+  const maxX = guideRect.x + guideRect.width + slack;
+  const maxY = guideRect.y + guideRect.height + slack;
+  const deg = Number.isFinite(rotationDeg) ? rotationDeg : 0;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = fullBox.x + fullBox.width / 2;
+  const cy = fullBox.y + fullBox.height / 2;
+  for (const p of outline) {
+    let px = fullBox.x + p.x * fullBox.width;
+    let py = fullBox.y + p.y * fullBox.height;
+    if (deg) {
+      const dx = px - cx;
+      const dy = py - cy;
+      px = cx + dx * cos - dy * sin;
+      py = cy + dx * sin + dy * cos;
+    }
+    if (px < minX || py < minY || px > maxX || py > maxY) return true;
+  }
+  return false;
+}
+
+/**
+ * Apparel trim check: only real opaque pixels count, rotated or not.
+ *
+ * The axis-aligned box runs first as a conservative filter — it contains the
+ * opaque footprint, so a negative there is proof and costs what it always did.
+ * Only when it says "maybe" do we reproject the outline, which is what stops a
+ * rotated design's hollow corners from warning on empty space.
+ */
+export function flatApparelOpaqueTrimmed(
+  guideRect: Rect,
+  placement: ArtworkPlacement,
+  artwork: HTMLImageElement,
+  fit: FlatArtFit = "cover",
+): boolean {
+  const aabb = flatVisibleArtBoxAxisAligned(guideRect, placement, artwork, fit);
+  if (!flatApparelGuideTrimmed(guideRect, aabb)) return false;
+  const outline = flatArtOpaqueOutlineCached(artwork);
+  // Unreadable pixels (tainted canvas) — keep the conservative box answer.
+  if (!outline) return true;
+  const artW = artwork.naturalWidth || artwork.width || 1;
+  const artH = artwork.naturalHeight || artwork.height || 1;
+  const fullBox = flatArtBox(guideRect, placement, artW, artH, fit);
+  const deg = Number.isFinite(placement.rotationDeg)
+    ? Number(placement.rotationDeg)
+    : 0;
+  return flatOpaqueOutlineTrimmed(guideRect, fullBox, deg, outline);
 }
 
 /**
@@ -973,6 +1408,392 @@ export function flatApparelArtworkTrimmed(
 }
 
 /**
+ * Overflow / floating silhouette: historical `alpha <= 16` means outside.
+ * `pointInMask` is inclusive (`>=`), so overflow passes `threshold + 1`.
+ */
+export const MASK_ALPHA_OVERFLOW_THRESHOLD = 16;
+/**
+ * 241 core printable. Feather ramp (1–127) is ignored so a soft mask edge
+ * cannot report a perpetual uncovered rim.
+ */
+export const MASK_ALPHA_THRESHOLD = 128;
+/** Artwork counts as covering a core mask sample. */
+export const ART_COVER_ALPHA = 10;
+/**
+ * At least this many samples along the mask AABB long side, and never a
+ * coarser step than {@link TAPESTRY_COVERAGE_MAX_STEP_PX}.
+ * 256 @ 1024² catalog blank ≈ 4 mockup px; clamped to 2 px so a few-mm
+ * white strip on 50×60 (~3 mm) and 104" (~5 mm) cannot sit between samples.
+ */
+export const TAPESTRY_COVERAGE_MIN_AXIS = 256;
+export const TAPESTRY_COVERAGE_MAX_STEP_PX = 2;
+
+const maskRgbaCache = new WeakMap<
+  HTMLImageElement,
+  { data: Uint8ClampedArray; width: number; height: number } | null
+>();
+
+export function readMaskRgbaCached(
+  mask: HTMLImageElement,
+): { data: Uint8ClampedArray; width: number; height: number } | null {
+  if (maskRgbaCache.has(mask)) return maskRgbaCache.get(mask)!;
+  const width = mask.naturalWidth || mask.width;
+  const height = mask.naturalHeight || mask.height;
+  if (width <= 0 || height <= 0) {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+  try {
+    ctx.drawImage(mask, 0, 0, width, height);
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const hit = { data, width, height };
+    maskRgbaCache.set(mask, hit);
+    return hit;
+  } catch {
+    maskRgbaCache.set(mask, null);
+    return null;
+  }
+}
+
+/**
+ * Overflow rule + 241 coverage share this lookup: map a mockup-space point
+ * onto the mask bitmap and test alpha (inclusive `>= minAlpha`).
+ * Out of the canvas → not in the mask.
+ */
+export function pointInMask(
+  data: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasX: number,
+  canvasY: number,
+  canvasW: number,
+  canvasH: number,
+  minAlpha: number,
+): boolean {
+  if (
+    !(maskW > 0) ||
+    !(maskH > 0) ||
+    !(canvasW > 0) ||
+    !(canvasH > 0) ||
+    canvasX < 0 ||
+    canvasY < 0 ||
+    canvasX >= canvasW ||
+    canvasY >= canvasH
+  ) {
+    return false;
+  }
+  const mx = Math.min(maskW - 1, Math.max(0, Math.floor(canvasX * (maskW / canvasW))));
+  const my = Math.min(maskH - 1, Math.max(0, Math.floor(canvasY * (maskH / canvasH))));
+  return data[(my * maskW + mx) * 4 + 3] >= minAlpha;
+}
+
+/** Downsample cap for the 241 dashed droop outline (overlay only). */
+export const TAPESTRY_OUTLINE_MAX_DIM = 256;
+
+/**
+ * Core-mask silhouette polyline in canvas/mockup px (alpha ≥ minAlpha).
+ * Used by the 241 editor dashed box so it traces the droop, not the
+ * inch-aspect letterbox. Overflow / apparel trim do not call this.
+ */
+export function maskCoreOutlineFromRgba(
+  data: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  minAlpha = MASK_ALPHA_THRESHOLD,
+): Array<{ x: number; y: number }> | null {
+  if (!(maskW > 0) || !(maskH > 0) || !(canvasW > 0) || !(canvasH > 0)) {
+    return null;
+  }
+  const scale = Math.min(1, TAPESTRY_OUTLINE_MAX_DIM / Math.max(maskW, maskH));
+  const sw = Math.max(1, Math.round(maskW * scale));
+  const sh = Math.max(1, Math.round(maskH * scale));
+  const inside = new Uint8Array(sw * sh);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const mx = Math.min(maskW - 1, Math.floor((x + 0.5) * (maskW / sw)));
+      const my = Math.min(maskH - 1, Math.floor((y + 0.5) * (maskH / sh)));
+      if (data[(my * maskW + mx) * 4 + 3] >= minAlpha) inside[y * sw + x] = 1;
+    }
+  }
+
+  let startX = -1;
+  let startY = -1;
+  outer: for (let x = 0; x < sw; x++) {
+    for (let y = 0; y < sh; y++) {
+      if (inside[y * sw + x]) {
+        startX = x;
+        startY = y;
+        break outer;
+      }
+    }
+  }
+  if (startX < 0) return null;
+
+  const n8: Array<[number, number]> = [
+    [0, -1],
+    [1, -1],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+    [-1, 1],
+    [-1, 0],
+    [-1, -1],
+  ];
+  const isIn = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < sw && y < sh && inside[y * sw + x] === 1;
+
+  // Moore-neighbor: start looking north-west of the left-edge seed.
+  const path: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+  let cx = startX;
+  let cy = startY;
+  let dir = 7;
+  const maxSteps = sw * sh * 2;
+  for (let i = 0; i < maxSteps; i++) {
+    let found = -1;
+    for (let k = 0; k < 8; k++) {
+      const d = (dir + k) % 8;
+      const nx = cx + n8[d][0];
+      const ny = cy + n8[d][1];
+      if (isIn(nx, ny)) {
+        found = d;
+        break;
+      }
+    }
+    if (found < 0) break;
+    cx += n8[found][0];
+    cy += n8[found][1];
+    // Next search starts two steps counter-clockwise from the walk dir
+    // so we hug the boundary (standard Moore backtrack).
+    dir = (found + 6) % 8;
+    if (cx === startX && cy === startY && path.length > 2) break;
+    path.push({ x: cx, y: cy });
+  }
+  if (path.length < 3) return null;
+
+  const stride = path.length > 120 ? Math.ceil(path.length / 80) : 1;
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < path.length; i += stride) {
+    out.push({
+      x: (path[i].x + 0.5) * (canvasW / sw),
+      y: (path[i].y + 0.5) * (canvasH / sh),
+    });
+  }
+  const last = path[path.length - 1];
+  const tail = out[out.length - 1];
+  if (
+    !tail ||
+    tail.x !== (last.x + 0.5) * (canvasW / sw) ||
+    tail.y !== (last.y + 0.5) * (canvasH / sh)
+  ) {
+    out.push({
+      x: (last.x + 0.5) * (canvasW / sw),
+      y: (last.y + 0.5) * (canvasH / sh),
+    });
+  }
+  return out;
+}
+
+export function tapestryMaskOutlinePoints(
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+): Array<{ x: number; y: number }> | null {
+  if (!mask) return null;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return null;
+  return maskCoreOutlineFromRgba(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+  );
+}
+
+export function tapestryCoverageSampleStep(aabbW: number, aabbH: number): number {
+  const long = Math.max(aabbW, aabbH, 1);
+  return Math.max(
+    1,
+    Math.min(
+      TAPESTRY_COVERAGE_MAX_STEP_PX,
+      Math.floor(long / TAPESTRY_COVERAGE_MIN_AXIS) || 1,
+    ),
+  );
+}
+
+/**
+ * True when any CORE mask sample (`pointInMask` ≥ {@link MASK_ALPHA_THRESHOLD})
+ * is not covered by opaque art (alpha > {@link ART_COVER_ALPHA}).
+ * Pure: callers supply aligned RGBA buffers (art already placed).
+ */
+/** True when (x,y) lies inside the (possibly rotated) artwork draw box. */
+export function pointInFlatArtBox(
+  box: Rect,
+  x: number,
+  y: number,
+  rotationDeg = 0,
+): boolean {
+  if (!(box.width > 0) || !(box.height > 0)) return false;
+  const deg = Number.isFinite(rotationDeg) ? Number(rotationDeg) : 0;
+  if (!deg) {
+    return (
+      x >= box.x &&
+      y >= box.y &&
+      x < box.x + box.width &&
+      y < box.y + box.height
+    );
+  }
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const rad = (-deg * Math.PI) / 180;
+  const dx = x - cx;
+  const dy = y - cy;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.abs(lx) <= box.width / 2 && Math.abs(ly) <= box.height / 2;
+}
+
+/**
+ * 241 coverage in one coordinate space: core mask samples (α≥128) vs the
+ * geometric art box (scale=1 covers `placementRect`). No rasterized art alpha
+ * — drawImage fringe at the AABB extrema is not a real white strip.
+ */
+export function maskCoreUncoveredByArtBox(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+  artBox: Rect,
+  rotationDeg = 0,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      if (!pointInFlatArtBox(artBox, x, y, rotationDeg)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 241 composite coverage: a droop-core sample is covered if it sits in the
+ * bg fill rect OR the displayed art box (contain + preview +15% + user scale).
+ * Full-bleed art with no hex fill still counts as covered.
+ */
+export function maskCoreUncoveredByComposite(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+  fillRect: Rect | null,
+  artBox: Rect | null,
+  artRotationDeg = 0,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      const inFill = !!(fillRect && pointInFlatArtBox(fillRect, x, y, 0));
+      const inArt = !!(artBox && pointInFlatArtBox(artBox, x, y, artRotationDeg));
+      if (!inFill && !inArt) return true;
+    }
+  }
+  return false;
+}
+
+export function maskCoreUncoveredFromRgba(
+  maskData: Uint8ClampedArray,
+  maskW: number,
+  maskH: number,
+  artData: Uint8ClampedArray,
+  artW: number,
+  artH: number,
+  canvasW: number,
+  canvasH: number,
+  sampleBounds: Rect,
+  sampleStep: number,
+): boolean {
+  if (!(canvasW > 0) || !(canvasH > 0) || !(sampleStep > 0)) return false;
+  const x0 = sampleBounds.x;
+  const y0 = sampleBounds.y;
+  const x1 = sampleBounds.x + sampleBounds.width;
+  const y1 = sampleBounds.y + sampleBounds.height;
+  for (let y = y0; y < y1; y += sampleStep) {
+    for (let x = x0; x < x1; x += sampleStep) {
+      if (
+        !pointInMask(
+          maskData,
+          maskW,
+          maskH,
+          x,
+          y,
+          canvasW,
+          canvasH,
+          MASK_ALPHA_THRESHOLD,
+        )
+      ) {
+        continue;
+      }
+      const ax = Math.min(artW - 1, Math.max(0, Math.floor(x * (artW / canvasW))));
+      const ay = Math.min(artH - 1, Math.max(0, Math.floor(y * (artH / canvasH))));
+      if (artData[(ay * artW + ax) * 4 + 3] <= ART_COVER_ALPHA) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True when the axis-aligned art box sits inside the dashed guide AABB but
  * still overlaps transparent mask pixels (silhouette / print-window clip).
  * Samples the art-box perimeter in mask space — cheap and catches the common
@@ -983,28 +1804,14 @@ export function flatMaskRejectsArtBox(
   artBox: Rect,
   canvasW: number,
   canvasH: number,
-  alphaThreshold = 16,
+  alphaThreshold = MASK_ALPHA_OVERFLOW_THRESHOLD,
 ): boolean {
   if (!mask || artBox.width <= 0 || artBox.height <= 0) return false;
-  const mw = mask.naturalWidth || mask.width;
-  const mh = mask.naturalHeight || mask.height;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const { data, width: mw, height: mh } = pixels;
   if (mw <= 0 || mh <= 0 || canvasW <= 0 || canvasH <= 0) return false;
 
-  const c = document.createElement("canvas");
-  c.width = mw;
-  c.height = mh;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return false;
-  let data: Uint8ClampedArray;
-  try {
-    ctx.drawImage(mask, 0, 0, mw, mh);
-    data = ctx.getImageData(0, 0, mw, mh).data;
-  } catch {
-    return false;
-  }
-
-  const sx = mw / canvasW;
-  const sy = mh / canvasH;
   const steps = 24;
   const samples: Array<{ x: number; y: number }> = [];
   for (let i = 0; i <= steps; i++) {
@@ -1029,14 +1836,141 @@ export function flatMaskRejectsArtBox(
     );
   }
 
+  // Inclusive `pointInMask` ≥ (threshold+1) ≡ historical `!(alpha <= threshold)`.
+  const overflowMinAlpha = alphaThreshold + 1;
   for (const p of samples) {
-    if (p.x < 0 || p.y < 0 || p.x >= canvasW || p.y >= canvasH) return true;
-    const mx = Math.min(mw - 1, Math.max(0, Math.floor(p.x * sx)));
-    const my = Math.min(mh - 1, Math.max(0, Math.floor(p.y * sy)));
-    const a = data[(my * mw + mx) * 4 + 3];
-    if (a <= alphaThreshold) return true;
+    if (!pointInMask(data, mw, mh, p.x, p.y, canvasW, canvasH, overflowMinAlpha)) {
+      return true;
+    }
   }
   return false;
+}
+
+/**
+ * 241 under-coverage: walk core mask samples via {@link pointInMask} (`>= 128`);
+ * warn if any lies outside the geometric art box (same `placementRect` as
+ * `renderFlatView`). Scale 1 = box covers the core AABB — no over-scale default.
+ */
+export function flatMaskCoreUncovered(
+  mask: HTMLImageElement | null,
+  artwork: HTMLImageElement,
+  placement: ArtworkPlacement,
+  placementRect: Rect,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!(placementRect.width > 0) || !(placementRect.height > 0)) return false;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const artW = artwork.naturalWidth || artwork.width || 0;
+  const artH = artwork.naturalHeight || artwork.height || 0;
+  if (!(artW > 0) || !(artH > 0)) return false;
+
+  const box = flatArtBox(placementRect, placement, artW, artH, "contain");
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredByArtBox(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+    box,
+    placement.rotationDeg ?? 0,
+  );
+}
+
+/**
+ * 241 bg-gap: true when any droop-core sample sits outside `fillRect`.
+ * Uses the same display rect as the placer (+15% preview). Art size is ignored.
+ */
+export function flatPrintAreaUncoveredByFill(
+  mask: HTMLImageElement | null,
+  fillRect: Rect,
+  canvasW: number,
+  canvasH: number,
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!(fillRect.width > 0) || !(fillRect.height > 0)) return true;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredByArtBox(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+    fillRect,
+    0,
+  );
+}
+
+/**
+ * 241 warning: uncovered print area when neither the bg fill nor the displayed
+ * art box (contain × +15% display rect × user scale) reaches a droop-core sample.
+ */
+export function flatPrintAreaUncoveredByComposite(
+  mask: HTMLImageElement | null,
+  canvasW: number,
+  canvasH: number,
+  opts: {
+    fillRect: Rect | null;
+    artBox: Rect | null;
+    artRotationDeg?: number;
+  },
+): boolean {
+  if (!mask || !(canvasW > 0) || !(canvasH > 0)) return false;
+  if (!opts.fillRect && !opts.artBox) return true;
+  const pixels = readMaskRgbaCached(mask);
+  if (!pixels) return false;
+  const nativeBounds = flatMaskAlphaBoundsCached(mask);
+  const sampleBounds = nativeBounds
+    ? scaleRectToCanvas(
+        nativeBounds,
+        pixels.width,
+        pixels.height,
+        canvasW,
+        canvasH,
+      )
+    : { x: 0, y: 0, width: canvasW, height: canvasH };
+  const step = tapestryCoverageSampleStep(sampleBounds.width, sampleBounds.height);
+  return maskCoreUncoveredByComposite(
+    pixels.data,
+    pixels.width,
+    pixels.height,
+    canvasW,
+    canvasH,
+    sampleBounds,
+    step,
+    opts.fillRect,
+    opts.artBox,
+    opts.artRotationDeg ?? 0,
+  );
 }
 
 /**
@@ -1450,12 +2384,33 @@ function applyPhoneCaseMapShading(
 }
 
 /**
- * Multiply a normalized shading layer over the artwork layer, restricted to
- * the artwork's own alpha so transparent (garment) pixels stay untouched.
- *
- * When `fabricWeave` is set (tapestry): simple coloured blank multiply only —
- * no procedural weave grid. Printify's photo mockup is available on demand.
+ * 241 editor/preview: let the catalog blank's folds/shadows read through the
+ * print. Preview composite only — bake never calls this.
  */
+function applyCatalogBlankShading(
+  artCanvas: HTMLCanvasElement,
+  artCtx: CanvasRenderingContext2D,
+  blank: HTMLImageElement,
+  w: number,
+  h: number,
+): void {
+  const cloth = document.createElement("canvas");
+  cloth.width = w;
+  cloth.height = h;
+  const cctx = cloth.getContext("2d");
+  if (!cctx) return;
+  cctx.drawImage(blank, 0, 0, w, h);
+  clipLayerToArt(cloth, artCanvas);
+
+  artCtx.save();
+  // Fold/drape only — multiply darkens. Overlay of the light catalog blank
+  // was lifting midtones (pastel wash vs Printify). Bake never calls this.
+  artCtx.globalCompositeOperation = "multiply";
+  artCtx.globalAlpha = 0.58;
+  artCtx.drawImage(cloth, 0, 0);
+  artCtx.restore();
+}
+
 function applyShading(
   artCanvas: HTMLCanvasElement,
   artCtx: CanvasRenderingContext2D,
@@ -1465,8 +2420,12 @@ function applyShading(
   w: number,
   h: number,
   artworkCorsClean: boolean,
-  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean },
+  opts?: { phoneCaseMap?: boolean; fabricWeave?: boolean; catalogBlankShade?: boolean },
 ): void {
+  if (opts?.catalogBlankShade) {
+    applyCatalogBlankShading(artCanvas, artCtx, blank, w, h);
+    return;
+  }
   if (opts?.fabricWeave) {
     applySimpleBlankMultiply(artCanvas, artCtx, blank, w, h);
     return;
@@ -2298,9 +3257,12 @@ export function renderFlatView(input: FlatRenderInput): void {
     printCanvasBackgroundColor = null,
     decorMode = false,
     fabricWeave = false,
+    catalogBlankShade = false,
     layerAdjust,
     previewLayers,
     garmentColorHex = null,
+    blueprintId = null,
+    generationModel = null,
   } = input;
   const coloredBlank =
     !edgeWrapMode &&
@@ -2395,11 +3357,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     const ctx = target.getContext("2d");
     if (!ctx) return;
 
-    const customerBg =
-      typeof printCanvasBackgroundColor === "string" &&
-      /^#[0-9a-fA-F]{6}$/.test(printCanvasBackgroundColor.trim())
-        ? printCanvasBackgroundColor.trim()
-        : null;
+    const customerBg = parsePrintCanvasFillHex(printCanvasBackgroundColor);
 
     // Step 1: Always Printify grey guide chrome for the print canvas (blue
     // dashed). Customer bg is mask-clipped in step 2b so the outer grey box
@@ -2572,12 +3530,25 @@ export function renderFlatView(input: FlatRenderInput): void {
 
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(blankDrawSource, 0, 0, W, H);
-  if (!artwork) return;
 
-  const { w: artW, h: artH } = imgDims(artwork);
-  if (artW <= 0 || artH <= 0) return;
+  const areaFill = parsePrintCanvasFillHex(printCanvasBackgroundColor);
+  const { w: artW, h: artH } = artwork ? imgDims(artwork) : { w: 0, h: 0 };
+  const hasArt = !!(artwork && artW > 0 && artH > 0);
+  // Fill-without-art is for tote / pillow / phone (caller passes a fill via
+  // printCanvasFillForView). Apparel callers pass null when the face is off.
+  if (!hasArt && !areaFill) return;
 
-  const rect = flatPlacementRectPx(view, mask, W, H, { edgeWrapMode, decorMode });
+  const rect = applyFlatPreviewPlacementRect(
+    blueprintId,
+    flatPlacementRectPx(view, mask, W, H, {
+      edgeWrapMode,
+      decorMode,
+      skipApparelPrintGuideBoost:
+        blueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals,
+    }),
+    generationModel,
+  );
+  const artFit = flatArtFitForBlueprint(blueprintId);
 
   const art = document.createElement("canvas");
   art.width = W;
@@ -2600,21 +3571,42 @@ export function renderFlatView(input: FlatRenderInput): void {
     const printRect: Rect = { x: 0, y: 0, width: printW, height: printH };
     const mesh = buildMeshGrid(view, scaleX, scaleY, printRect);
     if (pctx && mesh) {
-      const box = flatArtBox(printRect, placement, artW, artH);
-      drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
-      drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
-      drewMesh = true;
+      if (areaFill) {
+        pctx.fillStyle = areaFill;
+        pctx.fillRect(printRect.x, printRect.y, printRect.width, printRect.height);
+      }
+      if (hasArt && artwork) {
+        const box = flatArtBox(printRect, placement, artW, artH, artFit);
+        drawFlatArtwork(pctx, artwork, box, placement.rotationDeg ?? 0);
+      }
+      if (areaFill || hasArt) {
+        drawMeshWarp(actx, printCanvas, printW, printH, mesh, { inflateSeams: true });
+        drewMesh = true;
+      }
     }
   }
 
   if (!drewMesh) {
-    const box = flatArtBox(rect, placement, artW, artH);
-    drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
+    if (areaFill) {
+      actx.fillStyle = areaFill;
+      actx.fillRect(rect.x, rect.y, rect.width, rect.height);
+    }
+    if (hasArt && artwork) {
+      const box = flatArtBox(rect, placement, artW, artH, artFit);
+      drawFlatArtwork(actx, artwork, box, placement.rotationDeg ?? 0);
+    }
   }
 
+  // Clip the composite (art + bg), not the source. 576 dome / 241 droop:
+  // mask only — full-canvas guide so harvest AABB is not destination-out'd
+  // on top of the silhouette. Bake never calls this clip.
   clipFlatArtToPrintArea(actx, {
     mask,
-    rect,
+    rect:
+      (isBeanieBlueprint(blueprintId) || shouldProbeCatalogBlankGuide(blueprintId)) &&
+      mask
+        ? { x: 0, y: 0, width: W, height: H }
+        : rect,
     canvasW: W,
     canvasH: H,
     fabricWeave: fabricWeave && !edgeWrapMode,
@@ -2634,6 +3626,7 @@ export function renderFlatView(input: FlatRenderInput): void {
     {
       phoneCaseMap: shadeMode === "map" && !!shading && !!edgeWrapMode,
       fabricWeave: fabricWeave && !edgeWrapMode,
+      catalogBlankShade: catalogBlankShade && !edgeWrapMode && !fabricWeave,
     },
   );
 

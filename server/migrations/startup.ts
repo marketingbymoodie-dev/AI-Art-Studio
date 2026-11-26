@@ -9,10 +9,37 @@
  * Every statement is fully idempotent and safe to run on every boot.
  */
 import { pool } from "../db";
+import { APPAREL_CHROMA_STYLE_BY_NAME, APPAREL_DARK_TIER_PROMPTS } from "@shared/apparel-chroma-prompts";
+import { applyForcedStyleLayerBySlug } from "@shared/promptLayers";
+import { remapCustomizerStyleConfigAfterGraphicsRetire } from "@shared/customizerPageStyles";
+import {
+  catalogSlugBackfillRows,
+  inferCatalogSlug,
+  RETIRED_GRAPHICS_SLUG_TO_KEEPER,
+  WIDEN_TO_ALL_TYPES_FLOATING_SLUGS,
+} from "@shared/styleCatalog";
+import {
+  catalogRowFieldsFromPreset,
+  NEW_APPAREL_CATALOG_SLUGS,
+} from "@shared/catalogArtStyles";
+import { STAGING_SOFTSTYLE_COMPARE_AT_JSON } from "@shared/compareAtBySize";
+import { STYLE_PRESETS } from "@shared/schema";
+import {
+  isOldQuotesStylePrefix,
+  QUOTES_OLD_INVENT_FRAGMENTS,
+  QUOTES_PLACEHOLDER,
+  QUOTES_THIN_STYLE_DARK,
+  QUOTES_THIN_STYLE_LIGHT,
+  QUOTES_TREATMENTS,
+  type QuotesVoiceId,
+} from "@shared/quotesStyle";
 
 // ── Column additions ──────────────────────────────────────────────────────────
 
 const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
+  { table: "flat_order_submissions", column: "print_file_paths", type: "JSONB" },
+  { table: "flat_order_submissions", column: "attempt_count", type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "flat_order_submissions", column: "next_attempt_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "customizer_hub_url",          type: "TEXT" },
   { table: "shopify_installations", column: "plan_name",                   type: "TEXT" },
   { table: "shopify_installations", column: "plan_status",                 type: "TEXT" },
@@ -37,8 +64,25 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "customizer_pages",      column: "base_product_handle",         type: "TEXT" },
   { table: "customizer_pages",      column: "style_config",                type: "JSONB" },
   { table: "customizer_pages",      column: "zero_price_alert_sent_at",    type: "TIMESTAMP" },
+  { table: "customizer_pages",      column: "product_group_id",            type: "TEXT" },
+  { table: "customizer_pages",      column: "intended_zones",              type: "JSONB" },
+  { table: "shipping_classes",      column: "group_delta_split_threshold_cents", type: "INTEGER" },
   { table: "generation_jobs",       column: "session_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "customer_id",                 type: "TEXT" },
+  // My Pet Sunburst render params — added after the four my_pet_* tables shipped.
+  // Must stay idempotent; the default matches MY_PET_DEFAULT_RENDER_PARAMS in
+  // shared/myPetSettings.ts.
+  {
+    table: "my_pet_settings",
+    column: "render_params",
+    type: `JSONB NOT NULL DEFAULT '{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb`,
+  },
+  // Replicate audit columns on my_pet_renders. Populated at generate time;
+  // linked back from the Shopify order via line-item properties on orders-paid.
+  { table: "my_pet_renders",       column: "replicate_prediction_id",     type: "TEXT" },
+  { table: "my_pet_renders",       column: "replicate_prediction_url",    type: "TEXT" },
+  { table: "my_pet_renders",       column: "shopify_order_id",            type: "TEXT" },
+  { table: "my_pet_renders",       column: "shopify_order_name",          type: "TEXT" },
   { table: "generation_jobs",       column: "creator_id",                  type: "TEXT" },
   { table: "generation_jobs",       column: "creator_session_id",          type: "TEXT" },
   { table: "product_types",         column: "printify_costs",              type: "TEXT DEFAULT '{}'" },
@@ -59,8 +103,36 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: 'style_presets',         column: 'options',                     type: 'JSONB' },
   { table: 'style_presets',         column: 'description_optional',        type: 'BOOLEAN NOT NULL DEFAULT FALSE' },
   { table: "style_presets",         column: "creator_scope",               type: "TEXT NOT NULL DEFAULT 'merchant'" },
+  // Style schema extension (WP1). Purely additive: every column nullable, no default,
+  // no backfill. Null means "behave exactly as before". prompt_prefix is untouched.
+  { table: "style_presets",         column: "prompt_template",             type: "TEXT" },
+  { table: "style_presets",         column: "output_mode",                 type: "TEXT" },
+  { table: "style_presets",         column: "negative_prompt",             type: "TEXT" },
+  { table: "style_presets",         column: "chroma_hex",                  type: "TEXT" },
+  { table: "style_presets",         column: "palette_max_colors",          type: "INTEGER" },
+  { table: "style_presets",         column: "ink_load_ceiling_percent",    type: "INTEGER" },
+  { table: "style_presets",         column: "vectorize_enabled",           type: "BOOLEAN" },
+  { table: "style_presets",         column: "generation_model",            type: "TEXT" },
+  { table: "style_presets",         column: "generation_quality",          type: "TEXT" },
+  { table: "style_presets",         column: "aspect_ratios",               type: "JSONB" },
+  { table: "style_presets",         column: "user_slot_schema",            type: "JSONB" },
+  { table: "style_presets",         column: "catalog_slug",                type: "TEXT" },
+  { table: "style_presets",         column: "background_selector_enabled", type: "BOOLEAN" },
+  { table: "style_presets",         column: "default_background_color",    type: "TEXT" },
+  { table: "style_presets",         column: "background_required",         type: "BOOLEAN" },
+  // Style packs. Nullable, no backfill: null = standard style, today's behaviour.
+  { table: "style_presets",         column: "visibility",                  type: "TEXT" },
+  { table: "style_presets",         column: "input_capabilities",          type: "JSONB" },
+  // Experience profiles. Nullable, no backfill: null = classic behaviour.
+  { table: "style_presets",         column: "generation_model_decor",      type: "TEXT" },
+  { table: "customizer_pages",      column: "experience_profile_id",       type: "VARCHAR" },
+  { table: "generation_jobs",       column: "creative_brief",              type: "JSONB" },
+  { table: "generation_events",     column: "provider_mime",               type: "TEXT" },
   { table: 'published_products',    column: 'expires_at',                  type: 'TIMESTAMP' },
   { table: 'published_products',    column: 'cart_added_at',               type: 'TIMESTAMP' },
+  { table: 'published_products',    column: 'order_protected_at',          type: 'TIMESTAMP' },
+  { table: 'published_products',    column: 'ready_at',                    type: 'TIMESTAMP' },
+  { table: 'design_sku_mappings',   column: 'cleanup_status',              type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_product_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_variant_id',           type: 'TEXT' },
   { table: 'generation_jobs',       column: 'shadow_expires_at',           type: 'TIMESTAMP' },
@@ -79,7 +151,12 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "platform_catalog_blueprints", column: "fabric_weave_texture",     type: "BOOLEAN" },
   { table: "aop_calibration_runs",  column: "export_url",                  type: "TEXT" },
   { table: "design_products",       column: "printify_product_id",         type: "TEXT" },
+  { table: "design_products",       column: "my_pet_enabled",              type: "BOOLEAN NOT NULL DEFAULT TRUE" },
+  { table: "design_products",       column: "default_size_backfilled",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "design_products",       column: "size_order_restored",         type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "shopify_installations", column: "embed_confirmed_at",          type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "shopify_app",                 type: "TEXT" },
+  { table: "shipping_store_settings", column: "flat_order_fulfillment_enabled", type: "BOOLEAN NOT NULL DEFAULT FALSE" },
   { table: "product_types",         column: "last_oos_scan_at",            type: "TIMESTAMP" },
   { table: "product_types",         column: "oos_available_variants",      type: "INTEGER" },
   { table: "product_types",         column: "oos_total_variants",          type: "INTEGER" },
@@ -94,6 +171,25 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "product_types",         column: "variant_availability",        type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "shipping_snapshot",           type: "TEXT DEFAULT '{}'" },
   { table: "product_types",         column: "is_platform_catalog_ref",     type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "product_types",         column: "shopify_variant_ids_both",    type: "JSON" },
+  { table: "product_types",         column: "print_sides_enabled",         type: "BOOLEAN" },
+  { table: "product_types",         column: "print_vertical_anchor",       type: "TEXT NOT NULL DEFAULT 'center'" },
+  { table: "product_types",         column: "print_chest_width_in",        type: "NUMERIC(5,2)" },
+  { table: "product_types",         column: "print_chest_height_in",       type: "NUMERIC(5,2)" },
+  { table: "product_types",         column: "blank_source_product_type_id", type: "INTEGER" },
+  { table: "product_types",         column: "listing_garment_word",        type: "TEXT" },
+  { table: "product_types",         column: "listing_handle_suffix",       type: "TEXT" },
+  { table: "product_types",         column: "listing_style_label",         type: "TEXT" },
+  { table: "product_types",         column: "compare_at_by_size",          type: "TEXT" },
+  { table: "product_types",         column: "garment_comfort_copy",        type: "TEXT" },
+  { table: "product_types",         column: "garment_durability_copy",     type: "TEXT" },
+  { table: "product_types",         column: "garment_shape",               type: "TEXT" },
+  { table: "product_types",         column: "garment_fit_ease",            type: "JSONB" },
+  { table: "product_types",         column: "garment_measurements",        type: "JSONB" },
+  { table: "shopify_installations", column: "size_finder_guarantee_enabled", type: "BOOLEAN" },
+  { table: "shopify_installations", column: "size_finder_guarantee_title", type: "TEXT" },
+  { table: "shopify_installations", column: "size_finder_guarantee_detail", type: "TEXT" },
+  { table: "shopify_installations", column: "size_finder_guarantee_url",   type: "TEXT" },
   { table: "shopify_installations", column: "storefront_free_gens_per_visitor", type: "INTEGER NOT NULL DEFAULT 2" },
   { table: "shopify_installations", column: "leftover_gens_reminder_bucket_key", type: "TEXT" },
   { table: "shopify_installations", column: "wholesale_credit_cents", type: "INTEGER NOT NULL DEFAULT 0" },
@@ -101,6 +197,27 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "shopify_installations", column: "refresh_token", type: "TEXT" },
   { table: "shopify_installations", column: "access_token_expires_at", type: "TIMESTAMP" },
   { table: "shopify_installations", column: "refresh_token_expires_at", type: "TIMESTAMP" },
+  { table: "shopify_installations", column: "theme_snapshot", type: "JSONB" },
+  { table: "shopify_installations", column: "atc_mode", type: "TEXT NOT NULL DEFAULT 'shadow-direct'" },
+  // Per-shop design-product cap override: NULL = plan tier (default); -1 =
+  // unlimited (owner/demo/internal); positive int = explicit per-shop cap.
+  // Platform-operator-only writes. See getEffectiveDesignProductLimit.
+  { table: "shopify_installations", column: "design_product_limit_override", type: "INTEGER" },
+  { table: "shopify_installations", column: "credit_reimbursement_mode", type: "TEXT NOT NULL DEFAULT 'appai_discount'" },
+  { table: "shopify_installations", column: "enabled_credit_pack_ids", type: "TEXT NOT NULL DEFAULT '[\"5\"]'" },
+  { table: "shadow_mint_jobs", column: "enqueued_at", type: "TIMESTAMP" },
+  { table: "design_candidates", column: "source", type: "TEXT NOT NULL DEFAULT 'generated'" },
+  { table: "design_candidates", column: "print_file_path", type: "TEXT" },
+  { table: "design_candidates", column: "artwork_path", type: "TEXT" },
+  { table: "design_candidates", column: "panel_id", type: "TEXT" },
+  { table: "design_candidates", column: "selected_colors", type: "JSONB" },
+  { table: "design_candidates", column: "generation", type: "JSONB" },
+  { table: "design_candidates", column: "publish_color_ticks", type: "JSONB" },
+  { table: "design_candidates", column: "publish_my_pet_enabled", type: "BOOLEAN" },
+  { table: "design_candidates", column: "printify_product_id", type: "TEXT" },
+  { table: "catalogue_candidate_choices", column: "mockup_images", type: "JSONB" },
+  { table: "catalogue_candidate_choices", column: "printify_product_id", type: "TEXT" },
+  { table: "catalogue_candidate_choices", column: "shopify_product_id", type: "TEXT" },
   { table: "credit_balances",        column: "earned_credits",             type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_balances",        column: "pack_credits",               type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "credit_ledger",          column: "source",                     type: "TEXT" },
@@ -121,13 +238,47 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   { table: "creator_style_assignments", column: "sort_order",              type: "INTEGER NOT NULL DEFAULT 0" },
   { table: "creators",                  column: "previous_username",       type: "TEXT" },
   { table: "help_articles",             column: "demo_url",                type: "TEXT" },
+  { table: "shipping_store_settings",   column: "pinned_fx_currency",      type: "TEXT" },
+  { table: "shipping_store_settings",   column: "free_shipping_enabled",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  { table: "shipping_store_settings",   column: "free_shipping_threshold_cents", type: "INTEGER NOT NULL DEFAULT 7500" },
+  { table: "shipping_store_settings",   column: "free_shipping_countries", type: "TEXT NOT NULL DEFAULT 'US'" },
+  { table: "shipping_store_settings",   column: "free_shipping_flat_cents", type: "INTEGER NOT NULL DEFAULT 495" },
+  { table: "my_pet_settings",           column: "surcharge_cents",         type: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "published_products",        column: "price_surcharge_cents",   type: "INTEGER" },
+  // Merchant own-key entitlement (unused until merchant own-key mode ships).
+  { table: "merchants",                 column: "can_use_own_api_keys",    type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  // Style-example batches on the staging render probe. Null on verbatim rows.
+  { table: "render_probe_results",      column: "batch_id",                type: "TEXT" },
+  { table: "render_probe_results",      column: "visual_system",           type: "TEXT" },
+  { table: "render_probe_results",      column: "concept_framework",       type: "TEXT" },
+  { table: "render_probe_results",      column: "composed_prompt",         type: "TEXT" },
+  { table: "render_probe_results",      column: "credential_ref",          type: "TEXT" },
+  { table: "render_probe_results",      column: "route",                   type: "TEXT" },
+  { table: "render_probe_results",      column: "reference_photo_id",      type: "TEXT" },
+  { table: "render_probe_results",      column: "behavior",                type: "TEXT" },
+  { table: "render_probe_results",      column: "product_family",          type: "TEXT" },
+  { table: "render_probe_results",      column: "concept_snapshot",        type: "JSONB" },
+  // Confirm checks on a catalogue import row. Soft warnings stay visible; this flag
+  // is what lets Create proceed after a reload.
+  { table: "catalogue_import_rows",     column: "acknowledged_warnings",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
 const DATA_MIGRATIONS: string[] = [
   `ALTER TABLE customers ALTER COLUMN credits SET DEFAULT 0`,
+  // Legacy plaintext merchant token was never used for generation; keys live encrypted in provider_credentials.
+  `UPDATE merchants SET custom_nano_banana_token = NULL WHERE custom_nano_banana_token IS NOT NULL`,
+  // GPT-Image-2 is retired; its style marker now means the Flare (OpenAI direct) route.
+  `UPDATE style_presets SET generation_model = 'openai-flare' WHERE generation_model IN ('gpt-image-2', 'openai/gpt-image-2')`,
+  `UPDATE style_presets SET generation_model_decor = 'openai-flare' WHERE generation_model_decor IN ('gpt-image-2', 'openai/gpt-image-2')`,
+  // Pack seeds stored "nano-banana", but the pack assignment actually rendered decor on NB2 (Google direct).
+  // Make that explicit so Admin → Styles shows the model that runs. Editor "Default" saves 'legacy', never matched here.
+  `UPDATE style_presets SET generation_model_decor = 'google-nb2' WHERE visibility = 'pack_only' AND catalog_slug LIKE 'pp-%' AND generation_model_decor = 'nano-banana'`,
+  `UPDATE style_presets SET generation_model_decor = 'legacy' WHERE generation_model_decor = 'nano-banana'`,
+  // Default only — do NOT stamp existing rows. The column is merchant-configurable
+  // (Admin → Settings, clamped 1–10) and an unconditional UPDATE here reset every
+  // merchant's choice on each boot (GH #50). ADD COLUMN already backfills NOT NULL 2.
   `ALTER TABLE shopify_installations ALTER COLUMN storefront_free_gens_per_visitor SET DEFAULT 2`,
-  `UPDATE shopify_installations SET storefront_free_gens_per_visitor = 2`,
   // Required: every installation must have a pricing catalogue stamp for enforcement.
   `UPDATE shopify_installations SET pricing_version = 0 WHERE pricing_version IS NULL`,
   `ALTER TABLE shopify_installations ALTER COLUMN pricing_version SET DEFAULT 0`,
@@ -146,6 +297,30 @@ const DATA_MIGRATIONS: string[] = [
    SET force_flat_harvest = true
    WHERE printify_blueprint_id = 1300
       OR fulfillment_layout = 'tote_folded_v1'`,
+  // NULL shopify_shop_domain does not match the shop list, so production rows
+  // that share a serial id are left alone. Inches fill only when both are empty.
+  `UPDATE product_types
+   SET print_chest_width_in = 11, print_chest_height_in = 14
+   WHERE printify_blueprint_id = 145
+     AND printify_provider_id = 99
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com', 'petstage.myshopify.com')
+     AND print_chest_width_in IS NULL
+     AND print_chest_height_in IS NULL`,
+  `UPDATE product_types
+   SET print_chest_width_in = 14, print_chest_height_in = 14
+   WHERE printify_blueprint_id = 706
+     AND printify_provider_id = 99
+     AND lower(shopify_shop_domain) IN ('h7epay-gh.myshopify.com', 'ai-art-studio-staging.myshopify.com', 'petstage.myshopify.com')
+     AND print_chest_width_in IS NULL
+     AND print_chest_height_in IS NULL`,
+  // Staging demo Softstyle only. Petposterous shirts stay null so their
+  // listings are not given a crossed-out price.
+  `UPDATE product_types
+   SET compare_at_by_size = '${STAGING_SOFTSTYLE_COMPARE_AT_JSON}'
+   WHERE printify_blueprint_id = 145
+     AND printify_provider_id = 99
+     AND lower(shopify_shop_domain) = 'ai-art-studio-staging.myshopify.com'
+     AND compare_at_by_size IS NULL`,
   `UPDATE product_types SET aop_template_id = 'leggings_v1'
    WHERE is_all_over_print = true
      AND printify_blueprint_id IN (256, 1050)
@@ -160,14 +335,25 @@ const DATA_MIGRATIONS: string[] = [
   `UPDATE product_types SET fabric_weave_texture = true
    WHERE printify_blueprint_id = 1649
      AND fabric_weave_texture IS NULL`,
-  // Vintage Poster: drop "travel poster" portrait bias — follow canvas orientation.
+  // Vintage Poster: first-seed empty rows only. Do not match product language
+  // ("vintage travel poster") — a merchant edit that keeps that phrase must survive.
   `UPDATE style_presets
    SET prompt_prefix = 'A full-bleed vintage travel illustration in classic Art Deco advertising-lithograph style (flat color fields, bold graphic shapes, period typography) that fills the entire canvas edge-to-edge in the canvas orientation — wider-than-tall when the canvas is landscape, taller-than-wide when portrait — with color and scene extending to all edges of'
-   WHERE LOWER(name) = 'vintage poster'
-     AND (
-       prompt_prefix ILIKE '%vintage travel poster%'
-       OR prompt_prefix NOT ILIKE '%canvas orientation%'
-     )`,
+   WHERE (catalog_slug = 'vintage-poster' OR (catalog_slug IS NULL AND LOWER(name) = 'vintage poster'))
+     AND (prompt_prefix IS NULL OR btrim(prompt_prefix) = '')`,
+  // Per-style bg config: only Watercolor + Free 4 All change. Null = inherit today's gate.
+  `UPDATE style_presets
+   SET background_selector_enabled = TRUE,
+       default_background_color = '#FFFFFF',
+       updated_at = NOW()
+   WHERE catalog_slug = 'watercolor'
+     AND background_selector_enabled IS NULL`,
+  `UPDATE style_presets
+   SET background_selector_enabled = TRUE,
+       default_background_color = 'none',
+       updated_at = NOW()
+   WHERE catalog_slug = 'free-4-all'
+     AND background_selector_enabled IS NULL`,
   // Wall Decals: product-level AR was portrait 2:3; per-size ARs are authoritative.
   `UPDATE product_types
    SET aspect_ratio = '1:1'
@@ -185,10 +371,10 @@ const DATA_MIGRATIONS: string[] = [
     )
     SELECT
       id,
-      COALESCE(credits, 0),
+      GREATEST(COALESCE(credits, 0), 0),
       0,
       0,
-      COALESCE(free_generations_used, 0),
+      GREATEST(COALESCE(free_generations_used, 0), 0),
       0,
       NOW()
     FROM customers
@@ -241,41 +427,71 @@ const DATA_MIGRATIONS: string[] = [
   // coupon grants dual-write both columns, so the legacy column being lower is
   // a strong signal that credits were already consumed.
   `UPDATE credit_balances cb
-    SET credits = c.credits,
+    SET credits = GREATEST(c.credits, 0),
         updated_at = NOW(),
         version = cb.version + 1
     FROM customers c
     WHERE cb.customer_id = c.id
-      AND c.credits < cb.credits`,
+      AND GREATEST(c.credits, 0) < cb.credits`,
   // Canonical hot-pink chroma prefixes for merchant apparel styles (matting-critical).
+  // Guard matches a white BACKGROUND, not the bare word "white": every canonical prefix
+  // says "no white mat" / "white may be used inside the subject", so `%white%` matched
+  // every row on every boot and reverted merchant edits (GH #49).
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of',
        category = 'apparel'
-   WHERE lower(name) = 'centered graphic'
-     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
+     AND prompt_prefix ILIKE '%white background%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors (avoid white, light colors, and hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of',
        category = 'apparel'
-   WHERE lower(name) = 'illustrated motif'
-     AND (prompt_prefix ILIKE '%white%' OR prompt_prefix NOT ILIKE '%#FF00FF%')`,
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
+     AND prompt_prefix ILIKE '%white background%'`,
   // Allow white inside subject (teeth, eyes) — matting now preserves connected-only removal.
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
-   WHERE lower(name) = 'centered graphic'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
-   WHERE lower(name) = 'illustrated motif'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   `UPDATE style_presets
    SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (avoid hot pink/magenta in the design), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
-   WHERE lower(name) = 'pet portraits'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
      AND category = 'apparel'
      AND prompt_prefix ILIKE '%avoid white, light colors%'`,
   // Stronger DO NOT use hot pink language + dark-tier DB column (editable in Admin without redeploy).
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of', prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of' WHERE lower(name) = 'illustrated motif'`,
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of', prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of' WHERE lower(name) = 'centered graphic'`,
-  `UPDATE style_presets SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of', prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of' WHERE lower(name) = 'pet portraits' AND category = 'apparel'`,
+  // These run on every boot, so each is guarded to fire only on a machine-written prior seed:
+  // prompt_prefix upgrades rows still holding the "(avoid hot pink/magenta in the design)"
+  // generation above; prompt_prefix_dark seeds only when unset. A merchant edit matches
+  // neither, so it survives restarts — which is what the Admin UI promises (GH #49).
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated character motif, detailed illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, illustrated character motif, detailed illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame, clean illustrated style. Create an illustrated motif of'
+   WHERE (catalog_slug = 'illustrated-motif' OR (catalog_slug IS NULL AND lower(name) = 'illustrated motif'))
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, centered flat vector illustration, bold clean shapes, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered composition, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, no rectangular frame. Create a centered graphic of'
+   WHERE (catalog_slug = 'centered-graphic' OR (catalog_slug IS NULL AND lower(name) = 'centered graphic'))
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
+  `UPDATE style_presets
+   SET prompt_prefix = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, flat vibrant colors, white may be used inside the subject (teeth, eyes, highlights) but not as a background mat (DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, no white mat, clean illustrated style. Create a pet portrait of'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
+     AND category = 'apparel'
+     AND prompt_prefix ILIKE '%hot pink/magenta in the design%'`,
+  `UPDATE style_presets
+   SET prompt_prefix_dark = 'T-shirt graphic, illustrated pet portrait, detailed character illustration, bright vibrant colors including white and light tones (avoid dark, black; DO NOT use solid hot pink (#FF00FF) or magenta anywhere in the main design — #FF00FF is reserved exclusively for the background mat), high contrast, centered, isolated on a solid hot pink (#FF00FF) background, no shadow, no texture, clean illustrated style. Create a pet portrait of'
+   WHERE (catalog_slug = 'pet-portraits' OR (catalog_slug IS NULL AND lower(name) = 'pet portraits'))
+     AND category = 'apparel'
+     AND (prompt_prefix_dark IS NULL OR prompt_prefix_dark = '')`,
   // Creator Marketplace: seed accounting cost ($0.05). Do not overwrite if already set.
   `INSERT INTO platform_config ("key", "value", "updated_at")
    VALUES ('AI_GENERATION_COST_USD', '0.05', NOW())
@@ -560,6 +776,98 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "designs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "designs" (
+        "id" serial PRIMARY KEY,
+        "customer_id" varchar NOT NULL,
+        "merchant_id" varchar,
+        "product_type_id" integer,
+        "prompt" text NOT NULL,
+        "style_preset" text,
+        "reference_image_url" text,
+        "generated_image_url" text,
+        "thumbnail_image_url" text,
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL DEFAULT 'black',
+        "aspect_ratio" text NOT NULL DEFAULT '3:4',
+        "transform_scale" integer NOT NULL DEFAULT 100,
+        "transform_x" integer NOT NULL DEFAULT 50,
+        "transform_y" integer NOT NULL DEFAULT 50,
+        "color_tier" text,
+        "alternate_image_url" text,
+        "design_source" text NOT NULL DEFAULT 'ai',
+        "status" text NOT NULL DEFAULT 'pending',
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "orders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "orders" (
+        "id" serial PRIMARY KEY,
+        "design_id" integer NOT NULL,
+        "customer_id" varchar NOT NULL,
+        "merchant_id" varchar,
+        "printify_order_id" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL,
+        "quantity" integer NOT NULL DEFAULT 1,
+        "price_in_cents" integer NOT NULL,
+        "shipping_in_cents" integer NOT NULL DEFAULT 0,
+        "credit_refund_in_cents" integer NOT NULL DEFAULT 0,
+        "shipping_address" text,
+        "created_at" timestamp DEFAULT now() NOT NULL,
+        "updated_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shared_designs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shared_designs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "design_id" integer,
+        "shop_domain" text,
+        "product_id" text,
+        "product_handle" text,
+        "share_token" text NOT NULL,
+        "image_url" text NOT NULL,
+        "thumbnail_url" text,
+        "prompt" text NOT NULL,
+        "style_preset" text,
+        "size" text NOT NULL,
+        "frame_color" text NOT NULL,
+        "transform_scale" integer NOT NULL DEFAULT 100,
+        "transform_x" integer NOT NULL DEFAULT 50,
+        "transform_y" integer NOT NULL DEFAULT 50,
+        "product_type_id" integer,
+        "expires_at" timestamp,
+        "view_count" integer NOT NULL DEFAULT 0,
+        "owner_customer_id" varchar,
+        "creator_id" varchar,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "cached_panel_images",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "cached_panel_images" (
+        "id" serial PRIMARY KEY,
+        "blueprint_id" integer NOT NULL,
+        "panel_name" text NOT NULL,
+        "panel_width" integer NOT NULL,
+        "panel_height" integer NOT NULL,
+        "image_data_url" text NOT NULL,
+        "created_at" timestamp DEFAULT now() NOT NULL
+      )
+    `,
+  },
+  {
     name: "design_sku_mappings",
     sql: `
       CREATE TABLE IF NOT EXISTS "design_sku_mappings" (
@@ -660,6 +968,83 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "success" boolean NOT NULL DEFAULT true,
         "error_message" text,
         "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "generation_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "generation_events" (
+        "id" serial PRIMARY KEY,
+        "kind" text NOT NULL,
+        "job_id" varchar,
+        "merchant_id" varchar,
+        "shop_domain" text,
+        "route" text,
+        "experience_profile" text,
+        "style_pack" text,
+        "style_slug" text,
+        "product_family" text,
+        "visual_system" text,
+        "concept_framework" text,
+        "provider" text,
+        "credential_scope" text,
+        "credential_ref" text,
+        "model" text,
+        "quality" text,
+        "size" text,
+        "transparent" boolean,
+        "transparent_fraction" numeric(6,4),
+        "attempts" integer,
+        "duration_ms" integer,
+        "usage" jsonb,
+        "estimated_cost_usd" numeric(10,6),
+        "provider_request_id" text,
+        "success" boolean NOT NULL,
+        "error_category" text,
+        "end_user_hash" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "render_probe_results",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "render_probe_results" (
+        "id" serial PRIMARY KEY,
+        "experiment" text NOT NULL,
+        "prompt_id" text NOT NULL,
+        "prompt_chars" integer,
+        "run" integer,
+        "provider" text NOT NULL,
+        "model" text NOT NULL,
+        "renderer_id" text,
+        "aspect_ratio" text,
+        "image_size" text,
+        "width" integer,
+        "height" integer,
+        "mime_type" text,
+        "provider_ms" integer,
+        "total_ms" integer,
+        "usage" jsonb,
+        "thoughts_tokens" integer,
+        "estimated_cost_usd" numeric(10,6),
+        "edges" jsonb,
+        "provider_request_id" text,
+        "storage_path" text,
+        "success" boolean NOT NULL,
+        "error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "batch_id" text,
+        "visual_system" text,
+        "concept_framework" text,
+        "composed_prompt" text,
+        "credential_ref" text,
+        "route" text,
+        "reference_photo_id" text,
+        "behavior" text,
+        "product_family" text,
+        "concept_snapshot" jsonb
       )
     `,
   },
@@ -1222,6 +1607,96 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "lifestyle_mockups",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "lifestyle_mockups" (
+        "id" serial PRIMARY KEY,
+        "generation_job_id" varchar NOT NULL,
+        "gender" text NOT NULL,
+        "garment" text NOT NULL,
+        "status" text NOT NULL,
+        "image_url" text,
+        "prompt" text,
+        "setting" text,
+        "seed" text,
+        "prediction_id" text,
+        "predict_time_sec" numeric(10, 3),
+        "cost_usd" numeric(10, 4),
+        "error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "completed_at" timestamp
+      )
+    `,
+  },
+  {
+    name: "style_packs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_packs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "merchant_id" varchar,
+        "slug" text NOT NULL,
+        "name" text NOT NULL,
+        "description" text,
+        "prompt_profile_key" text,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "sort_order" integer DEFAULT 0 NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_pack_items",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_pack_items" (
+        "id" serial PRIMARY KEY,
+        "pack_id" varchar NOT NULL,
+        "catalog_slug" text,
+        "style_preset_id" integer,
+        "sort_order" integer DEFAULT 0 NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "style_pack_merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_pack_merchants" (
+        "id" serial PRIMARY KEY,
+        "pack_id" varchar NOT NULL,
+        "merchant_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "experience_profiles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "experience_profiles" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "merchant_id" varchar,
+        "slug" text NOT NULL,
+        "name" text NOT NULL,
+        "style_pack_id" varchar,
+        "is_active" boolean DEFAULT true NOT NULL,
+        "config" jsonb,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "experience_profile_merchants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "experience_profile_merchants" (
+        "id" serial PRIMARY KEY,
+        "profile_id" varchar NOT NULL,
+        "merchant_id" varchar NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_generation_costs",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_generation_costs" (
@@ -1388,6 +1863,55 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
     `,
   },
   {
+    name: "style_prompt_suggestions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "style_prompt_suggestions" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "style_preset_id" integer NOT NULL,
+        "label" text NOT NULL,
+        "slot_values" jsonb NOT NULL,
+        "sort_order" integer NOT NULL DEFAULT 0,
+        "is_active" boolean NOT NULL DEFAULT true,
+        "times_used" integer NOT NULL DEFAULT 0,
+        "times_published" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "ip_guardrails",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "ip_guardrails" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "name" text NOT NULL,
+        "blocked_terms" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "negative_injection" text,
+        "post_gen_ocr_check" boolean NOT NULL DEFAULT false,
+        "severity" text NOT NULL DEFAULT 'BLOCK',
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "niche_store_configs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "niche_store_configs" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "creator_id" varchar NOT NULL,
+        "brand_name" text NOT NULL,
+        "niche" text NOT NULL,
+        "voice_guidelines" text,
+        "printed_in_usa" boolean NOT NULL DEFAULT false,
+        "trust_config" jsonb,
+        "ip_guardrail_id" varchar,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
     name: "creator_notes",
     sql: `
       CREATE TABLE IF NOT EXISTS "creator_notes" (
@@ -1526,9 +2050,584 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
       )
     `,
   },
+  // ── Shipping Coverage Service (Printify table ingestion + geo-gating) ──────
+  {
+    name: "shipping_classes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_classes" (
+        "id" serial PRIMARY KEY,
+        "blueprint_id" integer NOT NULL,
+        "provider_id" integer NOT NULL,
+        "name" text NOT NULL DEFAULT '',
+        "shipping_method" text NOT NULL DEFAULT 'standard',
+        "table_hash" text,
+        "variant_groups_json" text NOT NULL DEFAULT '[]',
+        "absolute_cap_cents_override" integer,
+        "typical_retail_cents_override" integer,
+        "group_delta_split_threshold_cents" integer,
+        "last_fetched_at" timestamp,
+        "last_changed_at" timestamp,
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_rates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_rates" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "country_code" text NOT NULL,
+        "variant_group" text NOT NULL,
+        "first_item_cents" integer NOT NULL,
+        "additional_cents" integer NOT NULL,
+        "currency" text NOT NULL DEFAULT 'USD',
+        "shippable" boolean NOT NULL DEFAULT TRUE,
+        "tier" text NOT NULL DEFAULT 'normal',
+        "ratio_bp" integer,
+        "typical_retail_cents" integer,
+        "tier_reason" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "variant_shipping",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "variant_shipping" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "product_type_id" integer NOT NULL,
+        "size_color_key" text NOT NULL,
+        "printify_variant_id" text NOT NULL,
+        "shopify_variant_id" text,
+        "variant_group" text NOT NULL,
+        "pseudo_weight_grams" integer,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_table_snapshots",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_table_snapshots" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "table_hash" text NOT NULL,
+        "raw_json" text NOT NULL,
+        "fetched_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_rate_audit",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_rate_audit" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL,
+        "sync_run_id" integer,
+        "country_code" text,
+        "variant_group" text,
+        "change_type" text NOT NULL,
+        "old_value" text,
+        "new_value" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_zone_rules",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_zone_rules" (
+        "id" serial PRIMARY KEY,
+        "shipping_class_id" integer NOT NULL DEFAULT 0,
+        "country_code" text NOT NULL,
+        "action" text NOT NULL,
+        "note" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_coverage",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_coverage" (
+        "id" serial PRIMARY KEY,
+        "product_type_id" integer NOT NULL,
+        "country_code" text NOT NULL,
+        "shippable" boolean NOT NULL,
+        "tier" text NOT NULL,
+        "first_item_cents" integer,
+        "additional_cents" integer,
+        "shipping_class_id" integer NOT NULL,
+        "table_hash" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_sync_runs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_sync_runs" (
+        "id" serial PRIMARY KEY,
+        "source" text NOT NULL DEFAULT 'manual',
+        "status" text NOT NULL DEFAULT 'running',
+        "classes_checked" integer NOT NULL DEFAULT 0,
+        "classes_changed" integer NOT NULL DEFAULT 0,
+        "classes_failed" integer NOT NULL DEFAULT 0,
+        "summary_json" text NOT NULL DEFAULT '{}',
+        "error" text,
+        "started_at" timestamp DEFAULT NOW() NOT NULL,
+        "finished_at" timestamp
+      )
+    `,
+  },
+  // ── Phase 3: per-shop delivery-profile reconciler ──────────────────────────
+  {
+    name: "shipping_store_settings",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_settings" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "shipping_mode" text NOT NULL DEFAULT 'off',
+        "manage_variant_weights" boolean NOT NULL DEFAULT true,
+        "probed_max_rates_per_zone" integer,
+        "probed_at" timestamp,
+        "pinned_fx_rate" text,
+        "pinned_fx_currency" text,
+        "pinned_fx_at" timestamp,
+        "last_reconcile_at" timestamp,
+        "last_reconcile_status" text,
+        "last_reconcile_error" text,
+        "last_reconcile_summary_json" text NOT NULL DEFAULT '{}',
+        "free_shipping_enabled" boolean NOT NULL DEFAULT FALSE,
+        "free_shipping_threshold_cents" integer NOT NULL DEFAULT 7500,
+        "free_shipping_countries" text NOT NULL DEFAULT 'US',
+        "free_shipping_flat_cents" integer NOT NULL DEFAULT 495,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_profiles",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_profiles" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "profile_key" text NOT NULL,
+        "shipping_class_id" integer NOT NULL,
+        "variant_group" text,
+        "shopify_profile_id" text,
+        "shopify_location_group_id" text,
+        "desired_hash" text,
+        "status" text NOT NULL DEFAULT 'pending',
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_zones",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_zones" (
+        "id" serial PRIMARY KEY,
+        "store_profile_id" integer NOT NULL,
+        "zone_key" text NOT NULL,
+        "shopify_zone_id" text,
+        "countries_json" text NOT NULL DEFAULT '[]',
+        "rest_of_world" boolean NOT NULL DEFAULT false,
+        "desired_hash" text,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shipping_store_rates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_rates" (
+        "id" serial PRIMARY KEY,
+        "store_zone_id" integer NOT NULL,
+        "band_index" integer NOT NULL,
+        "shopify_method_definition_id" text,
+        "lower_grams" integer NOT NULL,
+        "upper_grams" integer,
+        "price_cents" integer NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "shadow_mint_jobs",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shadow_mint_jobs" (
+        "id" serial PRIMARY KEY,
+        "shop" text NOT NULL,
+        "key" text NOT NULL,
+        "job_id" text NOT NULL,
+        "base_variant_id" text NOT NULL,
+        "base_product_id" text NOT NULL,
+        "cfg_snapshot" jsonb NOT NULL,
+        "mockup_url" text NOT NULL,
+        "price_override" text,
+        "state" text NOT NULL DEFAULT 'pending',
+        "attempts" integer NOT NULL DEFAULT 0,
+        "lease_until" timestamp,
+        "claimed_at" timestamp,
+        "ready_at" timestamp,
+        "enqueued_at" timestamp,
+        "last_error" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        UNIQUE ("shop", "key")
+      )
+    `,
+  },
+  {
+    name: "shipping_store_variants",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "shipping_store_variants" (
+        "id" serial PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "store_profile_id" integer NOT NULL,
+        "shopify_variant_id" text NOT NULL,
+        "source" text NOT NULL DEFAULT 'base',
+        "pseudo_weight_grams" integer,
+        "weight_written_at" timestamp,
+        "associated_at" timestamp,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    // Encrypted provider API keys. Only scope='platform' is read/written today;
+    // scope='shop' + shop_id are reserved for merchant own-key mode.
+    name: "provider_credentials",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "provider_credentials" (
+        "id" serial PRIMARY KEY,
+        "provider" text NOT NULL CHECK ("provider" IN ('openai', 'google', 'replicate')),
+        "scope" text NOT NULL DEFAULT 'platform' CHECK ("scope" IN ('platform', 'shop')),
+        "shop_id" varchar REFERENCES "merchants"("id") ON DELETE CASCADE,
+        "credential_ref" text NOT NULL,
+        "encrypted_key" text NOT NULL,
+        "last_four" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'unchecked' CHECK ("status" IN ('active', 'invalid', 'unchecked', 'disabled')),
+        "last_validated_at" timestamp,
+        "last_validation_error" text,
+        "created_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL,
+        CHECK (("scope" = 'platform' AND "shop_id" IS NULL) OR ("scope" = 'shop' AND "shop_id" IS NOT NULL))
+      )
+    `,
+  },
+  {
+    name: "mockup_panels",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "mockup_panels" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "panel_id" text NOT NULL,
+        "product_type_id" integer NOT NULL,
+        "view" text NOT NULL DEFAULT 'front',
+        "label" text NOT NULL,
+        "garment_color" text NOT NULL,
+        "garment_hex" text NOT NULL,
+        "kind" text NOT NULL,
+        "storage_path" text NOT NULL,
+        "mask_path" text NOT NULL,
+        "mask_source" text NOT NULL,
+        "width" integer NOT NULL,
+        "height" integer NOT NULL,
+        "print_width_of_h" numeric(6,4) NOT NULL DEFAULT 0.4415,
+        "print_height_of_h" numeric(6,4) NOT NULL DEFAULT 0.5041,
+        "print_top_of_h" numeric(6,4) NOT NULL DEFAULT 0.2074,
+        "print_rotation_deg" numeric(6,2) NOT NULL DEFAULT 0,
+        "is_default" boolean NOT NULL DEFAULT false,
+        "uploaded_by" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalogue_candidate_choices",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_candidate_choices" (
+        "candidate_id" text PRIMARY KEY,
+        "panel_id" text,
+        "selected_colors" jsonb NOT NULL DEFAULT '[]'::jsonb,
+        "artwork_path" text,
+        "approved_at" timestamp,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  // My Pet — storefront pet-swap on a published Petposterous catalogue design.
+  // SQL matches shared/schema.ts's myPetSettings/myPetPetPhotos/myPetRenders/
+  // myPetEmailCaptures exactly (see shared/myPetSettings.ts for the logic that
+  // reads/writes these rows).
+  {
+    name: "my_pet_settings",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_settings" (
+        "shop_domain" text PRIMARY KEY,
+        "base_prompt" text NOT NULL,
+        "style_tweaks" jsonb NOT NULL DEFAULT '{}'::jsonb,
+        "cap_per_listing" integer NOT NULL DEFAULT 2,
+        "cap_per_day" integer NOT NULL DEFAULT 20,
+        "cap_email_bonus" integer NOT NULL DEFAULT 2,
+        "render_params" jsonb NOT NULL DEFAULT '{"quality":"medium","background":"transparent","size":"1024x1536","outputFormat":"png","outputCompression":90,"moderation":"low"}'::jsonb,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_pet_photos",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_pet_photos" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "storage_path" text NOT NULL,
+        "order_id" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_renders",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_renders" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "client_ip" text,
+        "shopify_product_id" text NOT NULL,
+        "candidate_id" text NOT NULL,
+        "pet_photo_id" varchar NOT NULL,
+        "preview_path" text NOT NULL,
+        "job_id" varchar,
+        "color_id" text,
+        "size_id" text,
+        "duration_ms" integer,
+        "estimated_cost_usd" numeric(10,4),
+        "replicate_prediction_id" text,
+        "replicate_prediction_url" text,
+        "shopify_order_id" text,
+        "shopify_order_name" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "my_pet_email_captures",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "my_pet_email_captures" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "device_key" text NOT NULL,
+        "shopify_product_id" text NOT NULL,
+        "render_id" varchar NOT NULL,
+        "email" text NOT NULL,
+        "marketing_consent" boolean NOT NULL DEFAULT false,
+        "token" text NOT NULL UNIQUE,
+        "expires_at" timestamp NOT NULL,
+        "resolved_at" timestamp,
+        "created_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalogue_import_batches",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_import_batches" (
+        "id" varchar PRIMARY KEY,
+        "shop_domain" text NOT NULL,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "catalogue_import_rows",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "catalogue_import_rows" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "batch_id" varchar NOT NULL,
+        "shop_domain" text NOT NULL,
+        "filename" text NOT NULL,
+        "proposed_filename" text,
+        "content_hash" text,
+        "import_status" text NOT NULL DEFAULT 'drafted',
+        "failure_reason" text,
+        "style" text NOT NULL DEFAULT '',
+        "species" text NOT NULL DEFAULT '',
+        "humour_operator" text NOT NULL DEFAULT '',
+        "truth" text NOT NULL DEFAULT '',
+        "device" text NOT NULL DEFAULT '',
+        "exact_wording" text NOT NULL DEFAULT '',
+        "source" text NOT NULL DEFAULT 'draft',
+        "low_confidence" jsonb,
+        "selected" boolean NOT NULL DEFAULT true,
+        "acknowledged_warnings" boolean NOT NULL DEFAULT false,
+        "candidate_id" varchar,
+        "row_number" integer NOT NULL DEFAULT 0,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
+  {
+    name: "design_candidates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS "design_candidates" (
+        "id" varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+        "shop_domain" text NOT NULL,
+        "status" text NOT NULL DEFAULT 'pending',
+        "source" text NOT NULL DEFAULT 'generated',
+        "humour_operator" text NOT NULL,
+        "darkness_level" integer NOT NULL,
+        "species" text NOT NULL,
+        "device_structure" text NOT NULL,
+        "device_text" text NOT NULL,
+        "funny_truth" text NOT NULL,
+        "punchline" text NOT NULL DEFAULT '',
+        "art_style" text NOT NULL,
+        "behaviour" text NOT NULL,
+        "product_family" text NOT NULL,
+        "credential_ref" text NOT NULL,
+        "render_probe_result_id" integer,
+        "print_file_path" text,
+        "panel_id" text,
+        "selected_colors" jsonb,
+        "title" text,
+        "description" text,
+        "drop_reason" text,
+        "design_product_id" varchar,
+        "shopify_product_id" text,
+        "created_at" timestamp DEFAULT NOW() NOT NULL,
+        "updated_at" timestamp DEFAULT NOW() NOT NULL
+      )
+    `,
+  },
 ];
 
 const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
+  {
+    name: "shadow_mint_jobs_claim_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shadow_mint_jobs_claim_idx"
+      ON "shadow_mint_jobs" ("state", "created_at")`,
+  },
+  {
+    name: "mockup_panels_type_view_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "mockup_panels_type_view_idx"
+      ON "mockup_panels" ("product_type_id", "view", "panel_id")`,
+  },
+  {
+    name: "my_pet_pet_photos_device_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_pet_photos_device_idx"
+      ON "my_pet_pet_photos" ("shop_domain", "device_key")`,
+  },
+  {
+    name: "my_pet_renders_device_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_device_product_idx"
+      ON "my_pet_renders" ("shop_domain", "device_key", "shopify_product_id")`,
+  },
+  {
+    name: "my_pet_renders_device_day_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_device_day_idx"
+      ON "my_pet_renders" ("shop_domain", "device_key", "created_at")`,
+  },
+  {
+    name: "my_pet_renders_ip_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_ip_product_idx"
+      ON "my_pet_renders" ("shop_domain", "client_ip", "shopify_product_id")`,
+  },
+  {
+    name: "my_pet_renders_ip_day_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_ip_day_idx"
+      ON "my_pet_renders" ("shop_domain", "client_ip", "created_at")`,
+  },
+  {
+    name: "my_pet_renders_order_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_renders_order_idx"
+      ON "my_pet_renders" ("shop_domain", "shopify_order_id")`,
+  },
+  {
+    name: "my_pet_email_captures_device_product_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "my_pet_email_captures_device_product_idx"
+      ON "my_pet_email_captures" ("shop_domain", "device_key", "shopify_product_id")`,
+  },
+  {
+    name: "catalogue_import_rows_batch_file_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "catalogue_import_rows_batch_file_uidx"
+      ON "catalogue_import_rows" ("batch_id", "filename")`,
+  },
+  {
+    name: "catalogue_import_rows_shop_hash_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "catalogue_import_rows_shop_hash_idx"
+      ON "catalogue_import_rows" ("shop_domain", "content_hash")`,
+  },
+  {
+    name: "design_candidates_shop_status_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "design_candidates_shop_status_idx"
+      ON "design_candidates" ("shop_domain", "status")`,
+  },
+  {
+    // One live (non-disabled) key per (scope, shop, provider, ref).
+    name: "provider_credentials_live_ref_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "provider_credentials_live_ref_uidx"
+      ON "provider_credentials" ("scope", COALESCE("shop_id", ''), "provider", "credential_ref")
+      WHERE "status" <> 'disabled'`,
+  },
+  {
+    name: "generation_events_merchant_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "generation_events_merchant_created_idx"
+      ON "generation_events" ("merchant_id", "created_at")`,
+  },
+  {
+    name: "generation_events_job_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "generation_events_job_idx" ON "generation_events" ("job_id")`,
+  },
+  {
+    name: "shipping_store_settings_shop_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_settings_shop_uidx"
+      ON "shipping_store_settings" ("shop_domain")`,
+  },
+  {
+    name: "shipping_store_profiles_shop_key_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_profiles_shop_key_uidx"
+      ON "shipping_store_profiles" ("shop_domain", "profile_key")`,
+  },
+  {
+    name: "shipping_store_profiles_shop_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_store_profiles_shop_idx"
+      ON "shipping_store_profiles" ("shop_domain")`,
+  },
+  {
+    name: "shipping_store_zones_profile_key_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_zones_profile_key_uidx"
+      ON "shipping_store_zones" ("store_profile_id", "zone_key")`,
+  },
+  {
+    name: "shipping_store_rates_zone_band_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_rates_zone_band_uidx"
+      ON "shipping_store_rates" ("store_zone_id", "band_index")`,
+  },
+  {
+    name: "shipping_store_variants_shop_variant_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_store_variants_shop_variant_uidx"
+      ON "shipping_store_variants" ("shop_domain", "shopify_variant_id")`,
+  },
+  {
+    name: "shipping_store_variants_profile_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_store_variants_profile_idx"
+      ON "shipping_store_variants" ("store_profile_id")`,
+  },
   {
     name: "customer_aliases_alias_unique",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "customer_aliases_alias_unique"
@@ -1768,6 +2867,38 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
       ON "creator_customer_shop_visits" ("customer_id", "creator_id")`,
   },
   {
+    name: "lifestyle_mockups_job_gender_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "lifestyle_mockups_job_gender_idx"
+      ON "lifestyle_mockups" ("generation_job_id", "gender", "created_at")`,
+  },
+  {
+    name: "style_packs_slug_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_packs_slug_idx" ON "style_packs" ("slug")`,
+  },
+  {
+    name: "style_pack_items_pack_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_pack_items_pack_idx" ON "style_pack_items" ("pack_id")`,
+  },
+  {
+    name: "style_pack_merchants_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "style_pack_merchants_uidx"
+      ON "style_pack_merchants" ("pack_id", "merchant_id")`,
+  },
+  {
+    name: "experience_profiles_slug_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "experience_profiles_slug_idx" ON "experience_profiles" ("slug")`,
+  },
+  {
+    name: "experience_profile_merchants_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "experience_profile_merchants_uidx"
+      ON "experience_profile_merchants" ("profile_id", "merchant_id")`,
+  },
+  {
+    name: "lifestyle_mockups_created_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "lifestyle_mockups_created_idx"
+      ON "lifestyle_mockups" ("created_at")`,
+  },
+  {
     name: "creator_generation_costs_job_uidx",
     sql: `CREATE UNIQUE INDEX IF NOT EXISTS "creator_generation_costs_job_uidx"
       ON "creator_generation_costs" ("generation_job_id")`,
@@ -1801,6 +2932,16 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     name: "creator_style_assignments_style_idx",
     sql: `CREATE INDEX IF NOT EXISTS "creator_style_assignments_style_idx"
       ON "creator_style_assignments" ("style_preset_id")`,
+  },
+  {
+    name: "style_prompt_suggestions_style_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "style_prompt_suggestions_style_idx"
+      ON "style_prompt_suggestions" ("style_preset_id")`,
+  },
+  {
+    name: "niche_store_configs_creator_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "niche_store_configs_creator_uidx"
+      ON "niche_store_configs" ("creator_id")`,
   },
   {
     name: "creator_pack_purchases_creator_idx",
@@ -1872,9 +3013,532 @@ const INDEX_MIGRATIONS: { name: string; sql: string }[] = [
     sql: `CREATE INDEX IF NOT EXISTS "merchant_pack_purchases_shop_idx"
       ON "merchant_pack_purchases" ("shop_domain", "created_at")`,
   },
+  {
+    name: "shipping_classes_bp_provider_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_classes_bp_provider_uidx"
+      ON "shipping_classes" ("blueprint_id", "provider_id")`,
+  },
+  {
+    name: "shipping_rates_class_country_group_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_rates_class_country_group_uidx"
+      ON "shipping_rates" ("shipping_class_id", "country_code", "variant_group")`,
+  },
+  {
+    name: "shipping_rates_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_rates_class_idx"
+      ON "shipping_rates" ("shipping_class_id")`,
+  },
+  {
+    name: "variant_shipping_product_variant_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "variant_shipping_product_variant_uidx"
+      ON "variant_shipping" ("product_type_id", "printify_variant_id")`,
+  },
+  {
+    name: "variant_shipping_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "variant_shipping_class_idx"
+      ON "variant_shipping" ("shipping_class_id")`,
+  },
+  {
+    name: "shipping_table_snapshots_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_table_snapshots_class_idx"
+      ON "shipping_table_snapshots" ("shipping_class_id", "fetched_at")`,
+  },
+  {
+    name: "shipping_rate_audit_class_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_rate_audit_class_idx"
+      ON "shipping_rate_audit" ("shipping_class_id", "created_at")`,
+  },
+  {
+    name: "shipping_zone_rules_class_country_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_zone_rules_class_country_uidx"
+      ON "shipping_zone_rules" ("shipping_class_id", "country_code")`,
+  },
+  {
+    name: "shipping_coverage_product_country_uidx",
+    sql: `CREATE UNIQUE INDEX IF NOT EXISTS "shipping_coverage_product_country_uidx"
+      ON "shipping_coverage" ("product_type_id", "country_code")`,
+  },
+  {
+    name: "shipping_coverage_country_idx",
+    sql: `CREATE INDEX IF NOT EXISTS "shipping_coverage_country_idx"
+      ON "shipping_coverage" ("country_code", "shippable")`,
+  },
 ];
 
+async function backfillStyleCatalogSlugs(): Promise<number> {
+  let updated = 0;
+  for (const row of catalogSlugBackfillRows()) {
+    const extra =
+      row.slug === "opinionated"
+        ? ` OR lower(btrim(replace(name, chr(160), ' '))) IN ('opinionated', 'opinionated text')`
+        : "";
+    const r = await pool.query(
+      `UPDATE style_presets
+       SET catalog_slug = $1, updated_at = NOW()
+       WHERE catalog_slug IS NULL
+         AND category = $2
+         AND (
+           lower(btrim(replace(name, chr(160), ' '))) = lower($3)
+           ${extra}
+         )`,
+      [row.slug, row.category, row.name],
+    );
+    updated += (r as { rowCount?: number }).rowCount || 0;
+  }
+  return updated;
+}
+
+async function migrateLayeredStylePrefixes(): Promise<number> {
+  const tag = "[startup-migration] [opinionated]";
+  const light = APPAREL_CHROMA_STYLE_BY_NAME.opinionated;
+  const dark = APPAREL_DARK_TIER_PROMPTS.opinionated;
+  let updated = 0;
+
+  const before = await pool.query(
+    `SELECT id, name, merchant_id, catalog_slug, prompt_prefix, user_slot_schema
+     FROM style_presets
+     WHERE catalog_slug = 'opinionated'
+        OR (
+          prompt_prefix ILIKE '%bold stacked text typography%'
+          AND prompt_prefix ILIKE '%#FF00FF%'
+          AND prompt_prefix ILIKE '%strong opinion%'
+        )`,
+  );
+  const beforeRows = (before as { rows?: any[] }).rows || [];
+  console.log(`${tag} boot write running. matched ${beforeRows.length} row(s)`);
+  for (const row of beforeRows) {
+    const prefix = String(row.prompt_prefix || "");
+    console.log(
+      `${tag} BEFORE id=${row.id} name=${JSON.stringify(row.name)} ` +
+        `hasHex=${/#ff00ff/i.test(prefix)} hasBoldStack=${/bold stacked/i.test(prefix)} ` +
+        `slots=${row.user_slot_schema == null ? "null" : "set"}`,
+    );
+    console.log(`${tag} BEFORE prefix id=${row.id}:\n${prefix}`);
+  }
+
+  // First-seed empty Opinionated rows only. Dirty-OR repairs leftover chroma
+  // "bold stacked" seeds — not a chroma-free merchant edit.
+  const prefixUpd = await pool.query(
+    `UPDATE style_presets
+     SET prompt_prefix = $1,
+         prompt_prefix_dark = CASE
+           WHEN prompt_prefix_dark IS NULL OR btrim(prompt_prefix_dark) = '' THEN $2
+           WHEN prompt_prefix_dark ILIKE '%#FF00FF%'
+             OR prompt_prefix_dark ILIKE '%bold stacked%' THEN $2
+           ELSE prompt_prefix_dark
+         END,
+         updated_at = NOW()
+     WHERE (
+          catalog_slug = 'opinionated'
+          AND (prompt_prefix IS NULL OR btrim(prompt_prefix) = '')
+        )
+        OR (
+          prompt_prefix ILIKE '%bold stacked text typography%'
+          AND prompt_prefix ILIKE '%#FF00FF%'
+          AND prompt_prefix ILIKE '%strong opinion%'
+        )
+     RETURNING id, name, prompt_prefix`,
+    [light, dark],
+  );
+  const prefixRows = (prefixUpd as { rows?: any[]; rowCount?: number }).rows || [];
+  updated += prefixRows.length;
+  console.log(`${tag} prefix UPDATE rowCount=${prefixRows.length}`);
+  for (const row of prefixRows) {
+    console.log(`${tag} AFTER id=${row.id} name=${JSON.stringify(row.name)}:\n${row.prompt_prefix}`);
+  }
+
+  const verify = await pool.query(
+    `SELECT id, name, prompt_prefix, user_slot_schema
+     FROM style_presets
+     WHERE catalog_slug = 'opinionated'`,
+  );
+  const verifyRows = (verify as { rows?: any[] }).rows || [];
+  if (verifyRows.length === 0) {
+    const names = await pool.query(`SELECT id, name FROM style_presets ORDER BY id`);
+    console.warn(
+      `${tag} NO row with catalog_slug=opinionated. All styles: ${
+        ((names as { rows?: any[] }).rows || [])
+          .map((r) => `${r.id}:${JSON.stringify(r.name)}`)
+          .join(", ")
+      }`,
+    );
+  }
+  for (const row of verifyRows) {
+    console.log(`${tag} VERIFY id=${row.id} stored prompt_prefix:\n${row.prompt_prefix}`);
+  }
+
+  const renamed = await pool.query(
+    `UPDATE style_presets
+     SET name = 'Opinionated Text', updated_at = NOW()
+     WHERE catalog_slug = 'opinionated'
+       AND lower(btrim(replace(name, chr(160), ' '))) = 'opinionated'
+     RETURNING id`,
+  );
+  const renamedN = (renamed as { rowCount?: number }).rowCount || 0;
+  if (renamedN > 0) {
+    console.log(`${tag} display name → Opinionated Text rowCount=${renamedN}`);
+    updated += renamedN;
+  }
+
+  const others = await pool.query(
+    `SELECT id, name, category, catalog_slug, prompt_prefix, prompt_prefix_dark
+     FROM style_presets
+     WHERE catalog_slug IS DISTINCT FROM 'opinionated'`,
+  );
+  for (const row of (others as { rows?: any[] }).rows || []) {
+    try {
+      const slug = row.catalog_slug || inferCatalogSlug(row.name, row.category) || "";
+      const nextPrefix = applyForcedStyleLayerBySlug(slug, row.prompt_prefix || "", "light");
+      const nextDark = row.prompt_prefix_dark
+        ? applyForcedStyleLayerBySlug(slug, row.prompt_prefix_dark, "dark")
+        : row.prompt_prefix_dark;
+      if (nextPrefix === (row.prompt_prefix || "") && nextDark === row.prompt_prefix_dark) continue;
+      await pool.query(
+        `UPDATE style_presets
+         SET prompt_prefix = $1, prompt_prefix_dark = $2, updated_at = NOW()
+         WHERE id = $3`,
+        [nextPrefix, nextDark, row.id],
+      );
+      updated++;
+    } catch (err: any) {
+      console.error(`[startup-migration] style-layer row id=${row.id} failed:`, err.message ?? err);
+    }
+  }
+
+  return updated;
+}
+
+async function migrateQuotesInterpretiveStyle(): Promise<number> {
+  const tag = "[startup-migration] [quotes]";
+  let updated = 0;
+  const rows = await pool.query(
+    `SELECT id, prompt_prefix, prompt_prefix_dark, user_slot_schema, options, prompt_placeholder
+     FROM style_presets
+     WHERE catalog_slug = 'quotes'`,
+  );
+  for (const row of (rows as { rows?: any[] }).rows || []) {
+    const nextPrefix = isOldQuotesStylePrefix(row.prompt_prefix || "", "light")
+      ? QUOTES_THIN_STYLE_LIGHT
+      : row.prompt_prefix;
+    const nextDark = isOldQuotesStylePrefix(row.prompt_prefix_dark || "", "dark")
+      ? QUOTES_THIN_STYLE_DARK
+      : row.prompt_prefix_dark;
+    const nextPlaceholder =
+      !row.prompt_placeholder || /enter your topic/i.test(String(row.prompt_placeholder))
+        ? QUOTES_PLACEHOLDER
+        : row.prompt_placeholder;
+    let nextOptions = row.options;
+    const choices = Array.isArray(row.options?.choices) ? row.options.choices : null;
+    if (choices) {
+      const mapped = choices.map((c: any) => {
+        const id = String(c?.id || "").toLowerCase() as QuotesVoiceId;
+        const frag = String(c?.promptFragment || "");
+        const old = (QUOTES_OLD_INVENT_FRAGMENTS as Record<string, string>)[id];
+        if (old && frag.trim().toLowerCase() === old.toLowerCase() && QUOTES_TREATMENTS[id]) {
+          return { ...c, promptFragment: QUOTES_TREATMENTS[id] };
+        }
+        return c;
+      });
+      nextOptions = { ...row.options, choices: mapped };
+    }
+    const slotIsSet = row.user_slot_schema != null;
+    const prefixChanged = nextPrefix !== row.prompt_prefix;
+    const darkChanged = nextDark !== row.prompt_prefix_dark;
+    const placeholderChanged = nextPlaceholder !== row.prompt_placeholder;
+    const optionsChanged = JSON.stringify(nextOptions) !== JSON.stringify(row.options);
+    if (!slotIsSet && !prefixChanged && !darkChanged && !placeholderChanged && !optionsChanged) {
+      continue;
+    }
+    await pool.query(
+      `UPDATE style_presets
+       SET user_slot_schema = NULL,
+           prompt_prefix = $1,
+           prompt_prefix_dark = $2,
+           prompt_placeholder = $3,
+           options = $4::jsonb,
+           updated_at = NOW()
+       WHERE id = $5`,
+      [nextPrefix, nextDark, nextPlaceholder, JSON.stringify(nextOptions), row.id],
+    );
+    updated++;
+    console.log(`${tag} cleared literal + migrated row id=${row.id}`);
+  }
+  return updated;
+}
+
+/**
+ * Insert missing STYLE_PRESETS catalog slugs for every merchant, and sync
+ * Minimalist + the four 2026-08 floating styles in place (no dupes).
+ */
+export async function ensureCatalogStylesForAllMerchants(): Promise<{
+  inserted: number;
+  updated: number;
+  merchants: number;
+}> {
+  const merch = await pool.query(`SELECT id FROM merchants`);
+  const merchants = (merch as { rows?: { id: string }[] }).rows || [];
+  const presets = STYLE_PRESETS.filter((p) => p.id !== "none");
+  const syncSlugs = new Set<string>(["minimal-line", ...NEW_APPAREL_CATALOG_SLUGS]);
+  let inserted = 0;
+  let updated = 0;
+
+  for (const m of merchants) {
+    const existing = await pool.query(
+      `SELECT id, catalog_slug, name, category FROM style_presets WHERE merchant_id = $1`,
+      [m.id],
+    );
+    const bySlug = new Map<string, { id: number; name: string; category: string }>();
+    for (const r of (existing as { rows?: any[] }).rows || []) {
+      const slug =
+        (r.catalog_slug && String(r.catalog_slug)) ||
+        inferCatalogSlug(r.name, r.category);
+      if (slug && !bySlug.has(slug)) bySlug.set(slug, r);
+    }
+
+    for (let i = 0; i < presets.length; i++) {
+      const preset = presets[i];
+      const fields = catalogRowFieldsFromPreset(preset as any);
+      const hit = bySlug.get(preset.id);
+      if (hit) {
+        if (!syncSlugs.has(preset.id)) continue;
+        await pool.query(
+          `UPDATE style_presets
+           SET name = $1,
+               category = $2,
+               prompt_placeholder = $3,
+               generation_quality = $4,
+               user_slot_schema = $5,
+               prompt_prefix = CASE
+                 WHEN catalog_slug = 'minimal-line' THEN prompt_prefix
+                 ELSE $6
+               END,
+               output_mode = COALESCE($7, output_mode),
+               generation_model = CASE
+                 WHEN $7 = 'floating' AND generation_model IN ('openai-flare', 'replicate-flare') THEN generation_model
+                 WHEN $7 = 'floating' THEN 'openai-flare'
+                 ELSE generation_model
+               END,
+               updated_at = NOW()
+           WHERE id = $8`,
+          [
+            fields.name,
+            fields.category,
+            fields.promptPlaceholder,
+            fields.generationQuality,
+            fields.userSlotSchema,
+            fields.promptPrefix,
+            fields.outputMode,
+            hit.id,
+          ],
+        );
+        updated++;
+        continue;
+      }
+        await pool.query(
+          `INSERT INTO style_presets (
+           merchant_id, name, catalog_slug, prompt_prefix, category, is_active, sort_order,
+           prompt_placeholder, generation_quality, user_slot_schema, output_mode, generation_model,
+           background_selector_enabled, default_background_color, background_required
+         ) VALUES ($1,$2,$3,$4,$5,true,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [
+          m.id,
+          fields.name,
+          fields.catalogSlug,
+          fields.promptPrefix,
+          fields.category,
+          i,
+          fields.promptPlaceholder,
+          fields.generationQuality,
+          fields.userSlotSchema,
+          fields.outputMode,
+          fields.generationModel,
+          fields.backgroundSelectorEnabled,
+          fields.defaultBackgroundColor,
+          fields.backgroundRequired,
+        ],
+      );
+      inserted++;
+    }
+  }
+
+  return { inserted, updated, merchants: merchants.length };
+}
+
+function keeperSlugForGraphicsRow(row: {
+  catalog_slug?: string | null;
+  name?: string | null;
+  category?: string | null;
+}): string | null {
+  const stored = String(row.catalog_slug || "")
+    .trim()
+    .toLowerCase();
+  if (RETIRED_GRAPHICS_SLUG_TO_KEEPER[stored]) return RETIRED_GRAPHICS_SLUG_TO_KEEPER[stored];
+  return inferCatalogSlug(row.name, row.category);
+}
+
+async function remapCreatorAssignments(oldId: number, newId: number): Promise<number> {
+  if (oldId === newId) return 0;
+  const dropped = await pool.query(
+    `DELETE FROM creator_style_assignments a
+     USING creator_style_assignments b
+     WHERE a.style_preset_id = $1
+       AND b.style_preset_id = $2
+       AND a.creator_id = b.creator_id`,
+    [oldId, newId],
+  );
+  const moved = await pool.query(
+    `UPDATE creator_style_assignments
+     SET style_preset_id = $2, updated_at = NOW()
+     WHERE style_preset_id = $1`,
+    [oldId, newId],
+  );
+  return (
+    ((dropped as { rowCount?: number }).rowCount || 0) +
+    ((moved as { rowCount?: number }).rowCount || 0)
+  );
+}
+
+async function remapStylePromptSuggestions(oldId: number, newId: number): Promise<void> {
+  if (oldId === newId) return;
+  await pool.query(`DELETE FROM style_prompt_suggestions WHERE style_preset_id = $1`, [oldId]);
+  void newId;
+}
+
+/**
+ * Retire Graphics catalog twins and widen Centered Graphic / Illustrated Motif /
+ * Pattern Maker to All types + floating. Idempotent.
+ */
+export async function retireGraphicsTwinStyles(): Promise<{
+  remappedAssignments: number;
+  remappedPages: number;
+  converted: number;
+  deleted: number;
+  widened: number;
+}> {
+  const tag = "[startup-migration] [graphics-twins]";
+  const retiredSlugs = Object.keys(RETIRED_GRAPHICS_SLUG_TO_KEEPER);
+  const gfx = await pool.query(
+    `SELECT id, merchant_id, name, catalog_slug, category
+     FROM style_presets
+     WHERE catalog_slug = ANY($1::text[])`,
+    [retiredSlugs],
+  );
+  const gfxRows = (gfx as { rows?: any[] }).rows || [];
+
+  const keepers = await pool.query(
+    `SELECT id, merchant_id, catalog_slug
+     FROM style_presets
+     WHERE catalog_slug = ANY($1::text[])`,
+    [[...WIDEN_TO_ALL_TYPES_FLOATING_SLUGS]],
+  );
+  const keepersByMerchant = new Map<string, Map<string, number>>();
+  for (const row of (keepers as { rows?: any[] }).rows || []) {
+    const mid = String(row.merchant_id);
+    if (!keepersByMerchant.has(mid)) keepersByMerchant.set(mid, new Map());
+    keepersByMerchant.get(mid)!.set(String(row.catalog_slug), Number(row.id));
+  }
+
+  const idMap = new Map<string, string>();
+  let remappedAssignments = 0;
+  let converted = 0;
+  let deleted = 0;
+
+  for (const row of gfxRows) {
+    const keeperSlug = keeperSlugForGraphicsRow(row);
+    if (!keeperSlug || !WIDEN_TO_ALL_TYPES_FLOATING_SLUGS.includes(keeperSlug as any)) {
+      console.warn(`${tag} skip unmatched graphics row id=${row.id} slug=${row.catalog_slug}`);
+      continue;
+    }
+    const mid = String(row.merchant_id);
+    const existingId = keepersByMerchant.get(mid)?.get(keeperSlug);
+    if (existingId) {
+      idMap.set(String(row.id), String(existingId));
+      remappedAssignments += await remapCreatorAssignments(Number(row.id), existingId);
+      await remapStylePromptSuggestions(Number(row.id), existingId);
+      await pool.query(`DELETE FROM style_presets WHERE id = $1`, [row.id]);
+      deleted++;
+      continue;
+    }
+    const catalog = STYLE_PRESETS.find((p) => p.id === keeperSlug);
+    await pool.query(
+      `UPDATE style_presets
+       SET catalog_slug = $1,
+           name = $2,
+           category = 'all',
+           output_mode = 'floating',
+           generation_model = 'openai-flare',
+           updated_at = NOW()
+       WHERE id = $3`,
+      [keeperSlug, catalog?.name || row.name, row.id],
+    );
+    if (!keepersByMerchant.has(mid)) keepersByMerchant.set(mid, new Map());
+    keepersByMerchant.get(mid)!.set(keeperSlug, Number(row.id));
+    converted++;
+  }
+
+  let remappedPages = 0;
+  const pages = await pool.query(`SELECT id, style_config FROM customizer_pages WHERE style_config IS NOT NULL`);
+  for (const page of (pages as { rows?: any[] }).rows || []) {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(page.style_config, idMap);
+    if (!next.changed) continue;
+    await pool.query(`UPDATE customizer_pages SET style_config = $1::jsonb WHERE id = $2`, [
+      JSON.stringify(next.config),
+      page.id,
+    ]);
+    remappedPages++;
+  }
+
+  const widened = await pool.query(
+    `UPDATE style_presets
+     SET category = 'all',
+         output_mode = 'floating',
+         generation_model = CASE
+           WHEN generation_model IN ('openai-flare', 'replicate-flare') THEN generation_model
+           ELSE 'openai-flare'
+         END,
+         updated_at = NOW()
+     WHERE catalog_slug = ANY($1::text[])
+       AND (
+         category IS DISTINCT FROM 'all'
+         OR output_mode IS DISTINCT FROM 'floating'
+         OR generation_model IS NULL
+         OR generation_model NOT IN ('openai-flare', 'replicate-flare')
+       )`,
+    [[...WIDEN_TO_ALL_TYPES_FLOATING_SLUGS]],
+  );
+
+  const result = {
+    remappedAssignments,
+    remappedPages,
+    converted,
+    deleted,
+    widened: (widened as { rowCount?: number }).rowCount || 0,
+  };
+  console.log(`${tag} ${JSON.stringify(result)}`);
+  return result;
+}
+
 // ── Main entry point ──────────────────────────────────────────────────────────
+
+/**
+ * First boot after the per-shop flag exists: turn Printify submission on for
+ * the staging demo shop only. Later boots leave the row alone, so an operator
+ * can turn it off without the next deploy turning it back on. The shop domain
+ * is absent from every other database, so the update matches nothing there.
+ */
+export async function enableStagingDemoFlatFulfillmentOnce(): Promise<void> {
+  await pool.query(`CREATE TABLE IF NOT EXISTS startup_data_flags (name text PRIMARY KEY)`);
+  const flag = "staging-demo-flat-fulfillment-on";
+  const seen = await pool.query(`SELECT 1 FROM startup_data_flags WHERE name = $1`, [flag]);
+  if ((seen.rowCount ?? 0) > 0) return;
+  const updated = await pool.query(
+    `UPDATE shipping_store_settings
+     SET flat_order_fulfillment_enabled = true, updated_at = NOW()
+     WHERE shop_domain = 'ai-art-studio-staging.myshopify.com'`,
+  );
+  await pool.query(`INSERT INTO startup_data_flags (name) VALUES ($1) ON CONFLICT DO NOTHING`, [flag]);
+  console.log(`[startup-migration] staging demo flat fulfillment enabled rows=${updated.rowCount ?? 0}`);
+}
 
 export async function runStartupMigrations(): Promise<void> {
   const tag = "[startup-migration]";
@@ -1918,6 +3582,23 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
+  try {
+    await enableStagingDemoFlatFulfillmentOnce();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED staging demo flat fulfillment flag: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await backfillStyleCatalogSlugs();
+    applied++;
+    console.log(`${tag} catalog_slug backfill updated ${n} row(s)`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalog_slug backfill: ${err.message ?? err}`);
+  }
+
   // 4) Data migrations (safe re-runs)
   for (const sql of DATA_MIGRATIONS) {
     try {
@@ -1933,7 +3614,132 @@ export async function runStartupMigrations(): Promise<void> {
     }
   }
 
-  const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length;
+  try {
+    const n = await migrateLayeredStylePrefixes();
+    applied++;
+    console.log(`${tag} Layered style-layer migration ran (updated ${n} row(s))`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED layered style-layer migration: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await migrateQuotesInterpretiveStyle();
+    applied++;
+    console.log(`${tag} Quotes interpretive migration ran (updated ${n} row(s))`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED quotes interpretive migration: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await retireGraphicsTwinStyles();
+    applied++;
+    console.log(
+      `${tag} graphics twins retired: deleted=${n.deleted} converted=${n.converted} ` +
+        `assignments=${n.remappedAssignments} pages=${n.remappedPages} widened=${n.widened}`,
+    );
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED graphics twin retirement: ${err.message ?? err}`);
+  }
+
+  try {
+    const n = await ensureCatalogStylesForAllMerchants();
+    applied++;
+    console.log(
+      `${tag} catalog styles for all merchants: inserted=${n.inserted} updated=${n.updated} merchants=${n.merchants}`,
+    );
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalog styles for all merchants: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillDefaultSizeMedium } = await import("../default-size-medium");
+    const n = await backfillDefaultSizeMedium();
+    applied++;
+    console.log(`${tag} size order restore updated=${n.updated} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED size order restore: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillUnsetMyPetEnabled } = await import("../my-pet-metafields");
+    const n = await backfillUnsetMyPetEnabled();
+    applied++;
+    console.log(`${tag} my pet metafield backfill set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED my pet metafield backfill: ${err.message ?? err}`);
+  }
+
+  try {
+    const { ensureColourBlankTable } = await import("../colour-blanks");
+    await ensureColourBlankTable();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED colour blank base colours: ${err.message ?? err}`);
+  }
+
+  try {
+    const { ensureCatalogueShellCategories } = await import("../flywheel-category");
+    await ensureCatalogueShellCategories();
+    applied++;
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED catalogue shell categories: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillListingCopy } = await import("../listing-copy");
+    const n = await backfillListingCopy();
+    applied++;
+    console.log(`${tag} listing copy backfill updated=${n}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED listing copy backfill: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillHuskyListingTitles } = await import("../listing-title-fix");
+    const titles = await backfillHuskyListingTitles();
+    applied++;
+    for (const row of titles) {
+      console.log(`${tag} listing title type=${row.productTypeId} shopify=${row.shopify} handle=${row.handle} before=${JSON.stringify(row.before)} after=${JSON.stringify(row.after)}${row.reason ? ` reason=${row.reason}` : ""}`);
+    }
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED listing title fix: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillGarmentAccordionMetafields, ensureGarmentAccordionDefinitionsForAllShops } = await import("../garment-accordion-metafields");
+    const defs = await ensureGarmentAccordionDefinitionsForAllShops();
+    const n = await backfillGarmentAccordionMetafields();
+    applied++;
+    const failedDefs = defs.filter((row) => row.status === "failed");
+    console.log(`${tag} garment accordion definitions created=${defs.filter((row) => row.status === "created").length} present=${defs.filter((row) => row.status === "present").length} failed=${failedDefs.length}`);
+    for (const row of failedDefs) console.warn(`${tag} garment accordion definition ${row.shop} ${row.key}: ${row.error}`);
+    console.log(`${tag} garment accordion copy filled=${n.filled} metafields set=${n.set} skipped=${n.skipped} failed=${n.failed}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED garment accordion metafields: ${err.message ?? err}`);
+  }
+
+  try {
+    const { backfillFindMySize } = await import("../find-my-size");
+    const n = await backfillFindMySize();
+    applied++;
+    console.log(`${tag} find my size charts=${n.charts} guarantee=${n.guarantee}`);
+  } catch (err: any) {
+    errors++;
+    console.error(`${tag} FAILED find my size backfill: ${err.message ?? err}`);
+  }
+
+  const total = TABLE_MIGRATIONS.length + INDEX_MIGRATIONS.length + COLUMN_MIGRATIONS.length + DATA_MIGRATIONS.length + 1;
   console.log(`${tag} Done. total=${total} applied=${applied} errors=${errors}`);
   if (errors > 0) {
     console.error(`${tag} WARNING: ${errors} statement(s) failed — some routes may be degraded.`);

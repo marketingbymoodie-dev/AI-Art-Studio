@@ -4,6 +4,11 @@ import {
   bakeArtworkPlacementRotation,
   remapSourceRectForPlacementRotation,
   buildFlatMeshTargetPoints,
+  ARTWORK_SLICE_MIN_COVERAGE,
+  artworkSliceMuralCoverage,
+  artworkSliceSamplesMural,
+  artworkSourceRectForPanel,
+  clipSampleBbToSeamHalf,
   computeGroupRects,
   leggingsArtworkFallingOffUnseenSide,
   leggingsPanelHorizontalArtCoverage,
@@ -161,25 +166,39 @@ describe("printPanelOutputScale", () => {
 });
 
 describe("buildFlatMeshTargetPoints", () => {
+  const mesh = {
+    cols: 3,
+    rows: 2,
+    targetPoints: [
+      { x: 10, y: 20 },
+      { x: 30, y: 20 },
+      { x: 50, y: 20 },
+      { x: 10, y: 80 },
+      { x: 30, y: 80 },
+      { x: 50, y: 80 },
+    ],
+  };
+
   it("maps mesh corners to the full flat canvas", () => {
-    const mesh = {
-      cols: 3,
-      rows: 2,
-      targetPoints: [
-        { x: 10, y: 20 },
-        { x: 30, y: 20 },
-        { x: 50, y: 20 },
-        { x: 10, y: 80 },
-        { x: 30, y: 80 },
-        { x: 50, y: 80 },
-      ],
-    };
     const flat = buildFlatMeshTargetPoints(mesh, 400, 200);
     expect(flat).toHaveLength(6);
     expect(flat[0]).toEqual({ x: 0, y: 0 });
     expect(flat[2]).toEqual({ x: 400, y: 0 });
     expect(flat[3]).toEqual({ x: 0, y: 200 });
     expect(flat[5]).toEqual({ x: 400, y: 200 });
+  });
+
+  it("maps UV 0–1 onto a Safe dest rect when insets are supplied", () => {
+    const flat = buildFlatMeshTargetPoints(mesh, 400, 200, {
+      x: 40,
+      y: 20,
+      width: 320,
+      height: 160,
+    });
+    expect(flat[0]).toEqual({ x: 40, y: 20 });
+    expect(flat[2]).toEqual({ x: 360, y: 20 });
+    expect(flat[3]).toEqual({ x: 40, y: 180 });
+    expect(flat[5]).toEqual({ x: 360, y: 180 });
   });
 });
 
@@ -373,5 +392,188 @@ describe("shouldComposePillowWrapPrintFile", () => {
         { position: "front", width: 8000, height: 3000 },
       ]),
     ).toBe(true);
+  });
+});
+
+describe("artworkSourceRectForPanel pocket vs chest", () => {
+  it("maps a lower pocket mask to a lower slice of the same front-body rect", () => {
+    const frontRect: DesignRectInfo = {
+      union: { x: 100, y: 50, width: 400, height: 500 },
+      base: { x: 100, y: 50, width: 400, height: 500 },
+      effective: { x: 100, y: 50, width: 400, height: 500 },
+      anchor: { x: 300, y: 300 },
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0,
+      groupId: "front-body",
+      enabled: true,
+      rotationDeg: 0,
+    };
+    const chest = artworkSourceRectForPanel(
+      { x: 100, y: 50, width: 400, height: 400 },
+      "front",
+      frontRect,
+      1000,
+      2000,
+      "none",
+    );
+    const pocket = artworkSourceRectForPanel(
+      { x: 150, y: 350, width: 300, height: 180 },
+      "front_pocket",
+      frontRect,
+      1000,
+      2000,
+      "none",
+    );
+    expect(pocket.y).toBeGreaterThan(chest.y);
+    expect(pocket.y / 2000).toBeCloseTo((350 - 50) / 500, 5);
+  });
+});
+
+describe("artworkSliceSamplesMural", () => {
+  it("uses a 15% height-coverage threshold, not a 1px overlap", () => {
+    expect(ARTWORK_SLICE_MIN_COVERAGE).toBe(0.15);
+    // Fully inside — bridging / real pocket fill.
+    expect(artworkSliceMuralCoverage({ x: 10, y: 10, width: 80, height: 80 }, 100, 100)).toBe(1);
+    expect(artworkSliceSamplesMural({ x: 10, y: 10, width: 80, height: 80 }, 100, 100)).toBe(
+      true,
+    );
+    // Past the mural — this design's pocket (artV > 1).
+    expect(artworkSliceSamplesMural({ x: 0, y: 108, width: 100, height: 40 }, 100, 100)).toBe(
+      false,
+    );
+    // Last-row sliver: 3% of a 200px window (the 6px-on-2048 warp case).
+    expect(artworkSliceMuralCoverage({ x: 0, y: 97, width: 100, height: 100 }, 100, 100)).toBeCloseTo(
+      0.03,
+      5,
+    );
+    expect(artworkSliceSamplesMural({ x: 0, y: 97, width: 100, height: 100 }, 100, 100)).toBe(
+      false,
+    );
+    // Just below threshold (14%) still skip; 15% draws.
+    expect(artworkSliceSamplesMural({ x: 0, y: 86, width: 100, height: 100 }, 100, 100)).toBe(
+      false,
+    );
+    expect(artworkSliceSamplesMural({ x: 0, y: 85, width: 100, height: 100 }, 100, 100)).toBe(
+      true,
+    );
+    // Bridging: most of the window is mural, a little past the hem.
+    expect(
+      artworkSliceMuralCoverage({ x: 0, y: 70, width: 100, height: 40 }, 100, 100),
+    ).toBeCloseTo(0.75, 5);
+    expect(artworkSliceSamplesMural({ x: 0, y: 70, width: 100, height: 40 }, 100, 100)).toBe(
+      true,
+    );
+  });
+});
+
+describe("clipSampleBbToSeamHalf / hood print overlap", () => {
+  const union = { x: 0, y: 0, width: 200, height: 200 };
+  const aw = 1000;
+  const ah = 1000;
+
+  function hoodRect(overrides: Partial<DesignRectInfo> = {}): DesignRectInfo {
+    return {
+      union,
+      base: union,
+      effective: union,
+      anchor: { x: 100, y: 100 },
+      hasSeamPair: true,
+      anchorIsSeam: true,
+      seamAllowance: 0.08,
+      groupId: "hood",
+      enabled: true,
+      rotationDeg: 0,
+      ...overrides,
+    };
+  }
+
+  it("trims an overlapping left hood AABB at the garment seam, not artwork UV 0.5", () => {
+    const overlapping = { x: 0, y: 0, width: 120, height: 200 };
+    const clipped = clipSampleBbToSeamHalf(overlapping, hoodRect(), "left", "left_hood");
+    expect(clipped.x + clipped.width).toBeLessThan(100);
+    expect(clipped.width).toBeGreaterThan(50);
+
+    const slice = artworkSourceRectForPanel(
+      overlapping,
+      "left_hood",
+      hoodRect(),
+      aw,
+      ah,
+      "left",
+    );
+    const unclippedSlice = artworkSourceRectForPanel(
+      overlapping,
+      "front",
+      hoodRect({ hasSeamPair: false, seamAllowance: 0 }),
+      aw,
+      ah,
+      "none",
+    );
+    expect(slice.width).toBeLessThan(unclippedSlice.width);
+    expect(slice.width / aw).toBeGreaterThan(0.2);
+  });
+
+  it("does not half a solo hood whose union is the panel itself", () => {
+    const solo = { x: 0, y: 0, width: 200, height: 200 };
+    const rect = hoodRect({
+      union: solo,
+      base: solo,
+      effective: solo,
+      hasSeamPair: false,
+      anchorIsSeam: false,
+      seamAllowance: 0,
+    });
+    const clipped = clipSampleBbToSeamHalf(solo, rect, "left", "left_hood");
+    expect(clipped).toEqual(solo);
+  });
+
+  it("keeps the front-view right hood that lives on the left of the photo", () => {
+    // Wearer's right hood AABB sits at small X and only just crosses
+    // the seam. The old "keep x > mid" clip deleted it (blank panel).
+    const rightHoodOnPhotoLeft = { x: 20, y: 0, width: 90, height: 200 };
+    const clipped = clipSampleBbToSeamHalf(
+      rightHoodOnPhotoLeft,
+      hoodRect(),
+      "right",
+      "right_hood",
+    );
+    expect(clipped.width).toBeGreaterThan(50);
+    expect(clipped.x).toBe(20);
+    expect(clipped.x + clipped.width).toBeLessThanOrEqual(100);
+
+    const slice = artworkSourceRectForPanel(
+      rightHoodOnPhotoLeft,
+      "right_hood",
+      hoodRect(),
+      aw,
+      ah,
+      "right",
+    );
+    expect(slice.width / aw).toBeGreaterThan(0.2);
+    expect(slice.x + slice.width).toBeLessThan(aw * 0.55);
+  });
+
+  it("keeps a usable slice when Place scale moves artwork UV 0.5 off the hood AABB", () => {
+    // Regression: UV-clamping left panels to [0, 0.5] of `effective`
+    // collapsed this to a ~0-width column → banded legs on the hood.
+    const overlapping = { x: 0, y: 0, width: 120, height: 80 };
+    const effective = { x: -80, y: 40, width: 360, height: 360 };
+    const rect = hoodRect({
+      effective,
+      base: union,
+      hasSeamPair: true,
+      seamAllowance: 0.08,
+    });
+    const slice = artworkSourceRectForPanel(
+      overlapping,
+      "left_hood",
+      rect,
+      aw,
+      ah,
+      "left",
+    );
+    expect(slice.width / aw).toBeGreaterThan(0.15);
+    expect(slice.height / ah).toBeGreaterThan(0.1);
   });
 });

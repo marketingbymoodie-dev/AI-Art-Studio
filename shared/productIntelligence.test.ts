@@ -11,6 +11,8 @@ import {
   resolveMarkupPercent,
   suggestedRetailCents,
   unavailableVariantKeys,
+  isVariantKeyAvailable,
+  isVariantKeyExplicitlyOutOfStock,
 } from "./productIntelligence";
 
 describe("roundUpTo95 / suggestedRetailCents", () => {
@@ -79,6 +81,29 @@ describe("unavailableVariantKeys", () => {
         "xxl:black": "removed",
       }),
     ).toEqual(["xl:black", "xxl:black"]);
+  });
+});
+
+describe("isVariantKeyAvailable / isVariantKeyExplicitlyOutOfStock", () => {
+  const map = {
+    "s:black": "in_stock" as const,
+    "m:navy": "out_of_stock" as const,
+    "l:navy": "removed" as const,
+    "xl:navy": "unknown" as const,
+  };
+
+  it("treats missing keys as available (fail-open)", () => {
+    expect(isVariantKeyAvailable(map, "s", "white")).toBe(true);
+    expect(isVariantKeyExplicitlyOutOfStock(map, "s", "white")).toBe(false);
+  });
+
+  it("greys removed/unknown in the UI helper but mint only blocks explicit OOS", () => {
+    expect(isVariantKeyAvailable(map, "m", "navy")).toBe(false);
+    expect(isVariantKeyExplicitlyOutOfStock(map, "m", "navy")).toBe(true);
+    expect(isVariantKeyAvailable(map, "l", "navy")).toBe(false);
+    expect(isVariantKeyExplicitlyOutOfStock(map, "l", "navy")).toBe(false);
+    expect(isVariantKeyAvailable(map, "xl", "navy")).toBe(false);
+    expect(isVariantKeyExplicitlyOutOfStock(map, "xl", "navy")).toBe(false);
   });
 });
 

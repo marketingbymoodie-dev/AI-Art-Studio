@@ -8,11 +8,18 @@ describe("getDefaultPanelRenderConfig", () => {
     expect(cfg.mode).toBe("artwork");
   });
 
-  it("defaults hoodie back/hood panels to artwork off", () => {
+  it("defaults hoodie back panels to artwork off", () => {
     const back = getDefaultPanelRenderConfig("back", "hoodie", "hoodie_v1");
-    const hood = getDefaultPanelRenderConfig("left_hood", "hoodie", "hoodie_v1");
     expect(back.enabled).toBe(false);
-    expect(hood.enabled).toBe(false);
+    expect(back.mode).toBe("solid");
+  });
+
+  it("defaults hoodie hood panels to artwork on", () => {
+    // Hood prints by default so the customer gets the reveal; it stays movable
+    // and can be switched off per panel.
+    const hood = getDefaultPanelRenderConfig("left_hood", "hoodie", "hoodie_v1");
+    expect(hood.enabled).toBe(true);
+    expect(hood.mode).toBe("artwork");
   });
 
   it("defaults hoodie supporting panels to background color", () => {

@@ -1,5 +1,5 @@
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
-import { swapDecorSizeDimensionId } from "@shared/productVariantOptions";
+import { canonicalDecorSizeId, decorSizeIdCandidates } from "@shared/productVariantOptions";
 import { normalizePrintifyColorKey, slugPrintifyColorId } from "@shared/printifyColorSlug";
 
 function normalizeFlatColorKey(id: string): string {
@@ -37,12 +37,22 @@ function blankKeyMatches(manifest: FlatCalibrationManifest, key: string): boolea
   return !!(entry?.front || entry?.back);
 }
 
+function blankSizeToken(id: string): string | null {
+  const sizePart = id.includes(":") ? id.slice(0, id.indexOf(":")) : id;
+  return canonicalDecorSizeId(sizePart);
+}
+
 function findBlankKey(manifest: FlatCalibrationManifest, id: string, name?: string): string | null {
   if (!id && !name) return null;
   if (id && blankKeyMatches(manifest, id)) return id;
+  // A sized lookup (`36-x-24` / `36-x-24:black`) must not match a different
+  // size just because the frame colour name aliases to `black`. That returned
+  // the first `*:black` blank (14×11) for every poster size.
+  const wantedSize = id ? blankSizeToken(id) : null;
   const aliases = new Set(colorKeyAliases(id, name).map((a) => normalizeFlatColorKey(a)));
   for (const k of Object.keys(manifest.blanks || {})) {
     if (!blankKeyMatches(manifest, k)) continue;
+    if (wantedSize && blankSizeToken(k) !== wantedSize) continue;
     const kn = normalizeFlatColorKey(k);
     const seg = normalizeFlatColorKey(blankColorSegment(k));
     if (aliases.has(kn) || aliases.has(seg)) return k;
@@ -136,20 +146,15 @@ export function resolveFlatBlankColorId(
   const candidates: string[] = [];
 
   if (!apparelColorOnly && opts.sizeId && opts.frameColorId) {
-    candidates.push(`${opts.sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${opts.sizeId}`);
-    // HFP landscape sizes often need the swapped portrait harvest key (18x24 for 24x18).
-    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
-    if (swappedSize) {
-      candidates.push(
-        `${swappedSize}:${opts.frameColorId}`,
-        `${opts.frameColorId}:${swappedSize}`,
-      );
+    // Harvest keys are `36x24:black`. Imported size ids are often `36-x-24`.
+    // Try the canonical token before bare colour, or every size shows the first
+    // black frame and bake uses that size's print canvas.
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) {
+      candidates.push(`${sizeId}:${opts.frameColorId}`, `${opts.frameColorId}:${sizeId}`);
     }
   }
   if (!apparelColorOnly && opts.sizeId) {
-    candidates.push(opts.sizeId);
-    const swappedSize = swapDecorSizeDimensionId(opts.sizeId);
-    if (swappedSize) candidates.push(swappedSize);
+    for (const sizeId of decorSizeIdCandidates(opts.sizeId)) candidates.push(sizeId);
   }
   if (opts.frameColorId) candidates.push(opts.frameColorId);
   if (opts.frameColorName) candidates.push(opts.frameColorName);

@@ -55,4 +55,14 @@ describe("isPlatformAdminRequest", () => {
     expect(isPlatformAdminRequest({ shopDomain: "aiartstudio-gizsmzs2" })).toBe(true);
     expect(isPlatformAdminRequest({ shopDomain: "other.myshopify.com" })).toBe(false);
   });
+
+  it("allows the Petposterous shop as owner and still denies other merchants", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.OWNER_SHOP_DOMAIN;
+    delete process.env.PLATFORM_ADMIN_SHOP_DOMAINS;
+    expect(isPlatformAdminRequest({ shopDomain: "h7epay-gh.myshopify.com" })).toBe(true);
+    expect(isPlatformAdminRequest({ shopDomain: "h7epay-gh" })).toBe(true);
+    expect(isPlatformAdminRequest({ shopDomain: "petposterous.myshopify.com" })).toBe(false);
+    expect(isPlatformAdminRequest({ shopDomain: "ai-art-studio-staging.myshopify.com" })).toBe(false);
+  });
 });

@@ -66,6 +66,15 @@
   // customizer iframe) without relying on a stale closure from init().
   var _customerId = null;
   var _shop = null;
+  // Share one in-flight fetch between boot init() and tray openTray() REINIT
+  // so a fast tray open waits on the same request instead of racing it.
+  var _initPromise = null;
+
+  function notifySavedDesignsReady() {
+    try {
+      window.dispatchEvent(new CustomEvent('appai:saved-designs-ready'));
+    } catch (_) {}
+  }
 
   // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -93,11 +102,26 @@
     return ((el.innerText !== undefined ? el.innerText : el.textContent) || '').trim();
   }
 
+  // Identity token written by the designer iframe's identity bootstrap (same
+  // origin via App Proxy). Saved designs require it.
+  function getStoredIdentityToken() {
+    try {
+      return localStorage.getItem('appai_identity_token') || sessionStorage.getItem('appai_identity_token') || null;
+    } catch (_) { return null; }
+  }
+
+  function identityHeaders(json) {
+    var h = json ? { 'Content-Type': 'application/json' } : {};
+    var token = getStoredIdentityToken();
+    if (token) h.Authorization = 'Bearer ' + token;
+    return h;
+  }
+
   function fetchDesigns(customerId, shop) {
     return fetch(PROXY + '/api/storefront/customizer/my-designs', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityHeaders(true),
       body: JSON.stringify({ customerId: customerId, shop: shop })
     }).then(function (r) { return r.ok ? r.json() : null; });
   }
@@ -413,7 +437,7 @@
       {
         method: 'DELETE',
         credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
+        headers: identityHeaders(true),
       },
     ).then(function (r) {
       if (!r.ok) return false;
@@ -621,31 +645,26 @@
       console.warn('[AppAI Nav] No pageHandle for design', design.id);
       return;
     }
-    var url = '/pages/' + design.pageHandle + '?loadDesignId=' + encodeURIComponent(design.id);
+    var url = '/pages/' + design.pageHandle;
     // Pass the design's mockup so the customizer can paint it instantly while
     // the full design data loads (avoids the grey loading scan on open).
     var mockup = (design.mockupUrls && design.mockupUrls[0]) || '';
-    if (mockup) url += '&loadMockup=' + encodeURIComponent(mockup);
     var productName = design.baseTitle || 'saved design';
-    if (productName) url += '&loadProductName=' + encodeURIComponent(productName);
+    // Reopen target goes in tab storage, never the URL (a job id in a shareable
+    // link let anyone open and buy that design). Same key/shape as
+    // appai-art-embed.js APPAI_REOPEN_KEY and client/src/lib/reopenDesign.ts.
     try {
-      var activeIframe = document.querySelector('.ai-art-studio-embed iframe[title="AI Art Design Studio"], iframe[title="AI Art Design Studio"]');
-      if (activeIframe && activeIframe.contentWindow) {
-        activeIframe.contentWindow.postMessage({
-          type: 'AI_ART_STUDIO_SWITCH_SAVED_DESIGN',
-          design: {
-            id: design.id,
-            pageHandle: design.pageHandle,
-            mockupUrls: mockup ? [mockup] : [],
-            baseTitle: productName,
-            productTypeId: design.productTypeId || null
-          }
-        }, '*');
-        return;
-      }
-    } catch (e) {
-      console.warn('[AppAI Nav] Iframe saved design switch failed, using full page navigation:', e);
-    }
+      sessionStorage.setItem('appai_reopen_design', JSON.stringify({
+        id: String(design.id),
+        handle: String(design.pageHandle).toLowerCase(),
+        mockup: mockup || null,
+        productName: productName || null,
+        ts: Date.now()
+      }));
+    } catch (e) {}
+    // Always full-page navigate. In-iframe SWITCH_SAVED_DESIGN left the
+    // customizer on a blank/hung load when opening a tile from inside the
+    // editor; the homepage pill already used this assign path and worked.
     showNavOverlay(mockup, productName);
     navigateAfterOverlay(url);
   }
@@ -661,12 +680,15 @@
     if (!customerId) return Promise.resolve(false);
 
     var shop = getShop();
+    // Same customer + in-flight fetch → reuse (tray openTray joins boot).
+    // A new id (iframe login) must not join the previous request.
+    if (_initPromise && _customerId === customerId) return _initPromise;
     // Expose to module scope so openDrawer()/refreshDrawerIfChanged() can
     // re-fetch without a stale closure.
     _customerId = customerId;
     _shop = shop;
 
-    return fetchDesigns(customerId, shop).then(function (data) {
+    _initPromise = fetchDesigns(customerId, shop).then(function (data) {
       if (!data || !data.designs || data.designs.length === 0) {
         console.log('[AppAI Nav] No saved designs for this customer.');
         return false;
@@ -705,6 +727,7 @@
       // window.__APPAI_SAVED_DESIGNS__) and let it kick a background
       // refresh — never close over this initial `designs` snapshot.
       window.__APPAI_OPEN_SAVED_DESIGNS_DRAWER__ = function () { openDrawer(); };
+      notifySavedDesignsReady();
 
       if (_wired) return true;
       _wired = true;
@@ -756,6 +779,9 @@
     }).catch(function (e) {
       console.warn('[AppAI Nav] Failed to fetch saved designs:', e);
       return false;
+    }).then(function (result) {
+      _initPromise = null;
+      return result;
     });
   }
 
@@ -769,6 +795,22 @@
   window.__APPAI_SAVED_DESIGNS_REINIT__ = function () {
     return init();
   };
+
+  // Iframe / other-tab login writes identity without a reload. Boot init
+  // already bailed (or fetched the anonymous id). Re-run when the id appears.
+  window.addEventListener('storage', function (e) {
+    if (e.key !== 'appai_customer' && e.key !== 'appai_customer_id' && e.key !== 'appai_identity_token') return;
+    if (!getStoredCustomerId()) return;
+    // A refreshed identity token (designer bootstrap) must re-fetch even for the
+    // same customer — an expired token left the list empty.
+    if (e.key === 'appai_identity_token') _initPromise = null;
+    init();
+  });
+  window.addEventListener('message', function (event) {
+    if (!event.data || event.data.type !== 'APPAI_STOREFRONT_LOGGED_IN') return;
+    if (event.origin !== window.location.origin) return;
+    init();
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () {

@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { FileCode, RefreshCw } from "lucide-react";
+import AtcModeCard from "@/components/admin/AtcModeCard";
 
 interface HealthRow {
   shopDomain: string;
@@ -117,6 +118,8 @@ export default function PlatformGenerationHealthPage() {
             )}
           </CardContent>
         </Card>
+
+        <AtcModeCard />
 
         <Card>
           <CardHeader>

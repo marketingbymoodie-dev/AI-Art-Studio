@@ -21,7 +21,12 @@ import PlatformCatalogPage from "@/pages/platform-catalog";
 import OperatorCatalogPage from "@/pages/operator-catalog";
 import PlatformGenerationHealthPage from "@/pages/platform-generation-health";
 import PlatformProductIntelligencePage from "@/pages/platform-product-intelligence";
+import PlatformShippingPage from "@/pages/platform-shipping";
+import CatalogueStudioPage from "@/pages/admin/catalogue-studio";
+import ColourBlanksPage from "@/pages/admin/colour-blanks";
+import CatalogueBulkImportPage from "@/pages/admin/CatalogueBulkImport";
 import PlatformPricingModellerPage from "@/pages/admin/platform-pricing-modeller";
+import PlatformApiKeysPage from "@/pages/admin/platform-api-keys";
 import NotFound from "@/pages/not-found";
 
 import AdminSetupPage from "@/pages/admin/setup";
@@ -52,6 +57,7 @@ import AdminHowToPage from "@/pages/admin/how-to";
 import PlatformSupportPage from "@/pages/admin/platform-support";
 import PlatformHowToPage from "@/pages/admin/platform-how-to";
 import PlatformNewsletterPage from "@/pages/admin/platform-newsletter";
+import MyPetSettingsPage from "@/pages/admin/my-pet-settings";
 
 // DEV-ONLY: Storefront preview launcher — tree-shaken out of production builds
 import DevStorefrontPreview from "@/pages/dev-storefront-preview";
@@ -67,6 +73,7 @@ function AppRouter() {
   if (hasCreatorBootPayload() && !pathBasedCreator) {
     return (
       <Switch>
+        <Route path="/s/designer" component={EmbedDesign} />
         <Route path="/products" component={CreatorBootStorefrontPage} />
         <Route path="/about" component={CreatorBootStorefrontPage} />
         <Route path="/cart" component={CreatorBootStorefrontPage} />
@@ -96,7 +103,12 @@ function AppRouter() {
       <Route path="/admin/platform/operator-catalog" component={OperatorCatalogPage} />
       <Route path="/admin/platform/generation-health" component={PlatformGenerationHealthPage} />
       <Route path="/admin/platform/product-intelligence" component={PlatformProductIntelligencePage} />
+      <Route path="/admin/platform/shipping" component={PlatformShippingPage} />
+      <Route path="/admin/catalogue-studio/colour-blanks" component={ColourBlanksPage} />
+      <Route path="/admin/catalogue-studio" component={CatalogueStudioPage} />
+      <Route path="/admin/catalogue-import" component={CatalogueBulkImportPage} />
       <Route path="/admin/platform/pricing-modeller" component={PlatformPricingModellerPage} />
+      <Route path="/admin/platform/api-keys" component={PlatformApiKeysPage} />
       <Route path="/admin/platform/creators" component={PlatformCreatorsPage} />
       <Route path="/admin/platform/landing" component={PlatformLandingPage} />
       <Route path="/admin/platform/terms" component={PlatformTermsPage} />
@@ -104,6 +116,7 @@ function AppRouter() {
       <Route path="/admin/platform/how-to" component={PlatformHowToPage} />
       <Route path="/admin/platform/newsletter" component={PlatformNewsletterPage} />
       <Route path="/admin/platform/flat-calibrator/:blueprintId" component={FlatCalibrationMapperPage} />
+      <Route path="/admin/my-pet-settings" component={MyPetSettingsPage} />
 
       {/* Creator Marketplace marketing (public) */}
       <Route path="/beta" component={LuxeLandingPage} />

@@ -94,7 +94,11 @@ export function apparelMotifDesignColors(
 export function styleIsPatternMaker(
   styleName: string | null | undefined,
   stylePrefix: string | null | undefined,
+  catalogSlug?: string | null,
 ): boolean {
+  const slug = (catalogSlug || "").trim().toLowerCase();
+  if (slug === "pattern-maker" || slug === "graphics-pattern-maker") return true;
+  if (slug) return false;
   const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
   return (
     /\bpattern maker\b/.test(combined) ||
@@ -139,7 +143,11 @@ export function useCylindricalWrapPrompt(opts: {
 export function styleAllowsGeneratedText(
   styleName: string | null | undefined,
   stylePrefix: string | null | undefined,
+  catalogSlug?: string | null,
 ): boolean {
+  const slug = (catalogSlug || "").trim().toLowerCase();
+  if (slug === "opinionated" || slug === "quotes" || slug === "vintage-poster") return true;
+  if (slug) return false;
   const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
   if (!combined.trim()) return false;
   return (
@@ -159,7 +167,11 @@ export function styleAllowsGeneratedText(
 export function styleIsVintagePoster(
   styleName: string | null | undefined,
   stylePrefix: string | null | undefined,
+  catalogSlug?: string | null,
 ): boolean {
+  const slug = (catalogSlug || "").trim().toLowerCase();
+  if (slug === "vintage-poster") return true;
+  if (slug) return false;
   const combined = `${styleName || ""} ${stylePrefix || ""}`.toLowerCase();
   if (!combined.trim()) return false;
   return /\bvintage\s+poster\b/.test(combined) || /\bperiod typography\b/.test(combined);

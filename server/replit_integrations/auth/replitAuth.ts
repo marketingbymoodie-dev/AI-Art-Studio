@@ -71,20 +71,28 @@ function getShopifyApiSecret() {
   return secret;
 }
 
-function verifySessionJwt(token: string): ShopifySessionTokenPayload | null {
+function verifySessionJwt(token: string): { payload: ShopifySessionTokenPayload; label: string | null } | null {
   const apps = listShopifyAppCredentials();
-  const secrets = apps.length
-    ? apps.map((c) => c.apiSecret)
-    : [getShopifyApiSecret()];
-  const allowedAud = new Set(apps.length ? apps.map((c) => c.apiKey) : [getShopifyApiKey()]);
-
-  for (const secret of secrets) {
+  if (apps.length === 0) {
     try {
-      const decoded = jwt.verify(token, secret, { algorithms: ["HS256"] });
+      const decoded = jwt.verify(token, getShopifyApiSecret(), { algorithms: ["HS256"] });
+      if (!decoded || typeof decoded !== "object") return null;
+      const payload = decoded as ShopifySessionTokenPayload;
+      if (payload.aud && payload.aud !== getShopifyApiKey()) return null;
+      return { payload, label: "primary" };
+    } catch {
+      return null;
+    }
+  }
+
+  for (const app of apps) {
+    try {
+      const decoded = jwt.verify(token, app.apiSecret, { algorithms: ["HS256"] });
       if (!decoded || typeof decoded !== "object") continue;
       const payload = decoded as ShopifySessionTokenPayload;
-      if (payload.aud && !allowedAud.has(String(payload.aud))) continue;
-      return payload;
+      // The signature and the client id must belong to the same app.
+      if (payload.aud && payload.aud !== app.apiKey) continue;
+      return { payload, label: app.label };
     } catch {
       // try next app secret
     }
@@ -110,10 +118,11 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
     return res.status(401).json({ message: "Unauthorized: missing session token" });
   }
 
-  const payload = verifySessionJwt(token);
-  if (!payload) {
+  const verified = verifySessionJwt(token);
+  if (!verified) {
     return res.status(401).json({ message: "Unauthorized: invalid token" });
   }
+  const payload = verified.payload;
 
   // Attach shop info for later handlers.
   // `dest` may be bare `shop.myshopify.com` (no scheme) — fall back to `iss`.
@@ -122,9 +131,7 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
   req.shopOrigin = shopOrigin;
   req.shopifySession = payload;
 
-  // Bridge to req.user.claims.sub for compatibility with existing routes
-  // Use shopDomain as the user identifier since Shopify session tokens
-  // represent the authenticated shop context
+  // Bridge to req.user.claims.sub for compatibility with existing routes.
   const userId = shopDomain ? `shopify:merchant:${shopDomain}` : payload.sub || "unknown";
   req.user = {
     claims: {
@@ -132,7 +139,25 @@ const verifyShopifySessionToken: RequestHandler = (req, res, next) => {
     },
   };
 
-  return next();
+  void (async () => {
+    if (shopDomain && verified.label) {
+      try {
+        const { storage } = await import("../../storage");
+        const installation = await storage.getShopifyInstallationByShop(shopDomain);
+        if (installation?.shopifyApp && installation.shopifyApp !== verified.label) {
+          res.status(401).json({ message: "Unauthorized: shop is installed through a different app" });
+          return;
+        }
+        if (installation && !installation.shopifyApp) {
+          await storage.updateShopifyInstallation(installation.id, { shopifyApp: verified.label });
+        }
+      } catch (err) {
+        next(err);
+        return;
+      }
+    }
+    next();
+  })();
 };
 
 /**

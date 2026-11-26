@@ -39,6 +39,7 @@ import {
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
 import { getColorTier, type ColorTier } from "@shared/colorUtils";
+import { comboIsMinted, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -86,6 +87,7 @@ interface ProductDesignerConfig {
     safeZoneMargin: number;
   };
   variantMap?: Record<string, { printifyVariantId: number; providerId: number }>;
+  shopifyVariantIds?: unknown;
   variantPrices?: Record<string, string>;
   /** From linked customizer page — same allow-list as the storefront. */
   styleConfig?: CustomizerPageStyleConfig | null;
@@ -238,17 +240,25 @@ export default function DesignPage() {
   const defaultZoom = isApparel ? 135 : 100;
   const maxZoom = isApparel ? 135 : 200;
 
+  const mintedCatalog = resolveMintedShopifyCatalog({
+    shopifyVariantIds: designerConfig?.shopifyVariantIds,
+  });
+
   const isVariantAvailable = useCallback(
     (sizeId: string, colorId: string): boolean => {
-      if (!designerConfig?.variantMap) return true;
-      const key = `${sizeId}:${colorId}`;
-      return key in designerConfig.variantMap;
+      if (mintedCatalog.length === 0) return true;
+      const size = activeSizes.find((s) => s.id === sizeId);
+      const color = activeFrameColors.find((c) => c.id === colorId);
+      if (!size || !color) return false;
+      return comboIsMinted(mintedCatalog, size.name, color.name, color.id);
     },
-    [designerConfig?.variantMap]
+    [mintedCatalog, activeSizes, activeFrameColors],
   );
 
   const isCurrentSelectionValid =
-    !designerConfig?.variantMap || !selectedSize || !selectedFrameColor ? true : isVariantAvailable(selectedSize, selectedFrameColor);
+    mintedCatalog.length === 0 || !selectedSize || !selectedFrameColor
+      ? true
+      : isVariantAvailable(selectedSize, selectedFrameColor);
 
   const handleSelectProductType = (productType: ProductType) => {
     setSelectedProductTypeId(productType.id);
@@ -974,7 +984,7 @@ export default function DesignPage() {
               onClick={() => handleSizeChange(size.id)}
               disabled={!isAvailable}
               title={
-                !isAvailable ? `Not available in ${activeFrameColors.find((c) => c.id === selectedFrameColor)?.name || "selected color"}` : undefined
+                !isAvailable ? "Not available in this colour" : undefined
               }
               data-testid={`button-size-${size.id}`}
             >
@@ -1002,7 +1012,7 @@ export default function DesignPage() {
               style={{ backgroundColor: (color as any).hex }}
               onClick={() => isAvailable && handleFrameColorChange(color.id)}
               disabled={!isAvailable}
-              title={!isAvailable ? `Not available in ${activeSizes.find((s) => s.id === selectedSize)?.name || "selected size"}` : color.name}
+              title={!isAvailable ? "Not available in this size" : color.name}
               data-testid={`button-frame-${color.id}`}
             />
           );

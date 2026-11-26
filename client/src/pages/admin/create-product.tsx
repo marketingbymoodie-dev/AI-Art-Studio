@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -12,6 +12,8 @@ import { FlaskConical, Loader2, Package, Save } from "lucide-react";
 import AdminLayout from "@/components/admin-layout";
 import EmbedDesign, { type TesterDesignStatus } from "@/pages/embed-design";
 import { dedupeProductTypesForPicker } from "@shared/productTypePicker";
+import { lifestyleGarmentForBlueprint } from "@shared/lifestyleMockup";
+import { SeeItWornToolbar, useSeeItWorn } from "@/components/admin/SeeItWornPanel";
 import type { ProductType } from "@shared/schema";
 import {
   AlertDialog,
@@ -76,15 +78,21 @@ export default function AdminCreateProduct() {
   /** Flushes pending flat placement / zoom before a test order. */
   const flushDesignRef = useRef<(() => Promise<void>) | null>(null);
   const openEditorRef = useRef<(() => void) | null>(null);
+  const retryFailedUploadsRef = useRef<(() => Promise<void>) | null>(null);
   const [testerHasDesign, setTesterHasDesign] = useState(false);
   const [testerPanelStatus, setTesterPanelStatus] = useState<TesterDesignStatus["aopPanels"]>("none");
   const [placementEditorOpen, setPlacementEditorOpen] = useState(false);
   const [clipConfirmOpen, setClipConfirmOpen] = useState(false);
+  const [rateLimitedUntil, setRateLimitedUntil] = useState<number | undefined>();
+  const [retryWaitSec, setRetryWaitSec] = useState(0);
+  const [testerJobId, setTesterJobId] = useState<string | null>(null);
   const handleTesterDesignStatus = useCallback((status: TesterDesignStatus) => {
     testerStatusRef.current = status;
     setTesterHasDesign(!!status.jobId);
+    setTesterJobId(status.jobId ?? null);
     setTesterPanelStatus(status.aopPanels);
     setPlacementEditorOpen(!!status.placementEditorOpen);
+    setRateLimitedUntil(status.rateLimitedUntil);
   }, []);
 
   const leaveProduct = useCallback(() => {
@@ -94,7 +102,10 @@ export default function AdminCreateProduct() {
       flatClipSides: [],
     };
     setTesterHasDesign(false);
+    setTesterJobId(null);
     setTesterPanelStatus("none");
+    setRateLimitedUntil(undefined);
+    setRetryWaitSec(0);
     setPlacementEditorOpen(false);
     setClipConfirmOpen(false);
     try {
@@ -113,22 +124,6 @@ export default function AdminCreateProduct() {
       setLocation("/admin/platform/catalog");
     }
   }, [openedFromCatalog, setLocation]);
-
-  const embeddedContext = useMemo(
-    () =>
-      selectedProductTypeId != null
-        ? {
-            mode: "admin-tester" as const,
-            productTypeId: selectedProductTypeId,
-            onTesterDesignStatus: handleTesterDesignStatus,
-            saveDesignRef,
-            flushDesignRef,
-            openEditorRef,
-            onLeaveProduct: leaveProduct,
-          }
-        : undefined,
-    [selectedProductTypeId, handleTesterDesignStatus, leaveProduct],
-  );
 
   const {
     data: productTypesRaw,
@@ -150,6 +145,32 @@ export default function AdminCreateProduct() {
   const { data: studioIdentity } = useQuery<DesignStudioIdentity>({
     queryKey: ["/api/appai/design-studio/identity"],
   });
+
+  const embeddedContext = useMemo(
+    () =>
+      selectedProductTypeId != null
+        ? {
+            mode: "admin-tester" as const,
+            productTypeId: selectedProductTypeId,
+            shop: studioIdentity?.shop,
+            customerId: studioIdentity?.customerId,
+            onTesterDesignStatus: handleTesterDesignStatus,
+            saveDesignRef,
+            flushDesignRef,
+            openEditorRef,
+            retryFailedUploadsRef,
+            onLeaveProduct: leaveProduct,
+          }
+        : undefined,
+    [
+      selectedProductTypeId,
+      handleTesterDesignStatus,
+      leaveProduct,
+      studioIdentity?.shop,
+      studioIdentity?.customerId,
+    ],
+  );
+
   const { data: planData } = useQuery<{
     planName: string | null;
     planStatus: string | null;
@@ -188,9 +209,13 @@ export default function AdminCreateProduct() {
       }
       // AOP panels and flat Apply both report aopPanels saved/error. Do not send
       // a test order until the on-screen design has been persisted for Printify.
+      if (testerStatusRef.current.aopPanels === "rateLimited") {
+        const wait = testerStatusRef.current.retryAfterSec ?? 60;
+        throw new Error(`Try again in ${wait} seconds`);
+      }
       if (testerStatusRef.current.aopPanels === "error") {
         throw new Error(
-          "Last print-file sync failed — nudge the artwork once, wait until the button says Send a Test Order, then try again.",
+          "Last print-file sync failed — use Retry failed uploads after the wait, not a full re-place.",
         );
       }
       if (testerStatusRef.current.aopPanels !== "saved") {
@@ -238,12 +263,21 @@ export default function AdminCreateProduct() {
   const requestPlaceOrTestOrder = useCallback(() => {
     const needsOpen =
       testerPanelStatus === "none" && testerHasDesign && !placementEditorOpen;
-    if (needsOpen || testerPanelStatus === "error") {
+    if (needsOpen) {
       openEditorRef.current?.();
       return;
     }
+    if (testerPanelStatus === "rateLimited") {
+      if (rateLimitedUntil && Date.now() < rateLimitedUntil) return;
+      void retryFailedUploadsRef.current?.();
+      return;
+    }
+    if (testerPanelStatus === "error") {
+      void retryFailedUploadsRef.current?.();
+      return;
+    }
     requestTestOrder();
-  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder]);
+  }, [testerPanelStatus, testerHasDesign, placementEditorOpen, requestTestOrder, rateLimitedUntil]);
 
   const saveDesignMutation = useMutation({
     mutationFn: async () => {
@@ -277,7 +311,22 @@ export default function AdminCreateProduct() {
     },
   });
 
+  useEffect(() => {
+    if (testerPanelStatus !== "rateLimited" || !rateLimitedUntil) {
+      setRetryWaitSec(0);
+      return;
+    }
+    const tick = () => {
+      setRetryWaitSec(Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1000)));
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [testerPanelStatus, rateLimitedUntil]);
+
   const syncingPrintFiles = testerPanelStatus === "saving";
+  const rateLimitedWaiting =
+    testerPanelStatus === "rateLimited" && retryWaitSec > 0;
   const testerBusy =
     testOrderMutation.isPending || saveDesignMutation.isPending || syncingPrintFiles;
   const needsPlacement =
@@ -288,11 +337,29 @@ export default function AdminCreateProduct() {
       ? "Syncing placement…"
       : needsPlacement
         ? "Open placement editor"
-        : testerPanelStatus === "error"
-          ? "Retry placement"
+        : rateLimitedWaiting
+          ? `Try again in ${retryWaitSec} seconds`
+          : testerPanelStatus === "rateLimited" || testerPanelStatus === "error"
+            ? "Retry failed uploads"
           : testerHasDesign
             ? "Send a Test Order to Printify"
             : "Generate artwork first";
+  const lifestyleGarment = lifestyleGarmentForBlueprint(
+    (Array.isArray(productTypesRaw) ? productTypesRaw : []).find((pt) => pt.id === selectedProductTypeId)
+      ?.printifyBlueprintId ?? null,
+  );
+  const seeItWorn = useSeeItWorn(lifestyleGarment ? testerJobId : null);
+  const testerPreview =
+    lifestyleGarment && testerJobId
+      ? {
+          toolbar: <SeeItWornToolbar sw={seeItWorn} />,
+          imageUrl: seeItWorn.view === "worn" ? seeItWorn.shown?.imageUrl ?? null : null,
+          caption:
+            seeItWorn.view === "worn" && seeItWorn.shown
+              ? `${seeItWorn.shown.setting ?? ""} · ${Number(seeItWorn.shown.costUsd ?? 0).toFixed(3)}`
+              : null,
+        }
+      : undefined;
   const testerActions = selectedProductTypeId ? (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -325,6 +392,7 @@ export default function AdminCreateProduct() {
           disabled={
             testOrderMutation.isPending ||
             syncingPrintFiles ||
+            rateLimitedWaiting ||
             (testerPanelStatus === "none" && !testerHasDesign)
           }
           data-testid="button-send-test-order"
@@ -347,9 +415,16 @@ export default function AdminCreateProduct() {
           Same editor as the live store — place the artwork, then Send a Test Order unlocks.
         </p>
       ) : null}
+      {testerPanelStatus === "rateLimited" ? (
+        <p className="text-xs text-destructive" data-testid="text-design-rate-limited">
+          {rateLimitedWaiting
+            ? `Upload rate-limited. Try again in ${retryWaitSec} seconds.`
+            : "Cooldown over. Retry failed uploads — this will not re-send unchanged panels."}
+        </p>
+      ) : null}
       {testerPanelStatus === "error" ? (
         <p className="text-xs text-destructive" data-testid="text-design-save-error">
-          Print file sync failed. Move or scale the artwork once to retry.
+          Print file sync failed. Retry failed uploads — do not re-place to force a full burst.
         </p>
       ) : null}
       {testerPanelStatus === "saved" && testerHasDesign ? (
@@ -381,7 +456,8 @@ export default function AdminCreateProduct() {
             <p className="text-muted-foreground max-w-2xl">
               Try the AI art studio on your imported products before creating a Live Customizer Page.
               Generate artwork{canSaveDesigns ? ", optionally save to My Designs," : ""} and send a draft
-              Printify test order when you&apos;re ready. This does not put a page on your storefront — use
+              Printify test order when you&apos;re ready. Saved designs opened from My Designs land here
+              so you can resend them as test orders. This does not put a page on your storefront — use
               Customizer Pages → Create Page for that (supplier + suggested pricing required).
               Delete test orders in Printify if automatic fulfilment is enabled.
             </p>
@@ -490,6 +566,7 @@ export default function AdminCreateProduct() {
                 key={selectedProductTypeId}
                 embeddedContext={embeddedContext}
                 testerActions={testerActions}
+                testerPreview={testerPreview}
               />
             </CardContent>
           </Card>

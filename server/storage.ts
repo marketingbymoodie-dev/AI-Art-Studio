@@ -23,8 +23,9 @@ import {
   founderAlerts,
   oosCatalogueScans, type OosCatalogueScan,
 } from "@shared/schema";
+import { isForbiddenGenerationLedgerDebit } from "@shared/studio-credit-spend-guard";
 import { db } from "./db";
-import { eq, and, gte, lte, desc, asc, inArray, sql, isNull } from "drizzle-orm";
+import { eq, and, gte, lte, desc, asc, inArray, sql, isNull, or, ne } from "drizzle-orm";
 import { computeGenerationConsume, getEffectivePlan, resolveGenerationQuota } from "./customizer-plans";
 
 export interface IStorage {
@@ -107,6 +108,14 @@ export interface IStorage {
   getAllActiveStylePresets(): Promise<StylePresetDB[]>;
   createStylePreset(preset: InsertStylePreset): Promise<StylePresetDB>;
   updateStylePreset(id: number, updates: Partial<StylePresetDB>): Promise<StylePresetDB | undefined>;
+  updateStyleBackgroundByCatalogSlug(
+    catalogSlug: string,
+    updates: {
+      backgroundSelectorEnabled?: boolean | null;
+      defaultBackgroundColor?: string | null;
+      backgroundRequired?: boolean | null;
+    },
+  ): Promise<void>;
   deleteStylePreset(id: number): Promise<void>;
   
   // Shopify Installations
@@ -271,14 +280,10 @@ export class DatabaseStorage implements IStorage {
     return customer;
   }
 
-  async decrementCreditsIfAvailable(customerId: string): Promise<Customer | null> {
-    const result = await this.consumePaidCredit(
-      customerId,
-      `legacy-decrement:${customerId}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-      "legacy-decrementCreditsIfAvailable",
+  async decrementCreditsIfAvailable(_customerId: string): Promise<Customer | null> {
+    throw new Error(
+      "decrementCreditsIfAvailable is retired; generation spend must use spendStudioCredit with a completed generation_job",
     );
-    if (!result.consumed) return null;
-    return this.getCustomer(customerId).then((customer) => customer || null);
   }
 
   async ensureCustomerBalance(customerId: string): Promise<CreditBalance> {
@@ -472,6 +477,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async applyCreditLedgerEntry(entry: InsertCreditLedger): Promise<{ inserted: boolean; balance: CreditBalance | undefined }> {
+    if (isForbiddenGenerationLedgerDebit(entry)) {
+      throw new Error(
+        "Generation debits must use spendStudioCredit with a completed generation_job",
+      );
+    }
     return db.transaction(async (tx) => {
       await tx
         .insert(creditBalances)
@@ -497,14 +507,27 @@ export class DatabaseStorage implements IStorage {
         return { inserted: false, balance };
       }
 
+      // Positive grants MUST land in a bucket creator-spend / wallet-view can see.
+      // Coupon is paid (merchant-quota at redeem) → pack. Any other unsourced
+      // credit would orphan in `credits` and vanish on the next generate/status.
+      let source = entry.source === "earned" || entry.source === "pack" ? entry.source : null;
+      if (entry.deltaCredits > 0 && !source) {
+        if (entry.reason === "coupon") source = "pack";
+        else {
+          throw new Error(
+            `applyCreditLedgerEntry: positive grant requires source earned|pack (reason=${entry.reason})`,
+          );
+        }
+      }
+
       const [balance] = await tx
         .update(creditBalances)
         .set({
           credits: sql`GREATEST(0, ${creditBalances.credits} + ${entry.deltaCredits})`,
-          ...(entry.source === "earned"
+          ...(source === "earned"
             ? { earnedCredits: sql`GREATEST(0, ${creditBalances.earnedCredits} + ${entry.deltaCredits})` }
             : {}),
-          ...(entry.source === "pack"
+          ...(source === "pack"
             ? { packCredits: sql`GREATEST(0, ${creditBalances.packCredits} + ${entry.deltaCredits})` }
             : {}),
           version: sql`${creditBalances.version} + 1`,
@@ -528,52 +551,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Legacy: bucket-agnostic credit spend (does not distinguish earned vs pack,
-   * does not burn merchant quota on "earned"). Retained for coupon/manual
-   * paths only. Generation billing should use `spendStudioCredit` from
-   * `./studio-credits` so bucket accounting and quota burn stay correct.
+   * Retired. Generation spend must use spendStudioCredit with a completed generation_job.
    */
-  async consumePaidCredit(customerId: string, idempotencyKey: string, externalRef?: string): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
-    return db.transaction(async (tx) => {
-      await tx
-        .insert(creditBalances)
-        .values({ customerId, credits: 0, earnedCredits: 0, packCredits: 0, freeGenerationsUsed: 0, version: 0, updatedAt: new Date() })
-        .onConflictDoNothing();
-
-      const [existingLedger] = await tx.select().from(creditLedger).where(eq(creditLedger.idempotencyKey, idempotencyKey));
-      if (existingLedger) {
-        const [balance] = await tx.select().from(creditBalances).where(eq(creditBalances.customerId, customerId));
-        return { consumed: true, balance };
-      }
-
-      const [balance] = await tx
-        .update(creditBalances)
-        .set({
-          credits: sql`${creditBalances.credits} - 1`,
-          version: sql`${creditBalances.version} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(creditBalances.customerId, customerId), sql`${creditBalances.credits} > 0`))
-        .returning();
-
-      if (!balance) return { consumed: false, balance: undefined };
-
-      await tx.insert(creditLedger).values({
-        customerId,
-        deltaCredits: -1,
-        reason: "generation",
-        idempotencyKey,
-        externalRef,
-        metadata: null,
-      });
-
-      await tx
-        .update(customers)
-        .set({ credits: balance.credits, totalGenerations: sql`${customers.totalGenerations} + 1`, updatedAt: new Date() })
-        .where(eq(customers.id, customerId));
-
-      return { consumed: true, balance };
-    });
+  async consumePaidCredit(
+    _customerId: string,
+    _idempotencyKey: string,
+    _externalRef?: string,
+  ): Promise<{ consumed: boolean; balance: CreditBalance | undefined }> {
+    throw new Error(
+      "consumePaidCredit is retired; generation spend must use spendStudioCredit with a completed generation_job",
+    );
   }
 
   async consumeFreeGeneration(
@@ -912,6 +899,22 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return updated;
   }
 
+  async updateStyleBackgroundByCatalogSlug(
+    catalogSlug: string,
+    updates: {
+      backgroundSelectorEnabled?: boolean | null;
+      defaultBackgroundColor?: string | null;
+      backgroundRequired?: boolean | null;
+    },
+  ): Promise<void> {
+    const slug = String(catalogSlug || "").trim();
+    if (!slug) return;
+    await db
+      .update(stylePresets)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(stylePresets.catalogSlug, slug));
+  }
+
   async deleteStylePreset(id: number): Promise<void> {
     await db.delete(stylePresets).where(eq(stylePresets.id, id));
   }
@@ -1105,10 +1108,18 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
         .where(eq(creditLedger.idempotencyKey, idempotencyKey));
       if (!original || original.deltaCredits >= 0) return { refunded: false };
 
+      const refundSource =
+        original.source === "earned" || original.source === "pack" ? original.source : null;
       const [balance] = await tx
         .update(creditBalances)
         .set({
           credits: sql`${creditBalances.credits} + 1`,
+          ...(refundSource === "earned"
+            ? { earnedCredits: sql`${creditBalances.earnedCredits} + 1` }
+            : {}),
+          ...(refundSource === "pack"
+            ? { packCredits: sql`${creditBalances.packCredits} + 1` }
+            : {}),
           version: sql`${creditBalances.version} + 1`,
           updatedAt: new Date(),
         })
@@ -1120,6 +1131,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       await tx.insert(creditLedger).values({
         customerId,
         deltaCredits: 1,
+        source: refundSource,
         reason: "generation_refund",
         idempotencyKey: refundKey,
         externalRef: externalRef ?? idempotencyKey,
@@ -1401,7 +1413,10 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return db
       .select()
       .from(designSkuMappings)
-      .where(lte(designSkuMappings.expiresAt, before));
+      .where(and(
+        lte(designSkuMappings.expiresAt, before),
+        or(isNull(designSkuMappings.cleanupStatus), ne(designSkuMappings.cleanupStatus, "skipped_not_shadow")),
+      ));
   }
 
   async deleteDesignSkuMapping(id: number): Promise<void> {
@@ -1547,7 +1562,12 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     const [row] = await db
       .select()
       .from(publishedProducts)
-      .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.designId, designId)));
+      .where(and(eq(publishedProducts.shop, shop), eq(publishedProducts.designId, designId)))
+      .orderBy(
+        sql`case when ${publishedProducts.status} = 'active' then 0 else 1 end`,
+        desc(publishedProducts.createdAt),
+      )
+      .limit(1);
     return row;
   }
 
@@ -1595,7 +1615,7 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
     return row;
   }
 
-  /** Return all shadow products whose expiresAt has passed and are still active */
+  /** Expired shadows that were never added to a cart and never paid for. */
   async getExpiredShadowProducts(): Promise<PublishedProduct[]> {
     return db
       .select()
@@ -1603,17 +1623,88 @@ return { designs: designsWithTypesWithSource, total: countResult[0]?.count || 0 
       .where(
         and(
           eq(publishedProducts.status, "active"),
+          isNull(publishedProducts.cartAddedAt),
+          isNull(publishedProducts.orderProtectedAt),
           lte(publishedProducts.expiresAt, new Date())
         )
       );
   }
 
-  /** Mark a shadow product as added-to-cart and extend its expiry to 7 days from now */
+  async findActiveShadowProduct(
+    shop: string,
+    ids: { productId?: string; variantId?: string },
+  ): Promise<PublishedProduct | undefined> {
+    const productId = String(ids.productId || "").replace(/\D/g, "");
+    const variantId = String(ids.variantId || "").replace(/\D/g, "");
+    if (productId) {
+      const [byProduct] = await db
+        .select()
+        .from(publishedProducts)
+        .where(
+          and(
+            eq(publishedProducts.shop, shop),
+            eq(publishedProducts.shopifyProductId, productId),
+            eq(publishedProducts.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (byProduct) return byProduct;
+    }
+    if (!variantId) return undefined;
+    const [byVariant] = await db
+      .select()
+      .from(publishedProducts)
+      .where(
+        and(
+          eq(publishedProducts.shop, shop),
+          eq(publishedProducts.shopifyVariantId, variantId),
+          eq(publishedProducts.status, "active"),
+        ),
+      )
+      .limit(1);
+    return byVariant;
+  }
+
+  /** Mark a shadow product as added-to-cart and extend its expiry to 7 days from now.
+   *  A paid order stays permanent: cart-added must not put an expiry back on it. */
   async markShadowProductCartAdded(id: string): Promise<void> {
-    const sevenDays = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const sevenDays = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const [row] = await db
+      .select({ orderProtectedAt: publishedProducts.orderProtectedAt })
+      .from(publishedProducts)
+      .where(eq(publishedProducts.id, id))
+      .limit(1);
     await db
       .update(publishedProducts)
-      .set({ cartAddedAt: new Date(), expiresAt: sevenDays, updatedAt: new Date() })
+      .set({
+        cartAddedAt: now,
+        ...(row?.orderProtectedAt ? {} : { expiresAt: sevenDays }),
+        updatedAt: now,
+      })
+      .where(eq(publishedProducts.id, id));
+  }
+
+  /** Paid-order lock. expiresAt null means the hourly reaper has no expiry to act on. */
+  async protectShadowProductOrder(id: string): Promise<void> {
+    const now = new Date();
+    const [row] = await db
+      .select({
+        cartAddedAt: publishedProducts.cartAddedAt,
+        orderProtectedAt: publishedProducts.orderProtectedAt,
+      })
+      .from(publishedProducts)
+      .where(eq(publishedProducts.id, id))
+      .limit(1);
+    if (!row) return;
+    await db
+      .update(publishedProducts)
+      .set({
+        orderProtectedAt: row.orderProtectedAt || now,
+        cartAddedAt: row.cartAddedAt || now,
+        expiresAt: null,
+        updatedAt: now,
+      })
       .where(eq(publishedProducts.id, id));
   }
 

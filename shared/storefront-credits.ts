@@ -112,16 +112,12 @@ export function storefrontCreditBreakdown(args: {
   paidCredits?: number;
 }): StorefrontCreditBreakdown {
   const shopFreeRemaining = storefrontShopFreeRemaining(args);
-  const paidTotal = nonNegInt(args.paidCredits);
   const hasBuckets = args.earnedCredits != null || args.packCredits != null;
-  let shopEarned = nonNegInt(args.earnedCredits);
-  let pack = nonNegInt(args.packCredits);
-  if (!hasBuckets) {
-    shopEarned = paidTotal;
-    pack = 0;
-  } else if (shopEarned + pack === 0 && paidTotal > 0) {
-    shopEarned = paidTotal;
-  }
+  // Never treat an unbucketed `paidCredits` total as spendable — creator spend
+  // only takes creator-earned + pack. Showing that number is what zeroed the badge.
+  const shopEarned = hasBuckets ? nonNegInt(args.earnedCredits) : 0;
+  const pack = hasBuckets ? nonNegInt(args.packCredits) : 0;
+  const paidTotal = shopEarned + pack;
   return {
     shopFreeRemaining,
     shopEarned,
@@ -129,6 +125,17 @@ export function storefrontCreditBreakdown(args: {
     paidTotal,
     total: shopFreeRemaining + paidTotal,
   };
+}
+
+/**
+ * Spendable paid total — same buckets as the counter/modal (earned + pack).
+ * Does not use the unbucketed `credits` column (can be stale vs packCredits).
+ */
+export function storefrontPaidSpendable(args: {
+  earnedCredits?: number | null;
+  packCredits?: number | null;
+}): number {
+  return nonNegInt(args.earnedCredits) + nonNegInt(args.packCredits);
 }
 
 /** Shop free first, then paid (earned then pack at spend time). */
@@ -161,6 +168,8 @@ export function storefrontArtworksRemaining(args: {
   freeGenerationsUsed?: number;
   paidCredits?: number;
   freeGenerationLimit?: number;
+  earnedCredits?: number | null;
+  packCredits?: number | null;
 }): number {
   return storefrontCreditBreakdown(args).total;
 }

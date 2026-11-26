@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useLocation, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, apiFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,15 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Palette, Plus, Trash2, Edit2, Copy, Frame, Shirt, Shapes, RefreshCw, ImagePlus, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { StylePresetCategory } from "@shared/styleCategories";
+import { findLiteralSlot, literalUserSlotSchema, parseUserSlotSchema } from "@shared/promptLayers";
+import { notifyStylePresetsChanged } from "@shared/stylePresetFreshness";
+import {
+  GENERATION_ROUTES,
+  LEGACY_DEFAULT_ROUTE_LABEL,
+  generationRouteOption,
+  isTransparentCapableRoute,
+  normalizeGenerationRoute,
+} from "@shared/generationRoutes";
 import AdminLayout from "@/components/admin-layout";
 import type { StylePresetDB } from "@shared/schema";
 
@@ -49,7 +58,7 @@ async function uploadFile(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.readAsDataURL(file);
   });
-  const res = await fetch("/api/uploads/upload", {
+  const res = await apiFetch("/api/uploads/upload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ dataUrl, name: file.name }),
@@ -91,6 +100,20 @@ export default function AdminStyles() {
   const [styleBaseImageUrls, setStyleBaseImageUrls] = useState<string[]>([]);
   const [stylePromptPlaceholder, setStylePromptPlaceholder] = useState<string>("");
   const [descriptionOptional, setDescriptionOptional] = useState(false);
+  /** Route id or "default" (legacy). */
+  const [generationModel, setGenerationModel] = useState<string>("default");
+  /** "inherit" = same as generationModel; "default" = legacy on decor; else route id. */
+  const [generationModelDecor, setGenerationModelDecor] = useState<string>("inherit");
+  const [generationQuality, setGenerationQuality] = useState<"low" | "medium" | "high">("low");
+  const usesFlareQuality =
+    isTransparentCapableRoute(generationModel) ||
+    (generationModelDecor !== "inherit" && isTransparentCapableRoute(generationModelDecor));
+  const [vectorizeEnabled, setVectorizeEnabled] = useState(false);
+  const [literalTextStyle, setLiteralTextStyle] = useState(false);
+  const [literalMaxWords, setLiteralMaxWords] = useState(6);
+  const [bgSelectorMode, setBgSelectorMode] = useState<"auto" | "on" | "off">("auto");
+  const [bgDefaultColor, setBgDefaultColor] = useState<string>("");
+  const [bgRequired, setBgRequired] = useState(false);
   const [isUploadingBaseImage, setIsUploadingBaseImage] = useState(false);
   const MAX_BASE_IMAGES = 5;
 
@@ -141,6 +164,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       setStyleDialogOpen(false);
       resetStyleForm();
       toast({ title: "Style created", description: "Your custom style is ready to use." });
@@ -159,6 +183,7 @@ export default function AdminStyles() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
+      notifyStylePresetsChanged();
       setStyleDialogOpen(false);
       resetStyleForm();
       toast({ title: "Style updated" });
@@ -169,6 +194,23 @@ export default function AdminStyles() {
     },
   });
 
+  const persistLiteralSlotMutation = useMutation({
+    mutationFn: async ({ id, userSlotSchema }: { id: number; userSlotSchema: unknown }) => {
+      const path = returnCreator ? `/api/platform/styles/${id}` : `/api/admin/styles/${id}`;
+      const response = await apiRequest("PATCH", path, { userSlotSchema });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/platform/style-catalog"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      notifyStylePresetsChanged();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update literal text", description: error.message, variant: "destructive" });
+    },
+  });
+
   const toggleActiveMutation = useMutation({
     mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
       const response = await apiRequest("PATCH", `/api/admin/styles/${id}`, { isActive });
@@ -176,6 +218,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update style", description: error.message, variant: "destructive" });
@@ -188,6 +231,7 @@ export default function AdminStyles() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       toast({ title: "Style deleted" });
     },
   });
@@ -202,7 +246,11 @@ export default function AdminStyles() {
         baseImageUrls: (style as any).baseImageUrls || null,
         promptPlaceholder: (style as any).promptPlaceholder || null,
         descriptionOptional: !!(style as any).descriptionOptional,
+        userSlotSchema: (style as any).userSlotSchema || null,
         options: (style as any).options || null,
+        backgroundSelectorEnabled: (style as any).backgroundSelectorEnabled ?? null,
+        defaultBackgroundColor: (style as any).defaultBackgroundColor ?? null,
+        backgroundRequired: (style as any).backgroundRequired ?? null,
         isActive: false, // start inactive so merchant can rename before enabling
       };
       const response = await apiRequest("POST", "/api/admin/styles", payload);
@@ -210,6 +258,7 @@ export default function AdminStyles() {
     },
     onSuccess: (newStyle) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
+      notifyStylePresetsChanged();
       toast({
         title: "Style copied",
         description: `"Copy of ${newStyle.name?.replace(/^Copy of /, "")}" created — rename it before enabling.`,
@@ -228,6 +277,7 @@ export default function AdminStyles() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/styles"] });
       queryClient.invalidateQueries({ queryKey: ["/api/config"] });
+      notifyStylePresetsChanged();
       toast({
         title: "Styles updated",
         description: `Updated ${data.updated} styles, created ${data.created} new styles.`,
@@ -248,6 +298,15 @@ export default function AdminStyles() {
     setStyleBaseImageUrls([]);
     setStylePromptPlaceholder("");
     setDescriptionOptional(false);
+    setGenerationModel("default");
+    setGenerationModelDecor("inherit");
+    setGenerationQuality("low");
+    setVectorizeEnabled(false);
+    setLiteralTextStyle(false);
+    setLiteralMaxWords(6);
+    setBgSelectorMode("auto");
+    setBgDefaultColor("");
+    setBgRequired(false);
     setSubStylesEnabled(false);
     setSubStyleLabel("Style");
     setSubStyleRequired(true);
@@ -269,6 +328,25 @@ export default function AdminStyles() {
     setStyleBaseImageUrls(existingBaseUrls);
     setStylePromptPlaceholder((style as any).promptPlaceholder || "");
     setDescriptionOptional(!!(style as any).descriptionOptional);
+    setGenerationModel(normalizeGenerationRoute((style as any).generationModel) ?? "default");
+    const decorModel = String((style as any).generationModelDecor || "").trim().toLowerCase();
+    setGenerationModelDecor(
+      !decorModel
+        ? "inherit"
+        : decorModel === "legacy" || decorModel === "nano-banana"
+          ? "default"
+          : normalizeGenerationRoute(decorModel) ?? "inherit",
+    );
+    const quality = String((style as any).generationQuality || "low").toLowerCase();
+    setGenerationQuality(quality === "medium" || quality === "high" ? quality : "low");
+    setVectorizeEnabled((style as any).vectorizeEnabled === true);
+    const literal = findLiteralSlot(parseUserSlotSchema((style as any).userSlotSchema));
+    setLiteralTextStyle(!!literal);
+    setLiteralMaxWords(literal?.maxWords && literal.maxWords > 0 ? Number(literal.maxWords) : 6);
+    const bgOn = (style as any).backgroundSelectorEnabled;
+    setBgSelectorMode(bgOn === true ? "on" : bgOn === false ? "off" : "auto");
+    setBgDefaultColor(typeof (style as any).defaultBackgroundColor === "string" ? (style as any).defaultBackgroundColor : "");
+    setBgRequired(!!(style as any).backgroundRequired);
 
     const opts: StyleOptions | null = (style as any).options ?? null;
     if (opts && opts.choices && opts.choices.length > 0) {
@@ -407,6 +485,22 @@ export default function AdminStyles() {
       promptPlaceholder: stylePromptPlaceholder || null,
       descriptionOptional,
       options,
+      generationModel: generationModel === "default" ? null : generationModel,
+      generationModelDecor:
+        generationModelDecor === "inherit" ? null : generationModelDecor === "default" ? "legacy" : generationModelDecor,
+      generationQuality:
+        usesFlareQuality
+          ? generationQuality === "medium" || generationQuality === "high"
+            ? generationQuality
+            : null
+          : null,
+      vectorizeEnabled: vectorizeEnabled ? true : null,
+      userSlotSchema: literalTextStyle
+        ? { slots: [{ id: "text", kind: "literal" as const, maxWords: literalMaxWords || 6 }] }
+        : null,
+      backgroundSelectorEnabled: bgSelectorMode === "auto" ? null : bgSelectorMode === "on",
+      defaultBackgroundColor: bgDefaultColor || null,
+      backgroundRequired: bgRequired ? true : null,
     };
 
     if (editingStyle) {
@@ -458,6 +552,22 @@ export default function AdminStyles() {
     if (filterCategory === "all") return styles.filter((s) => s.category === "all" || !s.category);
     return styles.filter((s) => s.category === filterCategory || s.category === "all");
   }, [styles, filterCategory]);
+  const isPackStyle = (s: StylePresetDB) => (s as any).visibility === "pack_only";
+  const standardStyles = filteredStyles.filter((s) => !isPackStyle(s));
+  const packStyles = filteredStyles.filter(isPackStyle);
+  const packSectionTitle = packStyles.every((s) => String(s.catalogSlug || "").startsWith("pp-"))
+    ? "Petposterous pack"
+    : "Style pack styles";
+  const modelBadge = (style: StylePresetDB) => {
+    const main = generationRouteOption((style as any).generationModel)?.label ?? "Default routing";
+    const decorRaw = String((style as any).generationModelDecor || "").trim().toLowerCase();
+    if (!decorRaw) return main;
+    const decor =
+      decorRaw === "legacy" || decorRaw === "nano-banana"
+        ? "Default routing"
+        : generationRouteOption(decorRaw)?.label ?? "Default routing";
+    return decor === main ? main : `${main} · decor: ${decor}`;
+  };
 
   return (
     <AdminLayout>
@@ -513,8 +623,25 @@ export default function AdminStyles() {
             {[1, 2, 3].map((i) => <Skeleton key={i} className="h-32" />)}
           </div>
         ) : filteredStyles.length > 0 ? (
+          <div className="space-y-6">
+          {[
+            { key: "standard", title: null as string | null, list: standardStyles },
+            { key: "pack", title: packSectionTitle, list: packStyles },
+          ]
+            .filter((g) => g.list.length > 0)
+            .map((group) => (
+          <div key={group.key} className="space-y-3" data-testid={`styles-group-${group.key}`}>
+            {group.title && (
+              <div>
+                <h2 className="text-lg font-semibold">{group.title}</h2>
+                <p className="text-xs text-muted-foreground">
+                  Pack-only styles. The concept engine picks the style; its generation model below is the one that runs.
+                </p>
+              </div>
+            )}
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {filteredStyles.map((style) => {
+            {group.list.map((style) => {
+              const packStyle = isPackStyle(style);
               const opts: StyleOptions | null = (style as any).options ?? null;
               const hasSubStyles = opts && opts.choices && opts.choices.length > 0;
               return (
@@ -557,6 +684,9 @@ export default function AdminStyles() {
                         {opts!.choices.map((c) => c.name).join(", ")}
                       </p>
                     )}
+                    <p className="text-xs text-muted-foreground mb-3" data-testid={`text-style-model-${style.id}`}>
+                      Model: {modelBadge(style)}
+                    </p>
                     <div className="flex gap-2">
                       <Button
                         variant="ghost"
@@ -567,6 +697,8 @@ export default function AdminStyles() {
                       >
                         <Edit2 className="h-4 w-4" />
                       </Button>
+                      {!packStyle && (
+                      <>
                       <Button
                         variant="ghost"
                         size="icon"
@@ -588,11 +720,16 @@ export default function AdminStyles() {
                       >
                         <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
+                      </>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
               );
             })}
+          </div>
+          </div>
+            ))}
           </div>
         ) : (
           <Card>
@@ -661,18 +798,248 @@ export default function AdminStyles() {
                   <SelectContent>
                     <SelectItem value="decor">Decor — full-bleed artwork</SelectItem>
                     <SelectItem value="apparel">Apparel — garment graphics</SelectItem>
-                    <SelectItem value="graphics">Graphics — isolated motifs (chroma + SVG)</SelectItem>
+                    <SelectItem value="graphics">Graphics — isolated motifs</SelectItem>
                     <SelectItem value="all">All product types</SelectItem>
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Decor fills the canvas edge-to-edge. Apparel and Graphics use hot-pink chroma removal; Graphics is for blankets, totes, and patterns.
+                  Decor fills the canvas edge-to-edge. Apparel and Graphics follow the generation model.
                 </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Generation Model</Label>
+                <Select value={generationModel} onValueChange={setGenerationModel}>
+                  <SelectTrigger data-testid="select-generation-model">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">{LEGACY_DEFAULT_ROUTE_LABEL}</SelectItem>
+                    {GENERATION_ROUTES.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.label}
+                        {r.verified ? "" : " — unverified"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {GENERATION_ROUTES.find((r) => r.id === generationModel)?.hint ??
+                    "Full-bleed artwork via Replicate Nano Banana; apparel uses chroma background removal."}{" "}
+                  Floating styles always use a Flare route.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Decor products model</Label>
+                <Select value={generationModelDecor} onValueChange={setGenerationModelDecor}>
+                  <SelectTrigger data-testid="select-generation-model-decor">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">Same as Generation Model</SelectItem>
+                    <SelectItem value="default">{LEGACY_DEFAULT_ROUTE_LABEL}</SelectItem>
+                    {GENERATION_ROUTES.map((r) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {r.label}
+                        {r.verified ? "" : " — unverified"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Overrides the model on non-apparel products (posters, framed prints, pillows, mugs…). Flare
+                  renders full-bleed opaque artwork on decor unless the style is floating.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Generation Quality</Label>
+                {usesFlareQuality ? (
+                  <Select
+                    value={generationQuality === "high" ? "medium" : generationQuality}
+                    onValueChange={(v) => setGenerationQuality(v as "low" | "medium")}
+                  >
+                    <SelectTrigger data-testid="select-generation-quality">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low Quality (use for small, simple artwork)</SelectItem>
+                      <SelectItem value="medium">Standard Quality (use for all other artwork)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div
+                    className="flex h-10 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground"
+                    data-testid="select-generation-quality"
+                  >
+                    Standard
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  *Printify upscales resolution for final printing.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5 pr-3">
+                  <Label htmlFor="literal-text-style" className="text-sm font-medium">
+                    Literal text style
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Same setting as this style’s user_slot_schema: quotes the prompt box as
+                    literal text. Off means no literal slot is stored.
+                  </p>
+                </div>
+                <Switch
+                  id="literal-text-style"
+                  checked={literalTextStyle}
+                  onCheckedChange={(on) => {
+                    const prev = literalTextStyle;
+                    setLiteralTextStyle(on);
+                    if (!editingStyle) return;
+                    persistLiteralSlotMutation.mutate(
+                      {
+                        id: editingStyle.id,
+                        userSlotSchema: on
+                          ? literalUserSlotSchema(literalMaxWords || 6)
+                          : null,
+                      },
+                      { onError: () => setLiteralTextStyle(prev) },
+                    );
+                  }}
+                  data-testid="switch-literal-text-style"
+                />
+              </div>
+              {literalTextStyle && (
+                <div className="space-y-2">
+                  <Label htmlFor="literal-max-words">Max words</Label>
+                  <Input
+                    id="literal-max-words"
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={literalMaxWords}
+                    onChange={(e) => setLiteralMaxWords(Math.max(1, Number(e.target.value) || 6))}
+                    data-testid="input-literal-max-words"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="space-y-0.5">
+                  <Label htmlFor="vectorize-enabled" className="text-sm font-medium">
+                    Vectorize (large-format scaling)
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Trace the motif to SVG after generate. Off leaves the env default.
+                  </p>
+                </div>
+                <Switch
+                  id="vectorize-enabled"
+                  checked={vectorizeEnabled}
+                  onCheckedChange={setVectorizeEnabled}
+                  data-testid="switch-vectorize-enabled"
+                />
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="space-y-2">
+                  <Label>Background colour selector</Label>
+                  <Select
+                    value={bgSelectorMode}
+                    onValueChange={(v) => setBgSelectorMode(v as "auto" | "on" | "off")}
+                  >
+                    <SelectTrigger data-testid="select-bg-selector-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto — keep today’s product/style behaviour</SelectItem>
+                      <SelectItem value="on">On — show selector + swatches</SelectItem>
+                      <SelectItem value="off">Off — hide selector</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Controls the editor Background picker only. Does not change how fill composites or Printify bake dims.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="style-default-bg">Default background</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="style-default-bg"
+                      type="color"
+                      value={/^#[0-9A-Fa-f]{6}$/.test(bgDefaultColor) ? bgDefaultColor : "#FFFFFF"}
+                      onChange={(e) => setBgDefaultColor(e.target.value.toUpperCase())}
+                      className="h-9 w-10 cursor-pointer rounded border border-input bg-background"
+                      aria-label="Default background colour"
+                      data-testid="input-default-bg-color"
+                    />
+                    <Input
+                      value={bgDefaultColor === "none" ? "" : bgDefaultColor}
+                      placeholder="Auto / inherit"
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        if (!v) {
+                          setBgDefaultColor("");
+                          return;
+                        }
+                        if (/^#[0-9A-Fa-f]{6}$/.test(v)) setBgDefaultColor(v.toUpperCase());
+                      }}
+                      className="h-9 flex-1"
+                      data-testid="input-default-bg-hex"
+                    />
+                    <Button
+                      type="button"
+                      variant={bgDefaultColor === "none" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setBgDefaultColor("none")}
+                      data-testid="button-default-bg-none"
+                    >
+                      None
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setBgDefaultColor("")}
+                      data-testid="button-default-bg-inherit"
+                    >
+                      Auto
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Hex for a starting fill, None for transparent, Auto to keep today’s default.
+                  </p>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5 pr-3">
+                    <Label htmlFor="bg-required" className="text-sm font-medium">
+                      Background required
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Reserved for later. Does not block generate yet.
+                    </p>
+                  </div>
+                  <Switch
+                    id="bg-required"
+                    checked={bgRequired}
+                    onCheckedChange={setBgRequired}
+                    data-testid="switch-bg-required"
+                  />
+                </div>
+                {bgSelectorMode === "on" &&
+                  styleCategory === "decor" &&
+                  !isTransparentCapableRoute(generationModel) && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="note-bg-unusual">
+                      This looks like a full-bleed style. The selector is allowed — fill usually only shows in the editor preview, not on the print.
+                    </p>
+                  )}
               </div>
 
               {/* Prompt Prefix — auto-resizing textarea */}
               <div className="space-y-2">
-                <Label htmlFor="style-prompt">Prompt Prefix</Label>
+                <Label htmlFor="style-prompt">Style layer (creative treatment only)</Label>
                 <textarea
                   id="style-prompt"
                   ref={promptTextareaRef}
@@ -705,9 +1072,7 @@ export default function AdminStyles() {
                   data-testid="input-style-prompt"
                 />
                 <p className="text-xs text-muted-foreground">
-                  {styleCategory === "decor"
-                    ? "Full-bleed prefix — artwork should extend to all edges."
-                    : "Must include hot pink (#FF00FF) background language for background removal. Edits apply immediately — no deploy needed."}
+                  Write only the creative treatment. Background and edge rules come from the model and product.
                 </p>
               </div>
 
@@ -721,7 +1086,7 @@ export default function AdminStyles() {
                     id="style-prompt-dark"
                     value={stylePromptDark}
                     onChange={(e) => setStylePromptDark(e.target.value)}
-                    placeholder="Bright vibrant colors on dark garments… isolated on solid hot pink (#FF00FF) background…"
+                    placeholder="Bright vibrant colors on dark garments…"
                     rows={3}
                     className="w-full min-h-[72px] resize-y rounded-md border border-input bg-background px-3 py-2 text-sm"
                     data-testid="input-style-prompt-dark"

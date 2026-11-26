@@ -1,0 +1,138 @@
+import { describe, expect, it } from "vitest";
+import {
+  flatArtBox,
+  flatCovers,
+  flatContainPlacementScale,
+  flatDefaultPlacementScale,
+  flatFitPlacementToSafeArea,
+  flatOverflows,
+  flatShouldFitToSafeArea,
+  shouldSyncFlatFaceScale,
+  FLAT_APPAREL_DEFAULT_SCALE,
+} from "./flatRender";
+
+const TALL_GUIDE = { x: 100, y: 50, width: 200, height: 400 };
+
+describe("decor fill + mat coverage", () => {
+  const mat = { x: 40, y: 30, width: 400, height: 250 };
+
+  it("defaults framed/mat placement to 100% cover", () => {
+    expect(flatDefaultPlacementScale({ decorMode: true })).toBe(1);
+    expect(flatShouldFitToSafeArea({ decorMode: true })).toBe(false);
+  });
+
+  it("filled opaque PNG at scale 1 covers all four sides of the mat opening", () => {
+    const box = flatArtBox(
+      mat,
+      { scale: 1, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      300,
+      200,
+    );
+    expect(flatCovers(mat, box)).toBe(true);
+  });
+
+  it("scaled-down filled PNG leaves a gap (mat warning)", () => {
+    const box = flatArtBox(
+      mat,
+      { scale: 0.7, offsetX: 0, offsetY: 0, rotationDeg: 0 },
+      300,
+      200,
+    );
+    expect(flatCovers(mat, box)).toBe(false);
+  });
+});
+
+describe("flatShouldFitToSafeArea", () => {
+  it("fits apparel (non-bleed) bases", () => {
+    expect(flatShouldFitToSafeArea({})).toBe(true);
+  });
+
+  it("skips full-bleed decor, edge-wrap, and tapestry weave", () => {
+    expect(flatShouldFitToSafeArea({ decorMode: true })).toBe(false);
+    expect(flatShouldFitToSafeArea({ edgeWrapMode: true })).toBe(false);
+    expect(flatShouldFitToSafeArea({ fabricWeave: true })).toBe(false);
+  });
+
+  it("skips contain-fit for 241 catalog probe (cover baseline, no fabricWeave)", () => {
+    expect(flatShouldFitToSafeArea({ probeCatalogGuide: true })).toBe(false);
+    expect(flatDefaultPlacementScale({ probeCatalogGuide: true })).toBe(1);
+    expect(flatShouldFitToSafeArea({})).toBe(true);
+    expect(flatDefaultPlacementScale({})).toBe(FLAT_APPAREL_DEFAULT_SCALE);
+  });
+
+  it("576 uses contain draw baseline — not apparel cover-relative first-open fit", () => {
+    expect(flatShouldFitToSafeArea({ blueprintId: 576 })).toBe(false);
+    expect(flatDefaultPlacementScale({ blueprintId: 576 })).toBe(1);
+    expect(flatShouldFitToSafeArea({ probeCatalogGuide: true, blueprintId: 241 })).toBe(false);
+    expect(flatDefaultPlacementScale({ probeCatalogGuide: true, blueprintId: 241 })).toBe(1);
+  });
+});
+
+describe("flatContainPlacementScale", () => {
+  it("is 1 when artwork aspect matches the guide", () => {
+    expect(flatContainPlacementScale(TALL_GUIDE, 100, 200)).toBeCloseTo(1, 5);
+  });
+
+  it("is contain/cover when a wide design sits on a tall guide", () => {
+    // cover = max(200/400, 400/100) = 4; contain = min(0.5, 4) / 4 = 0.125
+    expect(flatContainPlacementScale(TALL_GUIDE, 400, 100)).toBeCloseTo(0.125, 5);
+  });
+
+  it("never exceeds 1 (scale=1 is already cover)", () => {
+    expect(flatContainPlacementScale(TALL_GUIDE, 200, 200)).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("flatFitPlacementToSafeArea", () => {
+  it("scales a wide design down so the box stays inside the dashed guide", () => {
+    const fitted = flatFitPlacementToSafeArea(TALL_GUIDE, 400, 100, {
+      scale: FLAT_APPAREL_DEFAULT_SCALE,
+      offsetX: 0.15,
+      offsetY: -0.2,
+    });
+    expect(fitted.offsetX).toBe(0);
+    expect(fitted.offsetY).toBe(0);
+    expect(fitted.scale).toBeCloseTo(0.125, 5);
+    const box = flatArtBox(TALL_GUIDE, fitted, 400, 100);
+    expect(flatOverflows(TALL_GUIDE, box, 0.5)).toBe(false);
+  });
+
+  it("does not scale up art that is already smaller than the guide", () => {
+    const fitted = flatFitPlacementToSafeArea(TALL_GUIDE, 100, 200, {
+      scale: 0.4,
+      offsetX: 0.3,
+      offsetY: 0.1,
+    });
+    expect(fitted.scale).toBeCloseTo(0.4, 5);
+    expect(fitted.offsetX).toBe(0);
+    expect(fitted.offsetY).toBe(0);
+  });
+
+  it("keeps a matching-aspect 0.85 seed (already inside) and only recenters", () => {
+    const fitted = flatFitPlacementToSafeArea(TALL_GUIDE, 100, 200, {
+      scale: FLAT_APPAREL_DEFAULT_SCALE,
+      offsetX: 0.2,
+      offsetY: 0,
+    });
+    expect(fitted.scale).toBeCloseTo(FLAT_APPAREL_DEFAULT_SCALE, 5);
+    expect(fitted.offsetX).toBe(0);
+  });
+});
+
+describe("shouldSyncFlatFaceScale", () => {
+  it("does not sync locked flat apparel (hoodie / tee)", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 77 })).toBe(false);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 66 })).toBe(false);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 5 })).toBe(false);
+  });
+
+  it("keeps the tote scale copy", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 836 })).toBe(true);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 1300 })).toBe(true);
+  });
+
+  it("leaves decor / phone on the existing copy path", () => {
+    expect(shouldSyncFlatFaceScale({ blueprintId: 77, decorMode: true })).toBe(true);
+    expect(shouldSyncFlatFaceScale({ blueprintId: 421, edgeWrapMode: true })).toBe(true);
+  });
+});

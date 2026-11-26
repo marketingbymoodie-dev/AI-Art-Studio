@@ -7,9 +7,11 @@ import {
   placementForPrintMatch,
   resolveGenerationJobIdForOrderLine,
   resolvePrintifyTarget,
+  resolvePrintifyTargetForOrderLine,
   shouldUseFlatBake,
   usablePrintArtworkUrl,
 } from "./flat-order-fulfillment";
+import { pickAopPanelsForOrderLine } from "./aop-line-snapshot";
 import type { ProductType } from "@shared/schema";
 
 describe("pickFlatOrderArtworkUrl", () => {
@@ -79,7 +81,7 @@ describe("resolveGenerationJobIdForOrderLine", () => {
 });
 
 describe("pickFlatOrderSizeColor", () => {
-  it("prefers designState over job columns", () => {
+  it("prefers designState over job columns when the line has no size/color", () => {
     expect(
       pickFlatOrderSizeColor({
         designStateSize: "20x30",
@@ -90,17 +92,106 @@ describe("pickFlatOrderSizeColor", () => {
     ).toEqual({ sizeId: "20x30", colorId: "white" });
   });
 
-  it("design product override wins over designState", () => {
+  it("line beats designState — natural line after job was overwritten to blue", () => {
+    expect(
+      pickFlatOrderSizeColor({
+        designStateSize: "M",
+        designStateColor: "blue",
+        lineSize: "M",
+        lineColor: "natural",
+        jobSize: "M",
+        jobColor: "blue",
+      }),
+    ).toEqual({ sizeId: "M", colorId: "natural" });
+  });
+
+  it("line beats designState — reverse last-write-wins (blue first, then natural on the job)", () => {
+    expect(
+      pickFlatOrderSizeColor({
+        designStateSize: "M",
+        designStateColor: "natural",
+        lineSize: "M",
+        lineColor: "blue",
+        jobSize: "M",
+        jobColor: "natural",
+      }),
+    ).toEqual({ sizeId: "M", colorId: "blue" });
+  });
+
+  it("falls back to designState when the line field is absent", () => {
+    expect(
+      pickFlatOrderSizeColor({
+        designStateSize: "20x30",
+        designStateColor: "white",
+        lineSize: "",
+        lineColor: "",
+        jobSize: "11x14",
+        jobColor: "black",
+      }),
+    ).toEqual({ sizeId: "20x30", colorId: "white" });
+  });
+
+  it("design product override wins over line and designState", () => {
     expect(
       pickFlatOrderSizeColor({
         designProductSizeId: "16x20",
         designProductColorId: "black",
         designStateSize: "20x30",
         designStateColor: "white",
+        lineSize: "M",
+        lineColor: "blue",
         jobSize: "11x14",
         jobColor: "gold",
       }),
     ).toEqual({ sizeId: "16x20", colorId: "black" });
+  });
+});
+
+describe("resolvePrintifyTargetForOrderLine", () => {
+  const productType = {
+    printifyBlueprintId: 12,
+    printifyProviderId: 99,
+    variantMap: JSON.stringify({
+      "m:natural": { printifyVariantId: 111, providerId: 99 },
+      "m:blue": { printifyVariantId: 222, providerId: 99 },
+    }),
+    flatCalibration: null,
+  } as unknown as ProductType;
+
+  it("uses the line _printify_variant_id even when designState color maps elsewhere", () => {
+    const fromJobColor = resolvePrintifyTarget(productType, "m", "blue");
+    expect(fromJobColor?.printifyVariantId).toBe(222);
+    const target = resolvePrintifyTargetForOrderLine(productType, "m", "blue", {
+      _printify_variant_id: "111",
+      _printify_blueprint_id: "12",
+      _printify_provider_id: "99",
+    });
+    expect(target).toEqual({ blueprintId: 12, providerId: 99, printifyVariantId: 111 });
+  });
+
+  it("falls back to the size/color map when the line has no Printify variant", () => {
+    expect(resolvePrintifyTargetForOrderLine(productType, "m", "blue", {})).toEqual({
+      blueprintId: 12,
+      providerId: 99,
+      printifyVariantId: 222,
+    });
+  });
+});
+
+describe("pickAopPanelsForOrderLine", () => {
+  it("prefers the line snapshot over later job panels", () => {
+    const line = [{ position: "front", url: "https://cdn.example/line-front.png" }];
+    const job = [
+      { position: "front", url: "https://cdn.example/job-front.png" },
+      { position: "back", url: "https://cdn.example/job-back.png" },
+    ];
+    expect(pickAopPanelsForOrderLine(line, job)).toEqual(line);
+  });
+
+  it("falls back to job panels when the line has no snapshot", () => {
+    const job = [{ position: "front", url: "https://cdn.example/job-front.png" }];
+    expect(pickAopPanelsForOrderLine(null, job)).toEqual(job);
+    expect(pickAopPanelsForOrderLine([], job)).toEqual(job);
   });
 });
 

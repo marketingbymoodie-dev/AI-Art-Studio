@@ -4,6 +4,7 @@
  */
 
 import { canonicalCreatorStyleName } from "./creatorMarketplace";
+import { isPackOnlyStyle } from "./stylePacks";
 import {
   type CustomizerPageStyleCategory,
   type StylePresetCategory,
@@ -24,7 +25,9 @@ export {
 
 export type CustomizerPageStyleConfig =
   | { mode: "category"; category: CustomizerPageStyleCategory }
-  | { mode: "selected"; presetIds: string[] };
+  | { mode: "selected"; presetIds: string[] }
+  /** Style pack (shared/stylePacks.ts). The server resolves it to `selected` before any client sees it. */
+  | { mode: "pack"; packId: string };
 
 export function parseCustomizerPageStyleConfig(
   raw: unknown,
@@ -49,7 +52,36 @@ export function parseCustomizerPageStyleConfig(
     const ids = o.presetIds.map(String).filter(Boolean);
     if (ids.length > 0) return { mode: "selected", presetIds: [...new Set(ids)] };
   }
+  if (o.mode === "pack" && typeof o.packId === "string" && o.packId.trim()) {
+    return { mode: "pack", packId: o.packId.trim() };
+  }
   return null;
+}
+
+/**
+ * Remap retired Graphics twin ids and the Graphics category bundle.
+ * Returns the original value when nothing changes.
+ */
+export function remapCustomizerStyleConfigAfterGraphicsRetire(
+  raw: unknown,
+  idMap: Map<string, string>,
+): { config: CustomizerPageStyleConfig | unknown; changed: boolean } {
+  const parsed = parseCustomizerPageStyleConfig(raw);
+  if (!parsed) return { config: raw, changed: false };
+  if (parsed.mode === "category") {
+    if (parsed.category === "graphics") {
+      return { config: { mode: "category", category: "all" }, changed: true };
+    }
+    return { config: raw, changed: false };
+  }
+  if (parsed.mode === "pack") return { config: raw, changed: false };
+  const nextIds = parsed.presetIds.map((id) => idMap.get(String(id)) ?? String(id));
+  const deduped = [...new Set(nextIds)];
+  const changed =
+    deduped.length !== parsed.presetIds.length ||
+    deduped.some((id, i) => id !== String(parsed.presetIds[i]));
+  if (!changed) return { config: raw, changed: false };
+  return { config: { mode: "selected", presetIds: deduped }, changed: true };
 }
 
 export function validateCustomizerPageStyleConfig(
@@ -60,6 +92,9 @@ export function validateCustomizerPageStyleConfig(
   }
   if (config.mode === "selected" && config.presetIds.length === 0) {
     return "Select at least one art style.";
+  }
+  if (config.mode === "pack" && !config.packId) {
+    return "Choose a style pack.";
   }
   return null;
 }
@@ -84,26 +119,31 @@ export function suggestedStyleCategoryForDesignerType(
   return def.mode === "category" ? def.category : "all";
 }
 
-export function dedupeStylePresets<T extends { id: string; name?: string }>(
-  presets: T[],
-): T[] {
+export function dedupeStylePresets<
+  T extends { id: string; name?: string; catalogSlug?: string | null },
+>(presets: T[]): T[] {
   const seenIds = new Set<string>();
-  const seenNames = new Set<string>();
+  const seenSlugs = new Set<string>();
   return presets.filter((p) => {
     const idKey = String(p.id);
-    const nameKey = (p.name || idKey).trim().toLowerCase();
-    if (seenIds.has(idKey) || seenNames.has(nameKey)) return false;
+    const slugKey = String(p.catalogSlug || "")
+      .trim()
+      .toLowerCase();
+    if (seenIds.has(idKey)) return false;
+    if (slugKey && seenSlugs.has(slugKey)) return false;
     seenIds.add(idKey);
-    seenNames.add(nameKey);
+    if (slugKey) seenSlugs.add(slugKey);
     return true;
   });
 }
 
 /** Apparel DTG vs Graphics chroma twins share a customer-facing name. */
-function isGraphicsStyleTwin<T extends { name?: string; category?: string | null }>(
+function isGraphicsStyleTwin<T extends { name?: string; category?: string | null; catalogSlug?: string | null }>(
   style: T,
 ): boolean {
-  return /\(graphics\)\s*$/i.test(style.name || "") || style.category === "graphics";
+  const slug = String((style as any).catalogSlug || "").trim().toLowerCase();
+  if (slug.startsWith("graphics-")) return true;
+  return style.category === "graphics";
 }
 
 /**
@@ -121,19 +161,62 @@ export function preferGraphicsStyleTwin(
 }
 
 /**
- * Collapse "Centered Graphic" + "Centered Graphic (Graphics)" to one row.
- * Storefront labels strip "(Graphics)", so both otherwise look identical.
+ * Collapse apparel DTG + Graphics chroma twins that share a customer-facing
+ * name ("Centered Graphic" / "Centered Graphic (Graphics)").
+ * Do not collapse rows that only share a display name across categories
+ * (Pet Portraits apparel vs decor).
  */
+function apparelGraphicsTwinKey<
+  T extends { id: string; name?: string; category?: string | null; catalogSlug?: string | null },
+>(style: T): string | null {
+  const name = canonicalCreatorStyleName(style.name || style.id);
+  if (!name) return null;
+  if (isGraphicsStyleTwin(style)) return name;
+  if ((style.category || "").toLowerCase() === "apparel") return name;
+  return null;
+}
+
+/** Map a twin that collapse dropped onto the row still shown in the dropdown. */
+export function findSurvivingStyleTwin<
+  T extends { id: string | number; name?: string; category?: string | null; catalogSlug?: string | null },
+>(dropped: T, survivors: T[]): T | undefined {
+  const droppedId = String(dropped.id);
+  const exact = survivors.find((s) => String(s.id) === droppedId);
+  if (exact) return exact;
+  const droppedTwin = apparelGraphicsTwinKey({
+    ...dropped,
+    id: droppedId,
+  } as T & { id: string });
+  if (droppedTwin) {
+    const hit = survivors.find(
+      (s) =>
+        apparelGraphicsTwinKey({
+          ...s,
+          id: String(s.id),
+        } as T & { id: string }) === droppedTwin,
+    );
+    if (hit) return hit;
+  }
+  const droppedName = canonicalCreatorStyleName(dropped.name || "");
+  if (droppedName) {
+    const hit = survivors.find(
+      (s) => canonicalCreatorStyleName(s.name || "") === droppedName,
+    );
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
 export function collapseStyleNameTwins<
-  T extends { id: string; name?: string; category?: string | null },
+  T extends { id: string; name?: string; category?: string | null; catalogSlug?: string | null },
 >(presets: T[], designerType?: string | null, pageCategory?: string | null): T[] {
   const preferGraphics = preferGraphicsStyleTwin(designerType, pageCategory);
   const rank = (p: T) => (isGraphicsStyleTwin(p) ? 0 : 1);
   const best = new Map<string, T>();
   const order: string[] = [];
   for (const p of presets) {
-    const key = canonicalCreatorStyleName(p.name || p.id);
-    if (!key) continue;
+    const twinKey = apparelGraphicsTwinKey(p);
+    const key = twinKey ? `ag:${twinKey}` : `id:${String(p.id)}`;
     const prev = best.get(key);
     if (!prev) {
       best.set(key, p);
@@ -170,13 +253,20 @@ export function filterStylePresetsForPage<
   const deduped = dedupeStylePresets(presets);
   const cfg = config ?? defaultStyleConfigForDesignerType(designerType);
   let filtered = deduped;
-  if (cfg.mode === "selected") {
+  if (cfg.mode === "pack") {
+    // Unresolved pack (server resolves packs first): fail closed.
+    filtered = [];
+  } else if (cfg.mode === "selected") {
     const idSet = new Set(cfg.presetIds.map(String));
     filtered = deduped.filter((p) => idSet.has(String(p.id)));
-  } else if (cfg.category !== "all") {
-    filtered = deduped.filter(
-      (p) => p.category === cfg.category || p.category === "all" || !p.category,
-    );
+  } else {
+    // Pack-only styles are never part of a category bundle.
+    filtered = deduped.filter((p) => !isPackOnlyStyle(p as { visibility?: string | null }));
+    if (cfg.category !== "all") {
+      filtered = filtered.filter(
+        (p) => p.category === cfg.category || p.category === "all" || !p.category,
+      );
+    }
   }
   return collapseStyleNameTwins(
     filtered,

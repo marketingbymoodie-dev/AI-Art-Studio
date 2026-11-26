@@ -17,6 +17,7 @@ import {
   summarizeVariantAvailability,
   type VariantAvailabilityStatus,
 } from "@shared/printifyAvailability";
+import { fetchPrintifyCatalog, printifyProviderVariantsUrl } from "./printifyCatalogVariantsFetch";
 import type { Merchant, ProductType } from "@shared/schema";
 
 const TAG = "[oos-catalogue-report]";
@@ -105,10 +106,9 @@ async function fetchCatalogVariants(
   opts: { showOutOfStock: boolean },
 ): Promise<{ ok: true; variants: unknown[] } | { ok: false; error: string }> {
   try {
-    const qs = opts.showOutOfStock ? "?show-out-of-stock=1" : "";
-    const resp = await fetch(
-      `https://api.printify.com/v1/catalog/blueprints/${blueprintId}/print_providers/${providerId}/variants.json${qs}`,
-      { headers: { Authorization: `Bearer ${apiToken}` } },
+    const resp = await fetchPrintifyCatalog(
+      printifyProviderVariantsUrl(blueprintId, providerId, opts.showOutOfStock),
+      apiToken,
     );
     if (!resp.ok) {
       return { ok: false, error: `Printify catalog API ${resp.status}` };

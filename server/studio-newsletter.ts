@@ -35,6 +35,8 @@ export type SubscribeNewsletterResult = {
   ok: true;
   alreadySubscribed: boolean;
   creditGranted: boolean;
+  /** Rung already used on this shop (same customer, different or same email). */
+  creditAlreadyClaimed: boolean;
   creditAmount: number;
 };
 
@@ -94,13 +96,36 @@ export async function subscribeToStudioNewsletter(
 
   if (!row) return { ok: false, reason: "Could not save your email." };
 
+  const alreadySubscribed = existing.length > 0;
+
+  // Already on the list: return immediately so the UI can flag the duplicate.
+  // Do not block this request on a credit grant (that path was hanging the spinner).
+  if (alreadySubscribed) {
+    return {
+      ok: true,
+      alreadySubscribed: true,
+      creditGranted: !!row.creditGranted,
+      creditAlreadyClaimed: !!row.creditGranted,
+      creditAmount: 0,
+    };
+  }
+
   const grantShop = shopDomain || row.shopDomain;
   const grantCustomer = customerId || row.customerId;
   let creditGranted = row.creditGranted;
+  let creditAlreadyClaimed = false;
   let creditAmount = 0;
 
   if (!creditGranted && grantShop && grantCustomer) {
     const granted = await tryGrantEmailSignup(grantShop, grantCustomer, email);
+    console.log("[newsletter] tryGrantEmailSignup", {
+      shop: grantShop,
+      customerId: grantCustomer,
+      granted: granted.granted,
+      duplicate: granted.duplicate,
+      amount: granted.amount,
+      reason: granted.reason || null,
+    });
     if (granted.granted) {
       creditGranted = true;
       creditAmount = granted.amount;
@@ -115,17 +140,25 @@ export async function subscribeToStudioNewsletter(
         .where(eq(studioNewsletterSubscribers.id, row.id));
     } else if (granted.duplicate) {
       creditGranted = true;
+      creditAlreadyClaimed = true;
       await db
         .update(studioNewsletterSubscribers)
         .set({ creditGranted: true, updatedAt: new Date() })
         .where(eq(studioNewsletterSubscribers.id, row.id));
     }
+  } else {
+    console.warn("[newsletter] grant skipped", {
+      alreadyGrantedFlag: !!creditGranted,
+      hasShop: !!grantShop,
+      hasCustomer: !!grantCustomer,
+    });
   }
 
   return {
     ok: true,
-    alreadySubscribed: existing.length > 0,
+    alreadySubscribed: false,
     creditGranted,
+    creditAlreadyClaimed,
     creditAmount,
   };
 }

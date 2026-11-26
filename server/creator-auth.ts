@@ -61,6 +61,18 @@ export type CreatorAuthedRequest = Request & {
   creator?: Creator;
 };
 
+/**
+ * Verified creator id from the request, or null. Unlike `requireCreator` this
+ * does not consult the marketplace feature flag and does not touch the DB — it
+ * is a credential check only, for routes shared with non-creator callers
+ * (e.g. the upload endpoint used by both platform admin and the creator portal).
+ */
+export function creatorIdFromRequest(req: Request): string | null {
+  const token = extractBearerOrCookie(req);
+  if (!token) return null;
+  return verifyCreatorIdentityToken(token)?.creatorId ?? null;
+}
+
 export async function requireCreator(
   req: CreatorAuthedRequest,
   res: Response,

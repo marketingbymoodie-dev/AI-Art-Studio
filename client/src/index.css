@@ -447,37 +447,27 @@ body[data-scroll-locked] {
 /* embed-design.tsx). Prevents overscroll-chaining to pull-to-refresh / glow */
 /* while JS forwarding handles the actual parent scroll.                      */
 /*                                                                            */
-/* Do not set touch-action here. We detect vertical page-scroll gestures in  */
-/* JS and call preventDefault only after intent is clear; CSS touch-action   */
-/* hints made Chrome commit some gestures natively while JS also forwarded.  */
-html[data-appai-embed],
-html[data-appai-embed] body {
-  overscroll-behavior-y: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Desktop embed: parent iframe grows to content height — no inner scrollbar. */
+/* Desktop embed: JS wheel-forward owns vertical; contain blocks pull-to-refresh. */
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]),
 html[data-appai-embed]:not([data-appai-mobile-native-scroll]) body {
   overflow: hidden;
   height: auto;
   min-height: 0;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
+/* Option A: same contract as desktop — parent owns scroll, iframe grows. */
 html[data-appai-embed][data-appai-mobile-native-scroll],
 html[data-appai-embed][data-appai-mobile-native-scroll] body {
-  min-height: 100%;
-  overflow-y: auto;
-  /* `none` (not `contain`) suppresses the iOS rubber-band bounce at the
-     iframe scroll boundary. Without this, reaching the bottom of the iframe
-     content shows a soft bounce that visually fights the parent-page scroll
-     handoff fired by the boundary touch handler in embed-design.tsx. */
-  overscroll-behavior-y: none;
-  -webkit-overflow-scrolling: touch;
-  /* The iframe scrolls internally on mobile, but its scrollbar would render
-     right next to the Shopify page's scrollbar (a confusing double bar).
-     Hide OUR internal one — scrolling itself is untouched. */
-  scrollbar-width: none;
+  overflow: hidden;
+  height: auto;
+  min-height: 0;
+  overscroll-behavior-y: auto;
+}
+
+html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-pan-x-root] {
+  touch-action: auto;
 }
 
 html[data-appai-embed][data-appai-mobile-native-scroll]::-webkit-scrollbar,
@@ -522,13 +512,12 @@ html[data-appai-embed]:not([data-appai-mobile-native-scroll]) [data-testid="hood
   touch-action: auto !important;
 }
 
-/* Don't apply touch-action: manipulation to the canvas / artwork drag surfaces
-   — they handle their own multi-touch (rotate / pinch). They opt back in to
-   default touch handling here. */
-html[data-appai-embed][data-appai-mobile-native-scroll] [data-appai-drag-surface],
-html[data-appai-embed][data-appai-mobile-native-scroll] canvas {
-  touch-action: none;
-}
+/* Mobile-native: do NOT set touch-action:none on canvas or a full-bleed
+   preview wrapper. That eats vertical iframe scroll (finger on empty garment
+   cannot pan). Artwork bbox / handles already set touch-action:none locally
+   (DesignRectHandlesOverlay, FlatDesignRectOverlay, ArtworkTransformOverlay
+   dashed rect). Empty canvas stays the browser default so pan-y can scroll.
+   Do not put pan-y on html/body — Chrome then double-scrolls with JS forward. */
 
 /* Storefront embed: Radix Select dropdown contrast — merchant theme CSS vars
    can leave popover/highlight pairs unreadable (black on black). These rules

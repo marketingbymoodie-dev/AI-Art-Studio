@@ -31,6 +31,7 @@ import {
   type WeaveConfig,
 } from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import type { FlatViewCalibration } from "@/pages/embed-design";
+import { shouldProbeCatalogBlankGuide } from "@shared/catalogSizeBlanks";
 import {
   AlertTriangle,
   ArrowDown,
@@ -76,7 +77,7 @@ type CalibratorState = {
   /** Providers skipped during multi-provider blank fill (e.g. Printify decorator 6002). */
   harvestWarnings?: string[];
   harvestProviderIds?: number[];
-  modelPickerLabel?: "phone" | "variant" | null;
+  modelPickerLabel?: "phone" | "variant" | "size" | null;
   edgeWrap?: boolean;
   models: ModelAssets[];
 };
@@ -161,6 +162,29 @@ function mockupCanvasRect(view: FlatViewCalibration, blank: HTMLImageElement): R
   const w = blank.naturalWidth || blank.width || view.mockupDims?.width || 1;
   const h = blank.naturalHeight || blank.height || view.mockupDims?.height || 1;
   return { x: 0, y: 0, width: w, height: h };
+}
+
+/** Magenta fill of this size’s catalog print rect — harvest pink is one size only. */
+function drawCatalogSizePinkGuide(
+  ctx: CanvasRenderingContext2D,
+  view: FlatViewCalibration,
+  blank: HTMLImageElement,
+  layerAdjust: CalibratorLayerAdjust,
+) {
+  const nr = view.visibleRectNormalized;
+  if (!nr) return;
+  const canvas = mockupCanvasRect(view, blank);
+  const dest = adjustCalibratorDrawRect(canvas, layerAdjust, canvas.width, canvas.height);
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.fillStyle = "#FF00FF";
+  ctx.fillRect(
+    dest.x + nr.x * dest.width,
+    dest.y + nr.y * dest.height,
+    nr.width * dest.width,
+    nr.height * dest.height,
+  );
+  ctx.restore();
 }
 
 function drawPinkReference(
@@ -273,12 +297,16 @@ export default function FlatCalibrationMapperPage() {
   const edgeWrapMode = !!data?.edgeWrap;
   const artScaleMax = flatPlacementScaleMax({ edgeWrapMode });
   const showModelPicker = models.length > 1;
+  const catalogSizeMode = data?.modelPickerLabel === "size";
+  const tapestryMaskMode = shouldProbeCatalogBlankGuide(blueprintId);
   const modelPickerLabel =
     data?.modelPickerLabel === "phone"
       ? "Phone model"
-      : data?.modelPickerLabel === "variant"
-        ? "Variant"
-        : "Model";
+      : catalogSizeMode
+        ? "Size"
+        : data?.modelPickerLabel === "variant"
+          ? "Variant"
+          : "Model";
 
   useEffect(() => {
     if (data?.harvestComplete && harvestPhase === "running") {
@@ -320,6 +348,12 @@ export default function FlatCalibrationMapperPage() {
   }, [models, selectedModelId]);
 
   useEffect(() => {
+    if (catalogSizeMode && !tapestryMaskMode && (activeLayer === "mask" || activeLayer === "shading")) {
+      setActiveLayer("stack");
+    }
+  }, [catalogSizeMode, tapestryMaskMode, activeLayer]);
+
+  useEffect(() => {
     if (selectedModel?.geometry) {
       const g = structuredClone(selectedModel.geometry);
       g.blank.scale = 1;
@@ -351,10 +385,16 @@ export default function FlatCalibrationMapperPage() {
   const printLayout = useMemo(() => {
     if (!calibratorView) return null;
     if (edgeWrapMode) return flatPrintCanvasLayout(calibratorView);
+    // Catalog size blanks are square 1024 PNGs — keep overlay % in that space
+    // so the dashed box tracks the hanging photo, not harvest printFileDims.
     const mockupW = calibratorView.mockupDims?.width ?? 900;
     const pfW = calibratorView.printFileDims?.width ?? 1;
     const pfH = calibratorView.printFileDims?.height ?? 1;
-    const mockupH = calibratorView.mockupDims?.height ?? Math.max(1, Math.round(mockupW * (pfH / pfW)));
+    const mockupH =
+      calibratorView.mockupDims?.height ??
+      (catalogSizeMode
+        ? mockupW
+        : Math.max(1, Math.round(mockupW * (pfH / pfW))));
     const visible = flatVisibleRectPx(calibratorView, mockupW, mockupH);
     return {
       previewW: mockupW,
@@ -365,7 +405,7 @@ export default function FlatCalibrationMapperPage() {
       imageDraw: { x: 0, y: 0, width: mockupW, height: mockupH },
       sourceCrop: null,
     };
-  }, [calibratorView, edgeWrapMode]);
+  }, [calibratorView, edgeWrapMode, catalogSizeMode]);
 
   const artCoversPrintArea = useMemo(() => {
     if (!testArtImg || !printLayout) return true;
@@ -448,13 +488,22 @@ export default function FlatCalibrationMapperPage() {
       return;
     }
 
-    const [blankImg, shadeImg, pinkImg, maskImg, artImg] = await Promise.all([
+    const [blankImg, harvestShadeImg, pinkImg, harvestMaskImg, artImg] = await Promise.all([
       loadImageFirst(model.assets.blank),
-      loadImageFirst(model.assets.shading, view.shadingUrl),
-      loadImageFirst(model.assets.pink),
-      loadImageFirst(model.assets.mask, view.maskUrl),
+      catalogSizeMode
+        ? Promise.resolve(null)
+        : loadImageFirst(model.assets.shading, view.shadingUrl),
+      catalogSizeMode ? Promise.resolve(null) : loadImageFirst(model.assets.pink),
+      // Shared harvest masks/shading are one silhouette (usually the first size).
+      // Catalog size blanks each have their own hanging photo — drop them so
+      // art clips to the dashed print rect, matching the storefront.
+      catalogSizeMode && !tapestryMaskMode
+        ? Promise.resolve(null)
+        : loadImageFirst(model.assets.mask, view.maskUrl),
       loadImage(testArtUrl),
     ]);
+    const maskImg = harvestMaskImg;
+    const shadeImg = harvestShadeImg;
 
     if (!blankImg) {
       setBlankLoadError(
@@ -467,7 +516,7 @@ export default function FlatCalibrationMapperPage() {
     }
     setBlankLoadError(null);
 
-    const layerOnlyPink = activeLayer === "pink" && showPink;
+    const layerOnlyPink = activeLayer === "pink" && showPink && (catalogSizeMode || !!pinkImg);
     const layerOnlyMask = activeLayer === "mask" && showMask && !showBlank && !showShading && !artImg;
 
     const previewW = edgeWrapMode
@@ -477,14 +526,18 @@ export default function FlatCalibrationMapperPage() {
       ? flatPrintCanvasLayout(view, { mask: maskImg, blank: blankImg }).previewH
       : mockupCanvasRect(view, blankImg).height;
 
-    if (layerOnlyPink && pinkImg) {
+    if (layerOnlyPink) {
       canvas.width = previewW;
       canvas.height = previewH;
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.fillStyle = edgeWrapMode ? "#d4d4d4" : "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+      if (catalogSizeMode) {
+        drawCatalogSizePinkGuide(ctx, view, blankImg, geometry.blank);
+      } else if (pinkImg) {
+        drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+      }
     } else if (layerOnlyMask && maskImg) {
       canvas.width = previewW;
       canvas.height = previewH;
@@ -511,7 +564,7 @@ export default function FlatCalibrationMapperPage() {
         placement: previewPlacement,
         tier: "flat",
         edgeWrapMode,
-        decorMode: weavePreview && !edgeWrapMode,
+        decorMode: catalogSizeMode || (weavePreview && !edgeWrapMode),
         forceShadingMap: edgeWrapMode,
         artworkCorsClean: true,
         layerAdjust: lockedLayerAdjust,
@@ -524,8 +577,12 @@ export default function FlatCalibrationMapperPage() {
 
       const ctx = canvas.getContext("2d");
       if (ctx) {
-        if (showPink && pinkImg && activeLayer !== "pink") {
-          drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+        if (showPink && activeLayer !== "pink") {
+          if (catalogSizeMode) {
+            drawCatalogSizePinkGuide(ctx, view, blankImg, geometry.blank);
+          } else if (pinkImg) {
+            drawPinkReference(ctx, pinkImg, view, blankImg, maskImg, geometry, edgeWrapMode);
+          }
         }
         if (showMask && maskImg && activeLayer !== "mask") {
           drawMaskDebugOverlay(ctx, maskImg, view, blankImg, geometry.mask, edgeWrapMode);
@@ -547,6 +604,8 @@ export default function FlatCalibrationMapperPage() {
     lockedLayerAdjust,
     weavePreview,
     weaveCfg,
+    catalogSizeMode,
+    tapestryMaskMode,
   ]);
 
   // blankLoadError is set inside renderPreview; not a render dependency.
@@ -757,21 +816,29 @@ export default function FlatCalibrationMapperPage() {
               <div className="space-y-2 rounded border p-2">
                 <div className="text-xs font-medium">Visible layers</div>
                 <div className="flex items-center justify-between">
-                  <Label className="text-xs">Pink reference (magenta mockup)</Label>
+                  <Label className="text-xs">
+                    {catalogSizeMode
+                      ? "Print area (magenta)"
+                      : "Pink reference (magenta mockup)"}
+                  </Label>
                   <Switch checked={showPink} onCheckedChange={setShowPink} />
                 </div>
                 <div className="flex items-center justify-between">
                   <Label className="text-xs">Blank</Label>
                   <Switch checked={showBlank} onCheckedChange={setShowBlank} />
                 </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">Shading</Label>
-                  <Switch checked={showShading} onCheckedChange={setShowShading} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">Mask overlay</Label>
-                  <Switch checked={showMask} onCheckedChange={setShowMask} />
-                </div>
+                {!catalogSizeMode && (
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">Shading</Label>
+                    <Switch checked={showShading} onCheckedChange={setShowShading} />
+                  </div>
+                )}
+                {!catalogSizeMode && (
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs">Mask overlay</Label>
+                    <Switch checked={showMask} onCheckedChange={setShowMask} />
+                  </div>
+                )}
               </div>
 
               <div>
@@ -783,8 +850,8 @@ export default function FlatCalibrationMapperPage() {
                 >
                   <option value="stack">All layers (stack)</option>
                   <option value="blank">Blank only</option>
-                  <option value="shading">Shading only</option>
-                  <option value="mask">Mask only</option>
+                  {!catalogSizeMode && <option value="shading">Shading only</option>}
+                  {(!catalogSizeMode || tapestryMaskMode) && <option value="mask">Mask only</option>}
                   <option value="pink">Pink reference only</option>
                 </select>
               </div>
@@ -1059,11 +1126,29 @@ export default function FlatCalibrationMapperPage() {
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-zinc-100 p-3">
               <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
-                <div className="relative inline-block max-h-[min(58vh,calc(100vh-18rem))] max-w-full overflow-hidden rounded shadow leading-none">
+                <div
+                  key={selectedModelId || "calibrator-preview"}
+                  className="relative inline-block max-h-[min(58vh,calc(100vh-18rem))] max-w-full overflow-hidden rounded shadow leading-none"
+                >
                   <canvas
                     ref={canvasRef}
                     className="block h-auto max-h-[min(58vh,calc(100vh-18rem))] w-auto max-w-full"
                   />
+                  {calibratorView && printLayout && !testArtImg && (
+                    <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                      <div
+                        className="absolute border-2 border-dashed border-sky-300/95"
+                        style={{
+                          left: `${(printLayout.printCanvas.x / printLayout.previewW) * 100}%`,
+                          top: `${(printLayout.printCanvas.y / printLayout.previewH) * 100}%`,
+                          width: `${(printLayout.printCanvas.width / printLayout.previewW) * 100}%`,
+                          height: `${(printLayout.printCanvas.height / printLayout.previewH) * 100}%`,
+                          boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
+                        }}
+                        title="Printable area"
+                      />
+                    </div>
+                  )}
                   {testArtImg && calibratorView && printLayout && (
                     <FlatDesignRectOverlay
                       canvasRef={canvasRef}
@@ -1076,6 +1161,8 @@ export default function FlatCalibrationMapperPage() {
                       innerGuideRect={edgeWrapMode ? null : printLayout.printCanvas}
                       outerGuideRect={edgeWrapMode ? printLayout.printCanvas : null}
                       placementRect={printLayout.printCanvas}
+                      mockupWidth={printLayout.previewW}
+                      mockupHeight={printLayout.previewH}
                       scaleMax={artScaleMax}
                       onChange={setArtPlacement}
                     />
@@ -1085,7 +1172,9 @@ export default function FlatCalibrationMapperPage() {
               <p className="mt-2 shrink-0 max-w-md self-center text-center text-[11px] text-muted-foreground">
                 {edgeWrapMode
                   ? "Blue dashed = print canvas — scale artwork until it covers all four edges. Drag handles or use sidebar nudge. Blank redraws cameras and rounded case lip on top of art."
-                  : "Dashed outline = printable area on the mockup — artwork is clipped to the harvested mask. Nudge blank, mask, and shading layers if registration is off."}
+                  : catalogSizeMode
+                    ? "Dashed outline = printable fabric on this size’s hanging photo. Switching Size loads that photo and refits the box — artwork clips to the box, not a shared harvest mask."
+                    : "Dashed outline = printable area on the mockup — artwork is clipped to the harvested mask. Nudge blank, mask, and shading layers if registration is off."}
               </p>
               {blankLoadError && (
                 <p className="mt-1 max-w-md self-center text-xs text-amber-800">

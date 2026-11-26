@@ -1,5 +1,10 @@
 export const REUSE_REGENERATE_PREFIX =
-  "Recreate this artwork as closely as possible for the new product aspect ratio.";
+  "Recreate this artwork for the new product aspect ratio.";
+
+export function isReuseRegeneratePrompt(raw?: string | null): boolean {
+  const t = (raw || "").trim();
+  return /^recreate this artwork\b/i.test(t) && /new product aspect ratio/i.test(t);
+}
 
 /** Peel nested regenerate wrappers down to the customer's original idea. */
 export function unwrapReuseOriginalIdea(raw?: string | null): string {

@@ -1,0 +1,528 @@
+{% comment %}
+  My Pet — storefront pet-swap on a published design.
+  Renders when ai_art_studio.my_pet_enabled is true, or when that metafield
+  is unset and the product has the ai-art-studio-design tag.
+  An explicit false hides the block. False is blank in Liquid, so the unset
+  check is nil, not blank.
+  Default placement: below colour swatches, above Add to cart, full width.
+{% endcomment %}
+
+{% assign candidate_id = product.metafields.ai_art_studio.design_candidate_id.value %}
+{% assign my_pet_flag = product.metafields.ai_art_studio.my_pet_enabled.value %}
+{% assign show_my_pet = false %}
+{% if my_pet_flag == true or my_pet_flag == 'true' %}
+  {% assign show_my_pet = true %}
+{% elsif my_pet_flag == nil %}
+  {% if product.tags contains 'ai-art-studio-design' %}
+    {% assign show_my_pet = true %}
+  {% endif %}
+{% endif %}
+
+<script src="{{ 'appai-default-size.js' | asset_url }}" defer></script>
+{% if product %}
+  <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"{% if product.metafields.ai_art_studio.design_candidate_id.value != blank or product.tags contains 'ai-art-studio-design' %} data-appai-listing="1"{% endif %}></div>
+  <script src="{{ 'appai-find-my-size.js' | asset_url }}" defer></script>
+{% endif %}
+<script src="{{ 'appai-card-swatches.js' | asset_url }}" defer></script>
+{% if show_my_pet %}
+  {% assign button_label = block.settings.button_label | default: "My Pet" %}
+  {% assign button_subtitle = block.settings.button_subtitle | default: "See your pet on this design" %}
+  {% assign preview_mode = block.settings.preview_mode | default: "inline" %}
+
+  {%- capture color_swatches_json -%}[{%- assign swatch_comma = false -%}{%- for option in product.options_with_values -%}{%- assign option_name = option.name | downcase -%}{%- if option_name contains 'color' or option_name contains 'colour' -%}{%- for value in option.values -%}{%- if value.swatch.color != blank -%}{%- if swatch_comma -%},{%- endif -%}{"name":{{ value.name | json }},"hex":{{ value.swatch.color | json }}}{%- assign swatch_comma = true -%}{%- endif -%}{%- endfor -%}{%- endif -%}{%- endfor -%}]{%- endcapture -%}
+  <div
+    class="appai-my-pet"
+    id="appai-my-pet-{{ block.id }}"
+    data-candidate-id="{{ candidate_id | escape }}"
+    data-product-id="{{ product.id }}"
+    data-shop-domain="{{ shop.permanent_domain }}"
+    data-variants="{{ product.variants | json | escape }}"
+    data-color-swatches="{{ color_swatches_json | escape }}"
+    data-option-names="{{ product.options_with_values | map: 'name' | join: '::' | escape }}"
+    data-selected-variant="{{ product.selected_or_first_available_variant.id }}"
+    data-page-url="{{ shop.url }}{{ product.url }}"
+    data-preview-mode="{{ preview_mode | escape }}"
+  >
+    <button type="button" class="appai-my-pet__designs" data-appai-my-pet-designs hidden>Your designs</button>
+    <button type="button" class="appai-my-pet__button" data-appai-my-pet-open>
+      {{ button_label | escape }}
+    </button>
+    <p class="appai-my-pet__plus" data-appai-my-pet-plus hidden></p>
+    {% comment %}
+      Single caption slot that swaps between two messages at different moments:
+      — Pre-first-generation (perListingCount === 0): the theme-setting subtitle
+        ("See your pet on this design") — sells the button to a new shopper.
+      — Post-first-generation: the cap caption ("X of Y free designs remaining")
+        — informs a shopper who has already used attempts.
+      JS reads data-subtitle to restore the subtitle on cap-status refresh; the
+      initial inline text is the pre-JS / no-JS fallback. :empty in the <style>
+      block collapses the element entirely when neither message applies (subtitle
+      blank + no cap data yet).
+    {% endcomment %}
+    <div class="appai-my-pet__meta">
+      <p class="appai-my-pet__caption" data-subtitle="{{ button_subtitle | escape }}">{{ button_subtitle | escape }}</p>
+    </div>
+  </div>
+  {% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
+  {% assign appai_my_pet_js = 'appai-my-pet.js' | asset_url %}
+  <script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-debug-quiet" defer></script>
+  <script src="{{ appai_my_pet_js }}{% if appai_my_pet_js contains '?' %}&{% else %}?{% endif %}appai=my-pet-debug-quiet" defer></script>
+{% endif %}
+
+{% schema %}
+{
+  "name": "My Pet",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Button label",
+      "default": "My Pet",
+      "info": "Text shown on the button itself."
+    },
+    {
+      "type": "text",
+      "id": "button_subtitle",
+      "label": "Button subtitle",
+      "default": "See your pet on this design",
+      "info": "Small caption shown below the button. Leave blank to hide."
+    },
+    {
+      "type": "select",
+      "id": "preview_mode",
+      "label": "Preview mode",
+      "default": "inline",
+      "options": [
+        { "value": "inline", "label": "On the product image (default)" },
+        { "value": "modal", "label": "Popup — Your design window" }
+      ],
+      "info": "On the product image closes the generate window and shows the design on the main photo. The page's own colour, size, and Add to cart stay in use. Popup keeps a separate Your design window with its own selectors. If the main photo cannot be found, the popup is used."
+    }
+  ]
+}
+{% endschema %}
+
+<style>
+  :root {
+    /*
+     * Polish 8 — named fallback token for the My Pet CTA. Only kicks in when
+     * NEITHER the live JS sampling of the theme's own Add to cart button
+     * (--appai-my-pet-cta, set in appai-my-pet.js's applyThemeVars) NOR the
+     * theme's own --color-button-background setting-token exists. This is
+     * the current brand red (matches the hero "WEAR YOUR PET PEEVE" button) —
+     * edit here, in one place, if the brand colour is retuned later and the
+     * other two sources are ever unavailable.
+     */
+    --appai-my-pet-cta-fallback: #D65857;
+  }
+  .appai-my-pet {
+    width: 100%;
+    margin: 0.75rem 0;
+  }
+  .appai-my-pet__button {
+    display: block;
+    width: 100%;
+    padding: 0.85em 1.5em;
+    font-size: 1em;
+    font-weight: 600;
+    border-radius: var(--appai-my-pet-radius, 4px);
+    cursor: pointer;
+    border: none;
+    /*
+     * Polish 8 — filled CTA matching the theme's existing Primary button
+     * (same visual family as "WEAR YOUR PET PEEVE") instead of a competing
+     * fourth red. Priority order: (1) --appai-my-pet-cta — only set by
+     * appai-my-pet.js when the live Add-to-cart button sample is confidently
+     * red-family, i.e. direct proof it IS the brand red; (2) the theme's own
+     * --color-button-background settings token (what most Dawn-family themes,
+     * incl. Ritual, expose for their Primary button — covers the common case
+     * where Add to cart isn't red but the theme's Primary button style is);
+     * (3) hardcoded named fallback above. Text stays white to match the
+     * Primary button's own text treatment, with the theme's token preferred
+     * if it exposes one.
+     */
+    background: var(--appai-my-pet-cta, var(--color-button-background, var(--appai-my-pet-cta-fallback)));
+    color: var(--color-button-text, #ffffff);
+  }
+  .appai-my-pet__button:hover {
+    opacity: 0.85;
+  }
+  .appai-my-pet__meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.75rem;
+    flex-wrap: nowrap;
+    margin: 0.4em 0 0;
+    min-height: 1.35em;
+  }
+  .appai-my-pet__meta:has(.appai-my-pet__caption:empty) {
+    display: none;
+  }
+  /* Selected size stays the normal dark pill even when Horizon marks that
+     size sold out because the current colour has no variant. */
+  .variant-option__button-label:has([data-appai-size-selected="1"]) {
+    color: var(--color-selected-variant-text, #fff) !important;
+    background-color: var(--color-selected-variant-background, #000) !important;
+    opacity: 1 !important;
+    transition: none !important;
+  }
+  .variant-option__button-label:has([data-appai-size-selected="1"]) .variant-option__button-label__text {
+    color: var(--color-selected-variant-text, #fff) !important;
+    opacity: 1 !important;
+    -webkit-text-fill-color: var(--color-selected-variant-text, #fff) !important;
+  }
+  .variant-option__button-label:has([data-appai-size-selected="1"]) .variant-option__button-label__pill {
+    background: var(--color-selected-variant-background, #000) !important;
+    transform: none !important;
+    opacity: 1 !important;
+  }
+  .appai-my-pet__plus {
+    display: none !important;
+  }
+  .appai-my-pet-price-plus {
+    margin: 0.15rem 0 0.35rem !important;
+    font-size: 0.85em !important;
+    font-weight: 600 !important;
+    line-height: 1.35 !important;
+    text-align: left !important;
+    color: var(--appai-my-pet-caption-fg, #666666) !important;
+  }
+  .appai-my-pet__caption {
+    margin: 0 !important;
+    min-width: 0;
+    flex: 0 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.9em !important;
+    font-weight: 500 !important;
+    text-align: center !important;
+    /* !important so themes that force all <p> to inherit the section's foreground
+       (e.g. white-on-white inside product-info) can't hide the caption. */
+    color: var(--appai-my-pet-caption-fg, #666666) !important;
+    opacity: 1 !important;
+  }
+  .appai-my-pet__press {
+    position: relative;
+    display: inline;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 500;
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+    cursor: pointer;
+  }
+  .appai-my-pet__press::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 44px;
+    transform: translateY(-50%);
+  }
+  /* Collapse the caption slot entirely when neither the theme subtitle nor the
+     cap caption has anything to say (prevents an empty line of padding when a
+     merchant blanks the subtitle AND the shopper hasn't generated yet). */
+  .appai-my-pet__caption:empty {
+    display: none;
+  }
+  /*
+   * Polish 9 — shimmer sweep on the "X free designs remaining" caption, using
+   * the CTA colour as the highlight band so it visually ties back to the
+   * button. Toggled on/off in JS (renderAttemptsCaption) — only applied on
+   * the inviting "you have tries left" state, never on the cap-reached state.
+   * Ported from client/src/index.css's .shimmer-text admin pattern, which
+   * doesn't load on the storefront.
+   */
+  .appai-my-pet__caption.appai-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--appai-my-pet-caption-fg, #666666) 0%,
+      var(--appai-my-pet-cta, var(--color-button-background, var(--appai-my-pet-cta-fallback))) 50%,
+      var(--appai-my-pet-caption-fg, #666666) 100%
+    ) !important;
+    background-size: 200% auto !important;
+    -webkit-background-clip: text !important;
+    background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    color: transparent !important;
+    animation: appai-shimmer-sweep 2.2s linear infinite;
+  }
+  @keyframes appai-shimmer-sweep {
+    0% { background-position: 200% center; }
+    100% { background-position: -200% center; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .appai-my-pet__caption.appai-shimmer {
+      animation: none;
+      -webkit-text-fill-color: unset !important;
+      color: var(--appai-my-pet-caption-fg, #666666) !important;
+      background: none !important;
+    }
+    .appai-my-pet-restore__spin { animation: none; }
+  }
+  .appai-my-pet-restore {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: calc(100% - 1.5rem);
+    padding: 0.55rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.92);
+    color: #1a1a1a;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.2;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+  }
+  .appai-my-pet-restore__spin {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 2px solid rgba(0, 0, 0, 0.18);
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: appai-my-pet-restore-spin 0.8s linear infinite;
+  }
+  @keyframes appai-my-pet-restore-spin {
+    to { transform: rotate(360deg); }
+  }
+  .appai-my-pet-restore-locked {
+    opacity: 0.45 !important;
+    cursor: not-allowed !important;
+  }
+  .appai-my-pet__designs {
+    display: block;
+    width: 100%;
+    margin: 0 0 0.6rem;
+    padding: 0.85em 1.5em;
+    border: 0;
+    border-radius: 6px;
+    background: var(--color-secondary-button-background, #fff);
+    color: var(--color-secondary-button-text, #000);
+    box-shadow: 0 0 0 1px currentColor inset;
+    font: inherit;
+    font-weight: 700;
+    font-size: 1em;
+    line-height: 1.2;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .appai-my-pet__designs[hidden] { display: none !important; }
+  .appai-my-pet-designs-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: transparent;
+    pointer-events: none;
+  }
+  .appai-my-pet-designs-backdrop[hidden] { display: none !important; }
+  .appai-my-pet-designs {
+    position: fixed;
+    z-index: 41;
+    pointer-events: auto;
+    max-width: calc(100vw - 16px);
+    padding: 0.5rem;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  }
+  .appai-my-pet-designs__row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+  }
+  .appai-my-pet-designs__thumb {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 112px;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #1a1a1a;
+    font: inherit;
+    cursor: pointer;
+    text-align: center;
+  }
+  .appai-my-pet-designs__frame {
+    width: 112px;
+    height: 112px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #f3f3f3;
+    border: 1px solid rgba(26, 26, 26, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+  }
+  .appai-my-pet-designs__thumb[aria-pressed="true"] .appai-my-pet-designs__frame {
+    border: 2px solid #1a1a1a;
+  }
+  .appai-my-pet-designs__frame img,
+  .appai-my-pet-designs__zoom img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  .appai-my-pet-designs__name,
+  .appai-my-pet-designs__pair,
+  .appai-my-pet-designs__current {
+    display: block;
+    max-width: 100%;
+    line-height: 1.2;
+  }
+  .appai-my-pet-designs__name {
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .appai-my-pet-designs__pair,
+  .appai-my-pet-designs__current {
+    font-size: 0.75rem;
+    color: #555;
+  }
+  .appai-my-pet-designs__current { font-weight: 700; color: #1a1a1a; }
+  .appai-my-pet-designs__zoom { display: none; }
+  .appai-my-pet-designs__done {
+    display: none;
+    width: 100%;
+    margin-top: 0.75rem;
+    min-height: 44px;
+    border: 0;
+    border-radius: 999px;
+    background: #1a1a1a;
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .appai-my-pet-designs__thumb:hover .appai-my-pet-designs__zoom,
+    .appai-my-pet-designs__thumb:focus-visible .appai-my-pet-designs__zoom {
+      display: block;
+      position: absolute;
+      z-index: 3;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      width: 180px;
+      height: 180px;
+      transform: translateX(-50%);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      border: 2px solid #1a1a1a;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.2);
+      pointer-events: auto;
+    }
+  }
+  .appai-my-pet-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.84);
+    pointer-events: none;
+  }
+  .appai-my-pet-veil::before {
+    content: "";
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(0, 0, 0, 0.18);
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: appai-my-pet-restore-spin 0.8s linear infinite;
+  }
+  .appai-my-pet-switch-cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    z-index: 6;
+    pointer-events: none;
+    background: #fff;
+  }
+  .appai-my-pet-opening__spin {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(0, 0, 0, 0.18);
+    border-top-color: #1a1a1a;
+    border-radius: 50%;
+    animation: appai-my-pet-restore-spin 0.8s linear infinite;
+  }
+  .appai-my-pet-opening__label {
+    font-size: 13px;
+    line-height: 1.2;
+    color: #1a1a1a;
+  }
+  @media (max-width: 749px) {
+    .appai-my-pet__meta {
+      display: block;
+      text-align: center;
+      line-height: 1.35;
+    }
+    .appai-my-pet__caption {
+      display: inline;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+    }
+    .appai-my-pet__designs {
+      display: block;
+      width: 100%;
+      margin: 0 0 0.6rem;
+    }
+    .appai-my-pet-designs-backdrop.appai-my-pet-designs--sheet {
+      pointer-events: auto;
+    }
+    .appai-my-pet-designs-backdrop { background: transparent; }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs {
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      width: auto;
+      max-height: 40vh;
+      border-radius: 16px 16px 0 0;
+      padding: 0.75rem 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
+    }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      overflow: auto;
+      min-height: 0;
+    }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__thumb { width: 100%; }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__frame {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 1;
+    }
+    .appai-my-pet-designs--sheet .appai-my-pet-designs__done { display: block; flex: 0 0 auto; }
+  }
+</style>

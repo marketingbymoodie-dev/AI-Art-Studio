@@ -1,0 +1,494 @@
+/**
+ * Decisions for promoting an approved catalogue design.
+ * Nothing here creates a Shopify or Printify product.
+ *
+ * The product is a published catalogue item. It does not use the unlisted
+ * visibility of a customizer base product, and it does not use the hidden
+ * visibility of a shadow SKU.
+ */
+import { printifyColorIdForMockup } from "./mockupBundle";
+import { CATALOGUE_SHIRT_PROVIDER_ID, COMFORT_COLORS_BLUEPRINT_ID } from "./printPlacement";
+import { slugPrintifyColorId } from "./printifyColorSlug";
+import { resolveVariantFromMap, type VariantMap } from "./variantMapResolve";
+
+export const PRINTIFY_FULL_BLEED = { x: 0.5, y: 0.5, scale: 1 } as const;
+
+export type CapOccupant = { title: string; promotedAt: string };
+
+export type StoredMockup = { name: string; hex: string; path: string };
+
+/** Publish immediately, or hold a draft. The Studio page is already the approval. */
+export function catalogueVisibility(publishNow: boolean): "active" | "draft" {
+  return publishNow ? "active" : "draft";
+}
+
+export function catalogueTags(row: {
+  artStyle: string;
+  species: string;
+  humourOperator: string;
+}): string[] {
+  return [row.artStyle, row.species, row.humourOperator].map((value) => value.trim());
+}
+
+/** Unlisted customizer bases. Catalogue collections exclude this tag. */
+export const CATALOGUE_STUDIO_TAG = "aas-studio-product";
+
+/** Smart collection of designs whose My Pet switch is on. Never applied to a studio base. */
+export const MY_PET_TAG = "my-pet";
+
+/** Comfort Colors 1717 listings. Never applied to a studio base. */
+export const COMFORT_COLORS_TAG = "comfort-colors";
+
+/** Add or remove the My Pet tag. A studio base never receives it. */
+export function myPetTagForListing(tags: string[], enabled: boolean): string[] {
+  const without = tags.filter((tag) => tag !== MY_PET_TAG);
+  if (!enabled || without.includes(CATALOGUE_STUDIO_TAG)) return without;
+  return [...without, MY_PET_TAG];
+}
+
+/** Stable tag for one shirt type, e.g. aas-type-12. The number is that row's id. */
+export function catalogueTypeTag(productTypeId: number | null | undefined): string | null {
+  const id = Number(productTypeId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  return `aas-type-${id}`;
+}
+
+/** Add the Comfort Colors tag only for blueprint 706, provider 99. A studio base never receives it. */
+export function comfortColorsTagForListing(
+  tags: string[],
+  blueprintId: number | null | undefined,
+  providerId: number | null | undefined,
+): string[] {
+  const without = tags.filter((tag) => tag !== COMFORT_COLORS_TAG);
+  const comfort = Number(blueprintId) === COMFORT_COLORS_BLUEPRINT_ID
+    && Number(providerId) === CATALOGUE_SHIRT_PROVIDER_ID;
+  if (!comfort || without.includes(CATALOGUE_STUDIO_TAG)) return without;
+  return [...without, COMFORT_COLORS_TAG];
+}
+
+/** Style tags plus the shirt-type tag. Printify keeps catalogueTags only. */
+export function catalogueListingTags(row: {
+  artStyle: string;
+  species: string;
+  humourOperator: string;
+  productTypeId?: number | null;
+  blueprintId?: number | null;
+  providerId?: number | null;
+  /** Omitted leaves the tag list alone. False removes my-pet. True adds it. */
+  myPetEnabled?: boolean;
+}): string[] {
+  const tags = catalogueTags(row);
+  const typeTag = catalogueTypeTag(row.productTypeId);
+  const list = typeTag ? [...tags, typeTag] : tags;
+  const withPet = typeof row.myPetEnabled !== "boolean" ? list : myPetTagForListing(list, row.myPetEnabled);
+  return comfortColorsTagForListing(withPet, row.blueprintId, row.providerId);
+}
+
+/** Smart-collection rules: this shirt type, and never an unlisted studio product. */
+export function catalogueCollectionRules(productTypeId: number): {
+  appliedDisjunctively: false;
+  rules: Array<{ column: "TAG"; relation: "EQUALS" | "NOT_EQUALS"; condition: string }>;
+} {
+  const typeTag = catalogueTypeTag(productTypeId);
+  if (!typeTag) throw new Error("A collection needs a product type id.");
+  return {
+    appliedDisjunctively: false,
+    rules: [
+      { column: "TAG", relation: "EQUALS", condition: typeTag },
+      { column: "TAG", relation: "NOT_EQUALS", condition: CATALOGUE_STUDIO_TAG },
+    ],
+  };
+}
+
+export function mockupFileName(handle: string, colour: string): string {
+  const slug = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return `${slug(handle)}-${slug(colour)}-front.jpg`;
+}
+
+export function mockupAlt(title: string, colour: string): string {
+  return `${title.trim()} on ${colour.trim()}`;
+}
+
+export type VariantMediaUpdate = { id: string; mediaId: string };
+
+/**
+ * One mockup image per colour, applied to every size of that colour.
+ * Matches the alt text and filename promote stores, so "light grey" cannot
+ * take the file that belongs to "grey".
+ */
+export function variantMediaAssignments(input: {
+  title: string;
+  handle: string;
+  variants: Array<{ id: string; colour: string }>;
+  media: Array<{ id: string; alt: string; filename: string }>;
+}): { updates: VariantMediaUpdate[]; missing: string[] } {
+  const colours = [...new Set(input.variants.map((variant) => variant.colour.trim()).filter(Boolean))];
+  const mediaForColour = new Map<string, string>();
+  for (const colour of colours) {
+    const expectedAlt = mockupAlt(input.title, colour).toLowerCase();
+    const stem = mockupFileName(input.handle, colour).replace(/\.jpg$/i, "").toLowerCase();
+    const hit = input.media.find((item) => {
+      const alt = item.alt.trim().toLowerCase();
+      const filename = item.filename.trim().toLowerCase();
+      return alt === expectedAlt || filename.startsWith(stem);
+    });
+    if (hit) mediaForColour.set(colour.toLowerCase(), hit.id);
+  }
+  const updates: VariantMediaUpdate[] = [];
+  for (const variant of input.variants) {
+    const mediaId = mediaForColour.get(variant.colour.trim().toLowerCase());
+    if (mediaId) updates.push({ id: variant.id, mediaId });
+  }
+  const missing = colours.filter((colour) => !mediaForColour.has(colour.toLowerCase()));
+  return { updates, missing };
+}
+
+/** Refuse, name the cap, and list who is holding the slots. */
+export function capRefusal(limit: number, occupants: CapOccupant[]): string | null {
+  if (occupants.length < limit) return null;
+  const holding = occupants.map((row) => `${row.title} (${row.promotedAt})`).join("; ");
+  return `Active design-product cap is ${limit}. Holding the slots: ${holding}`;
+}
+
+export function promoteRefusals(input: {
+  printFilePath: string | null;
+  panelId: string | null;
+  productTypeName: string;
+  tickedColours: string[];
+  panelColours: string[];
+  storedMockupColours: string[];
+  title: string | null;
+  description: string | null;
+  artStyle: string | null;
+  species: string | null;
+  humourOperator: string | null;
+  shippingRefusal: string | null;
+  /** Set when the shop token cannot link colour swatches. Checked before any create. */
+  metaobjectRefusal: string | null;
+  publishNow: boolean;
+  capMessage: string | null;
+  missingPrices: string[];
+  /** Ticked colours whose Colour blanks row has no Shopify base colour. */
+  missingBaseColours?: string[];
+  /**
+   * The combined publish button builds the print file, listing, and mockups
+   * after this check. Those gaps are not refusals yet.
+   */
+  deferApprovalArtifacts?: boolean;
+}): string[] {
+  const missing: string[] = [];
+  const defer = input.deferApprovalArtifacts === true;
+  const baseMessage = missingShopifyBaseColourMessage(input.missingBaseColours || []);
+  if (baseMessage) missing.push(baseMessage);
+  if (!defer && !input.printFilePath) missing.push("No print file for this candidate.");
+  if (!input.panelId) missing.push("No mockup panel is chosen for this candidate.");
+  for (const colour of input.tickedColours) {
+    if (!input.panelColours.includes(colour)) {
+      missing.push(`No mockup panel for ${colour} on ${input.productTypeName}.`);
+    }
+    if (!defer && !input.storedMockupColours.includes(colour)) {
+      missing.push(`No stored mockup for ${colour}. Approve stores the images; promote does not render them again.`);
+    }
+  }
+  if (!input.tickedColours.length) missing.push("No colours are ticked.");
+  if (!defer && !String(input.title || "").trim()) missing.push("Title is not stored on the candidate.");
+  if (!defer && !String(input.description || "").trim()) missing.push("Description is not stored on the candidate.");
+  const taxonomy = [
+    ["style", input.artStyle],
+    ["species", input.species],
+    ["humour operator", input.humourOperator],
+  ].filter(([, value]) => !String(value || "").trim()).map(([name]) => name);
+  if (taxonomy.length) {
+    missing.push(`The candidate is missing ${taxonomy.join(", ")}. Promote does not invent tags.`);
+  }
+  if (input.shippingRefusal) missing.push(input.shippingRefusal);
+  if (input.metaobjectRefusal) missing.push(input.metaobjectRefusal);
+  if (input.missingPrices.length) {
+    missing.push(`No front price for ${input.missingPrices.join(", ")}.`);
+  }
+  if (input.publishNow && input.capMessage) missing.push(input.capMessage);
+  return missing;
+}
+
+export const METAOBJECT_SCOPE_REFUSAL =
+  "This shop's Shopify token has no metaobject scope, so colour swatches cannot be linked. Reinstall the app before promoting.";
+
+/** Shopify's colour-taxonomy names. A garment colour stores one of these. */
+export const SHOPIFY_BASE_COLOURS = [
+  "Beige",
+  "Black",
+  "Blue",
+  "Brown",
+  "Gold",
+  "Gray",
+  "Green",
+  "Navy",
+  "Orange",
+  "Pink",
+  "Purple",
+  "Red",
+  "White",
+  "Yellow",
+] as const;
+
+/**
+ * Garment colour → closest Shopify base colour.
+ * Comfort Colors names that are not themselves taxonomy values are listed here.
+ */
+const SWATCH_BASE_COLOR: Record<string, string> = {
+  white: "White",
+  black: "Black",
+  blue: "Blue",
+  sapphire: "Blue",
+  pink: "Pink",
+  azalea: "Pink",
+  red: "Red",
+  "cherry red": "Red",
+  sage: "Green",
+  green: "Green",
+  "light grey": "Gray",
+  "light gray": "Gray",
+  "dark grey": "Gray",
+  "dark gray": "Gray",
+  "sport grey": "Gray",
+  "sport gray": "Gray",
+  "light blue": "Blue",
+  navy: "Navy",
+  "true navy": "Navy",
+  royal: "Blue",
+  "military green": "Green",
+  natural: "White",
+  "dark heather": "Gray",
+  charcoal: "Gray",
+  grey: "Gray",
+  gray: "Gray",
+  bay: "Green",
+  berry: "Purple",
+  blossom: "Pink",
+  chambray: "Blue",
+  ivory: "Beige",
+  pepper: "Gray",
+  banana: "Yellow",
+  "blue jean": "Blue",
+  "blue spruce": "Green",
+  brick: "Red",
+  "bright salmon": "Pink",
+  "burnt orange": "Orange",
+  butter: "Yellow",
+  "chalky mint": "Green",
+  chili: "Red",
+  "china blue": "Blue",
+  citrus: "Yellow",
+  crimson: "Red",
+  crunchberry: "Pink",
+  cumin: "Brown",
+  denim: "Blue",
+  espresso: "Brown",
+  "flo blue": "Blue",
+  granite: "Gray",
+  grape: "Purple",
+  graphite: "Gray",
+  hemp: "Green",
+  "ice blue": "Blue",
+  "island green": "Green",
+  "island reef": "Blue",
+  khaki: "Beige",
+  "lagoon blue": "Blue",
+  "light green": "Green",
+  melon: "Orange",
+  midnight: "Navy",
+  moss: "Green",
+  mustard: "Yellow",
+  "mystic blue": "Blue",
+  "neon pink": "Pink",
+  orchid: "Purple",
+  periwinkle: "Blue",
+  "royal caribe": "Blue",
+  seafoam: "Green",
+  terracotta: "Orange",
+  "topaz blue": "Blue",
+  violet: "Purple",
+  "washed denim": "Blue",
+  watermelon: "Pink",
+  yam: "Orange",
+};
+
+/** A stored or typed value, kept only when it is one of Shopify's base colours. */
+export function normaliseShopifyBaseColor(value: string | null | undefined): string | null {
+  const key = String(value || "").trim().toLowerCase();
+  if (!key) return null;
+  return SHOPIFY_BASE_COLOURS.find((colour) => colour.toLowerCase() === key) ?? null;
+}
+
+/** Shopify's base colour for a garment colour. Null when we have no mapping. */
+export function swatchBaseColorName(colourName: string): string | null {
+  const key = colourName.trim().toLowerCase();
+  return SWATCH_BASE_COLOR[key] ?? normaliseShopifyBaseColor(key);
+}
+
+/** Said at the start of publish, before print files or mockups are built. */
+export function missingShopifyBaseColourMessage(names: string[]): string | null {
+  const list = names.map((name) => name.trim()).filter(Boolean);
+  if (!list.length) return null;
+  const joined = list.length === 1
+    ? list[0]
+    : list.length === 2
+      ? `${list[0]} and ${list[1]}`
+      : `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`;
+  const verb = list.length === 1 ? "has" : "have";
+  const pronoun = list.length === 1 ? "it" : "them";
+  return `${joined} ${verb} no Shopify base colour. Set ${pronoun} on Colour blanks before publishing.`;
+}
+
+/** Fields shopify--color-pattern requires. Base color is a taxonomy id list, not the hex. */
+export function colorPatternMetaobjectFields(args: {
+  label: string;
+  hex: string;
+  baseColorId: string;
+  solidPatternId: string;
+}): Array<{ key: string; value: string }> {
+  return [
+    { key: "label", value: args.label },
+    { key: "color", value: `#${args.hex.replace(/^#/, "")}` },
+    { key: "color_taxonomy_reference", value: JSON.stringify([args.baseColorId]) },
+    { key: "pattern_taxonomy_reference", value: args.solidPatternId },
+  ];
+}
+
+/** Sizes this colour can actually print. Names stay in the offered order. */
+export function printableSizeNames(
+  variantMap: VariantMap | null | undefined,
+  color: { name: string; hex: string },
+  offered: Array<{ id: string; name: string }>,
+): string[] {
+  const colorId = printifyColorIdForMockup(color.hex)?.colorId || slugPrintifyColorId(color.name);
+  if (!colorId) return [];
+  return offered
+    .filter((size) => resolveVariantFromMap(variantMap, size.id, colorId, { allowSizeFallbackForColor: false })?.entry.printifyVariantId)
+    .map((size) => size.name);
+}
+
+/** Storefront and Studio colour order. Missing names are skipped, not filled in. */
+export const CATALOGUE_COLOUR_ORDER = [
+  "White",
+  "Black",
+  "Sage",
+  "Dark grey",
+  "Red",
+  "Light grey",
+  "Blue",
+  "Pink",
+] as const;
+
+export function catalogueColourRank(name: string): number {
+  const index = CATALOGUE_COLOUR_ORDER.findIndex((colour) => colour.toLowerCase() === name.trim().toLowerCase());
+  return index === -1 ? CATALOGUE_COLOUR_ORDER.length : index;
+}
+
+/** Stable sort. Unknown colours stay after the eight, in their original order. */
+export function sortCatalogueColours<T extends { name: string }>(colours: readonly T[]): T[] {
+  return colours
+    .map((colour, index) => ({ colour, index }))
+    .sort((a, b) => catalogueColourRank(a.colour.name) - catalogueColourRank(b.colour.name) || a.index - b.index)
+    .map((row) => row.colour);
+}
+
+/**
+ * An empty stored list has not been chosen yet, so every available colour starts ticked.
+ * A stored subset stays ticked, in catalogue order. Legibility is not an input.
+ */
+export function initialTickedColours<T extends { name: string; hex: string }>(
+  stored: readonly T[],
+  available: readonly T[],
+): T[] {
+  const ordered = sortCatalogueColours(available);
+  if (!stored.length) return ordered.map((colour) => ({ ...colour }));
+  const wanted = new Set(stored.map((colour) => colour.name.toLowerCase()));
+  return ordered.filter((colour) => wanted.has(colour.name.toLowerCase()));
+}
+
+/**
+ * Index of size M in the first catalogue colour that this product actually sells.
+ * -1 when that colour has no M. Display order of the size option is separate.
+ */
+export function indexOfDefaultMedium<T extends { size: string; colour: string }>(
+  variants: readonly T[],
+  colourOrder: readonly string[],
+): number {
+  const present = new Set(variants.map((row) => row.colour.trim().toLowerCase()));
+  const named = colourOrder.find((name) => present.has(name.trim().toLowerCase()));
+  const defaultColour = (named || variants[0]?.colour || "").trim().toLowerCase();
+  if (!defaultColour) return -1;
+  return variants.findIndex((row) =>
+    row.size.trim().toUpperCase() === "M" && row.colour.trim().toLowerCase() === defaultColour,
+  );
+}
+
+/** Shopify variant positions: catalogue colour, then XS–3XL. M stays in that run. */
+export function catalogueVariantPositions(
+  variants: Array<{ id: string; colour: string; size: string }>,
+): Array<{ id: string; position: number }> {
+  const colourOrder: string[] = [];
+  for (const variant of sortCatalogueColours(variants.map((row) => ({ name: row.colour })))) {
+    if (!variant.name) continue;
+    if (colourOrder.some((name) => name.toLowerCase() === variant.name.toLowerCase())) continue;
+    colourOrder.push(variant.name);
+  }
+  const sorted = [...variants].sort((a, b) => compareColourThenSize(
+    { colour: a.colour, size: a.size },
+    { colour: b.colour, size: b.size },
+    colourOrder,
+  ));
+  return sorted.map((variant, index) => ({ id: variant.id, position: index + 1 }));
+}
+
+export const APPAREL_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL"] as const;
+
+/** Unknown labels sort after the canonical run, and keep their own relative order. */
+export function apparelSizeRank(name: string): number {
+  const index = APPAREL_SIZE_ORDER.indexOf(name.trim().toUpperCase() as typeof APPAREL_SIZE_ORDER[number]);
+  return index === -1 ? APPAREL_SIZE_ORDER.length : index;
+}
+
+/** Unique size labels in canonical order. */
+export function sortApparelSizeNames(names: string[]): string[] {
+  return [...new Set(names)].sort((a, b) => apparelSizeRank(a) - apparelSizeRank(b) || a.localeCompare(b));
+}
+
+/** Colour position first, then canonical size. */
+export function compareColourThenSize(
+  a: { colour: string; size: string },
+  b: { colour: string; size: string },
+  colourOrder: readonly string[],
+): number {
+  const colourRank = (name: string) => {
+    const index = colourOrder.findIndex((colour) => colour.toLowerCase() === name.toLowerCase());
+    return index === -1 ? colourOrder.length : index;
+  };
+  const byColour = colourRank(a.colour) - colourRank(b.colour);
+  if (byColour) return byColour;
+  const bySize = apparelSizeRank(a.size) - apparelSizeRank(b.size);
+  if (bySize) return bySize;
+  return a.size.localeCompare(b.size);
+}
+
+/** "XS–3XL" when the printable sizes are a contiguous run. Apparel sizes use size order, so XS last in the offered list still reads XS–3XL. */
+export function formatSizeRange(offeredNames: string[], printableNames: string[]): string {
+  if (!printableNames.length) return "no sizes";
+  const ranks = printableNames.map((name) => apparelSizeRank(name));
+  if (ranks.every((rank) => rank < APPAREL_SIZE_ORDER.length)) {
+    const ordered = printableNames
+      .map((name, i) => ({ name, rank: ranks[i] }))
+      .sort((a, b) => a.rank - b.rank);
+    if (ordered.length === 1) return ordered[0].name;
+    const contiguous = ordered.every((row, i) => i === 0 || row.rank === ordered[i - 1].rank + 1);
+    if (contiguous) return `${ordered[0].name}–${ordered[ordered.length - 1].name}`;
+    return ordered.map((row) => row.name).join(", ");
+  }
+  const index = new Map(offeredNames.map((name, i) => [name, i]));
+  const at = printableNames.map((name) => index.get(name)).filter((n): n is number => n != null).sort((a, b) => a - b);
+  if (at.length !== printableNames.length) return printableNames.join(", ");
+  const contiguous = at.every((n, i) => i === 0 || n === at[i - 1] + 1);
+  if (contiguous && at.length > 1) return `${offeredNames[at[0]]}–${offeredNames[at[at.length - 1]]}`;
+  return printableNames.join(", ");
+}

@@ -27,6 +27,7 @@ import {
 } from "@shared/creatorMarketplace";
 import { displayRetailPrice, hasPositiveRetailPrice } from "@shared/shopifyVariantPriceSync";
 import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
+import { ShipCountrySelector } from "@/components/creators/ShipCountrySelector";
 
 export type CreatorBoot = {
   id: string;
@@ -91,6 +92,7 @@ type CreatorCartPayload = {
     artworkUrl?: string | null;
     jobId?: string | null;
     printReady?: boolean;
+    printFilesPending?: boolean;
   }>;
 };
 
@@ -129,6 +131,8 @@ function useCreatorCartQuery(username: string) {
       persistCreatorCart(username, json, snap!.cartId);
       return json;
     },
+    refetchInterval: (query) =>
+      query.state.data?.lines?.some((line) => line.printFilesPending) ? 2000 : false,
   });
 }
 
@@ -173,7 +177,7 @@ function designerHref(opts: {
   if (username) params.set("creatorUsername", username);
   if (creatorId) params.set("creatorId", creatorId);
   params.set("storefront", "true");
-  if (opts.loadDesignId) params.set("loadDesignId", opts.loadDesignId);
+  // The design to reopen is handed over in tab storage on click (lib/reopenDesign), never the URL.
   return `/s/designer?${params.toString()}`;
 }
 
@@ -222,6 +226,7 @@ function StoreShell({
             </div>
           </Link>
           <nav className="flex items-center gap-3 text-sm">
+            <ShipCountrySelector compact className="hidden sm:flex" />
             <Link href={basePath || "/"} className="text-muted-foreground hover:text-foreground">
               Home
             </Link>
@@ -265,6 +270,9 @@ function StoreShell({
           </nav>
         </div>
       </header>
+      <div className="mx-auto max-w-5xl px-4 pt-3 sm:hidden">
+        <ShipCountrySelector />
+      </div>
       <main className="mx-auto max-w-5xl px-4 py-10">{children}</main>
       <footer className="border-t mt-16">
         <div className="mx-auto max-w-5xl px-4 py-6 text-center text-xs text-muted-foreground">
@@ -716,6 +724,7 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
   const lines = data?.lines || [];
   const checkoutUrl = data?.checkoutUrl || snap?.checkoutUrl || "";
   const itemCount = data?.itemCount ?? snap?.itemCount ?? 0;
+  const printFilesPending = lines.some((line) => line.printFilesPending);
 
   return (
     <div className="mx-auto max-w-xl space-y-6">
@@ -808,6 +817,11 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
             : "Could not update the cart."}
         </p>
       ) : null}
+      {printFilesPending ? (
+        <p className="text-sm text-muted-foreground" role="status">
+          Finalizing print files… Checkout unlocks when they are ready.
+        </p>
+      ) : null}
       {checkoutError ? (
         <p className="text-sm text-destructive">{checkoutError}</p>
       ) : null}
@@ -818,9 +832,9 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
         </Button>
         <Button
           className="flex-1"
-          disabled={!checkoutUrl || itemCount < 1 || preparingCheckout}
+          disabled={!checkoutUrl || itemCount < 1 || preparingCheckout || printFilesPending}
           onClick={() => {
-            if (!checkoutUrl || !snap?.cartId) return;
+            if (!checkoutUrl || !snap?.cartId || printFilesPending) return;
             setCheckoutError(null);
             setPreparingCheckout(true);
             void (async () => {
@@ -835,6 +849,13 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
                   }),
                 });
                 const json = await res.json().catch(() => ({}));
+                if (res.status === 409 || json?.error === "PRINT_FILES_PENDING") {
+                  setCheckoutError(
+                    json?.message ||
+                      "Print files are still finalizing. Checkout unlocks when they are ready.",
+                  );
+                  return;
+                }
                 if (res.ok && json?.checkoutUrl) {
                   nextCheckoutUrl = String(json.checkoutUrl);
                   persistCreatorCart(creator.username, json, snap.cartId);
@@ -860,7 +881,9 @@ function CartView({ creator, basePath }: { creator: CreatorBoot; basePath: strin
             })().finally(() => setPreparingCheckout(false));
           }}
         >
-          {preparingCheckout
+          {printFilesPending
+            ? "Finalizing print files…"
+            : preparingCheckout
             ? "Preparing checkout…"
             : `Checkout${itemCount > 0 ? ` (${itemCount})` : ""}`}
         </Button>

@@ -77,6 +77,7 @@ export type CreatorCartLine = {
   artworkUrl: string | null;
   jobId: string | null;
   printReady: boolean;
+  printFilesPending?: boolean;
   baseVariantId: string | null;
   attributes: CartLineAttribute[];
 };
@@ -166,6 +167,10 @@ function mapCreatorCart(cart: StorefrontCartNode | null | undefined): CreatorCar
       jobId,
       printReady: !!(jobId && artwork && artwork.length < 255),
       baseVariantId: attrs.find((a) => a.key === "_base_variant_id")?.value || null,
+      printFilesPending: !!(
+        attrs.some((a) => a.key === "_print_files_pending" && String(a.value || "").trim()) &&
+        !attrs.some((a) => a.key === "_aop_pl" && String(a.value || "").trim())
+      ),
       attributes: attrs.map((a) => ({ key: a.key, value: a.value })),
     };
   });

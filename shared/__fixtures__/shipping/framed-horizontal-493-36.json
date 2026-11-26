@@ -1,0 +1,33 @@
+{
+  "classKey": "493:36",
+  "blueprintId": 493,
+  "providerId": 36,
+  "name": "Horizontal Framed Poster — provider 36",
+  "note": "Snapshotted from live ingest 2026-08-24. 11×8 is g1 (sizeColorKey 11-x-8:black|white). No AU zone row — AU falls to ROW, and ROW g1 is warned ($49.99), not excluded.",
+  "productTypeId": 20,
+  "groups": [
+    { "group": "g1", "label": "11-x-8", "printifyVariantIds": ["66162", "66163"] },
+    { "group": "g2", "label": "14-x-11, 18-x-12", "printifyVariantIds": ["65414", "65415", "65416", "65417"] },
+    { "group": "g3", "label": "20-x-16", "printifyVariantIds": ["66222", "66223"] },
+    { "group": "g4", "label": "24-x-18", "printifyVariantIds": ["65420", "65421"] },
+    { "group": "g5", "label": "30-x-20", "printifyVariantIds": ["66224", "66225"] },
+    { "group": "g6", "label": "36-x-24", "printifyVariantIds": ["65424", "65425"] }
+  ],
+  "mappings": [
+    { "sizeColorKey": "11-x-8:black", "variantGroup": "g1" },
+    { "sizeColorKey": "11-x-8:white", "variantGroup": "g1" },
+    { "sizeColorKey": "14-x-11:black", "variantGroup": "g2" },
+    { "sizeColorKey": "14-x-11:white", "variantGroup": "g2" },
+    { "sizeColorKey": "18-x-12:black", "variantGroup": "g2" },
+    { "sizeColorKey": "24-x-18:black", "variantGroup": "g4" },
+    { "sizeColorKey": "36-x-24:black", "variantGroup": "g6" }
+  ],
+  "rates": [
+    { "countryCode": "ROW", "variantGroup": "g1", "firstItemCents": 4999, "additionalCents": 0, "shippable": true, "tier": "warned" },
+    { "countryCode": "ROW", "variantGroup": "g2", "firstItemCents": 5549, "additionalCents": 0, "shippable": true, "tier": "warned" },
+    { "countryCode": "ROW", "variantGroup": "g3", "firstItemCents": 6099, "additionalCents": 0, "shippable": true, "tier": "warned" },
+    { "countryCode": "ROW", "variantGroup": "g4", "firstItemCents": 6399, "additionalCents": 0, "shippable": true, "tier": "normal" },
+    { "countryCode": "ROW", "variantGroup": "g5", "firstItemCents": 7299, "additionalCents": 0, "shippable": true, "tier": "normal" },
+    { "countryCode": "ROW", "variantGroup": "g6", "firstItemCents": 9149, "additionalCents": 0, "shippable": true, "tier": "normal" }
+  ]
+}

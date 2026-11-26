@@ -6,10 +6,36 @@ import {
   trackCreatorEvent,
 } from "@/lib/creator-analytics";
 import { creatorCartPath, currentCreatorReturnUrl, readCreatorCart, writeCreatorCart } from "@/lib/creatorCart";
-import { creatorCheckoutRememberUrl, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { creatorCheckoutRememberUrl, readLastCreatorVisit, writeLastCreatorVisit } from "@shared/lastCreatorVisit";
+import { resolveMobileShellBrandName } from "@/components/designer/resolveMobileShellBrandName";
 import { CreatorVisitedShops, type VisitedShopLink } from "@/components/creators/CreatorVisitedShops";
-import { shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { hasPrintConfigSuffix, reusableShadowDesignId, shadowDesignIdForCart } from "@shared/shadowDesignId";
+import { normalizeAtcMode, type AtcMode } from "@shared/atcMode";
 import {
+  artworkUrlForFingerprint,
+  atcShadowDesignId,
+  sanitizePrintConfigInput,
+  type PrintConfigFingerprintInput,
+} from "@shared/printConfigFingerprint";
+import {
+  ATC_MAX_CART_ADD_CALLS_PER_TAP,
+  ATC_RETRY_AFTER_DEFAULT_MS,
+  ATC_SHADOW_PREVIEW_NOT_READY,
+  ATC_SHADOW_STILL_PREPARING,
+  ATC_STOREFRONT_PROPAGATION_WAITS_MS,
+  PRE_SHADOW_AWAIT_MS,
+  PRE_SHADOW_SIZE_DEBOUNCE_MS,
+  atcCustomerSafeError,
+  classifyCartAddFailure,
+  clearAtcRateLimitCooldown,
+  parseRetryAfterMs,
+  readAtcRateLimitRemainingMs,
+  writeAtcRateLimitCooldown,
+} from "@shared/atcStorefrontRetry";
+import {
+  LINE_AOP_CAPTURE_KEY,
+  LINE_AOP_PANELS_KEY,
+  LINE_AOP_PENDING_KEY,
   LINE_FLAT_PLACEMENT_KEY,
   LINE_TOTE_PLACEMENT_KEY,
   encodeFlatLinePlacement,
@@ -18,6 +44,14 @@ import {
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { API_BASE, PROXY_PREFIX, buildAppUrl } from "@/lib/urlBase";
+import {
+  clearReopenDesign,
+  pageHandleFromUrl,
+  readReopenDesign,
+  stashReopenFromHostUrl,
+  writeReopenDesign,
+} from "@/lib/reopenDesign";
+import { isDataPreviewUrl, normalizePreviewUrl } from "@shared/previewUrl";
 import { downloadImageFromUrl } from "@/lib/downloadImage";
 import { StudioNewsletterSignup } from "@/components/studio-newsletter-signup";
 import { StudioMenuIconButton } from "@/components/studio-menu-icon-button";
@@ -39,16 +73,31 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap } from "lucide-react";
+import { Loader2, Sparkles, ImagePlus, ShoppingCart, RefreshCw, RefreshCcw, X, Save, LogIn, LogOut, Share2, Upload, ExternalLink, CheckCircle, ChevronLeft, ChevronRight, ChevronDown, Info, Plus, Download, Layers, Trash2, Images, Ticket, GraduationCap, Pencil, Palette, Ruler, SlidersHorizontal, Type, LayoutTemplate, Droplet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { countWords, findLiteralSlot, literalPlaceholder, parseUserSlotSchema } from "@shared/promptLayers";
 import {
   StorefrontTermsAccept,
   useStorefrontTermsAccept,
 } from "@/components/terms/StorefrontTermsAccept";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import SizeChartTable from "@/components/SizeChartTable";
 import { CreatorProductTermsNote } from "@/components/creators/CreatorProductTermsNote";
-import { getSizeChartByBlueprintId, type NormalizedSizeChart } from "@/lib/printifySizeCharts";
+import { ShipCountrySelector } from "@/components/creators/ShipCountrySelector";
+import {
+  ShippingSizeDownsell,
+  ShippingWarnedEstimate,
+} from "@/components/creators/ShippingSizeGate";
+import { useStorefrontSizeCoverage } from "@/lib/storefrontSizeCoverage";
+import {
+  buildSizeDownsell,
+  filterCatalogSizesForCountry,
+  findSizeCoverageRow,
+  sizeTokensMatch,
+} from "@shared/shipping-size-coverage";
+import type { NormalizedSizeChart } from "@/lib/printifySizeCharts";
+import { FindMySizeButton } from "@/components/FindMySizeDialog";
+import type { FindMySizeGuide } from "@shared/findMySize";
 import {
   ProductMockup,
   ZoomControls,
@@ -105,7 +154,10 @@ import {
   firstUsableBlankKey,
 } from "@/components/designer/FlatProductPlacer/lib/flatAssets";
 import { resolveStoredColorHex } from "@shared/printifyColorResolver";
-import { flatDefaultPlacementScale } from "@/components/designer/FlatProductPlacer/lib/flatRender";
+import {
+  flatDefaultPlacementScale,
+  flatShouldFitToSafeArea,
+} from "@/components/designer/FlatProductPlacer/lib/flatRender";
 import { shouldUseStyleReferenceImage } from "@shared/generationPromptHints";
 import {
   isVariantKeyAvailable,
@@ -120,6 +172,22 @@ import {
   buildReuseRegeneratePrompt,
   composeReuseRegenerateUserPrompt,
 } from "@shared/reuseArtworkPrompt";
+import {
+  DEFAULT_DECOR_BACKGROUND_FILL,
+  parseLiveFillHex,
+  resolveLiveFillHex,
+} from "@shared/decorBackgroundFill";
+import { resolveStyleBackgroundConfig } from "@shared/styleBackgroundConfig";
+import {
+  classifyGenerationFailure,
+  extractHttpErrorPayload,
+  GenerationRequestError,
+  toGenerationRequestError,
+} from "@shared/generationFailure";
+import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
+import { PreviewStudioGenOverlay } from "@/components/designer/PreviewStudioGenOverlay";
+import { MobileCustomizerShell } from "@/components/designer/MobileCustomizerShell";
+import { MobileDebugOverlay } from "@/components/designer/MobileDebugOverlay";
 import {
   bothRetailAboveFront,
   coerceVariantPricesBothMap,
@@ -140,6 +208,7 @@ import {
 } from "@shared/creatorArtworkLibrary";
 import {
   canvasOrientationFromAspect,
+  extractDimensionalKey,
   filterSizesByCanvasOrientation,
   frameColorsRedundantWithSizes,
   isLandscapeSizeAspect,
@@ -159,6 +228,7 @@ import {
 import {
   isCatalogSizeBlankBlueprint,
   resolveBlankUrlForSize,
+  shouldProbeCatalogBlankGuide,
 } from "@shared/catalogSizeBlanks";
 import { resolveFabricWeaveTexture } from "@shared/fabricWeave";
 import {
@@ -170,6 +240,25 @@ import {
   styleMatchesSelectableCategories,
   type CustomizerPageStyleConfig,
 } from "@shared/customizerPageStyles";
+import {
+  STYLE_PRESETS_CHANNEL,
+  STYLE_PRESETS_STORAGE_KEY,
+  shouldApplyParentStylePresets,
+} from "@shared/stylePresetFreshness";
+import {
+  detectQuotesVerbatimInput,
+  isQuotesCatalogSlug,
+  QUOTES_LITERAL_MAX_WORDS,
+  QUOTES_PLACEHOLDER,
+  type QuoteOption,
+} from "@shared/quotesStyle";
+import { isFloatingCatalogStyle, resolveCatalogSlug } from "@shared/styleCatalog";
+import {
+  coerceStyleHint,
+  findStylePresetForFill,
+  resolveSelectableStylePreset,
+  type SavedStyleHints,
+} from "@shared/resolveStylePresetForUi";
 import {
   isAllowedCentralAuthOrigin,
   isStorefrontGoogleAuthMessage,
@@ -195,15 +284,119 @@ import {
   personMockupPreferenceRank,
 } from "@shared/printifyMockupLabels";
 import { printifyShippingLineProps } from "@shared/printify-shipping-quote";
-import { hasExactVariantMapping, hasVariantMappingForColor, resolveVariantFromMap } from "@shared/variantMapResolve";
-import { matchShopifyVariantBySizeColor } from "@shared/shopifyVariantMatch";
+import { hasExactVariantMapping, hasVariantMappingForColor, normalizeApparelSizeId, resolveVariantFromMap, type VariantMap } from "@shared/variantMapResolve";
+import { matchShopifyVariantBySizeColor, matchShopifyVariantBySizeTitle, resolveMintedShopifyCatalog } from "@shared/shopifyVariantMatch";
+import { printSidesTwinVariant } from "@shared/printSides";
 import { resolveStorefrontHeadlinePrice } from "@shared/shopifyVariantPriceSync";
+import {
+  formatStorefrontHeadlineDisplay,
+  isShopCurrencyPresentment,
+} from "@shared/presentmentDisplay";
 import { isPillowWrapBlueprint } from "@shared/hoodieTemplate";
 import { ADJUSTABLE_TOTE_BLUEPRINT_ID } from "@shared/productLayoutPolicy";
+import {
+  experienceCopy,
+  parsePublicExperienceProfile,
+  type PublicExperienceProfile,
+} from "@shared/experienceProfile";
+import { parseStyleInputCapabilities } from "@shared/stylePacks";
+import { parseCreativeBrief, type PublicCreativeBrief } from "@shared/creativeBrief";
+import { PETPOSTEROUS_CONCEPT_FRAMEWORKS, petposterousLook, petposterousLooks, petposterousProductFamily } from "@shared/petposterousCreative";
+import { ConceptOptionsPicker } from "@/components/designer/ConceptOptionsPicker";
+import { scheduleWalletSettleRefresh } from "@/lib/walletSettleRefresh";
+import {
+  PackCreativeControls,
+  choiceLabel,
+  type PackCreativeState,
+} from "@/components/designer/PackCreativeControls";
+import { PackCreativeWizard } from "@/components/designer/PackCreativeWizard";
+import {
+  aopCanReuseStoredPanels,
+  aopPanelCaptureSignaturesMatch,
+  canonicalAopPanelCaptureSignature,
+  expectedAopCaptureHashFromLiveState,
+  parseStoredAopPanelCaptureSignature,
+  placerStateFromStoredCaptureSignature,
+} from "@shared/aopPanelCaptureSignature";
+import {
+  aopLifestyleMockupNotice,
+  hasLocalAopFrontComposite,
+  shouldKeepAopCartReadyOnPrintifyFailure,
+} from "@shared/aopLifestyleMockup";
+import {
+  UploadRateLimitedError,
+  hostPrintPanelsBatched,
+  isUploadRateLimitedError,
+  parseRetryAfterSec,
+  resolveSignatureMatchedPanels,
+  shouldKickAopPersist,
+  type HostedPrintPanel,
+} from "@shared/storefrontDesignUpload";
 
 /** Printify mockup cache key — size affects variant resolution for apparel. */
 function mockupCacheKey(sizeId: string | undefined, colorId: string | undefined): string {
   return `${sizeId || "default"}:${colorId || "default"}`;
+}
+
+const AOP_FINALIZE_JOBS_KEY = "appai:aopFinalizeJobs";
+
+function rememberAopFinalizeJob(jobId: string, shop: string, captureHash?: string | null) {
+  try {
+    const raw = sessionStorage.getItem(AOP_FINALIZE_JOBS_KEY);
+    const map = raw
+      ? (JSON.parse(raw) as Record<string, { shop: string; at: number; captureHash?: string }>)
+      : {};
+    const prev = map[jobId];
+    map[jobId] = {
+      shop,
+      at: Date.now(),
+      captureHash: (captureHash || prev?.captureHash || "").trim() || undefined,
+    };
+    sessionStorage.setItem(AOP_FINALIZE_JOBS_KEY, JSON.stringify(map));
+  } catch {
+    /* iframe storage may be blocked */
+  }
+}
+
+function forgetAopFinalizeJob(jobId: string) {
+  try {
+    const raw = sessionStorage.getItem(AOP_FINALIZE_JOBS_KEY);
+    const map = raw ? (JSON.parse(raw) as Record<string, { shop: string; at: number }>) : {};
+    delete map[jobId];
+    sessionStorage.setItem(AOP_FINALIZE_JOBS_KEY, JSON.stringify(map));
+  } catch {
+    /* iframe storage may be blocked */
+  }
+}
+
+/** Idle window before the cart-state effect's AOP pre-warm actually fires — see aopSnapshotDebounceRef. */
+const AOP_SNAPSHOT_DEBOUNCE_MS = 600;
+
+async function freezeAopLineSnapshot(
+  shop: string,
+  jobId: string,
+  expectedCaptureHash?: string | null,
+): Promise<string | null> {
+  try {
+    const res = await safeFetch(`${API_BASE}/api/storefront/aop-line-snapshot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shop,
+        jobId,
+        expectedCaptureHash: expectedCaptureHash || undefined,
+      }),
+    });
+    if (!res.ok) {
+      console.error("[AOP] aop-line-snapshot failed", res.status, "— ATC will proceed without _aop_pl");
+      return null;
+    }
+    const data = await res.json();
+    return typeof data?.snapshot === "string" && data.snapshot.trim() ? String(data.snapshot) : null;
+  } catch (e) {
+    console.error("[AOP] aop-line-snapshot error — ATC will proceed without _aop_pl", e);
+    return null;
+  }
 }
 
 /** Hidden cart props so Shopify checkout can quote Printify first/additional shipping. */
@@ -275,6 +468,8 @@ interface GeneratedDesign {
   id: string;
   imageUrl: string;
   prompt: string;
+  /** Model that produced this image — 241 preview scale keys off it. */
+  generationModel?: string | null;
 }
 
 const DEFAULT_AOP_PATTERN_SETTINGS: {
@@ -379,6 +574,7 @@ interface ProductTypeConfig {
     inStock?: boolean;
   }>;
   variantMap?: Record<string, { printifyVariantId?: number | string; providerId?: number }>;
+  shopifyVariantIds?: unknown;
   /** Product Intelligence: sizeId:colorId → stock status */
   variantAvailability?: VariantAvailabilityMap;
   unavailableVariantKeys?: string[];
@@ -416,6 +612,7 @@ interface ProductTypeConfig {
   /** Admin override for woven fabric texture on flat mockups (null = blueprint default). */
   fabricWeaveTexture?: boolean | null;
   sizeChart?: NormalizedSizeChart | null;
+  sizeFinder?: FindMySizeGuide | null;
   /**
    * Front+back retail prices keyed by shopify variant id and/or `sizeName:colorName`.
    * Base Shopify variant prices remain front-only; this map drives “from $X” + ATC surcharge.
@@ -425,9 +622,6 @@ interface ProductTypeConfig {
 
 type ProductInfoSectionsProps = {
   description?: string | null;
-  sizeChart?: NormalizedSizeChart | null;
-  sizeChartLoading?: boolean;
-  blueprintId?: number;
   className?: string;
   /** Creator storefront: shipping / made-to-order returns on the product page. */
   commerceTerms?: boolean;
@@ -487,6 +681,27 @@ async function safeJson<T = any>(res: Response, label?: string): Promise<T> {
 /** Check if a URL is a base64 data URL */
 function isDataUrl(url: string): boolean {
   return !!url && url.startsWith("data:");
+}
+
+/** Copy Product Intelligence stock fields off a designer-config payload. */
+function designerStockFields(dc: {
+  variantAvailability?: unknown;
+  unavailableVariantKeys?: unknown;
+}): {
+  variantAvailability: VariantAvailabilityMap;
+  unavailableVariantKeys: string[];
+} {
+  const raw = dc?.variantAvailability;
+  const variantAvailability =
+    typeof raw === "string"
+      ? parseVariantAvailabilityMap(raw)
+      : raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as VariantAvailabilityMap)
+        : {};
+  const unavailableVariantKeys = Array.isArray(dc?.unavailableVariantKeys)
+    ? (dc.unavailableVariantKeys as string[])
+    : [];
+  return { variantAvailability, unavailableVariantKeys };
 }
 
 /**
@@ -605,7 +820,10 @@ function clampPreviewChromeAspectCss(arCss: string): string {
 
 function toAbsoluteImageUrl(url: string): string {
   if (!url) return url;
-  if (isDataUrl(url)) return url;
+  const unwrapped = normalizePreviewUrl(url);
+  if (!unwrapped) return url;
+  if (isDataPreviewUrl(unwrapped)) return unwrapped;
+  url = unwrapped;
   const assetBase = typeof window !== "undefined" ? window.__APPAI_ASSET_BASE__ : undefined;
   if (assetBase && (url.startsWith("http://") || url.startsWith("https://"))) {
     try {
@@ -625,6 +843,22 @@ function toAbsoluteImageUrl(url: string): string {
     return `${assetBase.replace(/\/$/, "")}${url}`;
   }
   return buildAppUrl(url);
+}
+
+/** Same motif after load even when persist stored a relative / proxy URL. */
+function aopArtworkUrlsMatch(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const na = toAbsoluteImageUrl(a);
+  const nb = toAbsoluteImageUrl(b);
+  if (na === nb) return true;
+  try {
+    const pa = new URL(na, "https://appai.local").pathname.replace(/\/+$/, "");
+    const pb = new URL(nb, "https://appai.local").pathname.replace(/\/+$/, "");
+    return pa.length > 1 && pa === pb;
+  } catch {
+    return false;
+  }
 }
 
 function isTemporaryPrintifyMockupUrl(url: string): boolean {
@@ -686,11 +920,25 @@ async function ensureHostedUrl(url: string): Promise<string> {
   // data: URL — upload directly to server storage
   if (isDataUrl(url)) {
     console.log("[EmbedDesign] Converting data URL to hosted URL via direct upload...");
-    const uploadRes = await safeFetch(`${API_BASE}/api/uploads/upload`, {
+    // Storefront visitors are anonymous, so this uses the public-but-protected
+    // storefront endpoint (rate-limited, size-capped, PNG/JPEG only) rather than
+    // the authenticated admin upload route.
+    const uploadRes = await safeFetch(`${API_BASE}/api/storefront/uploads/design`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dataUrl: url, name: `design-${Date.now()}.png` }),
     });
+    if (uploadRes.status === 429) {
+      let body: unknown = null;
+      try {
+        body = await uploadRes.json();
+      } catch {
+        body = null;
+      }
+      throw new UploadRateLimitedError(
+        parseRetryAfterSec(uploadRes.headers.get("Retry-After"), body),
+      );
+    }
     if (!uploadRes.ok) throw new Error("Failed to upload design image to storage");
     const { objectPath } = await uploadRes.json();
     // The upload endpoint now returns an ABSOLUTE Supabase public URL when
@@ -740,6 +988,241 @@ function normalizeVariantToken(value: string): string {
   return value.toLowerCase().trim().replace(/[\s_-]+/g, "_");
 }
 
+/** Hosted Apply panels (`url`) or in-memory rasters (`dataUrl`) → fetch payload. */
+function panelsFromSavedAopPrintUrls(
+  raw: unknown,
+): Array<{ position: string; dataUrl: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ position: string; dataUrl: string }> = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as { position?: unknown; url?: unknown; dataUrl?: unknown };
+    const position = String(rec.position || "").trim();
+    const url = String(rec.url || rec.dataUrl || "").trim();
+    if (!position || !url) continue;
+    out.push({ position, dataUrl: url });
+  }
+  return out;
+}
+
+/** Resolve a saved size value (id, name, or XL / X-Large alias) to the config size id. */
+function resolvePrintSizeId(
+  stored: string | null | undefined,
+  sizes: Array<{ id: string; name: string }>,
+): string | null {
+  if (!stored?.trim() || sizes.length === 0) return stored?.trim() || null;
+  const trimmed = stored.trim();
+  if (sizes.some((s) => s.id === trimmed)) return trimmed;
+  const want = normalizeApparelSizeId(normalizeVariantToken(trimmed));
+  const hit = sizes.find((s) => {
+    if (s.name.toLowerCase() === trimmed.toLowerCase()) return true;
+    const idNorm = normalizeApparelSizeId(normalizeVariantToken(s.id));
+    const nameNorm = normalizeApparelSizeId(normalizeVariantToken(s.name));
+    return idNorm === want || nameNorm === want;
+  });
+  return hit?.id ?? null;
+}
+
+function resolveSizeIdFromCoverage(
+  sizeId: string,
+  sizes: Array<{ id: string; name: string }>,
+): string | null {
+  const hit = sizes.find(
+    (s) =>
+      s.id === sizeId ||
+      sizeTokensMatch(s.id, sizeId) ||
+      sizeTokensMatch(s.name, sizeId),
+  );
+  return hit?.id ?? resolvePrintSizeId(sizeId, sizes);
+}
+
+/**
+ * Bumped on every mobile-shell deploy. Logged, not rendered — it is how the
+ * headless diagnose scripts confirm a Railway deploy actually went live before
+ * a phone test, which is otherwise unknowable (no iOS remote console here).
+ */
+const CP1_BUILD_MARKER = "cp2-b1.1";
+
+/** Parent storefront when iframed; this window when top-level (`host=page`). */
+function hostWindow(): Window {
+  try {
+    if (window.parent && window.parent !== window) return window.parent;
+  } catch {
+    /* cross-origin parent */
+  }
+  return window;
+}
+
+function readUrlSizeParam(): string {
+  try {
+    const fromSelf = new URLSearchParams(window.location.search).get("size");
+    if (fromSelf?.trim()) return fromSelf.trim();
+  } catch {
+    /* ignore */
+  }
+  try {
+    return new URL(hostWindow().location.href).searchParams.get("size")?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+function loggedInCustomerIdFromHost(): string {
+  try {
+    const fromQuery = new URLSearchParams(window.location.search).get("customerId") || "";
+    if (fromQuery.trim()) return fromQuery.trim();
+  } catch {
+    /* ignore */
+  }
+  try {
+    const injected = (window as any).__APPAI_LOGGED_IN_CUSTOMER_ID__;
+    if (injected != null && String(injected).trim()) return String(injected).trim();
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function applyPresentmentPayload(pres: any) {
+  if (!pres || typeof pres !== "object") return null;
+  const cur =
+    pres.currency != null && String(pres.currency).trim()
+      ? String(pres.currency).trim().toUpperCase()
+      : null;
+  const rawPrices =
+    pres.pricesByVariantId && typeof pres.pricesByVariantId === "object"
+      ? pres.pricesByVariantId
+      : {};
+  const pricesByVariantId: Record<string, number> = {};
+  for (const [k, v] of Object.entries(rawPrices as Record<string, unknown>)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) pricesByVariantId[String(k)] = Math.round(n);
+  }
+  return {
+    currency: cur,
+    rate:
+      pres.rate != null && Number.isFinite(Number(pres.rate)) ? Number(pres.rate) : null,
+    shopCurrency: pres.shopCurrency ? String(pres.shopCurrency).trim().toUpperCase() : null,
+    country: pres.country ? String(pres.country).trim().toUpperCase() : null,
+    locale: pres.locale ? String(pres.locale) : null,
+    pricesByVariantId,
+  };
+}
+
+function presentmentQueryFromSearch(sp: URLSearchParams): string {
+  let q = "";
+  for (const key of ["currency", "rate", "shopCurrency", "country", "locale"] as const) {
+    const v = sp.get(key);
+    if (v) q += `&${key}=${encodeURIComponent(v)}`;
+  }
+  return q;
+}
+
+function themeSnapshotFromHostStorage(): Record<string, string> | null {
+  try {
+    const raw = hostWindow().sessionStorage.getItem("appai:themeSnapshot");
+    if (!raw) return null;
+    const t = JSON.parse(raw);
+    return t && typeof t === "object" && !Array.isArray(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Style-pack concept writer option (server/pack-concept-engine.ts). */
+type PackConceptOptionClient = { funnyTruth: string; visualJoke: string; punchline: string; subjectPriority: string; conceptFramework?: string };
+
+/** Store experience profile colours on top of the store theme (only keys the profile sets). */
+function applyExperienceBrandVars(brand: PublicExperienceProfile["brand"] | null | undefined) {
+  if (!brand) return;
+  const t: Record<string, string> = {};
+  if (brand.accentColor || brand.primaryColor) t.buttonBg = (brand.accentColor || brand.primaryColor)!;
+  if (brand.surfaceColor) t.backgroundColor = brand.surfaceColor;
+  if (brand.textColor) t.textColor = brand.textColor;
+  if (Object.keys(t).length) applyStoreThemeVars(t);
+}
+
+/** Merchant theme CSS variables — same mapping as AI_ART_STUDIO_THEME. */
+function applyStoreThemeVars(t: Record<string, string>) {
+  if (!t || typeof t !== "object") return;
+  const root = document.documentElement.style;
+  const bgHSL = cssColorToHSL(t.backgroundColor);
+  const fgHSL = cssColorToHSL(t.textColor);
+  if (bgHSL) root.setProperty("--background", bgHSL);
+  if (fgHSL) {
+    const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
+    root.setProperty("--foreground", safeFg);
+    root.setProperty("--card-foreground", safeFg);
+  }
+  const btnBgHSL = cssColorToHSL(t.buttonBg);
+  const btnFgHSL = cssColorToHSL(t.buttonColor);
+  if (btnBgHSL) {
+    root.setProperty("--primary", btnBgHSL);
+    root.setProperty("--ring", btnBgHSL);
+    root.setProperty("--sidebar-primary", btnBgHSL);
+    root.setProperty("--primary-border", adjustHSLLightness(btnBgHSL, -8));
+    const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
+    if (safePrimaryFg) root.setProperty("--primary-foreground", safePrimaryFg);
+  } else if (btnFgHSL) {
+    const safePrimaryFg = ensureContrastingForeground("0 0% 9%", btnFgHSL);
+    if (safePrimaryFg) root.setProperty("--primary-foreground", safePrimaryFg);
+  }
+  if (t.buttonRadius) root.setProperty("--radius", t.buttonRadius);
+  if (t.fontFamily) root.setProperty("--font-sans", t.fontFamily);
+  if (t.inputFontFamily) root.setProperty("--appai-control-font-family", t.inputFontFamily);
+  if (t.inputFontSize) root.setProperty("--appai-control-font-size", t.inputFontSize);
+  else if (t.fontSize) root.setProperty("--appai-control-font-size", t.fontSize);
+  if (t.inputFontWeight) root.setProperty("--appai-control-font-weight", t.inputFontWeight);
+  if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
+    root.setProperty("--font-heading", t.headingFontFamily);
+  }
+  const inputBorderHSL = cssColorToHSL(t.inputBorderColor);
+  if (inputBorderHSL) {
+    root.setProperty("--border", inputBorderHSL);
+    root.setProperty("--input", inputBorderHSL);
+  }
+  const inputBgHSL = cssColorToHSL(t.inputBg);
+  const effectiveBgHSL = bgHSL ?? "0 0% 100%";
+  const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
+  const cardLightness = hslLightness(inputBgHSL);
+  let cardHSL = inputBgHSL;
+  if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
+    cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
+  }
+  if (cardHSL) {
+    root.setProperty("--card", cardHSL);
+    const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
+    if (safeCardFg) root.setProperty("--card-foreground", safeCardFg);
+  }
+  const accentHSL = cssColorToHSL(t.accentColor);
+  if (accentHSL) {
+    root.setProperty("--accent", accentHSL);
+    const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
+    if (safeAccentFg) root.setProperty("--accent-foreground", safeAccentFg);
+  }
+  if (bgHSL) {
+    root.setProperty("--secondary", adjustHSLLightness(bgHSL, -6));
+    root.setProperty("--secondary-border", adjustHSLLightness(bgHSL, -14));
+    root.setProperty("--muted", adjustHSLLightness(bgHSL, -8));
+    const popoverHSL = adjustHSLLightness(bgHSL, -3);
+    root.setProperty("--popover", popoverHSL);
+    const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
+    if (safePopoverFg) root.setProperty("--popover-foreground", safePopoverFg);
+  }
+  if (fgHSL) {
+    const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
+    const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
+    const mutedFg = adjustHSLLightness(fgHSL, 30);
+    root.setProperty("--muted-foreground", ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
+    root.setProperty("--secondary-foreground", ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
+  }
+}
+
+if (typeof window !== "undefined") {
+  const bootTheme = themeSnapshotFromHostStorage();
+  if (bootTheme) applyStoreThemeVars(bootTheme);
+}
+
 /** Resolve a saved frameColor value (id, name, or slug) to the config color id. */
 function resolveFrameColorId(
   stored: string | null | undefined,
@@ -759,6 +1242,19 @@ function resolveFrameColorId(
       normalizeVariantToken(f.name) === slug,
   );
   return bySlug?.id ?? null;
+}
+
+/** First colour that is actually sellable on this product (mapped, else first). */
+function pickFallbackFrameColorId(
+  frameColors: Array<{ id: string; name: string }>,
+  variantMap?: VariantMap | null,
+): string {
+  if (!frameColors.length) return "";
+  if (variantMap) {
+    const mapped = frameColors.find((c) => hasVariantMappingForColor(variantMap, c.id));
+    if (mapped) return mapped.id;
+  }
+  return frameColors[0].id;
 }
 
 /** Match a Shopify variant from a catalog by human-readable size + color names. */
@@ -784,13 +1280,22 @@ function sortSizesByRetailPrice<T extends { id: string }>(
 
 function mapServerVariantsToCatalog(
   raw: any[],
-): Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }> {
+): Array<{
+  id: string;
+  title: string;
+  price: string;
+  option1?: string;
+  option2?: string;
+  option3?: string;
+  imageSrc?: string;
+}> {
   return raw.map((v: any) => ({
     id: String(v.id),
     title: v.title || "",
     price: v.price != null ? String(v.price) : "0.00",
     option1: v.option1,
     option2: v.option2,
+    option3: v.option3,
     imageSrc: typeof v.imageSrc === "string" ? v.imageSrc : undefined,
   }));
 }
@@ -841,6 +1346,11 @@ type ReuseHandoff = {
   artworkUrl?: string;
   prompt?: string;
   autoGenerate?: boolean;
+  stylePreset?: string | null;
+  catalogSlug?: string | null;
+  styleName?: string | null;
+  outputMode?: string | null;
+  generationModel?: string | null;
   ts: number;
 };
 
@@ -853,8 +1363,8 @@ function reuseStorageTargets(): Storage[] {
   };
   try {
     if (window.parent && window.parent !== window) {
-      pushUnique(window.parent.sessionStorage);
-      pushUnique(window.parent.localStorage);
+      pushUnique(hostWindow().sessionStorage);
+      pushUnique(hostWindow().localStorage);
     }
   } catch {
     /* cross-origin parent */
@@ -1080,22 +1590,28 @@ const _isStorefrontIframe = typeof window !== 'undefined' &&
 
 const DIRECT_APP_API_BASE = "https://appai-pod-production.up.railway.app";
 
-/** Absolute http(s) URL for save-mockups (server rejects relative/proxy paths). */
+/** Absolute http(s) or clean data: URL for save-mockups (never host-concat data:). */
 function toAbsoluteMockupUrlForSave(u: string | null | undefined): string | null {
   if (!u) return null;
-  if (u.startsWith("http://") || u.startsWith("https://")) return u;
-  const resolved = toAbsoluteImageUrl(u);
-  if (resolved.startsWith("http")) return resolved;
-  const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
-  return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  return normalizePreviewUrl(u, (relative) => {
+    const resolved = toAbsoluteImageUrl(relative);
+    if (resolved.startsWith("http://") || resolved.startsWith("https://")) return resolved;
+    const path = relative.startsWith(PROXY_PREFIX) ? relative.slice(PROXY_PREFIX.length) : relative;
+    return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  });
 }
 
 /**
  * Core fetch wrapper — uses XHR in Shopify storefront iframes (where window.fetch
  * is broken by Shopify's service worker) and window.fetch everywhere else.
  */
-/** AI generate with a reference image routinely exceeds 30s. */
-const GENERATE_REQUEST_TIMEOUT_MS = 180_000;
+/** Preview Studio sync generate — settle at 90s so the loader cannot spin forever. */
+const GENERATE_REQUEST_TIMEOUT_MS = 90_000;
+
+/** ATC button overlay: reveal only after this wait so fast reuse adds never show it. */
+const ATC_FINALIZING_REVEAL_MS = 3_000;
+/** Exact title from the existing AOP finalize toast / checkout-gate copy. Do not add a second sentence. */
+const ATC_FINALIZING_LABEL = "Finalizing print files…";
 
 function isAbortLikeError(err: unknown): boolean {
   if (!err) return false;
@@ -1193,17 +1709,37 @@ function isCreatorDesignerHost(): boolean {
   return path.startsWith("/s/designer") || path.startsWith("/c/");
 }
 
+/** App-proxy phone shell or creator designer — stay on this path when rewriting page=. */
+function designerAppPathname(path: string): string | null {
+  if (path.includes("/apps/appai/s/designer")) return "/apps/appai/s/designer";
+  if (path.startsWith("/s/designer")) return "/s/designer";
+  return null;
+}
+
 function applyCustomizerPageToUrl(
   url: URL,
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
-  if (isCreatorDesignerHost() || url.pathname.startsWith("/s/designer")) {
-    if (!url.pathname.startsWith("/s/designer")) url.pathname = "/s/designer";
+  const designerPath = designerAppPathname(url.pathname);
+  if (designerPath || isCreatorDesignerHost()) {
+    url.pathname = designerPath || "/s/designer";
     url.searchParams.set("page", pageHandle);
     url.searchParams.set("pageHandle", pageHandle);
   } else {
     url.pathname = `/pages/${pageHandle}`;
+    // Phone-shell leftovers on a theme URL make the embed hop straight
+    // back to /s/designer with the previous product.
+    url.searchParams.delete("host");
+    url.searchParams.delete("returnTo");
+    url.searchParams.delete("storefront");
+    url.searchParams.delete("deferDesignerConfig");
+    url.searchParams.delete("mobileNativeScroll");
+    url.searchParams.delete("page");
+    url.searchParams.delete("pageHandle");
+    url.searchParams.delete("productHandle");
+    url.searchParams.delete("productTypeId");
+    url.searchParams.delete("productId");
   }
   for (const [key, value] of Object.entries(extra)) {
     if (value) url.searchParams.set(key, value);
@@ -1215,12 +1751,101 @@ function replaceCustomizerPageHistory(
   pageHandle: string,
   extra: Record<string, string | null | undefined> = {},
 ) {
+  const { loadDesignId, loadMockup, loadProductName, ...rest } = extra;
+  if (loadDesignId) {
+    writeReopenDesign(hostWindow(), {
+      id: loadDesignId,
+      handle: pageHandle,
+      mockup: loadMockup,
+      productName: loadProductName,
+    });
+  } else if ("loadDesignId" in extra) {
+    clearReopenDesign(hostWindow());
+  }
   try {
-    const parentUrl = new URL(window.parent.location.href);
-    applyCustomizerPageToUrl(parentUrl, pageHandle, extra);
-    window.parent.history.replaceState({}, "", parentUrl.toString());
+    const parentUrl = new URL(hostWindow().location.href);
+    applyCustomizerPageToUrl(parentUrl, pageHandle, {
+      ...rest,
+      loadDesignId: null,
+      loadMockup: null,
+      loadProductName: null,
+      savedDesignId: null,
+    });
+    hostWindow().history.replaceState({}, "", parentUrl.toString());
   } catch {
     /* parent may be inaccessible */
+  }
+}
+
+/** Customizer page handle the reopen entry is keyed by (host URL, else this window's params). */
+function reopenPageHandle(): string {
+  try {
+    const fromHost = pageHandleFromUrl(new URL(hostWindow().location.href));
+    if (fromHost) return fromHost;
+  } catch {
+    /* cross-origin guard */
+  }
+  try {
+    return pageHandleFromUrl(new URL(window.location.href));
+  } catch {
+    return "";
+  }
+}
+
+/** Homepage-pill URL: /pages/{handle} — no designer leftovers, never a job id. */
+function buildCleanSavedDesignUrl(
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+): string {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) qs.set(key, value);
+  }
+  const q = qs.toString();
+  return `/pages/${encodeURIComponent(pageHandle)}${q ? `?${q}` : ""}`;
+}
+
+function isTopLevelDesignerWindow(): boolean {
+  try {
+    if (window.parent === window) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return new URLSearchParams(window.location.search).get("host") === "page";
+  } catch {
+    return false;
+  }
+}
+
+/** Full-page open for a saved design — same clean /pages/ URL as the homepage tray pill. */
+function assignHostToSavedDesign(
+  pageHandle: string,
+  extra: Record<string, string | null | undefined> = {},
+) {
+  const { loadDesignId, loadMockup, loadProductName, ...rest } = extra;
+  if (loadDesignId) {
+    writeReopenDesign(hostWindow(), {
+      id: loadDesignId,
+      handle: pageHandle,
+      mockup: loadMockup,
+      productName: loadProductName,
+    });
+  }
+  const dest = buildCleanSavedDesignUrl(pageHandle, rest);
+  try {
+    window.parent.postMessage({ type: "ai-art-studio:open-saved-design", url: dest }, "*");
+  } catch {
+    /* ignore */
+  }
+  if (isTopLevelDesignerWindow()) {
+    window.location.assign(dest);
+    return;
+  }
+  try {
+    hostWindow().location.assign(dest);
+  } catch {
+    window.location.assign(dest);
   }
 }
 
@@ -1289,13 +1914,23 @@ function detectRuntimeMode(params: URLSearchParams): RuntimeMode {
 function InfoCollapsible({
   title,
   children,
+  onClose,
 }: {
   title: string;
   children: React.ReactNode;
+  /** Phone shell: collapsing a section dismisses the Info tray. */
+  onClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border-2 border-foreground bg-background">
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) onClose?.();
+      }}
+      className="rounded-md border-2 border-foreground bg-background"
+    >
       <CollapsibleTrigger asChild>
         <button
           type="button"
@@ -1305,7 +1940,16 @@ function InfoCollapsible({
           <ChevronDown className={`h-4 w-4 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
         </button>
       </CollapsibleTrigger>
-      <CollapsibleContent>
+      <CollapsibleContent
+        onAnimationEnd={() => {
+          if (typeof window === "undefined" || window.parent === window) return;
+          const h = Math.max(
+            document.documentElement.scrollHeight,
+            document.body.scrollHeight,
+          );
+          window.parent.postMessage({ type: "ai-art-studio:resize", height: h }, "*");
+        }}
+      >
         <div className="border-t px-3 py-3">{children}</div>
       </CollapsibleContent>
     </Collapsible>
@@ -1335,49 +1979,33 @@ function sanitizeProductDescriptionHtml(
 
 function ProductInfoSections({
   description,
-  sizeChart,
-  sizeChartLoading,
-  blueprintId,
   className,
   productName,
   commerceTerms,
   commerceTermsOrigin,
-}: ProductInfoSectionsProps & { productName?: string | null }) {
+  onSectionClose,
+}: ProductInfoSectionsProps & {
+  productName?: string | null;
+  onSectionClose?: () => void;
+}) {
   const safeDescription = sanitizeProductDescriptionHtml(description || "", productName);
   const hasDetails = !!safeDescription;
-  const hasSizeChartArea = !!blueprintId || !!sizeChart || sizeChartLoading;
   const showCommerce = !!commerceTerms;
-  if (!hasDetails && !hasSizeChartArea && !showCommerce) return null;
+  if (!hasDetails && !showCommerce) return null;
 
   return (
     <div className={`space-y-2 ${className || ""}`} data-testid="container-product-info-sections">
       {showCommerce && (
-        <InfoCollapsible title="Shipping & returns">
+        <InfoCollapsible title="Shipping & returns" onClose={onSectionClose}>
           <CreatorProductTermsNote appOrigin={commerceTermsOrigin || undefined} />
         </InfoCollapsible>
       )}
       {hasDetails && (
-        <InfoCollapsible title="Product Details">
+        <InfoCollapsible title="Product Details" onClose={onSectionClose}>
           <div
             className="prose prose-sm max-w-none text-sm leading-relaxed text-muted-foreground"
             dangerouslySetInnerHTML={{ __html: safeDescription }}
           />
-        </InfoCollapsible>
-      )}
-      {hasSizeChartArea && (
-        <InfoCollapsible title="Size Chart">
-          {sizeChartLoading ? (
-            <div className="rounded-md border p-3 text-sm text-muted-foreground">Loading size chart...</div>
-          ) : (
-            <SizeChartTable chart={sizeChart} compact />
-          )}
-          {import.meta.env.DEV && (
-            <div className="mt-2 rounded-md bg-muted/50 p-2 text-[11px] text-muted-foreground">
-              <div>Current blueprint ID: {blueprintId ?? "missing"}</div>
-              <div>Chart loaded: {sizeChart ? "yes" : "no"}</div>
-              <div>Row count: {sizeChart?.rows.length ?? 0}</div>
-            </div>
-          )}
         </InfoCollapsible>
       )}
     </div>
@@ -1406,7 +2034,11 @@ export type TesterDesignStatus = {
    *   saved  — latest apply's panels are on the job
    *   error  — the latest capture failed (check console)
    */
-  aopPanels: 'none' | 'saving' | 'saved' | 'error';
+  aopPanels: 'none' | 'saving' | 'saved' | 'error' | 'rateLimited';
+  /** Seconds to wait after a 429 (also encoded in rateLimitedUntil). */
+  retryAfterSec?: number;
+  /** Epoch ms when a 429 cooldown ends. */
+  rateLimitedUntil?: number;
   /**
    * Flat apparel faces currently past the dashed print guide (trim warning).
    * Tester uses this to confirm before sending a clipped test order.
@@ -1421,6 +2053,10 @@ export interface EmbedDesignProps {
     | {
     mode: 'admin-tester';
     productTypeId: string | number;
+        /** Merchant shop ({handle}.myshopify.com) from design-studio identity — needed to reopen saved designs. */
+        shop?: string;
+        /** Merchant "My Designs" customer id — same identity used by the admin designs library. */
+        customerId?: string;
         /** Fired whenever the on-screen design's job id or panel-capture status changes,
          *  so the tester page can target test orders at the design on screen. */
         onTesterDesignStatus?: (status: TesterDesignStatus) => void;
@@ -1430,6 +2066,8 @@ export interface EmbedDesignProps {
         flushDesignRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Opens the AOP/flat placement editor (same UI as the live storefront). */
         openEditorRef?: React.MutableRefObject<(() => void) | null>;
+        /** Retry only failed / dirty print-panel uploads after a 429 cooldown. */
+        retryFailedUploadsRef?: React.MutableRefObject<(() => Promise<void>) | null>;
         /** Preview Studio: leave this product and return to the product list. */
         onLeaveProduct?: () => void;
       }
@@ -1441,6 +2079,12 @@ export interface EmbedDesignProps {
       };
   /** Preview Studio: Save / test-order actions sit above Generate + Upload. */
   testerActions?: ReactNode;
+  /**
+   * Admin tester only: controls pinned to the top of the main preview box, and
+   * (when set) an image shown in that box in place of the flat preview — e.g.
+   * the "See it worn" lifestyle mockup. The storefront never passes this.
+   */
+  testerPreview?: { toolbar?: ReactNode; imageUrl?: string | null; caption?: string | null };
 }
 
 /**
@@ -1490,13 +2134,15 @@ function persistCustomerRecord(next: CustomerInfo) {
 
 function hasStoredLoggedInIdentity(): boolean {
   // Must stay in sync with isSignedIn() in appai-customizer-tray.js.
-  // ONLY appai_customer.isLoggedIn === true counts. Never fall back to
-  // appai_customer_id presence: the anonymous bootstrap writes that id for
-  // every visitor, and older app versions wrote it WITHOUT the
-  // appai_customer record — that legacy state suppressed the sign-in panel
-  // for anonymous visitors ("just opens a customizer page").
+  // ONLY AppAI OTP/Google counts: isLoggedIn === true AND an email.
+  // Never fall back to appai_customer_id or a Shopify customer.id —
+  // those hid the tray Sign in row for store-logged-in visitors.
   const c = readStoredCustomerRecord();
-  return c?.isLoggedIn === true;
+  return (
+    c?.isLoggedIn === true &&
+    typeof c.email === "string" &&
+    c.email.includes("@")
+  );
 }
 
 /** Dedupe carousel/mockup URLs by origin+pathname (ignore query strings). */
@@ -1550,12 +2196,22 @@ function isPlacementForkDesign(d: { designState?: Record<string, unknown> | null
   return d.designState?.placementFork === true;
 }
 
-/** Per-job cart/preview raster — do not fall back to a sibling placement's mockupUrls. */
+/**
+ * Same thumbnail SoT as the parent cart-drawer Saved Designs
+ * (`appai-saved-designs-nav.js`): job `mockupUrls[0]`, then artwork.
+ * Colour-change persist writes mockupUrls and used to leave
+ * designState.flatMockups stale — preferring those rasters made the
+ * in-iframe strip lag the drawer.
+ */
 function savedDesignPreviewUrl(d: {
   mockupUrls?: string[] | null;
   artworkUrl?: string | null;
   designState?: Record<string, unknown> | null;
 }): string {
+  const fromJob = Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "";
+  if (typeof fromJob === "string" && fromJob.trim()) {
+    return normalizePreviewUrl(fromJob.trim()) || "";
+  }
   const ds = d.designState && typeof d.designState === "object" ? d.designState : null;
   const flat =
     ds && ds.flatMockups && typeof ds.flatMockups === "object"
@@ -1565,13 +2221,10 @@ function savedDesignPreviewUrl(d: {
     ds && ds.hoodieAopMockups && typeof ds.hoodieAopMockups === "object"
       ? (ds.hoodieAopMockups as Record<string, unknown>)
       : null;
-  for (const u of [
-    flat?.front,
-    hoodie?.front,
-    Array.isArray(d.mockupUrls) ? d.mockupUrls[0] : "",
-    d.artworkUrl,
-  ]) {
-    if (typeof u === "string" && u.trim()) return u.trim();
+  for (const u of [flat?.front, hoodie?.front, d.artworkUrl]) {
+    if (typeof u === "string" && u.trim()) {
+      return normalizePreviewUrl(u.trim()) || "";
+    }
   }
   return "";
 }
@@ -1588,6 +2241,65 @@ function isPrintifyOnDemandMockupLabel(label: string): boolean {
 function isBackGalleryLabel(label: string | undefined): boolean {
   const l = String(label || "").trim().toLowerCase();
   return l === "back" || l.startsWith("back ");
+}
+
+/** Style keys already on a reuse / save payload — no extra fetch. */
+function carriedStyleHints(raw: Record<string, unknown> | null | undefined): {
+  stylePreset: string | null;
+  catalogSlug: string | null;
+  styleName: string | null;
+  outputMode: string | null;
+  generationModel: string | null;
+} {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const stylePreset =
+    coerceStyleHint(o.stylePreset) || coerceStyleHint(o.styleId) || "";
+  const catalogSlug =
+    coerceStyleHint(o.catalogSlug) || coerceStyleHint(o.catalog_slug) || "";
+  const styleName =
+    coerceStyleHint(o.styleName) || coerceStyleHint(o.style_name) || "";
+  return {
+    stylePreset: stylePreset || null,
+    catalogSlug: catalogSlug || null,
+    styleName: styleName || null,
+    outputMode: coerceStyleHint(o.outputMode) || null,
+    generationModel: coerceStyleHint(o.generationModel) || null,
+  };
+}
+
+function styleHintsHaveIdentity(h: {
+  stylePreset?: string | null;
+  catalogSlug?: string | null;
+  styleName?: string | null;
+}): boolean {
+  return !!(h.stylePreset || h.catalogSlug || h.styleName);
+}
+
+function resolveSavedStyleDropdownId(
+  selectable: StylePreset[],
+  hints: SavedStyleHints,
+  pool: StylePreset[] | undefined,
+  context: string,
+): string {
+  const match = resolveSelectableStylePreset(selectable, hints, { pool });
+  if (match) return String(match.id);
+  const stylePreset = coerceStyleHint(hints.stylePreset);
+  const catalogSlug = coerceStyleHint(hints.catalogSlug);
+  const styleName = coerceStyleHint(hints.styleName);
+  if (stylePreset || catalogSlug || styleName) {
+    console.warn("[LoadDesign] style preselect unresolved", {
+      context,
+      stylePreset: stylePreset || null,
+      catalogSlug: catalogSlug || null,
+      styleName: styleName || null,
+      options: selectable.map((p) => ({
+        id: String(p.id),
+        catalogSlug: p.catalogSlug ?? null,
+        name: p.name,
+      })),
+    });
+  }
+  return "";
 }
 
 /** Artwork + Printify mockups + merchant catalog extras (deduped). */
@@ -1671,7 +2383,7 @@ function resolvePostGenMockupUrl(
   return null;
 }
 
-export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDesignProps = {}) {
+export default function EmbedDesign({ embeddedContext, testerActions, testerPreview }: EmbedDesignProps = {}) {
   const searchParams = new URLSearchParams(window.location.search);
 
   // Detect runtime mode. When hosted in-process by the admin tester or merchant design
@@ -1683,16 +2395,51 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     : detectRuntimeMode(searchParams);
 
   const isAdminTester = runtimeMode === 'admin-tester';
+  const [adminTesterShop, setAdminTesterShop] = useState<string | null>(() =>
+    embeddedContext?.mode === "admin-tester" && embeddedContext.shop
+      ? embeddedContext.shop
+      : null,
+  );
   // merchant-studio: merchant admin "My Designs" studio. Uses the same storefront endpoints
   // as real customers (see RuntimeMode doc above) — folded into isStorefront so config/
   // generate/mockup/save-design/my-designs all pick the storefront API branch automatically.
   const isMerchantStudio = runtimeMode === 'merchant-studio';
   const isStorefront = runtimeMode === 'storefront' || isMerchantStudio;
+  const isTopLevelHost = searchParams.get("host") === "page";
   /** Creator Marketplace host: dual quota + Storefront API cart (not theme /cart/add.js). */
   const creatorUsernameRaw = (searchParams.get("creatorUsername") || "").trim();
   const creatorUsernameParam = creatorUsernameRaw.toLowerCase();
   const creatorIdParam = (searchParams.get("creatorId") || "").trim();
   const isCreatorStorefront = isStorefront && !isMerchantStudio && !!(creatorUsernameParam || creatorIdParam);
+  const shopNameParam = (searchParams.get("shopName") || "").trim();
+  const [creatorStoreName, setCreatorStoreName] = useState<string | null>(() => {
+    if (!creatorUsernameParam) return null;
+    const last = readLastCreatorVisit();
+    if (!last || last.username !== creatorUsernameParam) return null;
+    return last.shopName || null;
+  });
+  const [merchantStoreName, setMerchantStoreName] = useState<string | null>(null);
+  const shellBrandName = useMemo(
+    () =>
+      resolveMobileShellBrandName({
+        isCreatorStorefront,
+        creatorStoreName,
+        merchantStoreName,
+        shopNameParam,
+      }),
+    [isCreatorStorefront, creatorStoreName, merchantStoreName, shopNameParam],
+  );
+  const openStorefrontCart = useCallback(() => {
+    if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
+      window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
+      return;
+    }
+    try {
+      hostWindow().location.href = "/cart";
+    } catch {
+      window.location.href = "/cart";
+    }
+  }, [isCreatorStorefront, creatorUsernameRaw, creatorUsernameParam]);
   useEffect(() => {
     if (!isCreatorStorefront || !creatorUsernameParam) return;
     writeLastCreatorVisit({
@@ -1706,9 +2453,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (cancelled) return;
         const creator = json?.creator as { username?: string; publicName?: string } | undefined;
         if (!creator?.username) return;
+        const shopName = creator.publicName || creator.username;
+        setCreatorStoreName(shopName);
         writeLastCreatorVisit({
           username: creator.username,
-          shopName: creator.publicName || creator.username,
+          shopName,
           returnUrl: currentCreatorReturnUrl(creator.username),
         });
       })
@@ -1745,9 +2494,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const requiresSessionToken = runtimeMode === 'admin-embedded';
   const usesPublicStorefrontApi = runtimeMode === 'storefront';
 
+  // Legacy ?loadDesignId= arrivals (old bookmarks, cached theme JS): keep the
+  // reopen target in tab storage and take the job id out of the address bar.
+  useState(() => {
+    if (runtimeMode === 'storefront') stashReopenFromHostUrl(hostWindow());
+    return null;
+  });
+
   // Anonymous session ID for storefront free-generation tracking.
   // Persisted in localStorage so it survives page refreshes.
-  const [anonSessionId] = useState(() => {
+  const [anonSessionId, setAnonSessionId] = useState(() => {
     // merchant-studio has its own server-resolved identity (see identity bootstrap effect below)
     // and must never mix into a real customer's anonymous session on the same browser.
     if (!isStorefront || isMerchantStudio) return '';
@@ -1761,14 +2517,36 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   });
 
   // Ref for the pre-shadow product poll timer — declared early so the mount cleanup can reference it.
+  /** Per-shop ATC architecture from designerConfig; only shadow-direct is wired so far. */
+  const atcModeRef = useRef<AtcMode>(normalizeAtcMode(null));
   const preShadowPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preShadowJobIdRef = useRef<string | null>(null);
+  /**
+   * Key (`job::variant::cfgHash`) the server pre-minted under at Apply, as
+   * reported by shadow-variant/:jobId. ATC only falls back to the pre-created
+   * variant when this equals the key it is about to persist — a stale hash
+   * (edit after Apply) must cold-mint per the snapshot rule.
+   */
+  const preShadowDesignIdRef = useRef<string | null>(null);
+  /** Persist keys already warmed (or in flight) per catalog variant. */
+  const preShadowWarmRef = useRef<Map<string, string>>(new Map());
+  const preShadowDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Retail (dollars string, e.g. "18.95") last synced against the shadow
+   * variant via resolve-design-variant. On the next ATC for the same
+   * (job, retail) we can use preShadowVariantId directly and fire the
+   * resolve call in the background — saves the ~1.5-3s Admin round-trip.
+   *
+   * Cleared whenever the design job or displayed retail changes so a
+   * price drift is picked up on the next ATC.
+   */
+  const preShadowSyncedRetailRef = useRef<{ jobId: string; retail: string } | null>(null);
 
   // Merge anonymous session into customer account when customer is logged in.
   // Fire once on mount; backend is idempotent so re-merging is safe.
   const mergeSessionRan = useRef(false);
   useEffect(() => {
-    const custId = searchParams.get("customerId") || '';
+    const custId = loggedInCustomerIdFromHost();
     if (!isStorefront || !anonSessionId || !custId || mergeSessionRan.current) return;
     mergeSessionRan.current = true;
 
@@ -1824,7 +2602,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       (searchParams.get("page") || searchParams.get("pageHandle") || "").trim();
     if (fromQuery) return fromQuery;
     try {
-      const parentPath = window.parent.location.pathname || "";
+      const parentPath = hostWindow().location.pathname || "";
       const match = parentPath.match(/^\/pages\/([^/?#]+)/);
       if (match && match[1]) return match[1];
     } catch {
@@ -1903,14 +2681,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, []);
   
   const showPresetsParam = searchParams.get("showPresets") !== "false";
-  const shopifyCustomerId = searchParams.get("customerId") || "";
+  const shopifyCustomerId = loggedInCustomerIdFromHost();
   const shopifyCustomerEmail = searchParams.get("customerEmail") || "";
   const shopifyCustomerName = searchParams.get("customerName") || "";
   const sharedDesignId = searchParams.get("sharedDesignId") || "";
   const loadDesignId = searchParams.get("loadDesignId") || "";
   const parentReuseParams = (() => {
     try {
-      return new URLSearchParams(window.parent.location.search);
+      return new URLSearchParams(hostWindow().location.search);
     } catch {
       return new URLSearchParams();
     }
@@ -1924,15 +2702,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const autoReuseGenerateParam =
     (parentReuseParams.get("autoReuseGenerate") || searchParams.get("autoReuseGenerate") || "") === "1";
   // parentLoadDesignId: read loadDesignId directly from the parent page URL.
-  // The iframe is served on the same Shopify domain as the parent, so window.parent.location
+  // The iframe is served on the same Shopify domain as the parent, so hostWindow().location
   // is accessible (no cross-origin restriction). This bypasses the Shopify CDN-cached liquid file.
+  // Normally the tab-scoped reopen entry (see lib/reopenDesign) — the job id is no
+  // longer carried in the URL.
+  const reopenEntry = isStorefront && !isMerchantStudio ? readReopenDesign(hostWindow(), reopenPageHandle()) : null;
   const parentLoadDesignId = (() => {
     try {
-      const parentParams = new URLSearchParams(window.parent.location.search);
-      return parentParams.get('loadDesignId') || '';
+      const parentParams = new URLSearchParams(hostWindow().location.search);
+      const legacy = parentParams.get('loadDesignId') || '';
+      if (legacy) return legacy;
     } catch {
-      return ''; // cross-origin guard (shouldn't happen on same domain)
+      /* cross-origin guard (shouldn't happen on same domain) */
     }
+    return reopenEntry?.id || '';
   })();
   // bridgeLoadDesignId is set by Saved Designs clicks / postMessage. Must win over a
   // sticky parent ?loadDesignId= — otherwise clicking design A while the parent URL
@@ -1949,27 +2732,59 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const initialPreviewMockupUrl = (() => {
     let raw = "";
     try {
-      raw = new URLSearchParams(window.parent.location.search).get("loadMockup") || "";
+      raw = new URLSearchParams(hostWindow().location.search).get("loadMockup") || "";
     } catch {
       /* cross-origin guard */
     }
     if (!raw) raw = searchParams.get("loadMockup") || "";
-    if (!raw) return "";
-    try {
-      return decodeURIComponent(raw);
-    } catch {
-      return raw;
+    if (!raw && reopenEntry?.mockup) raw = reopenEntry.mockup;
+    if (!raw) {
+      try {
+        raw = hostWindow().sessionStorage.getItem("appai_landing_mockup") || "";
+      } catch {
+        /* sessionStorage blocked */
+      }
     }
+    if (!raw) return "";
+    let decoded = raw;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      decoded = raw;
+    }
+    return normalizePreviewUrl(decoded) || "";
   })();
 
   const [prompt, setPrompt] = useState("");
   const [isLoadingSharedDesign, setIsLoadingSharedDesign] = useState(!!sharedDesignId);
+  /** This browser's session no longer owns a design it was asked to reopen. */
+  const [designAccessDenied, setDesignAccessDenied] = useState(false);
   const [sharedDesignError, setSharedDesignError] = useState<string | null>(null);
   const [isSharedDesign, setIsSharedDesign] = useState(false);
   const [selectedSize, setSelectedSize] = useState("");
+  const [shippingDownsellSizeId, setShippingDownsellSizeId] = useState<string | null>(null);
   const [selectedFrameColor, setSelectedFrameColor] = useState("");
+  const [atcUpdatesPending, setAtcUpdatesPending] = useState(false);
+  const [saveStatePending, setSaveStatePending] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string>("");
   const [selectedStyleOption, setSelectedStyleOption] = useState<string>("");
+  const [decorBackgroundFill, setDecorBackgroundFill] = useState<string>(DEFAULT_DECOR_BACKGROUND_FILL);
+  /** Style fields from a reopened save — selectedPreset may be a slug or stale merchant id. */
+  const [loadedDecorStyle, setLoadedDecorStyle] = useState<{
+    stylePreset?: string | null;
+    catalogSlug?: string | null;
+    styleName?: string | null;
+    outputMode?: string | null;
+    generationModel?: string | null;
+  } | null>(null);
+  const [quoteOptions, setQuoteOptions] = useState<QuoteOption[] | null>(null);
+  const [quotePickIndex, setQuotePickIndex] = useState<number | null>(null);
+  const [quoteTheme, setQuoteTheme] = useState("");
+  const [quoteWriting, setQuoteWriting] = useState(false);
+  const [quoteRowDrafts, setQuoteRowDrafts] = useState<string[]>([]);
+  const [quoteEditingIndex, setQuoteEditingIndex] = useState<number | null>(null);
+  const quoteEditSeedRef = useRef("");
+  const prevQuoteVoiceRef = useRef("");
   const [referenceImages, setReferenceImages] = useState<File[]>([]);
   const [referencePreviews, setReferencePreviews] = useState<string[]>([]);
   type ReusePageOption = {
@@ -2020,6 +2835,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [reuseRegenerateBasePrompt, setReuseRegenerateBasePrompt] = useState<string | null>(null);
   const [generatedDesign, setGeneratedDesign] = useState<GeneratedDesign | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [atcFinalizingReveal, setAtcFinalizingReveal] = useState(false);
+  const [atcAvoidFinalizingLabel, setAtcAvoidFinalizingLabel] = useState(false);
+  const [atcCooldownUntil, setAtcCooldownUntil] = useState(0);
+  const [atcCooldownNow, setAtcCooldownNow] = useState(() => Date.now());
+  const atcCooldownRemainingMs = Math.max(0, atcCooldownUntil - atcCooldownNow);
+  useEffect(() => {
+    const remaining = readAtcRateLimitRemainingMs();
+    if (remaining > 0) setAtcCooldownUntil(Date.now() + remaining);
+  }, []);
+  useEffect(() => {
+    if (!atcCooldownUntil) return;
+    const tick = () => {
+      const now = Date.now();
+      setAtcCooldownNow(now);
+      if (now >= atcCooldownUntil) setAtcCooldownUntil(0);
+    };
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [atcCooldownUntil]);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
   const debugBridge = searchParams.get("debugBridge") === "1";
@@ -2070,16 +2905,54 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         const se = document.scrollingElement || document.documentElement;
         se.scrollTop += target.getBoundingClientRect().top;
       }
-      try {
-        window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
-      } catch {
-        /* cross-origin parent */
+      if (!isTopLevelHost) {
+        try {
+          window.parent.postMessage({ type: 'ai-art-studio:scroll-to-preview' }, '*');
+        } catch {
+          /* cross-origin parent */
+        }
       }
     });
-  }, []);
+  }, [isTopLevelHost]);
 
   const [stylePresets, setStylePresets] = useState<StylePreset[]>([]);
+  const stylePresetsOwnedRef = useRef(false);
+  const lastDesignerProductTypeRef = useRef("");
+  const refetchStylePresetsRef = useRef<() => Promise<void>>(async () => {});
   const [pageStyleConfig, setPageStyleConfig] = useState<CustomizerPageStyleConfig | null>(null);
+  /** Store experience profile (branding/copy/controls). Null = classic customizer. */
+  const [experienceProfile, setExperienceProfile] = useState<PublicExperienceProfile | null>(null);
+  // Style-pack creative inputs (only used when a pack style is active).
+  const [packState, setPackState] = useState<PackCreativeState>({
+    petName: "",
+    species: "",
+    personality: [],
+    humor: "",
+    relationship: "",
+    wordsMode: "suggest",
+    exactWords: "",
+  });
+  const [packConcepts, setPackConcepts] = useState<PackConceptOptionClient[] | null>(null);
+  const [packConceptPick, setPackConceptPick] = useState<number | null>(null);
+  const [packConceptLoading, setPackConceptLoading] = useState(false);
+  const [packWizardStep, setPackWizardStep] = useState(0);
+  const [packVisualSystem, setPackVisualSystem] = useState("");
+  const [packMoreLooks, setPackMoreLooks] = useState(false);
+  /** Stored private photos from a reloaded brief (reused on regenerate). */
+  const [packStoredRefs, setPackStoredRefs] = useState<PublicCreativeBrief["referenceImages"]>([]);
+  /** Role per uploaded File (pet / owner); untagged files are sent as legacy strings. */
+  const referenceRoleMapRef = useRef(new WeakMap<File, "pet" | "owner">());
+  const pendingUploadRoleRef = useRef<"pet" | "owner">("pet");
+  const packConceptKeyRef = useRef("");
+  const experienceProfileRef = useRef<PublicExperienceProfile | null>(null);
+  experienceProfileRef.current = experienceProfile;
+  // Profile colours win over the store theme; the theme handlers re-apply them too.
+  useEffect(() => {
+    applyExperienceBrandVars(experienceProfile?.brand);
+  }, [experienceProfile]);
+  /** Store copy override, else the classic literal passed in. */
+  const xc = (key: Parameters<typeof experienceCopy>[1], fallback: string) =>
+    experienceCopy(experienceProfile, key, fallback);
   const [productTypeConfig, setProductTypeConfig] = useState<ProductTypeConfig | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   /** Disabled customizer pages may reopen a saved design for ATC, but not Start Fresh / new generate. */
@@ -2089,8 +2962,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [isInAppProductSwitching, setIsInAppProductSwitching] = useState(false);
   const [productTypeError, setProductTypeError] = useState<string | null>(null);
   const [brandingSettings, setBrandingSettings] = useState<any>(null);
-  const [sizeChart, setSizeChart] = useState<NormalizedSizeChart | null>(null);
-  const [sizeChartLoading, setSizeChartLoading] = useState(false);
 
   // Derived early — cart-state sync and load-design helpers reference these before JSX.
   // Dimensional sizes are sorted smallest→largest by the first inch number (11×8 before 14×11).
@@ -2107,6 +2978,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }));
     return sortDimensionalSizesAscending(mapped);
   }, [productTypeConfig]);
+
+  const sizeCoverageQ = useStorefrontSizeCoverage(productTypeId, isCreatorStorefront);
+  const sizeCoverageRows = sizeCoverageQ.data?.sizes;
+  const shipCountryForCoverage = sizeCoverageQ.data?.country || "US";
 
   const frameOptionsRedundantWithSizes = useMemo(
     () =>
@@ -2142,6 +3017,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         id: c.id,
         name: c.name,
         hex: c.hex,
+        variantAvailable: c.variantAvailable,
+        inStock: c.inStock,
       })),
     [productTypeConfig],
   );
@@ -2192,6 +3069,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     !(isPhoneCaseProduct && !frameColorsArePhoneModels) &&
     !(!!productTypeConfig?.isAllOverPrint && frameColorObjects.length <= 1);
 
+  // If the current colour is fully OOS, move to the first in-stock colour.
+  useEffect(() => {
+    if (!showFrameColorSelector) return;
+    if (!selectedFrameColor || frameColorObjects.length === 0) return;
+    const current = frameColorObjects.find((c) => c.id === selectedFrameColor);
+    if (current?.inStock !== false) return;
+    const next = frameColorObjects.find((c) => c.inStock !== false);
+    if (next) setSelectedFrameColor(next.id);
+  }, [showFrameColorSelector, selectedFrameColor, frameColorObjects]);
+
   // Phone cases with models in Size: never leave a junk Model fragment as frameColor.
   useEffect(() => {
     if (!isPhoneCaseProduct || frameColorsArePhoneModels) return;
@@ -2229,7 +3116,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         decorPerSize: cal.decorPerSize,
       })
     );
-    // Comforter / wall decals: same — Printify zoom mode left tester stuck on
+    // Comforter / wall decals / indoor tapestry: same — Printify zoom mode left tester stuck on
     // "Save design / Refresh Mockups" because placement never auto-Applied.
     const catalogSizeBlank = isCatalogSizeBlankBlueprint(
       productTypeConfig?.printifyBlueprintId,
@@ -2269,6 +3156,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // merchant-studio runs in-process inside the admin app — there is no theme iframe or
     // referrer to inspect, so the shop domain is resolved server-side and passed explicitly.
     if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+    if (embeddedContext?.mode === 'admin-tester' && embeddedContext.shop) {
+      return embeddedContext.shop;
+    }
+    if (adminTesterShop) return adminTesterShop;
 
     // URL param is set by the theme embed (?shop=…). It is often the short handle only
     // (same as window.Shopify.shop), but /api/storefront/* must use *.myshopify.com
@@ -2299,6 +3190,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Get the myshopify.com domain specifically for API calls that require it
   const getMyShopifyDomain = (): string | null => {
     if (embeddedContext?.mode === 'merchant-studio') return embeddedContext.shop;
+    if (embeddedContext?.mode === 'admin-tester' && embeddedContext.shop) {
+      return embeddedContext.shop;
+    }
+    if (adminTesterShop) return adminTesterShop;
 
     const shopParam = searchParams.get("shop") || "";
     
@@ -2329,6 +3224,141 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     console.log('[Design Studio] Could not determine myshopify.com domain from shop param:', shopParam);
     return null;
   };
+
+  const applyOwnStylePresets = useCallback((presets: StylePreset[]) => {
+    setStylePresets(presets);
+    stylePresetsOwnedRef.current = true;
+  }, []);
+
+  const refetchStylePresets = useCallback(async () => {
+    const shop = getMyShopifyDomain();
+    const pageHandle =
+      activeProductContext.pageHandle ||
+      searchParams.get("page") ||
+      searchParams.get("pageHandle") ||
+      "";
+    const cacheBuster = `_t=${Date.now()}`;
+    const takePresets = (raw: unknown) => {
+      if (!Array.isArray(raw)) return false;
+      applyOwnStylePresets(raw as StylePreset[]);
+      return true;
+    };
+    try {
+      if (isStorefront && pageHandle && shop) {
+        const pageUrl =
+          `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shop)}` +
+          `&handle=${encodeURIComponent(pageHandle)}&${cacheBuster}` +
+          (creatorUsernameParam
+            ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}`
+            : "") +
+          (creatorIdParam ? `&creatorId=${encodeURIComponent(creatorIdParam)}` : "");
+        const pageRes = await safeFetch(pageUrl, {}, 8000);
+        if (!pageRes.ok) return;
+        const pageCfg = await pageRes.json();
+        if (takePresets(pageCfg.stylePresets) && pageCfg.styleConfig !== undefined && !isCreatorStorefront) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(pageCfg.experienceProfile));
+        }
+        return;
+      }
+      if (isAdminTester && productTypeId && productTypeId !== "0") {
+        const designerRes = await safeFetch(
+          `${API_BASE}/api/product-types/${productTypeId}/designer?${cacheBuster}`,
+          {},
+          8000,
+        );
+        if (!designerRes.ok) return;
+        const designerCfg = await designerRes.json();
+        if (designerCfg.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(designerCfg.experienceProfile));
+        }
+        takePresets(designerCfg.stylePresets);
+        return;
+      }
+      if (shop && productTypeId && productTypeId !== "0") {
+        const designerParams = new URLSearchParams({
+          shop,
+          _t: String(Date.now()),
+        });
+        if (activeProductContext.productHandle) {
+          designerParams.set("productHandle", activeProductContext.productHandle);
+        }
+        const designerRes = await safeFetch(
+          `${API_BASE}/api/storefront/product-types/${productTypeId}/designer?${designerParams.toString()}`,
+          {},
+          8000,
+        );
+        if (!designerRes.ok) return;
+        const designerCfg = await designerRes.json();
+        if (designerCfg.styleConfig !== undefined) {
+          setPageStyleConfig(parseCustomizerPageStyleConfig(designerCfg.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(designerCfg.experienceProfile));
+        }
+        takePresets(designerCfg.stylePresets);
+      }
+    } catch (err) {
+      console.warn("[EmbedDesign] stylePresets refetch failed:", err);
+    }
+  }, [
+    activeProductContext.pageHandle,
+    activeProductContext.productHandle,
+    applyOwnStylePresets,
+    creatorIdParam,
+    creatorUsernameParam,
+    isAdminTester,
+    isCreatorStorefront,
+    isStorefront,
+    productTypeId,
+    searchParams,
+  ]);
+
+  refetchStylePresetsRef.current = refetchStylePresets;
+
+  useEffect(() => {
+    let lastKick = 0;
+    const kick = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastKick < 1500) return;
+      lastKick = now;
+      void refetchStylePresetsRef.current();
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("focus", kick);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", kick);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onInvalidate = () => {
+      void refetchStylePresetsRef.current();
+    };
+    let ch: BroadcastChannel | null = null;
+    try {
+      ch = new BroadcastChannel(STYLE_PRESETS_CHANNEL);
+      ch.onmessage = onInvalidate;
+    } catch {
+      /* unsupported */
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STYLE_PRESETS_STORAGE_KEY && event.newValue) onInvalidate();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      try {
+        ch?.close();
+      } catch {
+        /* ignore */
+      }
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   
   const shopDomain = resolveShopDomain();
 
@@ -2383,6 +3413,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     enabled: boolean;
     creditAmount: number;
     thresholdCents: number | null;
+    /** Server-rendered label in the Phase 4 shopper currency (e.g. "AUD $76"). */
+    thresholdDisplay?: string | null;
     sortOrder?: number;
   };
   type PublicRewardLadder = {
@@ -2395,6 +3427,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const googleAuthNonceRef = useRef<string | null>(null);
   const googleAuthPopupRef = useRef<Window | null>(null);
   const [storefrontCustomerId, setStorefrontCustomerId] = useState<string | null>(() => {
+    if (embeddedContext?.mode === "admin-tester") {
+      return embeddedContext.customerId || null;
+    }
     try {
       return (
         localStorage.getItem("appai_customer_id") ||
@@ -2418,9 +3453,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   });
 
+  // Latest token for long-lived callbacks (save-design / fork-design) without widening their deps.
+  const storefrontIdentityTokenRef = useRef<string | null>(storefrontIdentityToken);
+  storefrontIdentityTokenRef.current = storefrontIdentityToken;
+  const identityJsonHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const t = storefrontIdentityTokenRef.current;
+    if (t) headers.Authorization = `Bearer ${t}`;
+    return headers;
+  };
+
+  /** Saved-designs requests carry the visitor's identity token (server requires it). */
+  const savedDesignsHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
+    return headers;
+  };
+
+  const refreshStorefrontWalletRef = useRef<() => Promise<number | null>>(async () => null);
+
   useEffect(() => {
     if (!isStorefront || isMerchantStudio || !shopDomain || !anonSessionId) return;
-    const shopifyCustomerId = searchParams.get("customerId") || null;
+    const shopifyCustomerId = loggedInCustomerIdFromHost() || null;
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (storefrontIdentityToken) headers.Authorization = `Bearer ${storefrontIdentityToken}`;
 
@@ -2438,6 +3492,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     })
       .then((res) => res.json())
       .then((data) => {
+        if (data?.rotateSession) {
+          // This browser session was merged into a signed-in account whose token
+          // expired: start a fresh anonymous session (bootstrap re-runs); the
+          // customer signs in again to get their account back.
+          try {
+            for (const k of ['appai_customer_id', 'appai_identity_token', 'appai_customer']) {
+              localStorage.removeItem(k);
+              sessionStorage.removeItem(k);
+            }
+            const fresh = crypto.randomUUID();
+            localStorage.setItem('appai_session', fresh);
+            setStorefrontIdentityToken(null);
+            setStorefrontCustomerId(null);
+            setCustomer(null);
+            setAnonSessionId(fresh);
+          } catch {
+            /* storage unavailable — stay anonymous-less until reload */
+          }
+          return;
+        }
         if (!data?.ok || !data.customerId) return;
         setStorefrontCustomerId(data.customerId);
         setStorefrontIdentityToken(data.identityToken || null);
@@ -2451,12 +3525,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             prev?.email ||
             stored?.email ||
             undefined;
-          const isKnownLoggedInCustomer =
-            data.signedIn === true ||
-            prev?.isLoggedIn === true ||
-            stored?.isLoggedIn === true ||
-            !!email ||
-            !!shopifyCustomerId;
+          // Server signedIn is OTP/Google only. Do not treat Shopify
+          // customerId or a leftover email as AppAI sign-in — that hid
+          // the customizer-tray Sign in row after a designer visit.
+          const isKnownLoggedInCustomer = data.signedIn === true;
           const next = {
             ...(prev || stored || { id: data.customerId, isLoggedIn: false }),
             id: data.customerId,
@@ -2490,6 +3562,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (storefrontCustomerId) qs.set("customerId", storefrontCustomerId);
     safeFetch(
       `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs?${qs}`,
+      { headers: storefrontIdentityToken ? { Authorization: `Bearer ${storefrontIdentityToken}` } : {} },
     )
       .then((r) => (r.ok ? r.json() : { designs: [] }))
       .then((data) => {
@@ -2511,6 +3584,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     creatorUsernameRaw,
     creatorUsernameParam,
     storefrontCustomerId,
+    storefrontIdentityToken,
   ]);
 
   useEffect(() => {
@@ -2532,6 +3606,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       .then((data) => {
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
+        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
         setGalleryLimit(data.savedLimit || 30);
         canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
@@ -2540,8 +3615,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // admin-tester: resolve merchant design-studio identity so manual "Save to My Designs"
   // can link generation_jobs rows the same way merchant-studio auto-save does.
+  // Parent Preview Studio may already pass shop + customerId from the same identity query.
   useEffect(() => {
     if (!isAdminTester) return;
+    if (embeddedContext?.mode === "admin-tester") {
+      if (embeddedContext.shop) {
+        adminTesterShopRef.current = embeddedContext.shop;
+        setAdminTesterShop(embeddedContext.shop);
+      }
+      if (embeddedContext.customerId) {
+        setStorefrontCustomerId(embeddedContext.customerId);
+      }
+    }
     safeFetch(`${API_BASE}/api/appai/design-studio/identity`, {
       credentials: 'include',
     })
@@ -2549,12 +3634,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       .then((data) => {
         if (!data?.customerId) return;
         setStorefrontCustomerId(data.customerId);
-        adminTesterShopRef.current = data.shop || null;
+        if (data.identityToken) setStorefrontIdentityToken(data.identityToken);
+        adminTesterShopRef.current = data.shop || adminTesterShopRef.current;
+        if (data.shop) setAdminTesterShop(data.shop);
         setGalleryLimit(data.savedLimit || 30);
         canSaveMerchantDesignsRef.current = data.canSaveDesigns === true;
       })
       .catch((err) => console.warn('[EmbedDesign] admin-tester identity bootstrap failed', err));
-  }, [isAdminTester]);
+  }, [isAdminTester, embeddedContext]);
 
   const completeStorefrontLogin = useCallback((data: {
     customerId: string;
@@ -2569,6 +3656,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     galleryLimit?: number;
   }) => {
     const newCustomerId = data.customerId;
+    // Pre-login anonymous identity token: proves the merged session belonged to this browser.
+    let priorAnonToken: string | null = null;
+    try {
+      priorAnonToken = localStorage.getItem('appai_identity_token') || sessionStorage.getItem('appai_identity_token');
+    } catch {
+      /* storage unavailable */
+    }
     const loginEmail = data.email || otpEmail.trim() || undefined;
     const wallet = customerWalletFromApi(data);
     setStorefrontCustomerId(newCustomerId);
@@ -2605,17 +3699,82 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (anonSessionId && shopDomain) {
       safeFetch(`${API_BASE}/api/storefront/merge-session`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: anonSessionId, customerId: newCustomerId, shop: shopDomain }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(data.identityToken ? { Authorization: `Bearer ${data.identityToken}` } : {}),
+        },
+        body: JSON.stringify({
+          sessionId: anonSessionId,
+          customerId: newCustomerId,
+          shop: shopDomain,
+          ...(priorAnonToken && priorAnonToken !== data.identityToken ? { anonIdentityToken: priorAnonToken } : {}),
+        }),
       }).catch(() => {});
     }
     if (shopDomain) {
       setSavedDesignsLoading(true);
-      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs?shop=${encodeURIComponent(shopDomain)}&customerId=${encodeURIComponent(newCustomerId)}`)
+      safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(data.identityToken ? { Authorization: `Bearer ${data.identityToken}` } : {}),
+        },
+        body: JSON.stringify({ shop: shopDomain, customerId: newCustomerId }),
+      })
         .then(r => r.json()).then(d => { if (d.designs) setSavedDesigns(d.designs); })
         .catch(() => {}).finally(() => setSavedDesignsLoading(false));
     }
+    // Parent tray/nav bailed at boot (no identity). Same hand-off as in-tray
+    // login calling __APPAI_SAVED_DESIGNS_REINIT__.
+    try {
+      window.parent.postMessage({ type: "APPAI_STOREFRONT_LOGGED_IN" }, window.location.origin);
+    } catch {
+      /* parent may be gone */
+    }
   }, [anonSessionId, shopDomain, otpEmail]);
+
+  const refreshStorefrontWallet = useCallback(async (): Promise<number | null> => {
+    if (!shopDomain || !storefrontCustomerId) return null;
+    try {
+      const qs = new URLSearchParams({
+        customerId: storefrontCustomerId,
+        shop: shopDomain,
+      });
+      if (creatorUsernameParam) qs.set("creatorUsername", creatorUsernameParam);
+      if (creatorIdParam) qs.set("creatorId", creatorIdParam);
+      const res = await safeFetch(`${API_BASE}/api/storefront/credits/status?${qs}`, {
+        headers: storefrontIdentityToken
+          ? { Authorization: `Bearer ${storefrontIdentityToken}` }
+          : {},
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) return null;
+      setCustomer((prev) => {
+        const next = {
+          ...(prev || { id: storefrontCustomerId, isLoggedIn: false }),
+          id: data.customerId || storefrontCustomerId,
+          ...customerWalletFromApi(data, prev),
+          isLoggedIn: prev?.isLoggedIn === true,
+        };
+        persistCustomerRecord(next);
+        return next;
+      });
+      if (typeof data.freeGenerationLimit === "number" && Number.isFinite(data.freeGenerationLimit)) {
+        setFreeGenerationLimit(data.freeGenerationLimit);
+      }
+      return typeof data.freeGenerationsUsed === "number" ? data.freeGenerationsUsed : null;
+    } catch {
+      /* badge refresh is best-effort */
+      return null;
+    }
+  }, [
+    shopDomain,
+    storefrontCustomerId,
+    storefrontIdentityToken,
+    creatorUsernameParam,
+    creatorIdParam,
+  ]);
+  refreshStorefrontWalletRef.current = refreshStorefrontWallet;
 
   useEffect(() => {
     if (!isStorefront || !shopDomain) return;
@@ -2805,7 +3964,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   });
   const artworksRemaining = creditBreakdown.total;
   const hasGenerationCapacity = artworksRemaining > 0;
-  const storefrontLoggedIn = customer?.isLoggedIn === true;
+  const storefrontLoggedIn =
+    customer?.isLoggedIn === true &&
+    typeof customer.email === "string" &&
+    customer.email.includes("@");
   useEffect(() => {
     if (!isCreatorStorefront || !creatorUsernameParam || !storefrontCustomerId || !storefrontLoggedIn) {
       return;
@@ -2832,6 +3994,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [mockupTriggered, setMockupTriggered] = useState(false);
   const [mockupError, setMockupError] = useState<string | null>(null);
   const [mockupFailed, setMockupFailed] = useState(false);
+  /** AOP lifestyle/Printify in flight — never blocks ATC when local front exists. */
+  const [mockupPending, setMockupPending] = useState(false);
   const [selectedMockupIndex, setSelectedMockupIndex] = useState(0);
   const [catalogPreviewIndex, setCatalogPreviewIndex] = useState(0);
   const [mockupsStale, setMockupsStale] = useState(false);
@@ -2840,6 +4004,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [showPatternStep, setShowPatternStep] = useState(false);
   const [aopPendingMotifUrl, setAopPendingMotifUrl] = useState<string | null>(null);
   const [aopPatternUrl, setAopPatternUrl] = useState<string | null>(null);
+  const aopPatternUrlRef = useRef<string | null>(null);
+  aopPatternUrlRef.current = aopPatternUrl;
   const [printPlacement, setPrintPlacement] = useState<"front" | "back" | "both">("front");
   // Persisted PatternCustomizer settings — survive close/reopen of the overlay
   const [aopPatternSettings, setAopPatternSettings] = useState<{
@@ -2861,6 +4027,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
    */
   const [hoodieAopPlacerState, setHoodieAopPlacerState] =
     useState<HoodieAopPlacerState | null>(null);
+  const hoodieAopPlacerStateRef = useRef<HoodieAopPlacerState | null>(null);
+  hoodieAopPlacerStateRef.current = hoodieAopPlacerState;
+  const hoodieApplySeqRef = useRef(0);
   const hoodieAopPlacerRef = useRef<HoodieAopPlacerHandle>(null);
   const [aopApplyStatus, setAopApplyStatus] = useState<
     "idle" | "saving" | "saved" | "error"
@@ -2884,6 +4053,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const [flatMockupRefreshNonce, setFlatMockupRefreshNonce] = useState(0);
   /** True while framed flat decor is re-rastering after size/colour change. */
   const [flatMockupRefreshing, setFlatMockupRefreshing] = useState(false);
+  // Same flag as the "Updating mockups…" overlay — iframe + parent ATC stay
+  // disabled for the full in-flight regen (Printify + flat).
+  const mockupsUpdating = !!(flatMockupRefreshing || mockupLoading || mockupTriggered);
   /** On-demand Printify lifestyle/context for flat framed (not auto-fetched). */
   const [lifestyleShotLoading, setLifestyleShotLoading] = useState(false);
   const [lifestyleShotError, setLifestyleShotError] = useState<string | null>(null);
@@ -2919,12 +4091,47 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Always-current base variant ID for shadow product pre-creation.
   // Updated by a useEffect so fetchPrintifyMockups (which has limited deps) can read it.
   const baseVariantForShadowRef = useRef<string>('');
+  /** Retail the size dropdown / headline is showing — PreShadow must mint at this, not Admin drift. */
+  const displayedRetailRef = useRef<string | null>(null);
   const variantsLoadedKeyRef = useRef("");
   const variantsFetchingKeyRef = useRef("");
   // Suppress the stale-on-transform effect during design loading (applyLoadedDesign sets transform
   // and mockups in the same batch; we don't want that to mark the freshly-loaded mockups as stale)
   const suppressMockupStaleRef = useRef(false);
   const savedJobIdRef = useRef<string | null>(null); // tracks the jobId of the most recently generated design
+  /**
+   * AOP cart-state pre-warm cache/dedup (embed-design.tsx cart-state effect).
+   * Keyed on `${jobId}::${hash}` so a real edit (new hash) always gets a
+   * fresh attempt. `status: "warm"` means we already have `_aop_pl` for this
+   * exact key — skip re-fetching. `status: "cooling"` means the LAST attempt
+   * at this exact key failed (429/network/no-snapshot-yet) — skip retrying
+   * it until `until` passes, but this is a short wait, not a permanent
+   * suppression: a different key (edit, or the placer ref finally
+   * populating) is never blocked by it, and the SAME key retries once the
+   * cooldown elapses. Never persists across a full page reload — refs reset
+   * on remount, so a stuck cooldown can't outlive the session it was set in.
+   */
+  const aopSnapshotWarmRef = useRef<{
+    key: string;
+    status: "warm" | "cooling";
+    until?: number;
+  } | null>(null);
+  /**
+   * Debounce in front of the per-key cache above. Dedup-by-value only
+   * throttles a REPEATED key — during an active drag/scale/rotate gesture,
+   * `placements` (and thus the capture hash) changes on nearly every
+   * pointermove frame, so every key is novel and the cache alone can't
+   * throttle it. Only start the actual freeze attempt once a given key has
+   * been the current one, uninterrupted, for AOP_SNAPSHOT_DEBOUNCE_MS — a
+   * superseding key (the gesture continuing) clears this timer before it
+   * fires, so at most one attempt is ever in flight per settled state.
+   */
+  const aopSnapshotDebounceRef = useRef<{
+    key: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+  /** Sync lock — isPending lags one paint, so a second tap can POST another job. */
+  const generateInFlightRef = useRef(false);
   /** Placement already saved on that job — a later scale/move ATC forks a new saved design. */
   const placementFrozenSigRef = useRef<string | null>(null);
   // admin-tester has no shop URL param — the admin generate endpoint returns the job's
@@ -2949,7 +4156,36 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   selectedSizeRef.current = selectedSize;
   /** Saved-design colour must win over the product's first/base colour. */
   const pendingRestoreColorRef = useRef<string | null>(null);
+  const pendingRestoreSizeRef = useRef<string | null>(null);
+  const pendingRestoreStyleRef = useRef<SavedStyleHints | null>(null);
   const restoringSavedDesignRef = useRef(false);
+  /** True when AOP print panels are in lastAopPanelUrlsRef (load restore or Apply). */
+  const [aopPrintPanelsReady, setAopPrintPanelsReady] = useState(false);
+  /** Refresh clicked before the hoodie placer mounted — flush once it is. */
+  const pendingAopRefreshRef = useRef(false);
+  /** Last persisted / restored aopPanelCaptureSignature (raw string or object). */
+  const storedAopPanelCaptureSignatureRef = useRef<unknown>(null);
+  /** Customer closed the AOP editor via Back — fallback must not reopen it. */
+  const aopEditorDismissedRef = useRef(false);
+  /** Customer closed the flat placer via Back — fallback must not reopen it. */
+  const flatEditorDismissedRef = useRef(false);
+  const lastAopArtworkUrlForDismissRef = useRef<string | null>(null);
+  /** Reuse-as-is: apply after the target product config has re-rendered. */
+  const pendingReuseApplyRef = useRef<{
+    jobId: string;
+    artworkUrl: string;
+    prompt: string;
+    productTypeId: string;
+    stylePreset?: string | null;
+    catalogSlug?: string | null;
+    styleName?: string | null;
+    outputMode?: string | null;
+    generationModel?: string | null;
+  } | null>(null);
+  /** HoodieAopPlacer state last written at Apply / load — not remount seed-fill. */
+  const lastPersistedAopCaptureStateRef = useRef<unknown>(null);
+  const lastHostedPrintPanelsRef = useRef<HostedPrintPanel[]>([]);
+  const aopPersistKickAttemptedRef = useRef(false);
   const onTesterDesignStatusRef = useRef<
     ((status: TesterDesignStatus) => void) | undefined
   >(undefined);
@@ -2963,6 +4199,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // upload can never overwrite the panels from a newer apply (last-apply-wins).
   const aopPanelPersistSeqRef = useRef(0);
   const aopPanelPersistPromiseRef = useRef<Promise<void> | null>(null);
+  /** True only while persistPrintPanels uploads are actually running (not a leftover resolved promise). */
+  const aopPanelPersistInFlightRef = useRef(false);
+  const aopFinalizePendingCountRef = useRef(0);
+  useEffect(() => {
+    if (!isAddingToCart) {
+      setAtcFinalizingReveal(false);
+      setAtcAvoidFinalizingLabel(false);
+      return;
+    }
+    setAtcAvoidFinalizingLabel(aopFinalizePendingCountRef.current > 0);
+    const timer = window.setTimeout(() => {
+      setAtcFinalizingReveal(true);
+    }, ATC_FINALIZING_REVEAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [isAddingToCart]);
   const showPatternStepRef = useRef(false);
   showPatternStepRef.current = showPatternStep;
   // Flat placer (apron / tee / phone etc.) open — keep the design after ATC so
@@ -2988,7 +4239,114 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const activeMockupJobKeyRef = useRef<string | null>(null);
   
   const [addedToCart, setAddedToCart] = useState(false);
+  // Badges the editor's own mobile Cart icon (MobileCustomizerShell) — Shopify's
+  // native theme cart icon lives on the parent storefront page and already
+  // updates itself; this is the app-owned icon shown while the customizer
+  // shell has taken over the screen. App Proxy mode serves this iframe on the
+  // shop's own origin (see appai-art-embed.js comment near iframe.src), so a
+  // same-origin /cart.js fetch resolves against the real Shopify cart.
+  const [cartItemCount, setCartItemCount] = useState<number | null>(null);
+  const refreshShopCartCount = useCallback(async () => {
+    if (isCreatorStorefront || isMerchantStudio) return;
+    try {
+      const res = await fetch("/cart.js", { credentials: "same-origin" });
+      if (!res.ok) return;
+      const cart = await res.json();
+      if (typeof cart?.item_count === "number") {
+        setCartItemCount(cart.item_count);
+      }
+    } catch {
+      // Cross-origin direct-Railway dev fallback, or a network hiccup —
+      // the badge just stays at its last known value.
+    }
+  }, [isCreatorStorefront, isMerchantStudio]);
+  useEffect(() => {
+    void refreshShopCartCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const { toast } = useToast();
+  // Mobile customizer shell branch (checkpoint 1: scaffold). Everything gated by
+  // this flag is only active below the mobile breakpoint; desktop is untouched.
+  const rawIsMobile = useIsMobile();
+  // Do not OR host=page: that latched the phone shell after the theme hop and
+  // never released on grow (tablet landscape / re-maximise). useIsMobile now
+  // flips both ways and still treats phone landscape as mobile.
+  const isMobile = rawIsMobile;
+  // Portal targets for the AOP placer's control column. Callback refs (not
+  // useRef) so the placer re-renders once the sheet containers exist.
+  const [aopOptionsSlotEl, setAopOptionsSlotEl] = useState<HTMLDivElement | null>(null);
+  const [aopAdjustSlotEl, setAopAdjustSlotEl] = useState<HTMLDivElement | null>(null);
+  const [aopSheetRequest, setAopSheetRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const [mobileSheetCloseRequest, setMobileSheetCloseRequest] = useState<{
+    nonce: number;
+    retractRail?: boolean;
+  } | null>(null);
+  const dismissMobileSheet = useCallback((opts?: { retractRail?: boolean }) => {
+    setMobileSheetCloseRequest((prev) => ({
+      nonce: (prev?.nonce ?? 0) + 1,
+      retractRail: opts?.retractRail,
+    }));
+  }, []);
+  useEffect(() => {
+    console.log("[EmbedDesign] CP1 host", {
+      build: CP1_BUILD_MARKER,
+      host: searchParams.get("host"),
+      isTopLevelHost,
+      parentIsSelf: window.parent === window,
+      innerWidth: window.innerWidth,
+      path: window.location.pathname,
+      rawUseIsMobile: rawIsMobile,
+      usePhoneLayout: isMobile,
+    });
+  }, [isTopLevelHost, isMobile, rawIsMobile]);
+
+  useEffect(() => {
+    if (!isMobile) return;
+    document.body.classList.add("appai-mobile-dialogs");
+    return () => document.body.classList.remove("appai-mobile-dialogs");
+  }, [isMobile]);
+
+  const beginAopFinalizeToast = useCallback((
+    jobId: string,
+    shop: string,
+    captureHash?: string | null,
+  ) => {
+    rememberAopFinalizeJob(jobId, shop, captureHash);
+    try {
+      window.parent.postMessage(
+        { type: "AI_ART_STUDIO_PRINT_FILES_PENDING", jobId, shop, captureHash },
+        "*",
+      );
+    } catch {
+      /* ignore */
+    }
+    // Finalize progress lives in the ATC button (ATC_FINALIZING_LABEL) only —
+    // a separate top-of-screen toast duplicated that status and, since it was
+    // only ever dismissed when aopFinalizePendingCountRef returned to 0,
+    // could linger past what the button showed. Keep the pending-count
+    // bookkeeping (still drives atcAvoidFinalizingLabel) without a second toast.
+    aopFinalizePendingCountRef.current += 1;
+  }, []);
+
+  const endAopFinalizeToast = useCallback((jobId: string, ok: boolean) => {
+    forgetAopFinalizeJob(jobId);
+    try {
+      window.parent.postMessage(
+        { type: ok ? "AI_ART_STUDIO_PRINT_FILES_READY" : "AI_ART_STUDIO_PRINT_FILES_FAILED", jobId },
+        "*",
+      );
+    } catch {
+      /* ignore */
+    }
+    aopFinalizePendingCountRef.current = Math.max(0, aopFinalizePendingCountRef.current - 1);
+    if (aopFinalizePendingCountRef.current === 0 && !ok) {
+      toast({
+        variant: "destructive",
+        title: "Couldn’t finalise print files",
+        description: "Please try adding to cart again before checkout.",
+      });
+    }
+  }, [toast]);
 
   const activeEarnRungs = useMemo(() => {
     if (!rewardLadderPublic?.rungs?.length) return [] as PublicRewardRung[];
@@ -3013,8 +4371,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return `Share a design — earn ${credits} when someone opens your link`;
     }
     if (rung.rungKey === "purchase_threshold") {
-      const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
-      return `Order over $${dollars} — earn ${credits}`;
+      const label = rung.thresholdDisplay || `$${(rung.thresholdCents ?? 5000) / 100} USD`;
+      return `Order over ${label} — earn ${credits}`;
     }
     return credits;
   }, []);
@@ -3040,6 +4398,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       duration: 8000,
     });
   }, [toast, activeEarnRungs, describeEarnRung, storefrontLoggedIn, isCreatorStorefront]);
+
+  const redeemStorefrontCoupon = useCallback(async () => {
+    const code = couponCode.trim();
+    if (!code) return;
+    setCouponLoading(true);
+    setCouponError(null);
+    setCouponSuccess(null);
+    try {
+      const r = await safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
+        method: "POST",
+        headers: identityJsonHeaders(),
+        body: JSON.stringify({
+          code,
+          customerId: storefrontCustomerId,
+          shop: shopDomain,
+        }),
+      });
+      const data = await r.json();
+      if (data.ok && data.creditsAdded > 0) {
+        setCouponSuccess(
+          `${data.creditsAdded} credit${data.creditsAdded !== 1 ? "s" : ""} added!`,
+        );
+        setCustomer((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, ...customerWalletFromApi(data, prev) };
+          persistCustomerRecord(next);
+          return next;
+        });
+        setCouponCode("");
+      } else {
+        setCouponError(data.error || "Invalid code");
+      }
+    } catch {
+      setCouponError("Failed to redeem code");
+    } finally {
+      setCouponLoading(false);
+    }
+  }, [couponCode, storefrontCustomerId, shopDomain]);
 
   useEffect(() => {
     if (!creditsPopoverOpen) return;
@@ -3276,6 +4672,55 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const toteFoldedLayout =
     productTypeConfig?.effectiveFulfillmentLayout === "tote_folded_v1" ||
     Number(productTypeConfig?.printifyBlueprintId) === ADJUSTABLE_TOTE_BLUEPRINT_ID;
+
+  /**
+   * Canonical print-config fingerprint input. ONE builder feeds both the ATC
+   * persist key (`atcShadowDesignId`) and the Apply-time `save-mockups`
+   * pre-mint, so the server's derived key is byte-identical to what ATC
+   * later looks up. Kept on a ref (refreshed every render) so callbacks with
+   * narrow deps (fetchPrintifyMockups, persistFlatMockupsForGallery) read the
+   * committed state, not a stale closure.
+   * `artworkUrl` mirrors ensureHostedUrl's sync branches; a data: URL yields
+   * "" and simply falls back to cold-mint at tap (hash differs post-upload).
+   */
+  /**
+   * One hoodie source for Apply + ATC. Callers write this ref immediately
+   * before hashing; the builder never reads React state or getState() itself.
+   */
+  const syncHoodieFingerprintRef = (explicit?: HoodieAopPlacerState | null) => {
+    if (explicit) {
+      hoodieAopPlacerStateRef.current = explicit;
+      return;
+    }
+    const live = hoodieAopPlacerRef.current?.getState?.() ?? hoodieAopPlacerStateRef.current;
+    if (live) hoodieAopPlacerStateRef.current = live;
+  };
+
+  const buildAtcPrintConfigInputRef = useRef<() => PrintConfigFingerprintInput>(() => ({}));
+  buildAtcPrintConfigInputRef.current = () => {
+    // Same identity Apply and ATC hash: generate already stores https on
+    // imageUrl; artworkUrlForFingerprint / ensureHostedUrl(https) are that string.
+    const artworkUrl = artworkUrlForFingerprint(generatedDesign?.imageUrl);
+    const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
+    const totePrintBack = printPlacement === "both" || liveFlat?.enabled?.back === true;
+    return {
+      artworkUrl,
+      flat: liveFlat,
+      tote: toteFoldedLayout
+        ? { scale: transform.scale, x: transform.x, y: transform.y, printBack: totePrintBack }
+        : null,
+      aopHoodie: (hoodieAopPlacerStateRef.current as Record<string, unknown> | null) ?? null,
+      aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
+    };
+  };
+  /** `printConfig` + derived-key hint for a PreShadow-eligible save-mockups body. */
+  const preShadowKeyFields = useCallback((jobId: string, baseVariantId: string) => {
+    const printConfig = sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current());
+    if (!printConfig) return {};
+    const designId = atcShadowDesignId(jobId, baseVariantId, printConfig);
+    console.log("[PreShadow] client derived", designId, "vid", baseVariantId);
+    return { printConfig, designId };
+  }, []);
   const useAopCustomizer = !!(
     (productTypeConfig?.useAopCustomizer ?? !!productTypeConfig?.isAllOverPrint) &&
     // Flat/mesh on-the-fly products must never also open PatternCustomizer —
@@ -3331,7 +4776,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return isLandscapeSizeAspect(ar);
   }, [printSizes, selectedSize, productTypeConfig?.aspectRatio]);
 
-  /** Inch AR for catalog size blanks (wall decals) — drives dashed guide when harvest is shared 2:3. */
+  /** Inch AR for catalog size blanks (wall decals / tapestry) — drives dashed guide when harvest is shared 2:3. */
   const catalogSizeAspectRatio = useMemo(() => {
     const sizeConfig = printSizes.find((s) => s.id === selectedSize);
     if (!sizeConfig) return null;
@@ -3562,6 +5007,126 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return collapseStyleNameTwins(matched, productTypeConfig?.designerType);
   }, [stylePresets, productTypeConfig, pageStyleConfig, isCreatorStorefront]);
 
+  const showDecorFloatingFill = useMemo(() => {
+    const active = resolveSelectableStylePreset(
+      filteredStylePresets,
+      {
+        stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+        catalogSlug: loadedDecorStyle?.catalogSlug,
+        styleName: loadedDecorStyle?.styleName,
+      },
+      { pool: stylePresets },
+    );
+    const catalogSlug =
+      active?.catalogSlug ||
+      loadedDecorStyle?.catalogSlug ||
+      selectedPreset ||
+      null;
+    const styleName = active?.name || loadedDecorStyle?.styleName || null;
+    const styleId = active?.id || selectedPreset || loadedDecorStyle?.stylePreset || null;
+    if (!active && !catalogSlug && !styleName && !styleId) return false;
+    if (!generatedDesign?.imageUrl && !active && !selectedPreset) return false;
+    const productOpts = {
+      isApparelProduct: isApparel,
+      designerType: productTypeConfig?.designerType,
+      catalogSlug,
+      styleName,
+      styleId,
+      outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+      generationModel: active?.generationModel || loadedDecorStyle?.generationModel,
+      useAopCustomizer,
+      edgeWrapMode: flatEdgeWrapMode,
+    };
+    return resolveStyleBackgroundConfig(
+      {
+        catalogSlug,
+        outputMode: productOpts.outputMode,
+        backgroundSelectorEnabled: active?.backgroundSelectorEnabled,
+        defaultBackgroundColor: active?.defaultBackgroundColor,
+        backgroundRequired: active?.backgroundRequired,
+      },
+      productOpts,
+      null,
+    ).visible;
+  }, [
+    filteredStylePresets,
+    stylePresets,
+    selectedPreset,
+    loadedDecorStyle,
+    generatedDesign?.imageUrl,
+    isApparel,
+    productTypeConfig?.designerType,
+    useAopCustomizer,
+    flatEdgeWrapMode,
+  ]);
+
+  const liveDecorFillHex = useMemo(
+    () =>
+      resolveLiveFillHex(decorBackgroundFill, {
+        shown: showDecorFloatingFill && !flatEdgeWrapMode,
+      }),
+    [decorBackgroundFill, showDecorFloatingFill, flatEdgeWrapMode],
+  );
+
+  const applyLiveDecorFill = useCallback((next: string) => {
+    setDecorBackgroundFill(next);
+    const hex = parseLiveFillHex(next);
+    setFlatPlacerState((prev) => (prev ? { ...prev, backgroundColor: hex } : prev));
+    setAopPatternSettings((prev) => ({ ...prev, bgColor: hex ?? "" }));
+    setAopPlacementSettings((prev) =>
+      prev ? { ...prev, bgColor: hex ?? undefined } : prev,
+    );
+    const aopHex = hex || "#FFFFFF";
+    hoodieAopPlacerRef.current?.setBackgroundColor?.(aopHex);
+    setHoodieAopPlacerState((prev) =>
+      prev ? { ...prev, backgroundColor: aopHex } : prev,
+    );
+    setSelectedMockupIndex(0);
+  }, []);
+
+  const seedFlatBackgroundColor = (): string | null => {
+    if (flatEdgeWrapMode) return "#FFFFFF";
+    const active = resolveSelectableStylePreset(
+      filteredStylePresets,
+      {
+        stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+        catalogSlug: loadedDecorStyle?.catalogSlug,
+        styleName: loadedDecorStyle?.styleName,
+      },
+      { pool: stylePresets },
+    );
+    const catalogSlug =
+      active?.catalogSlug ||
+      loadedDecorStyle?.catalogSlug ||
+      selectedPreset ||
+      null;
+    const cfg = resolveStyleBackgroundConfig(
+      {
+        catalogSlug,
+        outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+        backgroundSelectorEnabled: active?.backgroundSelectorEnabled,
+        defaultBackgroundColor: active?.defaultBackgroundColor,
+        backgroundRequired: active?.backgroundRequired,
+      },
+      {
+        isApparelProduct: isApparel,
+        designerType: productTypeConfig?.designerType,
+        catalogSlug,
+        styleName: active?.name || loadedDecorStyle?.styleName || null,
+        styleId: active?.id || selectedPreset || loadedDecorStyle?.stylePreset || null,
+        outputMode: active?.outputMode || loadedDecorStyle?.outputMode,
+        generationModel: active?.generationModel || loadedDecorStyle?.generationModel,
+        useAopCustomizer,
+        edgeWrapMode: flatEdgeWrapMode,
+      },
+      null,
+    );
+    if (cfg.defaultRaw === "none") return null;
+    if (cfg.defaultFill) return cfg.defaultFill;
+    if (showDecorFloatingFill) return liveDecorFillHex;
+    return null;
+  };
+
   const activeStyleHasOrientationChoices = useMemo(() => {
     const active = filteredStylePresets.find((p) => p.id === selectedPreset);
     return styleChoicesIncludeCanvasOrientation(active?.options?.choices);
@@ -3615,7 +5180,82 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     productTypeConfig?.aspectRatio,
   ]);
 
+  const countryAwareSizes = useMemo(() => {
+    if (!isCreatorStorefront) return orientationFilteredSizes;
+    return filterCatalogSizesForCountry(orientationFilteredSizes, sizeCoverageRows);
+  }, [isCreatorStorefront, orientationFilteredSizes, sizeCoverageRows]);
+
+  const selectedSizeCoverage = useMemo(() => {
+    if (!isCreatorStorefront || !sizeCoverageRows?.length || !selectedSize) return undefined;
+    const size = printSizes.find((s) => s.id === selectedSize);
+    return (
+      findSizeCoverageRow(selectedSize, sizeCoverageRows) ||
+      (size?.name ? findSizeCoverageRow(size.name, sizeCoverageRows) : undefined)
+    );
+  }, [isCreatorStorefront, sizeCoverageRows, selectedSize, printSizes]);
+
+  const shippingDownsell = useMemo(() => {
+    if (!isCreatorStorefront || !shippingDownsellSizeId || !sizeCoverageRows?.length) return null;
+    return buildSizeDownsell({
+      requestedSizeId: shippingDownsellSizeId,
+      country: shipCountryForCoverage,
+      rows: sizeCoverageRows,
+    });
+  }, [
+    isCreatorStorefront,
+    shippingDownsellSizeId,
+    sizeCoverageRows,
+    shipCountryForCoverage,
+  ]);
+
+  const shippingWarnedRow =
+    isCreatorStorefront &&
+    selectedSizeCoverage?.shippable &&
+    selectedSizeCoverage.tier === "warned"
+      ? selectedSizeCoverage
+      : null;
+
+  const sizeSelectorValue = countryAwareSizes.some((s) => s.id === selectedSize)
+    ? selectedSize
+    : "";
+  const shippingBlocksGenerate = !!(
+    isCreatorStorefront &&
+    selectedSizeCoverage &&
+    !selectedSizeCoverage.shippable
+  );
+
+  const catalogSizeKey = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    const hyphen = String(selectedSize || "").match(/^(\d+)-(\d+)$/);
+    return (
+      extractDimensionalKey(selectedSize) ||
+      (sizeConfig
+        ? extractDimensionalKey(sizeConfig.name) ||
+          (sizeConfig.width && sizeConfig.height
+            ? `${Math.round(sizeConfig.width)}x${Math.round(sizeConfig.height)}`
+            : null)
+        : null) ||
+      (hyphen ? `${hyphen[1]}x${hyphen[2]}` : null)
+    );
+  }, [printSizes, selectedSize]);
+
+  const catalogSizeBlankBlueprint = isCatalogSizeBlankBlueprint(
+    productTypeConfig?.printifyBlueprintId,
+  );
+  const probeCatalogGuide = shouldProbeCatalogBlankGuide(
+    productTypeConfig?.printifyBlueprintId,
+  );
+
   const orientationBlankOverride = useMemo(() => {
+    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
+    if (catalogSizeBlankBlueprint && selectedSize) {
+      const byCatalogSize = resolveBlankUrlForSize(
+        productTypeConfig?.baseMockupImages,
+        sizeConfig || { id: selectedSize, name: selectedSize },
+        productTypeConfig?.aspectRatio,
+      );
+      if (byCatalogSize) return byCatalogSize;
+    }
     if (!hasMixedCanvasOrientation || !sizeCanvasOrientation || !selectedSize) {
       return null;
     }
@@ -3646,7 +5286,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       if (hasOrientationBlank) return null;
     }
-    const sizeConfig = printSizes.find((s) => s.id === selectedSize);
     const bySize = resolveBlankUrlForSize(
       productTypeConfig?.baseMockupImages,
       sizeConfig || { id: selectedSize, name: selectedSize },
@@ -3676,6 +5315,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     productTypeConfig?.aspectRatio,
     catalogBlankByOrientation,
     catalogPreviewImages,
+    catalogSizeBlankBlueprint,
   ]);
 
   const applyCanvasOrientation = useCallback(
@@ -3721,57 +5361,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ],
   );
 
+  // Saved jobs store a slug, name, or foreign merchant id. Map that onto
+  // the current dropdown option so Art Style + the fill picker both light up.
   useEffect(() => {
-    const blueprintId = productTypeConfig?.printifyBlueprintId;
-    if (productTypeConfig?.sizeChart) {
-      setSizeChart(productTypeConfig.sizeChart);
-      setSizeChartLoading(false);
-      return;
-    }
-    if (!blueprintId) {
-      setSizeChart(null);
-      setSizeChartLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const loadingTimeout = globalThis.setTimeout(() => {
-      if (!cancelled) {
-        console.warn("[EmbedDesign] Size chart lookup timed out", { blueprintId });
-        setSizeChart(null);
-        setSizeChartLoading(false);
-      }
-    }, 10000);
-
-    setSizeChartLoading(true);
-    getSizeChartByBlueprintId(blueprintId)
-      .then((chart) => {
-        if (!cancelled) setSizeChart(chart);
-      })
-      .catch((error) => {
-        console.warn("[EmbedDesign] Failed to load size chart", error);
-        if (!cancelled) setSizeChart(null);
-      })
-      .finally(() => {
-        globalThis.clearTimeout(loadingTimeout);
-        if (!cancelled) setSizeChartLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-      globalThis.clearTimeout(loadingTimeout);
+    if (filteredStylePresets.length === 0) return;
+    if (pendingRestoreStyleRef.current) return;
+    const hints: SavedStyleHints = {
+      stylePreset: selectedPreset || loadedDecorStyle?.stylePreset,
+      catalogSlug: loadedDecorStyle?.catalogSlug,
+      styleName: loadedDecorStyle?.styleName,
     };
-  }, [productTypeConfig?.printifyBlueprintId, productTypeConfig?.sizeChart]);
-
-  // Reset selectedPreset if it's not in the filtered list (e.g., after product type loads)
-  useEffect(() => {
-    if (selectedPreset && selectedPreset !== "" && filteredStylePresets.length > 0) {
-      const isValidPreset = filteredStylePresets.some(p => p.id === selectedPreset);
-      if (!isValidPreset) {
+    const match = resolveSelectableStylePreset(filteredStylePresets, hints, {
+      pool: stylePresets,
+    });
+    if (match) {
+      const matchId = String(match.id);
+      if (selectedPreset !== matchId) setSelectedPreset(matchId);
+      return;
+    }
+    if (
+      loadedDecorStyle?.stylePreset ||
+      loadedDecorStyle?.catalogSlug ||
+      loadedDecorStyle?.styleName
+    ) {
+      const displayable = filteredStylePresets.some((p) => String(p.id) === selectedPreset);
+      if (selectedPreset && !displayable) {
+        resolveSavedStyleDropdownId(
+          filteredStylePresets,
+          hints,
+          stylePresets,
+          "remap-style-list",
+        );
         setSelectedPreset("");
       }
+      return;
     }
-  }, [filteredStylePresets, selectedPreset]);
+    if (!selectedPreset) return;
+    if (
+      isFloatingCatalogStyle({ catalogSlug: selectedPreset, outputMode: loadedDecorStyle?.outputMode }) ||
+      resolveCatalogSlug({ catalogSlug: selectedPreset, name: selectedPreset })
+    ) {
+      return;
+    }
+    setSelectedPreset("");
+  }, [filteredStylePresets, stylePresets, selectedPreset, loadedDecorStyle]);
 
   const defaultProductTypeConfig: ProductTypeConfig = {
     id: 0,
@@ -3794,6 +5427,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const applyDesignerConfig = useCallback((dc: any, source: string) => {
     if (!dc) return;
     console.log(`[EmbedDesign] ${source}: applying designer config. id=${dc.id} name="${dc.name}"`);
+    atcModeRef.current = normalizeAtcMode(dc.atcMode);
     setProductTypeConfig({
       id: dc.id,
       name: dc.name,
@@ -3805,6 +5439,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       sizes: dc.sizes || [],
       frameColors: dc.frameColors || [],
       variantMap: dc.variantMap || {},
+      shopifyVariantIds: dc.shopifyVariantIds ?? null,
       hasPrintifyMockups: dc.hasPrintifyMockups || false,
       baseMockupImages: dc.baseMockupImages || undefined,
       doubleSidedPrint: dc.doubleSidedPrint || false,
@@ -3825,12 +5460,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       printifyBlueprintId: dc.printifyBlueprintId,
       printifyProviderId: dc.printifyProviderId,
       fabricWeaveTexture: dc.fabricWeaveTexture ?? null,
-      sizeChart: dc.sizeChart || null,
+      ...designerStockFields(dc),
     });
-    if (dc.sizeChart) {
-      setSizeChart(dc.sizeChart);
-      setSizeChartLoading(false);
-    }
     if (dc.frameColors?.length > 0) {
       const pending = pendingRestoreColorRef.current;
       const restored = pending
@@ -4019,6 +5650,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         applyDesignerConfig(activeProductContext.designerConfig, 'ACTIVE CONTEXT');
         if (activeProductContext.stylePresets) {
           setStylePresets(activeProductContext.stylePresets);
+          stylePresetsOwnedRef.current = true;
         }
         if (!isCancelled) setConfigLoading(false);
         return;
@@ -4035,7 +5667,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           // Still fetch style presets — lightweight, non-blocking
           fetchWithTimeout(`${API_BASE}/api/config?_t=${Date.now()}`, 8000)
             .then(r => safeJson(r, '/api/config'))
-            .then(c => { if (!isCancelled && c.stylePresets) setStylePresets(c.stylePresets); })
+            .then(c => {
+              if (!isCancelled && c.stylePresets) {
+                setStylePresets(c.stylePresets);
+                stylePresetsOwnedRef.current = true;
+              }
+            })
             .catch(() => {});
           if (!isCancelled) setConfigLoading(false);
           return;
@@ -4047,9 +5684,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Large imported products can exceed browser/proxy URL limits if the full
       // designer config is sent as a query param. In that mode the parent sends
       // the config over postMessage after the iframe announces it is ready.
-      if (searchParams.get('deferDesignerConfig') === '1') {
+      // Top-level (`host=page`) has no parent — fetch customizer-page ourselves.
+      if (searchParams.get('deferDesignerConfig') === '1' && !isTopLevelHost) {
         console.log(`${logPrefix} Waiting for designer config via postMessage`);
         return;
+      }
+
+      if (isTopLevelHost) {
+        const urlPres = applyPresentmentPayload({
+          currency: searchParams.get("currency"),
+          rate: searchParams.get("rate"),
+          shopCurrency: searchParams.get("shopCurrency"),
+          country: searchParams.get("country"),
+          locale: searchParams.get("locale"),
+        });
+        if (urlPres) {
+          if (urlPres.currency) setActiveCurrency(urlPres.currency);
+          presentmentMetaRef.current = {
+            rate: urlPres.rate,
+            shopCurrency: urlPres.shopCurrency,
+            country: urlPres.country,
+            locale: urlPres.locale,
+          };
+        }
+        const storedTheme = themeSnapshotFromHostStorage();
+        if (storedTheme) applyStoreThemeVars(storedTheme);
       }
 
       const cacheBuster = `_t=${Date.now()}`;
@@ -4076,6 +5735,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           const pageUrl =
             `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(myshopifyDomain)}` +
             `&handle=${encodeURIComponent(pageHandleForLoad)}&${cacheBuster}` +
+            presentmentQueryFromSearch(searchParams) +
             (creatorUsernameParam
               ? `&creatorUsername=${encodeURIComponent(creatorUsernameParam)}`
               : "") +
@@ -4087,24 +5747,78 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             if (pageCfg?.designerConfig) {
               if (Array.isArray(pageCfg.stylePresets) && (pageCfg.stylePresets.length > 0 || isCreatorStorefront)) {
                 setStylePresets(pageCfg.stylePresets);
+                stylePresetsOwnedRef.current = true;
               }
               if (isCreatorStorefront) {
                 setPageStyleConfig(null);
+                setExperienceProfile(null);
               } else if (pageCfg.styleConfig !== undefined) {
                 setPageStyleConfig(parseCustomizerPageStyleConfig(pageCfg.styleConfig));
+                setExperienceProfile(parsePublicExperienceProfile(pageCfg.experienceProfile));
               }
               if (Array.isArray(pageCfg.variants) && pageCfg.variants.length > 0) {
-                setShopifyVariants(
-                  pageCfg.variants.map((v: any) => ({
-                    id: String(v.id),
-                    title: v.title || "",
-                    price: v.price || "0.00",
-                    option1: v.option1,
-                    option2: v.option2,
-                    option3: v.option3,
-                    imageSrc: v.imageSrc,
-                  })),
-                );
+                const mapped = pageCfg.variants.map((v: any) => ({
+                  id: String(v.id),
+                  title: v.title || "",
+                  price: v.price || "0.00",
+                  option1: v.option1,
+                  option2: v.option2,
+                  option3: v.option3,
+                  imageSrc: v.imageSrc,
+                }));
+                setShopifyVariants(mapped);
+                setVariants(mapped);
+                const urlVariant = searchParams.get("selectedVariant");
+                const base =
+                  urlVariant ||
+                  (pageCfg.baseVariantId ? String(pageCfg.baseVariantId) : null) ||
+                  mapped[0]?.id ||
+                  null;
+                if (base) {
+                  setShopifyVariantId(String(base));
+                  setOverrideVariantId(String(base));
+                }
+              }
+              const pagePres = applyPresentmentPayload(pageCfg.presentment);
+              if (pagePres) {
+                if (pagePres.currency) setActiveCurrency(pagePres.currency);
+                if (Object.keys(pagePres.pricesByVariantId).length > 0) {
+                  setPresentmentPricesByVariantId(pagePres.pricesByVariantId);
+                }
+                presentmentMetaRef.current = {
+                  rate: pagePres.rate,
+                  shopCurrency: pagePres.shopCurrency,
+                  country: pagePres.country,
+                  locale: pagePres.locale,
+                };
+              }
+              if (pageCfg.themeSnapshot && typeof pageCfg.themeSnapshot === "object") {
+                applyStoreThemeVars(pageCfg.themeSnapshot as Record<string, string>);
+                applyExperienceBrandVars(experienceProfileRef.current?.brand);
+              }
+              if (typeof pageCfg.storeName === "string" && pageCfg.storeName.trim()) {
+                setMerchantStoreName(pageCfg.storeName.trim());
+              }
+              if (isTopLevelHost) {
+                const handleForPrices =
+                  pageCfg.baseProductHandle || productHandle || "";
+                if (handleForPrices) {
+                  fetch(`/products/${encodeURIComponent(handleForPrices)}.js`, {
+                    credentials: "same-origin",
+                  })
+                    .then((r) => (r.ok ? r.json() : null))
+                    .then((p) => {
+                      if (isCancelled || !p?.variants) return;
+                      const map: Record<string, number> = {};
+                      for (const v of p.variants as Array<{ id?: unknown; price?: unknown }>) {
+                        if (!v || v.id == null || v.price == null) continue;
+                        const cents = parseInt(String(v.price), 10);
+                        if (Number.isFinite(cents) && cents > 0) map[String(v.id)] = cents;
+                      }
+                      if (Object.keys(map).length > 0) setPresentmentPricesByVariantId(map);
+                    })
+                    .catch(() => {});
+                }
               }
               setActiveProductContext((prev) => ({
                 ...prev,
@@ -4204,6 +5918,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Handle style presets
         if (configRes.stylePresets) {
           setStylePresets(configRes.stylePresets);
+          stylePresetsOwnedRef.current = true;
         }
 
         // Handle designer config
@@ -4236,9 +5951,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           // page-filtered styles the live store embeds (not global /api/config).
           if (designerConfig.styleConfig !== undefined) {
             setPageStyleConfig(parseCustomizerPageStyleConfig(designerConfig.styleConfig));
+            setExperienceProfile(parsePublicExperienceProfile(designerConfig.experienceProfile));
           }
           if (Array.isArray(designerConfig.stylePresets) && designerConfig.stylePresets.length > 0) {
             setStylePresets(designerConfig.stylePresets);
+            stylePresetsOwnedRef.current = true;
           }
 
           setProductTypeConfig({
@@ -4252,6 +5969,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             sizes: designerConfig.sizes || [],
             frameColors: designerConfig.frameColors || [],
             variantMap: designerConfig.variantMap || {},
+            shopifyVariantIds: designerConfig.shopifyVariantIds ?? null,
             hasPrintifyMockups: designerConfig.hasPrintifyMockups || false,
             baseMockupImages: designerConfig.baseMockupImages || undefined,
             doubleSidedPrint: designerConfig.doubleSidedPrint || false,
@@ -4271,13 +5989,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             colorLabel: designerConfig.colorLabel || "Color",
             printifyBlueprintId: designerConfig.printifyBlueprintId,
             fabricWeaveTexture: designerConfig.fabricWeaveTexture ?? null,
-            sizeChart: designerConfig.sizeChart || null,
+            ...designerStockFields(designerConfig),
           });
 
-          if (designerConfig.sizeChart) {
-            setSizeChart(designerConfig.sizeChart);
-            setSizeChartLoading(false);
-          }
           if (designerConfig.frameColors?.length > 0) {
             const vm = designerConfig.variantMap || {};
             const pending = pendingRestoreColorRef.current;
@@ -4390,6 +6104,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     activeProductContext.stylePresets,
     applyDesignerConfig,
     isStorefront,
+    isTopLevelHost,
   ]);
 
   // Fetch merchant's branding settings and apply to designer
@@ -4452,7 +6167,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
-    safeFetch(`${API_BASE}/api/shared-designs/${sharedDesignId}`)
+    safeFetch(
+      `${API_BASE}/api/shared-designs/${sharedDesignId}` +
+        (anonSessionId ? `?sessionId=${encodeURIComponent(anonSessionId)}` : ''),
+      { headers: identityJsonHeaders() },
+    )
       .then(res => {
         if (!res.ok) {
           if (res.status === 410) {
@@ -4470,7 +6189,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           prompt: sharedDesign.prompt,
         });
         setPrompt(sharedDesign.prompt);
-        setSelectedPreset(sharedDesign.stylePreset || "");
+        const sharedHints: SavedStyleHints = {
+          stylePreset: sharedDesign.stylePreset,
+          catalogSlug: sharedDesign.catalogSlug,
+          styleName: sharedDesign.styleName,
+        };
+        const sharedMatchId = resolveSavedStyleDropdownId(
+          filteredStylePresets,
+          sharedHints,
+          stylePresets,
+          "shared-design",
+        );
+        const sharedMatch = sharedMatchId
+          ? filteredStylePresets.find((p) => String(p.id) === sharedMatchId)
+          : undefined;
+        setSelectedPreset(sharedMatchId);
+        setLoadedDecorStyle({
+          stylePreset: coerceStyleHint(sharedDesign.stylePreset) || null,
+          catalogSlug: coerceStyleHint(sharedDesign.catalogSlug) || sharedMatch?.catalogSlug || null,
+          styleName: coerceStyleHint(sharedDesign.styleName) || sharedMatch?.name || null,
+          outputMode: sharedMatch?.outputMode || null,
+          generationModel: sharedMatch?.generationModel || null,
+        });
         setSelectedSize(sharedDesign.size);
         setSelectedFrameColor(sharedDesign.frameColor);
         setTransform({
@@ -4490,16 +6230,79 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Load saved design from loadDesignId URL param (navigated from Saved Designs panel)
   // Helper to apply a saved design record to the UI state
-  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null }) => {
-    const abs = (u?: string) => u && u.startsWith('/') ? buildAppUrl(u) : u;
+  /** Restore a style-pack design's inputs, chosen concept and stored photos (creative brief). */
+  const restorePackBrief = (raw: unknown, stylePresetId: string | null | undefined) => {
+    const brief = parseCreativeBrief(raw);
+    if (!brief) {
+      setPackStoredRefs([]);
+      return;
+    }
+    const controls = experienceProfileRef.current?.controls;
+    const idFor = (options: Array<{ id: string; label: string }> | undefined, label: string | null) =>
+      (label && options?.find((o) => o.label === label)?.id) || "";
+    setPackState({
+      petName: brief.petName ?? "",
+      species: idFor(controls?.species?.options, brief.species),
+      personality: brief.personalityTraits.map((t) => idFor(controls?.personality?.options, t)).filter(Boolean),
+      humor: brief.humor ?? "",
+      relationship: brief.relationship ?? "",
+      wordsMode: brief.wordsMode,
+      exactWords: brief.wordsMode === "exact" ? brief.punchline ?? "" : "",
+    });
+    setPackVisualSystem(brief.visualSystem ?? "");
+    if (brief.subStyle && brief.profileKey !== "petposterous") setSelectedStyleOption(brief.subStyle);
+    packConceptKeyRef.current = `${stylePresetId ?? ""}|${brief.subStyle ?? ""}`;
+    if (brief.visualJoke) {
+      setPackConcepts([
+        {
+          funnyTruth: brief.funnyTruth ?? "",
+          visualJoke: brief.visualJoke,
+          punchline: brief.punchline ?? "",
+          subjectPriority: brief.subjectPriority ?? "",
+          conceptFramework: brief.conceptFramework ?? "pp-owner-vs-pet",
+        },
+      ]);
+      setPackConceptPick(0);
+    }
+    const signed = Array.isArray((raw as any)?.referenceImages) ? ((raw as any).referenceImages as any[]) : [];
+    setPackStoredRefs(
+      brief.referenceImages.map((r) => ({ ...r, url: signed.find((x) => x?.path === r.path)?.url ?? null })),
+    );
+  };
+
+  const applyLoadedDesign = (designId: string, imageUrl: string, promptText: string, ds: Record<string, any> | null | undefined, topLevel: { size?: string | null; frameColor?: string | null; stylePreset?: string | null; catalogSlug?: string | null; styleName?: string | null; mockupUrls?: string[] | null; productTypeId?: string | null; creativeBrief?: unknown }) => {
+    restorePackBrief(topLevel.creativeBrief, topLevel.stylePreset ?? ds?.stylePreset ?? null);
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
+    const abs = (u?: string) => {
+      if (!u) return u;
+      const n = normalizePreviewUrl(u);
+      if (!n) return u;
+      if (n.startsWith("/")) return buildAppUrl(n);
+      return n;
+    };
+    // Preview Studio: a restore must not look like a new placement edit (that
+    // would flip tester status back to "none" and block Send a Test Order).
+    suppressMockupStaleRef.current = true;
     // Prefer the job row artwork — never a stale designState.artworkUrl from another product.
     const preferredUrl =
       imageUrl ||
       (typeof ds?.artworkUrl === "string" ? ds.artworkUrl : "") ||
       "";
     const absUrl = abs(preferredUrl);
-    if (!absUrl) return;
+    if (!absUrl) {
+      const storedColor =
+        (typeof ds?.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
+        (typeof topLevel.frameColor === "string" && topLevel.frameColor.trim()) ||
+        "";
+      if (storedColor) pendingRestoreColorRef.current = storedColor;
+      else restoringSavedDesignRef.current = false;
+      return;
+    }
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     aopPersonMockupsRef.current = [];
     aopBaseMockupsRef.current = [];
     flatFrontMockupsRef.current = [];
@@ -4507,7 +6310,39 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Size/colour mockup cache is per-design — never reuse across designs.
     mockupColorCacheRef.current = {};
     currentMockupColorRef.current = "";
-    setGeneratedDesign({ id: designId, imageUrl: absUrl, prompt: promptText || '' });
+    const fromDs = carriedStyleHints(ds);
+    const fromTop = carriedStyleHints(topLevel as Record<string, unknown>);
+    const loadedStyle = {
+      stylePreset: fromDs.stylePreset || fromTop.stylePreset || null,
+      catalogSlug: fromDs.catalogSlug || fromTop.catalogSlug || null,
+      styleName: fromDs.styleName || fromTop.styleName || null,
+      outputMode: fromDs.outputMode || fromTop.outputMode || null,
+      generationModel: fromDs.generationModel || fromTop.generationModel || null,
+    };
+    setGeneratedDesign({
+      id: designId,
+      imageUrl: absUrl,
+      prompt: promptText || "",
+      generationModel: loadedStyle.generationModel || null,
+    });
+    setLoadedDecorStyle(loadedStyle);
+    // Keep origin hints until the style catalog can resolve them. Do not
+    // setSelectedPreset("") here — that default reset clobbers reuse fill.
+    if (styleHintsHaveIdentity(loadedStyle)) {
+      pendingRestoreStyleRef.current = loadedStyle;
+    }
+    if (filteredStylePresets.length > 0 && styleHintsHaveIdentity(loadedStyle)) {
+      const styleId = resolveSavedStyleDropdownId(
+        filteredStylePresets,
+        loadedStyle,
+        stylePresets,
+        `saved-design:${designId}`,
+      );
+      if (styleId) {
+        setSelectedPreset(styleId);
+        pendingRestoreStyleRef.current = null;
+      }
+    }
     if (promptText) setPrompt(promptText);
     savedJobIdRef.current = designId;
     placementFrozenSigRef.current = null;
@@ -4523,13 +6358,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatPlacerEditOpen(false);
     } else {
       setFlatPlacerEditOpen(Boolean((isAdminTester || openAppliedEditor) && usesFlatOnTheFlyPreview));
-    }
-    if (isAdminTester && designId) {
-      const designPt = String(topLevel.productTypeId || "").trim();
-      const currentPt = String(productTypeId || "").trim();
-      if (!designPt || !currentPt || designPt === currentPt) {
-        emitTesterDesignStatus({ jobId: designId, aopPanels: "none" });
-      }
     }
     // Immediately poll for a pre-existing shadow product for this design.
     // If the shadow product was created within the last 7 days, it will be returned
@@ -4549,9 +6377,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setTransform(restoredTransform);
         initialTransformRef.current = restoredTransform;
       }
-      if (ds.selectedSize) {
-        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === ds.selectedSize);
-        if (sizeOk) setSelectedSize(ds.selectedSize);
+      const storedSizeRaw =
+        (typeof ds.selectedSize === "string" && ds.selectedSize.trim()) || "";
+      if (storedSizeRaw) {
+        pendingRestoreSizeRef.current = storedSizeRaw;
+        const nextSize = resolvePrintSizeId(storedSizeRaw, printSizes);
+        if (nextSize) {
+          setSelectedSize(nextSize);
+          pendingRestoreSizeRef.current = null;
+        }
       }
       const storedColor =
         (typeof ds.selectedFrameColor === "string" && ds.selectedFrameColor.trim()) ||
@@ -4560,13 +6394,25 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (storedColor) {
         pendingRestoreColorRef.current = storedColor;
         const resolved = resolveFrameColorId(storedColor, frameColorObjects);
-        if (resolved) {
-          setSelectedFrameColor(resolved);
+        const next =
+          resolved ||
+          pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+        if (next) {
+          setSelectedFrameColor(next);
           pendingRestoreColorRef.current = null;
           restoringSavedDesignRef.current = false;
         }
       }
-      if (ds.stylePreset) setSelectedPreset(ds.stylePreset);
+      if (typeof ds.decorBackgroundFill === "string") {
+        setDecorBackgroundFill(ds.decorBackgroundFill);
+      } else if (
+        ds.flatPlacerState &&
+        typeof (ds.flatPlacerState as FlatProductPlacerState).backgroundColor === "string"
+      ) {
+        setDecorBackgroundFill(
+          (ds.flatPlacerState as FlatProductPlacerState).backgroundColor || "none",
+        );
+      }
       if (ds.aopPlacementSettings && typeof ds.aopPlacementSettings === 'object') {
         setAopPlacementSettings(ds.aopPlacementSettings as AopPlacementSettings);
         if (typeof ds.aopPlacementSettings.bgColor === 'string') {
@@ -4586,9 +6432,43 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // placer reads this via its `initialState` prop on first render and
       // seeds the customer's last placement / mode / link state so they
       // resume exactly where they left off.
-      if (ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object') {
-        setHoodieAopPlacerState(ds.hoodieAopPlacerState as HoodieAopPlacerState);
+      // Designs Applied in Preview Studio were saved without hoodieAopPlacerState;
+      // their placement + background survive only in the capture signature.
+      const restoredPlacerState =
+        ds.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === 'object'
+          ? ds.hoodieAopPlacerState
+          : placerStateFromStoredCaptureSignature(ds.aopPanelCaptureSignature);
+      if (restoredPlacerState) {
+        setHoodieAopPlacerState({
+          ...(restoredPlacerState as HoodieAopPlacerState),
+          // Same URL the AOP fallback / placer key uses — otherwise first
+          // mount drops placements and reseeds template defaults.
+          artworkUrl: absUrl,
+        });
       }
+      if (useAopCustomizer && absUrl) {
+        setAopPendingMotifUrl(absUrl);
+      }
+      // Refresh / Printify rebuild is keyed on lastAopPanelUrlsRef. Apply
+      // persists aopPrintPanelUrls; restore them here so the gate is winnable.
+      const restoredPanels = panelsFromSavedAopPrintUrls(ds.aopPrintPanelUrls).map((p) => ({
+        position: p.position,
+        dataUrl: abs(p.dataUrl) || p.dataUrl,
+      }));
+      if (restoredPanels.length > 0) {
+        lastAopPanelUrlsRef.current = restoredPanels;
+        lastHostedPrintPanelsRef.current = restoredPanels
+          .filter((p) => p.dataUrl.startsWith("http://") || p.dataUrl.startsWith("https://"))
+          .map((p) => ({ position: p.position, url: p.dataUrl, hash: "" }));
+        setAopPrintPanelsReady(true);
+        console.log(
+          "[LoadDesign] Restored aopPrintPanelUrls",
+          restoredPanels.map((p) => p.position).join(","),
+        );
+      }
+      storedAopPanelCaptureSignatureRef.current =
+        ds.aopPanelCaptureSignature ?? null;
+      lastPersistedAopCaptureStateRef.current = restoredPlacerState ?? null;
       // Mesh composites matching the placer (not Printify cameras). Restore
       // these as Front/Back so reopen matches what the customer last applied.
       const savedPtForMesh = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
@@ -4714,40 +6594,58 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     } else {
       if (topLevel.size) {
-        const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
-        if (sizeOk) setSelectedSize(topLevel.size);
+        pendingRestoreSizeRef.current = String(topLevel.size).trim() || pendingRestoreSizeRef.current;
+        const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
+        if (nextSize) {
+          setSelectedSize(nextSize);
+          pendingRestoreSizeRef.current = null;
+        }
       }
       if (topLevel.frameColor) {
         pendingRestoreColorRef.current = topLevel.frameColor;
         const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-        if (resolved) {
-          setSelectedFrameColor(resolved);
+        const next =
+          resolved ||
+          pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+        if (next) {
+          setSelectedFrameColor(next);
           pendingRestoreColorRef.current = null;
           restoringSavedDesignRef.current = false;
         }
       }
-      if (topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
+      // Style is already resolved above to a real dropdown option id — do not
+      // overwrite with a raw job slug / foreign merchant id.
     }
     // Some older saved AOP designs only persisted panel URLs in designState; their
     // size/color/style live on the top-level saved-design row. Always fall back to
     // those values so Edit Pattern -> Apply can regenerate mockups.
     if (!ds?.selectedSize && topLevel.size) {
-      const sizeOk = !printSizes.length || printSizes.some((s) => s.id === topLevel.size);
-      if (sizeOk) setSelectedSize(topLevel.size);
+      if (!pendingRestoreSizeRef.current) {
+        pendingRestoreSizeRef.current = String(topLevel.size).trim() || null;
+      }
+      const nextSize = resolvePrintSizeId(topLevel.size, printSizes);
+      if (nextSize) {
+        setSelectedSize(nextSize);
+        pendingRestoreSizeRef.current = null;
+      }
     }
     if (!pendingRestoreColorRef.current && topLevel.frameColor) {
       pendingRestoreColorRef.current = topLevel.frameColor;
       const resolved = resolveFrameColorId(topLevel.frameColor, frameColorObjects);
-      if (resolved) {
-        setSelectedFrameColor(resolved);
+      const next =
+        resolved ||
+        pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) {
+        setSelectedFrameColor(next);
         pendingRestoreColorRef.current = null;
         restoringSavedDesignRef.current = false;
       }
     }
     if (!pendingRestoreColorRef.current && !topLevel.frameColor && !ds?.selectedFrameColor) {
+      const next = pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) setSelectedFrameColor(next);
       restoringSavedDesignRef.current = false;
     }
-    if (!ds?.stylePreset && topLevel.stylePreset) setSelectedPreset(topLevel.stylePreset);
     const mockups = topLevel.mockupUrls;
     const savedProductTypeId = topLevel.productTypeId ? String(topLevel.productTypeId) : null;
     const currentProductTypeId = productTypeId ? String(productTypeId) : null;
@@ -4867,10 +6765,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       })();
     }
+    if (isAdminTester && designId) {
+      const designPt = String(topLevel.productTypeId || "").trim();
+      const currentPt = String(productTypeId || "").trim();
+      if (!designPt || !currentPt || designPt === currentPt) {
+        const hasPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
+        const printifyZoomReady = !useAopCustomizer && !usesFlatOnTheFlyPreview;
+        const flatStateReady = !!(ds?.flatPlacerState && typeof ds.flatPlacerState === "object");
+        const aopResumeReady =
+          useAopCustomizer &&
+          hasPrintFiles &&
+          (!!(ds?.hoodieAopPlacerState && typeof ds.hoodieAopPlacerState === "object") ||
+            !!placerStateFromStoredCaptureSignature(ds?.aopPanelCaptureSignature));
+        emitTesterDesignStatus({
+          jobId: designId,
+          aopPanels:
+            hasPrintFiles || printifyZoomReady || flatStateReady || aopResumeReady
+              ? "saved"
+              : "none",
+        });
+      }
+    }
   };
 
   // Track whether we've already restored the loadDesignId so we don't do it twice
   const loadDesignAppliedRef = useRef(false);
+  // In-gallery same-product apply sets loadDesignId without a remount — skip the wipe.
+  const skipLoadDesignWipeRef = useRef(false);
 
   const resolveSavedDesignPageHandle = useCallback(async (design: any): Promise<string> => {
     const direct = design?.pageHandle ? String(design.pageHandle) : "";
@@ -4895,29 +6816,83 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [creatorUsernameParam]);
 
+  const applySavedDesignRecord = (design: any) => {
+    const clickedId = design?.id ? String(design.id) : "";
+    const artwork = String(design?.artworkUrl || design?.imageUrl || "");
+    if (!clickedId || !artwork) return false;
+    skipLoadDesignWipeRef.current = true;
+    loadDesignAppliedRef.current = true;
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
+    openPlacementEditorOnApplyRef.current = !!(
+      showPatternStepRef.current || flatPlacerEditOpenRef.current
+    );
+    applyLoadedDesign(clickedId, artwork, design.prompt || "", design.designState, {
+      size: design.size,
+      frameColor: design.frameColor,
+      stylePreset: design.stylePreset,
+      mockupUrls: design.mockupUrls,
+      productTypeId: design.productTypeId,
+      creativeBrief: (design as any).creativeBrief,
+    });
+    setBridgeLoadDesignId(clickedId);
+    return true;
+  };
+
+  const currentCustomizerPageHandle = () =>
+    (
+      activeProductContext.pageHandle ||
+      searchParams.get("pageHandle") ||
+      searchParams.get("page") ||
+      ""
+    ).toLowerCase();
+
+  const openSavedDesignFromGallery = async (design: any) => {
+    const clickedId = String(design?.id || "");
+    if (!clickedId) return;
+    const pageHandle = await resolveSavedDesignPageHandle(design);
+    const currentHandle = currentCustomizerPageHandle();
+    const sameProduct =
+      !pageHandle ||
+      !currentHandle ||
+      pageHandle.toLowerCase() === currentHandle;
+    if (sameProduct) {
+      if (!applySavedDesignRecord(design)) {
+        toast({
+          title: "Couldn't open this design",
+          description: "The artwork for this save is missing.",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
+    setReuseBusy(true);
+    setReuseBusyLabel("Opening design…");
+    assignHostToSavedDesign(pageHandle, {
+      loadDesignId: clickedId,
+      loadMockup: savedDesignPreviewUrl(design)
+        ? toAbsoluteImageUrl(savedDesignPreviewUrl(design))
+        : null,
+      loadProductName: design.baseTitle || null,
+    });
+  };
+  const openSavedDesignFromGalleryRef = useRef(openSavedDesignFromGallery);
+  openSavedDesignFromGalleryRef.current = openSavedDesignFromGallery;
+
   const loadSavedDesignInPlace = useCallback((design: any) => {
+    if (applySavedDesignRecord(design)) return;
     const clickedId = design?.id ? String(design.id) : "";
     if (!clickedId) return;
     loadDesignAppliedRef.current = false;
-    try {
-      const parentUrl = new URL(window.parent.location.href);
-      parentUrl.searchParams.set("loadDesignId", clickedId);
-      const mockupSrc = savedDesignPreviewUrl(design);
-      if (mockupSrc) {
-        parentUrl.searchParams.set("loadMockup", toAbsoluteImageUrl(mockupSrc));
-      } else {
-        parentUrl.searchParams.delete("loadMockup");
-      }
-      window.parent.history.replaceState({}, "", parentUrl.toString());
-    } catch {
-      // cross-origin guard — fall back to iframe-only
-    }
-    const params = new URLSearchParams(window.location.search);
-    params.set("loadDesignId", clickedId);
-    window.history.replaceState({}, "", `${window.location.pathname}?${params}`);
+    const mockupSrc = savedDesignPreviewUrl(design);
+    writeReopenDesign(hostWindow(), {
+      id: clickedId,
+      handle: reopenPageHandle() || currentCustomizerPageHandle(),
+      mockup: mockupSrc ? toAbsoluteImageUrl(mockupSrc) : null,
+    });
     setBridgeLoadDesignId(clickedId);
     setLoadDesignNonce((n) => n + 1);
-  }, []);
+  }, [applySavedDesignRecord]);
 
   const switchToSavedDesignProduct = useCallback(async (design: any) => {
     const pageHandle = await resolveSavedDesignPageHandle(design);
@@ -4929,6 +6904,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setIsInAppProductSwitching(true);
     setConfigLoading(true);
     restoringSavedDesignRef.current = true;
+    setSelectedFrameColor("");
     setProductTypeError(null);
     setGeneratedDesign(null);
     setDesignSource(null);
@@ -4943,6 +6919,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatApplyStatus("idle");
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -4952,6 +6931,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
+    preShadowWarmRef.current.clear();
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
@@ -4972,6 +6954,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       throw new Error(`Could not load customizer page "${pageHandle}" (${res.status})`);
     }
     const config = await res.json();
+    if (typeof config.storeName === "string" && config.storeName.trim()) {
+      setMerchantStoreName(config.storeName.trim());
+    }
     if (!config?.designerConfig) {
       throw new Error(`Customizer page "${pageHandle}" has no designer config`);
     }
@@ -5063,15 +7048,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (config.baseProductTitle || config.title) params.set("productTitle", config.baseProductTitle || config.title);
     if (config.title) params.set("displayName", config.title);
     if (baseVariant) params.set("selectedVariant", baseVariant);
-    params.set("loadDesignId", designId);
-    if (mockupAbsForUrl) params.set("loadMockup", mockupAbsForUrl);
+    params.delete("loadDesignId");
+    params.delete("loadMockup");
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
 
     applyDesignerConfig(config.designerConfig, "SWITCH SAVED DESIGN");
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
+      stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setExperienceProfile(parsePublicExperienceProfile(config.experienceProfile));
     setConfigLoading(false);
 
     try {
@@ -5091,8 +7078,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setLoadDesignNonce((n) => n + 1);
   }, [applyDesignerConfig, shopDomain, creatorUsernameParam, creatorIdParam, resolveSavedDesignPageHandle]);
 
-  /** In-app customizer page switch (no full reload) — used by Reuse Artwork regenerate. */
-  const switchToCustomizerPageByHandle = useCallback(async (pageHandle: string) => {
+  /** In-app customizer page switch (no full reload) — used by Reuse Artwork. */
+  const switchToCustomizerPageByHandle = useCallback(async (
+    pageHandle: string,
+    historyExtra: Record<string, string | null | undefined> = {},
+  ) => {
     if (!pageHandle) throw new Error("Missing customizer page handle");
 
     setIsInAppProductSwitching(true);
@@ -5113,6 +7103,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setFlatApplyStatus("idle");
     setFlatRenderFailed(false);
     lastAopPanelUrlsRef.current = null;
+    setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
     setPrintifyMockups([]);
     setPrintifyMockupImages([]);
     setSelectedMockupIndex(0);
@@ -5122,11 +7115,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupFailed(false);
     setVariantError(null);
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
+    preShadowWarmRef.current.clear();
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     loadDesignAppliedRef.current = false;
     setBridgeLoadDesignId("");
     setSelectedSize("");
+    setSelectedFrameColor("");
     setSelectedPreset("");
     setSelectedStyleOption("");
 
@@ -5225,6 +7222,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       reusePrompt: null,
       reuseJobId: null,
       autoReuseGenerate: null,
+      ...historyExtra,
     });
 
     const params = new URLSearchParams(window.location.search);
@@ -5247,12 +7245,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     params.delete("reuseJobId");
     params.delete("autoReuseGenerate");
     window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    if (historyExtra.loadDesignId) {
+      setBridgeLoadDesignId(String(historyExtra.loadDesignId));
+      setLoadDesignNonce((n) => n + 1);
+    }
 
     applyDesignerConfig(config.designerConfig, "SWITCH REUSE PRODUCT");
     if (Array.isArray(config.stylePresets)) {
       setStylePresets(config.stylePresets);
+      stylePresetsOwnedRef.current = true;
     }
     setPageStyleConfig(parseCustomizerPageStyleConfig(config.styleConfig));
+    setExperienceProfile(parsePublicExperienceProfile(config.experienceProfile));
     setConfigLoading(false);
     setIsInAppProductSwitching(false);
 
@@ -5272,6 +7276,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   // Reset the applied flag whenever loadDesignId changes so we restore the new design
   useEffect(() => {
+    if (skipLoadDesignWipeRef.current) {
+      skipLoadDesignWipeRef.current = false;
+      loadDesignAppliedRef.current = true;
+      return;
+    }
     loadDesignAppliedRef.current = false;
     if (effectiveLoadDesignId) {
       restoringSavedDesignRef.current = true;
@@ -5289,6 +7298,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setFlatApplyStatus("idle");
       setFlatRenderFailed(false);
       lastAopPanelUrlsRef.current = null;
+      lastHostedPrintPanelsRef.current = [];
+      setAopPrintPanelsReady(false);
+      storedAopPanelCaptureSignatureRef.current = null;
+      lastPersistedAopCaptureStateRef.current = null;
       setPrintifyMockups([]);
       setPrintifyMockupImages([]);
       setSelectedMockupIndex(0);
@@ -5305,8 +7318,45 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [effectiveLoadDesignId, loadDesignNonce]);
 
-  /** Drop sticky loadDesignId from the URL so a remount can't revive the wrong design. */
+  // Reuse-as-is: apply after switchToCustomizerPageByHandle has committed the
+  // TARGET product config so useAopCustomizer / flat flags are not stale.
+  useEffect(() => {
+    const pending = pendingReuseApplyRef.current;
+    if (!pending || configLoading || !productTypeConfig) return;
+    pendingReuseApplyRef.current = null;
+    loadDesignAppliedRef.current = true;
+    aopEditorDismissedRef.current = false;
+    flatEditorDismissedRef.current = false;
+    openPlacementEditorOnApplyRef.current = true;
+    applyLoadedDesign(
+      pending.jobId,
+      pending.artworkUrl,
+      pending.prompt,
+      {
+        productTypeId: pending.productTypeId,
+        pageHandle: activeProductContext.pageHandle,
+        stylePreset: pending.stylePreset,
+        catalogSlug: pending.catalogSlug,
+        styleName: pending.styleName,
+        outputMode: pending.outputMode,
+        generationModel: pending.generationModel,
+      },
+      {
+        productTypeId: pending.productTypeId,
+        stylePreset: pending.stylePreset,
+        catalogSlug: pending.catalogSlug,
+        styleName: pending.styleName,
+      },
+    );
+    clearReuseHandoff();
+    setReuseBusy(false);
+    // applyLoadedDesign is a per-render closure; pageHandle is the switch signal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configLoading, productTypeConfig, activeProductContext.pageHandle]);
+
+  /** Drop the sticky reopen target (storage + legacy URL params) so a remount can't revive the wrong design. */
   const clearLoadDesignIdFromUrl = useCallback(() => {
+    clearReopenDesign(hostWindow());
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("loadDesignId");
@@ -5317,11 +7367,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       /* ignore */
     }
     try {
-      const parentUrl = new URL(window.parent.location.href);
+      const parentUrl = new URL(hostWindow().location.href);
       parentUrl.searchParams.delete("loadDesignId");
       parentUrl.searchParams.delete("loadMockup");
       parentUrl.searchParams.delete("loadProductName");
-      window.parent.history.replaceState({}, "", parentUrl.toString());
+      hostWindow().history.replaceState({}, "", parentUrl.toString());
     } catch {
       /* cross-origin guard */
     }
@@ -5329,8 +7379,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, []);
 
   const applyProductDefaultSizeColor = useCallback(() => {
-    const firstSize = printSizes[0]?.id || "";
-    if (firstSize) setSelectedSize(firstSize);
+    const pool = countryAwareSizes.length > 0 ? countryAwareSizes : printSizes;
+    if (pool.length === 1 && pool[0]?.id) {
+      setSelectedSize(pool[0].id);
+    } else {
+      setSelectedSize("");
+    }
+    setShippingDownsellSizeId(null);
     const colors = productTypeConfig?.frameColors || [];
     if (colors.length === 0) {
       setSelectedFrameColor("");
@@ -5340,36 +7395,144 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const firstColor =
       (vm && colors.find((c) => hasVariantMappingForColor(vm, c.id))) || colors[0];
     setSelectedFrameColor(firstColor?.id || "");
-  }, [printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
+  }, [countryAwareSizes, printSizes, productTypeConfig?.frameColors, productTypeConfig?.variantMap]);
 
-  /** After ATC / Start Fresh: drop sticky loadDesignId so the grey skeleton cannot loop. */
-  const resetStudioAfterPurchase = useCallback(() => {
-    if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
-    setGeneratedDesign(null);
-    setDesignSource(null);
-    loadDesignAppliedRef.current = true;
-    pendingRestoreColorRef.current = null;
-    restoringSavedDesignRef.current = false;
-    setBridgeLoadDesignId("");
-    clearLoadDesignIdFromUrl();
-    setReferenceImages([]);
-    setReferencePreviews([]);
-    setReuseRegenerateBasePrompt(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-    setSelectedPreset("");
-    setSelectedStyleOption("");
-    applyProductDefaultSizeColor();
-    try {
-      sessionStorage.removeItem(designSessionStorageKey(shopDomain, productHandle, productTypeId));
-    } catch {
-      /* ignore */
+  const freezeParentAtcForUpdate = useCallback(() => {
+    if (usesFlatOnTheFlyPreview && generatedDesign?.imageUrl) {
+      setFlatMockupRefreshing(true);
     }
+    if (!isStorefront) return;
+    setAtcUpdatesPending(true);
+    window.parent.postMessage({
+      type: "AI_ART_STUDIO_CART_STATE",
+      ready: false,
+      disabled: true,
+      label: "Updating mockups…",
+      payload: null,
+    }, "*");
+  }, [isStorefront, usesFlatOnTheFlyPreview, generatedDesign?.imageUrl]);
+
+  const handleCustomerFrameColorChange = useCallback((colorId: string) => {
+    if (colorId !== selectedFrameColor) freezeParentAtcForUpdate();
+    setSelectedFrameColor(colorId);
+  }, [selectedFrameColor, freezeParentAtcForUpdate]);
+
+  const applySelectedSize = useCallback(
+    (sizeId: string) => {
+      const catalogId = resolveSizeIdFromCoverage(sizeId, printSizes) || sizeId;
+      if (catalogId !== selectedSize) freezeParentAtcForUpdate();
+      const prevSize = printSizes.find((s) => s.id === selectedSize);
+      const nextSize = printSizes.find((s) => s.id === catalogId);
+      if (
+        generatedDesign?.imageUrl &&
+        prevSize &&
+        nextSize &&
+        prevSize.id !== nextSize.id
+      ) {
+        const prevAr = resolveSizeAspectRatio(
+          prevSize,
+          productTypeConfig?.aspectRatio,
+        );
+        const nextAr = resolveSizeAspectRatio(
+          nextSize,
+          productTypeConfig?.aspectRatio,
+        );
+        if (prevAr !== nextAr) {
+          toast({
+            title: isPhoneCaseProduct
+              ? "Model proportions changed"
+              : "Size proportions changed",
+            description:
+              "Generate new artwork so it matches this size's aspect ratio.",
+          });
+        }
+      }
+      setSelectedSize(catalogId);
+      setShippingDownsellSizeId(null);
+      if (frameOptionsRedundantWithSizes) {
+        const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
+        if (matched) setSelectedFrameColor(matched);
+      }
+      const flatOnTheFly = usesFlatOnTheFlyPreview;
+      if (!flatOnTheFly) {
+        setTransform({ scale: defaultZoom, x: 50, y: 50 });
+      }
+    },
+    [
+      printSizes,
+      selectedSize,
+      generatedDesign?.imageUrl,
+      productTypeConfig?.aspectRatio,
+      toast,
+      isPhoneCaseProduct,
+      frameOptionsRedundantWithSizes,
+      frameColorObjects,
+      usesFlatOnTheFlyPreview,
+      defaultZoom,
+      freezeParentAtcForUpdate,
+    ],
+  );
+
+  // Exactly one visible size (e.g. apron One Size) — same path as a customer click.
+  // Never pick the first of several.
+  useEffect(() => {
+    if (configLoading || !productTypeConfig) return;
+    if (countryAwareSizes.length !== 1) return;
+    const onlyId = countryAwareSizes[0]?.id;
+    if (!onlyId) return;
+    if (selectedSize === onlyId) return;
+    if (selectedSize && countryAwareSizes.some((s) => s.id === selectedSize)) return;
+    applySelectedSize(onlyId);
   }, [
-    applyProductDefaultSizeColor,
-    clearLoadDesignIdFromUrl,
-    shopDomain,
-    productHandle,
-    productTypeId,
+    configLoading,
+    productTypeConfig,
+    countryAwareSizes,
+    selectedSize,
+    applySelectedSize,
+  ]);
+
+  const urlSizeConsumedRef = useRef(false);
+  useEffect(() => {
+    if (!isCreatorStorefront || !printSizes.length) return;
+    if (effectiveLoadDesignId || sharedDesignId) return;
+    if (urlSizeConsumedRef.current) return;
+    const urlSize = readUrlSizeParam();
+    if (!urlSize) return;
+    const resolved = resolveSizeIdFromCoverage(urlSize, printSizes);
+    if (!resolved) return;
+    urlSizeConsumedRef.current = true;
+    setSelectedSize(resolved);
+  }, [isCreatorStorefront, printSizes, effectiveLoadDesignId, sharedDesignId]);
+
+  useEffect(() => {
+    if (!isCreatorStorefront || !sizeCoverageRows || !printSizes.length) return;
+    const candidate = shippingDownsellSizeId || selectedSize;
+    if (!candidate) {
+      if (countryAwareSizes.length === 1 && countryAwareSizes[0]) {
+        setSelectedSize(countryAwareSizes[0].id);
+      }
+      return;
+    }
+    const next = buildSizeDownsell({
+      requestedSizeId: candidate,
+      country: shipCountryForCoverage,
+      rows: sizeCoverageRows,
+    });
+    if (next) {
+      if (shippingDownsellSizeId !== next.requestedSizeId) {
+        setShippingDownsellSizeId(next.requestedSizeId);
+      }
+      return;
+    }
+    if (shippingDownsellSizeId) setShippingDownsellSizeId(null);
+  }, [
+    isCreatorStorefront,
+    sizeCoverageRows,
+    selectedSize,
+    printSizes,
+    shipCountryForCoverage,
+    countryAwareSizes,
+    shippingDownsellSizeId,
   ]);
 
   // Primary path: restore from savedDesigns list once it's populated
@@ -5402,25 +7565,42 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     console.log('[LoadDesign] Found design:', d.id, 'artworkUrl:', d.artworkUrl);
     loadDesignAppliedRef.current = true;
-    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId });
+    applyLoadedDesign(d.id, d.artworkUrl, d.prompt, d.designState, { size: d.size, frameColor: d.frameColor, stylePreset: d.stylePreset, mockupUrls: d.mockupUrls, productTypeId: d.productTypeId, creativeBrief: (d as any).creativeBrief });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveLoadDesignId, loadDesignNonce, savedDesigns, configLoading, isAdminTester, productTypeId, productTypeConfig]);
 
-  // Fallback path: if savedDesigns list is empty (not logged in, or list not yet fetched),
-  // fetch the job status directly from the server
+  // Fallback path: if the design isn't in the savedDesigns list (anonymous
+  // session still fetching, or a job that isn't in the gallery), fetch status.
   useEffect(() => {
     if (!effectiveLoadDesignId || !shopDomain || loadDesignAppliedRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    // Only run fallback after a short delay to give savedDesigns time to populate
+    const inList = savedDesigns.some((x) => x.id === effectiveLoadDesignId);
+    if (inList) return; // primary path will apply
+    const listResolved = !savedDesignsLoading;
+    const delay = listResolved ? 0 : 2000;
     const timer = setTimeout(() => {
-      if (loadDesignAppliedRef.current) return; // already restored from list
+      if (loadDesignAppliedRef.current) return;
       console.log('[LoadDesign] Fallback: fetching status for', effectiveLoadDesignId);
       const shop = shopDomain;
-      safeFetch(`${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(effectiveLoadDesignId)}&shop=${encodeURIComponent(shop)}&t=${Date.now()}`)
-        .then(res => res.ok ? res.json() : null)
+      const statusQs = new URLSearchParams({
+        jobId: effectiveLoadDesignId,
+        shop,
+        t: String(Date.now()),
+      });
+      if (anonSessionId) statusQs.set("sessionId", anonSessionId);
+      safeFetch(`${API_BASE}/api/storefront/generate/status?${statusQs.toString()}`, {
+        headers: identityJsonHeaders(),
+      })
+        .then(res => {
+          if (res.status === 403) {
+            setDesignAccessDenied(true);
+            return null;
+          }
+          return res.ok ? res.json() : null;
+        })
         .then(status => {
           if (!status || status.status !== 'complete') return;
-          if (loadDesignAppliedRef.current) return; // list restored it in the meantime
+          if (loadDesignAppliedRef.current) return;
           if (
             isAdminTester &&
             status.productTypeId != null &&
@@ -5437,23 +7617,64 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             return;
           }
           loadDesignAppliedRef.current = true;
-          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId });
+          applyLoadedDesign(effectiveLoadDesignId, status.imageUrl, status.prompt || '', status.designState, { size: status.size, frameColor: status.frameColor, stylePreset: status.stylePreset, mockupUrls: status.mockupUrls, productTypeId: status.productTypeId, creativeBrief: status.creativeBrief });
         })
         .catch(() => {});
-    }, 2000);
+    }, delay);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig]);
+  }, [effectiveLoadDesignId, loadDesignNonce, shopDomain, configLoading, isAdminTester, productTypeId, productTypeConfig, savedDesigns, savedDesignsLoading]);
 
   useEffect(() => {
+    if (frameColorObjects.length === 0) return;
     const pending = pendingRestoreColorRef.current;
-    if (!pending || frameColorObjects.length === 0) return;
-    const resolved = resolveFrameColorId(pending, frameColorObjects);
-    if (!resolved) return;
-    setSelectedFrameColor(resolved);
-    pendingRestoreColorRef.current = null;
-    restoringSavedDesignRef.current = false;
-  }, [frameColorObjects]);
+    if (pending) {
+      const resolved = resolveFrameColorId(pending, frameColorObjects);
+      const next =
+        resolved ||
+        pickFallbackFrameColorId(frameColorObjects, productTypeConfig?.variantMap);
+      if (next) setSelectedFrameColor(next);
+      pendingRestoreColorRef.current = null;
+      restoringSavedDesignRef.current = false;
+      return;
+    }
+    const currentOk = selectedFrameColor
+      ? resolveFrameColorId(selectedFrameColor, frameColorObjects)
+      : null;
+    if (!currentOk) {
+      const next = pickFallbackFrameColorId(
+        frameColorObjects,
+        productTypeConfig?.variantMap,
+      );
+      if (next) setSelectedFrameColor(next);
+    }
+  }, [frameColorObjects, productTypeConfig?.variantMap, selectedFrameColor]);
+
+  useEffect(() => {
+    const pending = pendingRestoreSizeRef.current;
+    if (!pending || printSizes.length === 0) return;
+    const next = resolvePrintSizeId(pending, printSizes);
+    if (next) {
+      setSelectedSize(next);
+      pendingRestoreSizeRef.current = null;
+    }
+  }, [printSizes]);
+
+  useEffect(() => {
+    const hints = pendingRestoreStyleRef.current;
+    if (!hints || !styleHintsHaveIdentity(hints)) return;
+    if (filteredStylePresets.length === 0) return;
+    const id = resolveSavedStyleDropdownId(
+      filteredStylePresets,
+      hints,
+      stylePresets,
+      "saved-design-retry",
+    );
+    if (id) {
+      if (selectedPreset !== id) setSelectedPreset(id);
+      pendingRestoreStyleRef.current = null;
+    }
+  }, [filteredStylePresets, stylePresets, selectedPreset]);
 
   // Clear sessionStorage when the user navigates away so returning to the page
   // starts fresh (blank mockup). The entry only survives a hard refresh (F5).
@@ -5527,7 +7748,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       safeFetch(`${API_BASE}/api/shopify/session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           shop: shopDomain,
           productId: productId,
@@ -5606,6 +7827,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const startShadowVariantPoll = useCallback((jobId: string | null, shop: string, initialDelay = 0) => {
     if (!jobId || !shop) return;
     preShadowJobIdRef.current = null;
+    preShadowDesignIdRef.current = null;
+    preShadowSyncedRetailRef.current = null;
     setPreShadowVariantId(null);
     setPreShadowProductId(null);
     if (preShadowPollRef.current) clearTimeout(preShadowPollRef.current);
@@ -5617,14 +7840,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return;
       }
       try {
-        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?shop=${encodeURIComponent(shop)}`);
+        const vid = baseVariantForShadowRef.current;
+        const qs = new URLSearchParams({ shop });
+        if (vid) qs.set("variantId", vid);
+        if (anonSessionId) qs.set("sessionId", anonSessionId);
+        const r = await safeFetch(`${API_BASE}/api/storefront/shadow-variant/${jobId}?${qs.toString()}`, {
+          headers: identityJsonHeaders(),
+        });
         if (r.ok) {
           const data = await r.json();
           if (data.ready && data.shadowVariantId) {
-            console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId);
+            console.log('[PreShadow] Shadow variant ready:', data.shadowVariantId, 'product:', data.shadowProductId, 'key:', data.shadowDesignId || null);
             preShadowJobIdRef.current = jobId;
+            preShadowDesignIdRef.current =
+              typeof data.shadowDesignId === "string" && data.shadowDesignId ? data.shadowDesignId : null;
+            if (vid && preShadowDesignIdRef.current) {
+              preShadowWarmRef.current.set(vid, preShadowDesignIdRef.current);
+            }
             setPreShadowVariantId(data.shadowVariantId);
             setPreShadowProductId(data.shadowProductId || null);
+            if (atcModeRef.current === "base-first") {
+              try {
+                window.parent.postMessage({
+                  type: "ai-art-studio:shadow-ready",
+                  variantId: String(data.shadowVariantId),
+                }, "*");
+              } catch (_) { /* parent decodes when it can */ }
+            }
             return;
           }
         }
@@ -5824,6 +8066,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     if (activeMockupJobKeyRef.current === mockupJobKey) {
       console.log('[Mockups] Duplicate mockup request ignored while job is in flight');
+      console.log("[AOP-TRACE] fetchPrintifyMockups duplicate — mockupsStale unchanged");
       return { ok: false, error: "Mockup already in progress" };
     }
 
@@ -5835,9 +8078,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const requestSeq = isOnDemandMerge
       ? mockupRequestSeqRef.current
       : ++mockupRequestSeqRef.current;
+    const keepAopCartReady = shouldKeepAopCartReadyOnPrintifyFailure({
+      useAopCustomizer,
+      hasLocalFrontComposite: hasLocalAopFrontComposite({
+        aopPatternUrl: aopPatternUrlRef.current,
+        baseMockups: aopBaseMockupsRef.current,
+      }),
+    });
     if (!isOnDemandMerge) {
       setMockupLoading(true);
+      console.log("[AOP-TRACE] setMockupsStale(false) fetchPrintifyMockups start");
       setMockupsStale(false);
+      if (keepAopCartReady) {
+        setMockupPending(true);
+        setMockupError(null);
+      }
       // Notify parent page so it can show the "Artwork Generating" overlay
       if (runtimeMode !== 'standalone') {
         window.parent.postMessage({ type: 'AI_ART_STUDIO_MOCKUP_LOADING', loading: true }, '*');
@@ -5868,11 +8123,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         ) {
           return bgColorOverride;
         }
-        if (!useAopCustomizer) return undefined;
-        const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
-        return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
-          ? candidate
-          : undefined;
+        if (useAopCustomizer) {
+          const candidate = aopPlacementSettings?.bgColor ?? aopPatternSettings?.bgColor;
+          return typeof candidate === "string" && /^#[0-9a-fA-F]{6}$/.test(candidate)
+            ? candidate
+            : undefined;
+        }
+        return liveDecorFillHex ?? undefined;
       })();
       const mockupPrintPlacement = useAopCustomizer
         ? undefined
@@ -5894,6 +8151,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         y: clampedY,
         shop: shopDomain,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       } : isShopify ? {
@@ -5911,6 +8169,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         shop: shopDomain,
         sessionToken,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       } : {
@@ -5926,6 +8185,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         x: clampedX,
         y: clampedY,
         bgColor: aopBgColor,
+        backgroundColor: liveDecorFillHex,
         preferContextViews: mergeContextOnly || undefined,
         preferPersonViews: mergePersonViews || undefined,
       };
@@ -5934,6 +8194,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Track the most recent per-panel rasters so the Retry button can replay them.
       if (panelUrls && panelUrls.length > 0) {
         lastAopPanelUrlsRef.current = panelUrls;
+        setAopPrintPanelsReady(true);
       }
       console.log('[EmbedDesign] Fetching mockup from:', endpoint);
       const body = JSON.stringify(payload);
@@ -6114,6 +8375,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     ? {
                         baseProductId: productId,
                         baseVariantId: baseVariantForShadowRef.current,
+                        ...(displayedRetailRef.current
+                          ? { price: displayedRetailRef.current }
+                          : {}),
                       }
                     : {}),
                 }),
@@ -6123,7 +8387,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             }
             void safeFetch(`${API_BASE}/api/storefront/save-state`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: identityJsonHeaders(),
               body: JSON.stringify({
                 jobId,
                 shop: shopDomain,
@@ -6218,16 +8482,30 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               jobId: savedJobIdRef.current,
               shop: shopDomain,
               mockupUrls: urlsToPersist,
-              ...(productId && baseVariantForShadow ? { baseProductId: productId, baseVariantId: baseVariantForShadow } : {}),
+              ...(productId && baseVariantForShadow
+                ? {
+                    baseProductId: productId,
+                    baseVariantId: baseVariantForShadow,
+                    ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                    // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
+                    ...(() => {
+                      syncHoodieFingerprintRef();
+                      return preShadowKeyFields(savedJobIdRef.current, baseVariantForShadow);
+                    })(),
+                  }
+                : {}),
             }),
           }).then(r => r.json()).then(saved => {
             console.log('[Mockups] save-mockups response:', saved);
+            if (saved.shadowDesignId && baseVariantForShadow) {
+              preShadowWarmRef.current.set(baseVariantForShadow, String(saved.shadowDesignId));
+            }
             if (saved.saved) {
               // Refresh saved designs list so the new mockup shows up in the dropdown
               setSavedDesignsLoading(true);
               safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: savedDesignsHeaders(),
                 body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
               })
                 .then(r => r.json()).then(d => { 
@@ -6354,20 +8632,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         return contextMergeOutcome;
       }
       console.error("Failed to generate Printify mockups:", error);
-      setMockupError(error instanceof Error ? error.message : "Failed to generate product preview");
+      const failMsg = error instanceof Error ? error.message : "Failed to generate product preview";
+      setMockupError(failMsg);
       setMockupFailed(true);
+      // AOP cart uses the local front composite. A lifestyle/Printify timeout
+      // must not re-stale the button back to "Refresh Mockups".
+      if (keepAopCartReady) {
+        console.log("[AOP-TRACE] fetchPrintifyMockups catch keep-cart-ready — mockupsStale unchanged");
+        return { ok: false, error: failMsg };
+      }
       // Keep mockupsStale so the UI surfaces an error rather than silently
       // showing a stale mockup from a previous size/color combination.
+      console.log("[AOP-TRACE] setMockupsStale(true) fetchPrintifyMockups catch");
       setMockupsStale(true);
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : "Failed to generate product preview",
-      };
+      return { ok: false, error: failMsg };
     } finally {
       if (!isOnDemandMerge && activeMockupJobKeyRef.current === mockupJobKey) {
         activeMockupJobKeyRef.current = null;
       }
       if (!isOnDemandMerge && requestSeq === mockupRequestSeqRef.current) {
+        setMockupPending(false);
         setMockupLoading(false);
         setMockupTriggered(false);
         // Clear the "Artwork Generating" overlay on the parent page
@@ -6415,6 +8699,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !mockupFailed
     ) {
     if (useAopCustomizer) {
+      if (aopEditorDismissedRef.current) return;
       // Resume with saved placer state: keep aopPatternUrl / mockups; only open
       // the placer. Clearing pattern URL forced a default re-apply path.
       console.log('[EmbedDesign] First useEffect: Triggering AOP Pattern Customizer');
@@ -6422,6 +8707,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (!hoodieAopPlacerState) setAopPatternUrl(null);
       setShowPatternStep(true);
     } else if (usesFlatOnTheFlyPreview) {
+        if (flatEditorDismissedRef.current) return;
         setFlatPlacerEditOpen(true);
       } else {
         fetchPrintifyMockups(
@@ -6437,6 +8723,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
   }, [isSharedDesign, generatedDesign?.imageUrl, productTypeConfig, selectedSize, selectedFrameColor, printifyMockups.length, mockupLoading, mockupFailed, transform, fetchPrintifyMockups, useAopCustomizer, usesFlatOnTheFlyPreview, hoodieAopPlacerState, reuseAwaitingGenerate]);
 
+  // Track the current artwork URL. Do NOT clear dismiss here — Apply/Back flush
+  // can rewrite imageUrl (hosted upload) and that used to reopen the editor.
+  // Generate / import / load / Edit Pattern clear dismiss at those call sites.
+  useEffect(() => {
+    const url = generatedDesign?.imageUrl
+      ? toAbsoluteImageUrl(generatedDesign.imageUrl)
+      : null;
+    lastAopArtworkUrlForDismissRef.current = url;
+  }, [generatedDesign?.imageUrl]);
+
   // Fallback: trigger mockups if generation completed but productTypeConfig wasn't ready during onSuccess.
   // Also handles session restore. For AOP: show Pattern Customizer instead of auto-fetching mockups.
   useEffect(() => {
@@ -6447,10 +8743,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ) return;
 
     if (useAopCustomizer) {
-      if (showPatternStep) return;
+      if (showPatternStep || aopEditorDismissedRef.current) return;
       console.log('[EmbedDesign] AOP Fallback: Triggering Pattern Customizer');
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-      if (!hoodieAopPlacerState) setAopPatternUrl(null);
+      // Saved-design restore sets hoodie state in this same commit cycle —
+      // don't wipe the restored mockup just because this closure is stale.
+      if (!hoodieAopPlacerState && !restoringSavedDesignRef.current) {
+        setAopPatternUrl(null);
+      }
       setShowPatternStep(true);
       return;
     }
@@ -6465,6 +8765,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     ) return;
 
     if (usesFlatOnTheFlyPreview) {
+      if (flatEditorDismissedRef.current) return;
       setFlatPlacerEditOpen(true);
       return;
     }
@@ -6495,7 +8796,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     try {
       const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop,
@@ -6655,24 +8956,37 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // absent while s:red exists (the mockup server resolves it via size fallback).
   useEffect(() => {
     const colors = productTypeConfig?.frameColors || [];
-    if (!productTypeConfig?.variantMap || colors.length === 0) return;
+    if (colors.length === 0) return;
     if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
-    if (hasVariantMappingForColor(productTypeConfig.variantMap, selectedFrameColor)) return;
-    const fallback = colors.find((c) =>
-      hasVariantMappingForColor(productTypeConfig.variantMap, c.id),
-    );
-    if (fallback) setSelectedFrameColor(fallback.id);
-    else if (!selectedFrameColor && colors[0]) setSelectedFrameColor(colors[0].id);
+    const currentOk = selectedFrameColor
+      ? resolveFrameColorId(selectedFrameColor, colors)
+      : null;
+    if (
+      currentOk &&
+      (!productTypeConfig?.variantMap ||
+        hasVariantMappingForColor(productTypeConfig.variantMap, currentOk))
+    ) {
+      return;
+    }
+    const fallback = pickFallbackFrameColorId(colors, productTypeConfig?.variantMap);
+    if (fallback && fallback !== selectedFrameColor) setSelectedFrameColor(fallback);
   }, [productTypeConfig?.variantMap, productTypeConfig?.frameColors, selectedFrameColor]);
 
   useEffect(() => {
-    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) return;
+    if (restoringSavedDesignRef.current || pendingRestoreColorRef.current) {
+      setSaveStatePending(false);
+      return;
+    }
     const jobId = savedJobIdRef.current;
-    if (!jobId || !shopDomain || !selectedFrameColor || !generatedDesign?.imageUrl) return;
+    if (!jobId || !shopDomain || !selectedFrameColor || !generatedDesign?.imageUrl) {
+      setSaveStatePending(false);
+      return;
+    }
+    setSaveStatePending(true);
     const t = window.setTimeout(() => {
       void safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop: shopDomain,
@@ -6681,7 +8995,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             selectedFrameColor: selectedFrameColorRef.current || selectedFrameColor,
           },
         }),
-      }).catch(() => {});
+      })
+        .catch(() => {})
+        .finally(() => setSaveStatePending(false));
     }, 500);
     return () => window.clearTimeout(t);
   }, [selectedFrameColor, selectedSize, shopDomain, generatedDesign?.imageUrl]);
@@ -6711,6 +9027,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    // AOP: never fire a panel-bearing POST from an interactive handler — on a
+    // phone it competes with the panel uploads the checkout gate depends on.
+    // The placer re-applies on a colour change, and that Apply re-runs the
+    // deferred (post-persist) lifestyle fetch. Keep the existing composites
+    // on screen until it does; clearing them here would blank the preview and
+    // `setMockupsStale` must stay false or ATC re-locks.
+    if (useAopCustomizer) {
+      console.log('[Mockups] AOP colour change — deferring lifestyle refetch to post-persist');
+      return;
+    }
+
     console.log('[Mockups] No cache for color', selectedFrameColor, '— auto-refetching');
     setMockupError(null);
     setMockupFailed(false);
@@ -6725,7 +9052,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       transform.scale,
       transform.x,
-      transform.y
+      transform.y,
+      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+      aopPlacementSettings?.mirrorMode,
+      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFrameColor]);
@@ -6749,6 +9079,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setSelectedMockupIndex(prev => prev === 0 ? 1 : prev);
       setMockupsStale(false);
       console.log('[Mockups] Swapped to cached mockups for size change', cacheKey);
+    } else if (useAopCustomizer) {
+      // Same rule as the colour effect: no panel-bearing POST from an
+      // interactive handler, and do NOT fall through to the `setMockupsStale`
+      // branch below — that would re-lock ATC on a size change.
+      console.log('[Mockups] AOP size change — deferring lifestyle refetch to post-persist');
     } else if (generatedDesign?.imageUrl && productTypeConfig && selectedFrameColor) {
       console.log('[Mockups] No cache for size', selectedSize, '— auto-refetching');
       setMockupError(null);
@@ -6765,7 +9100,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedFrameColor,
         transform.scale,
         transform.x,
-        transform.y
+        transform.y,
+        useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+        aopPlacementSettings?.mirrorMode,
+        useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined,
       );
     } else {
       setMockupsStale(true);
@@ -6871,6 +9209,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // that includes `variants` in its dependency array (avoids TDZ ReferenceError in production bundle)
   const [variants, setVariants] = useState<any[]>([]);
   const [variantError, setVariantError] = useState<string | null>(null);
+  const atcWorkingLabel =
+    atcFinalizingReveal && !atcAvoidFinalizingLabel && !variantError
+      ? ATC_FINALIZING_LABEL
+      : "Adding to Cart...";
   const [variantsFetched, setVariantsFetched] = useState(false);
 
   // Variant selected by the storefront parent via AI_ART_STUDIO_VARIANT_CHANGE postMessage.
@@ -6886,6 +9228,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Used to render a variant selector inside the generator on customizer pages.
   const [shopifyVariants, setShopifyVariants] = useState<Array<{ id: string; title: string; price: string; option1?: string; option2?: string; imageSrc?: string }>>([]);
   const [shopifyVariantId, setShopifyVariantId] = useState<string | null>(null);
+  /** Presentment sibling from parent — DISPLAY ONLY. Never merge into variants[].price. */
+  const [presentmentPricesByVariantId, setPresentmentPricesByVariantId] = useState<
+    Record<string, number>
+  >({});
+  const [activeCurrency, setActiveCurrency] = useState<string | null>(null);
+  const presentmentMetaRef = useRef<{
+    rate: number | null;
+    shopCurrency: string | null;
+    country: string | null;
+    locale: string | null;
+  }>({ rate: null, shopCurrency: null, country: null, locale: null });
+
+  /** Display-only ISO on size prices when the headline is another currency. */
+  const sizeDropdownCurrencyCode = useMemo(() => {
+    const meta = presentmentMetaRef.current;
+    if (isShopCurrencyPresentment(activeCurrency, meta.shopCurrency, meta.rate)) {
+      return null;
+    }
+    return String(meta.shopCurrency || "USD").trim().toUpperCase() || "USD";
+  }, [activeCurrency]);
+
+  const mintedCatalog = useMemo(
+    () =>
+      resolveMintedShopifyCatalog({
+        catalog: shopifyVariants.length > 0 ? shopifyVariants : null,
+        shopifyVariantIds: productTypeConfig?.shopifyVariantIds,
+      }),
+    [shopifyVariants, productTypeConfig?.shopifyVariantIds],
+  );
 
   /** Color-accurate garment photo from Shopify variant catalog (falls back to catalog placeholder). */
   const shopifyColorImagesDistinct = useMemo(() => {
@@ -7045,7 +9416,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-design`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityJsonHeaders(),
       credentials: 'include',
       body: JSON.stringify({ jobId, customerId, shop }),
     });
@@ -7065,7 +9436,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     await safeFetch(`${API_BASE}/api/storefront/save-state`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: identityJsonHeaders(),
       body: JSON.stringify({
         jobId,
         shop,
@@ -7147,17 +9518,44 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
-    const rawVariantId = findVariantId();
-    if (!rawVariantId) {
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
       window.parent.postMessage({
         type: 'AI_ART_STUDIO_CART_STATE',
         ready: false,
         disabled: true,
-        label: 'Select options to continue',
+        label: isPhoneCaseProduct ? 'Select a model' : 'Select a size',
         payload: null,
       }, '*');
       return;
     }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: 'Select a color',
+        payload: null,
+      }, '*');
+      return;
+    }
+
+    const rawVariantId = findVariantId();
+    if (!rawVariantId) {
+      if (atcUpdatesPending) setAtcUpdatesPending(false);
+      window.parent.postMessage({
+        type: 'AI_ART_STUDIO_CART_STATE',
+        ready: false,
+        disabled: true,
+        label: 'Unavailable combination',
+        payload: null,
+      }, '*');
+      return;
+    }
+    if (atcUpdatesPending) setAtcUpdatesPending(false);
 
     // Normalize to numeric (strip GID prefix if present) — /cart/add.js requires numeric IDs
     const variantId = normalizeVariantId(rawVariantId);
@@ -7182,6 +9580,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (savedJobIdRef.current) {
       properties["_appai_job_id"] = savedJobIdRef.current;
     }
+    const cartStateJob = String(savedJobIdRef.current || rawId || "").trim();
     const artworkUrl = generatedDesign.imageUrl;
     if (artworkUrl && !artworkUrl.startsWith('data:')) {
       properties['_artwork_url'] = toAbsoluteImageUrl(artworkUrl);
@@ -7213,13 +9612,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     const liveFlat = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnap = encodeFlatLinePlacement(liveFlat);
     if (flatSnap) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnap;
+    const totePrintBack =
+      printPlacement === "both" || liveFlat?.enabled?.back === true;
     if (toteFoldedLayout) {
       const toteSnap = encodeToteLinePlacement({
         scale: transform.scale,
         x: transform.x,
         y: transform.y,
+        printBack: totePrintBack,
       });
       if (toteSnap) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnap;
+    }
+    if (cartStateJob) {
+      properties["_shadow_design_id"] = atcShadowDesignId(cartStateJob, variantId, {
+        artworkUrl,
+        flat: liveFlat,
+        tote: toteFoldedLayout
+          ? {
+              scale: transform.scale,
+              x: transform.x,
+              y: transform.y,
+              printBack: totePrintBack,
+            }
+          : null,
+        aopHoodie: (hoodieAopPlacerState as Record<string, unknown> | null) ?? null,
+        aopPattern: (aopPlacementSettings as Record<string, unknown> | null | undefined) ?? null,
+      });
     }
 
     const flatPlacerOn = !!(
@@ -7238,32 +9656,143 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       aopApplyStatus === "saving"
     );
     const saveBlocking = flatSaveBlocking || aopSaveBlocking;
-    const mockupsStaleBlocksCart = mockupsStale;
+    const mockupsStaleBlocksCart = mockupsStale && !flatOnTheFlyEligible;
+    const cartNeedsSize = !String(selectedSize || "").trim();
+    const cartCanRefresh =
+      !useAopCustomizer ||
+      aopPrintPanelsReady ||
+      !!hoodieAopPlacerRef.current ||
+      !!hoodieAopPlacerState;
+    const cooldownBlocks = atcCooldownRemainingMs > 0;
+    const cooldownSec = Math.max(1, Math.ceil(atcCooldownRemainingMs / 1000));
     const shouldDisable =
-      waitingForMockups || isAddingToCart || mockupsStaleBlocksCart || mockupLoading || saveBlocking;
-    const label = saveBlocking
+      waitingForMockups ||
+      isAddingToCart ||
+      cooldownBlocks ||
+      mockupsStaleBlocksCart ||
+      mockupsUpdating ||
+      saveBlocking ||
+      saveStatePending;
+    const label = isAddingToCart
+      ? atcWorkingLabel
+      : cooldownBlocks
+      ? `Try again in ${cooldownSec}s`
+      : saveBlocking
       ? "Saving design\u2026"
-      : waitingForMockups
-        ? "Generating preview\u2026"
-        : mockupLoading
-          ? "Refreshing Mockups\u2026"
-        : mockupsStaleBlocksCart
-          ? "Refresh Mockups to Continue"
-          : "Add to Cart";
+      : waitingForMockups || mockupsUpdating
+        ? "Updating mockups…"
+        : cartNeedsSize && generatedDesign
+          ? "Select a size"
+          : mockupsStaleBlocksCart && cartCanRefresh
+            ? "Refresh Mockups to Continue"
+            : "Add to Cart";
 
+    const cartFrontPrice = parseFloat(
+      shopifyVariants.find((v) => String(v.id) === String(variantId))?.price || "0",
+    );
+    const cartMappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    const cartRetail =
+      (cartMappedCents > 0 ? (cartMappedCents / 100).toFixed(2) : null) ||
+      (cartFrontPrice > 0 ? cartFrontPrice.toFixed(2) : null);
+
+    const cartStatePayload = {
+      variantId,
+      baseVariantId: variantId,
+      quantity: 1,
+      properties,
+      ...(cartRetail ? { price: cartRetail } : {}),
+      ...(anonSessionId ? { sessionId: anonSessionId } : {}),
+      ...(storefrontIdentityToken ? { identityToken: storefrontIdentityToken } : {}),
+    };
     window.parent.postMessage({
       type: 'AI_ART_STUDIO_CART_STATE',
-      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupLoading && !saveBlocking,
+      ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
       disabled: shouldDisable,
       waitingForMockups,
       label,
-      payload: {
-        variantId,
-        quantity: 1,
-        properties,
-      },
+      payload: cartStatePayload,
     }, '*');
-  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, getPreferredMockupUrl, isAddingToCart, selectedSize, selectedFrameColor, frameColorObjects, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y]);
+    if (
+      productTypeConfig?.isAllOverPrint &&
+      shopDomain &&
+      savedJobIdRef.current
+    ) {
+      const jobId = savedJobIdRef.current;
+      const cartStateCap = expectedAopCaptureHashFromLiveState(
+        hoodieAopPlacerStateRef.current ?? hoodieAopPlacerState,
+      );
+      // No valid hash yet (e.g. the placer ref hasn't populated on this
+      // render) — nothing usable to send, and nothing is cached against
+      // this case, so the next render with a real hash tries normally.
+      // This must never collapse to "give up for the session" — that's
+      // exactly the EXPECTED_CAPTURE_REQUIRED storm this replaces.
+      if (cartStateCap) {
+        const warmKey = `${jobId}::${cartStateCap}`;
+        const warm = aopSnapshotWarmRef.current;
+        const alreadyWarm = warm?.key === warmKey && warm.status === "warm";
+        const cooling =
+          warm?.key === warmKey &&
+          warm.status === "cooling" &&
+          (warm.until ?? 0) > Date.now();
+        // A different key (real edit, or this same design once the ref
+        // populates) is never held back by either check above — both are
+        // scoped to this exact (jobId, hash) pair, not the job as a whole.
+        const pendingDebounce = aopSnapshotDebounceRef.current;
+        if (pendingDebounce && pendingDebounce.key !== warmKey) {
+          // A newer hash superseded whatever was pending (e.g. the drag
+          // continued past the previous frame) — that attempt is now for a
+          // stale state and must never fire.
+          clearTimeout(pendingDebounce.timer);
+          aopSnapshotDebounceRef.current = null;
+        }
+        if (
+          !alreadyWarm &&
+          !cooling &&
+          (!aopSnapshotDebounceRef.current || aopSnapshotDebounceRef.current.key !== warmKey)
+        ) {
+          // Don't attempt yet — wait to see if this key is still current
+          // after the idle window. An unrelated re-render of this effect
+          // (many of this dependency list's other values change far more
+          // often than the AOP placement does) with the SAME key must not
+          // reset this timer, or a key that never gets a quiet window would
+          // never warm — the `key !== warmKey` guard above and this branch's
+          // own condition are what keep a same-key re-render a no-op here.
+          const timer = setTimeout(() => {
+            // Re-check we're still the live pending attempt for this key —
+            // belt-and-braces alongside the clearTimeout above.
+            if (aopSnapshotDebounceRef.current?.key !== warmKey) return;
+            aopSnapshotDebounceRef.current = null;
+            void freezeAopLineSnapshot(shopDomain, jobId, cartStateCap).then((snap) => {
+              if (savedJobIdRef.current !== jobId) return;
+              if (!snap) {
+                // Not ready yet — short cooldown on this exact key only, so
+                // it doesn't get hammered every render while unresolved.
+                aopSnapshotWarmRef.current = {
+                  key: warmKey,
+                  status: "cooling",
+                  until: Date.now() + 5000,
+                };
+                return;
+              }
+              aopSnapshotWarmRef.current = { key: warmKey, status: "warm" };
+              window.parent.postMessage({
+                type: 'AI_ART_STUDIO_CART_STATE',
+                ready: !waitingForMockups && !mockupsStaleBlocksCart && !mockupsUpdating && !saveBlocking && !cartNeedsSize && !isAddingToCart && !cooldownBlocks,
+                disabled: shouldDisable,
+                waitingForMockups,
+                label,
+                payload: {
+                  ...cartStatePayload,
+                  properties: { ...properties, [LINE_AOP_PANELS_KEY]: snap },
+                },
+              }, '*');
+            });
+          }, AOP_SNAPSHOT_DEBOUNCE_MS);
+          aopSnapshotDebounceRef.current = { key: warmKey, timer };
+        }
+      }
+    }
+  }, [isStorefront, runtimeMode, generatedDesign, mockupLoading, mockupsUpdating, getPreferredMockupUrl, isAddingToCart, atcWorkingLabel, atcCooldownRemainingMs, selectedSize, selectedFrameColor, frameColorObjects, frameOptionsRedundantWithSizes, printSizes, showFrameColorSelector, isPhoneCaseProduct, productTypeConfig, bridgeReady, variants, shopifyVariants, overrideVariantId, shopifyVariantId, mockupsStale, flatApplyStatus, flatPlacementDirty, flatRenderFailed, flatPlacerEditOpen, showPatternStep, aopApplyStatus, flatPlacerState, toteFoldedLayout, transform.scale, transform.x, transform.y, shopDomain, atcUpdatesPending, saveStatePending, aopPrintPanelsReady, useAopCustomizer, hoodieAopPlacerState, aopPlacementSettings, printPlacement, anonSessionId, storefrontIdentityToken]);
 
   const generateMutation = useMutation({
     mutationFn: async (payload: {
@@ -7272,7 +9801,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       size: string;
       frameColor?: string;
       stylePreset?: string;
-      referenceImages?: string[];
+      styleOptionId?: string;
+      quoteArtBrief?: string;
+      quoteFontSuggestion?: string;
+      quotesVoice?: string;
+      /** Legacy string[]; pack styles send role-tagged objects. */
+      referenceImages?: string[] | Array<Record<string, string | null>>;
+      stylePackId?: string;
+      packInputs?: Record<string, unknown>;
       baseImageUrl?: string;
       shop?: string;
       sessionToken?: string;
@@ -7282,6 +9818,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       creatorUsername?: string;
       creatorId?: string;
       creatorSessionId?: string;
+      reuseRegenerate?: boolean;
     }) => {
       const endpoint = isStorefront
         ? `${API_BASE}/api/storefront/generate`
@@ -7306,6 +9843,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         const postStart = Date.now();
         const fetchPromise = safeFetch(endpoint, {
           method: "POST",
+          credentials: "include",
           headers: { ...storefrontJsonHeaders(), "X-Req-Id": reqId },
           body: JSON.stringify(payload),
         }, 60_000);
@@ -7329,6 +9867,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             setShowGalleryFullModal(true);
             throw new Error('GALLERY_FULL');
           }
+          if (jobData.error === 'SHIPPING_EXCLUDED' || jobData.error === 'SHIPPING_UNMAPPED') {
+            if (jobData.sizeId) setShippingDownsellSizeId(String(jobData.sizeId));
+            throw new Error(jobData.message || "This size cannot ship to your country.");
+          }
           if (jobData.error === 'Shop not authorized' && jobData.reinstallUrl) {
             throw new Error(`SHOP_NEEDS_REINSTALL:${jobData.reinstallUrl}`);
           }
@@ -7347,7 +9889,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Phase 2: poll GET /generate/status every 2s, max 5 minutes
         const shop = payload.shop || new URLSearchParams(window.location.search).get('shop') || '';
         if (!shop) throw new Error('Shop domain is required for generation. Please reload the page.');
-        const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}`;
+        const statusUrl = `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shop)}${anonSessionId ? `&sessionId=${encodeURIComponent(anonSessionId)}` : ""}`;
         const deadline = Date.now() + 5 * 60 * 1000;
         let consecutiveErrors = 0;
 
@@ -7356,7 +9898,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           let status: { status?: string; error?: string; imageUrl?: string; thumbnailUrl?: string } | null = null;
           try {
             const statusRes = await raceTimeout(
-              safeFetch(statusUrl, { headers: { "X-Req-Id": reqId } }),
+              safeFetch(statusUrl, { headers: { ...identityJsonHeaders(), "X-Req-Id": reqId } }),
               15_000,
               'GET /generate/status',
             );
@@ -7389,35 +9931,46 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         throw new Error('Generation timed out after 5 minutes');
       }
 
-      // ── Non-storefront: synchronous request (unchanged) ──
-      const response = await fetchWithTimeoutSimple(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }, GENERATE_REQUEST_TIMEOUT_MS);
-      const data = await response.json();
-      if (!response.ok) {
-        if (data.requiresLogin) {
+      // ── Non-storefront: synchronous request (Preview Studio + Shopify admin) ──
+      try {
+        const response = await fetchWithTimeoutSimple(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }, GENERATE_REQUEST_TIMEOUT_MS);
+        return await response.json();
+      } catch (err: unknown) {
+        const failBody = extractHttpErrorPayload(err);
+        if (failBody?.requiresLogin) {
           setLoginError("Please log in to your account to create designs.");
-        } else if (data.requiresCredits || data.needsCredits) {
+        } else if (failBody?.requiresCredits || failBody?.needsCredits) {
           setLoginError("No credits remaining. Please purchase more credits to continue.");
-        } else if (data.error === 'GALLERY_FULL' || data.galleryFull) {
+        } else if (failBody?.error === "GALLERY_FULL" || failBody?.galleryFull) {
           setShowGalleryFullModal(true);
-          throw new Error('GALLERY_FULL');
+          throw new Error("GALLERY_FULL");
         }
-        throw new Error(data.error || "Failed to generate design");
+        throw toGenerationRequestError(err);
       }
-      return data;
     },
     onSuccess: (data, variables) => {
       const imageUrl = data.imageUrl || data.design?.generatedImageUrl;
       const designId = data.designId || data.design?.id || crypto.randomUUID();
       setAddedToCart(false);
       const composedPrompt = composeReuseRegenerateUserPrompt(reuseRegenerateBasePrompt, prompt);
+      const active = findStylePresetForFill(filteredStylePresets, selectedPreset);
+      const generationModel = active?.generationModel || loadedDecorStyle?.generationModel || null;
       setGeneratedDesign({
         id: designId,
         imageUrl: imageUrl,
         prompt: composedPrompt || prompt,
+        generationModel,
+      });
+      setLoadedDecorStyle({
+        stylePreset: selectedPreset || null,
+        catalogSlug: active?.catalogSlug || null,
+        styleName: active?.name || null,
+        outputMode: active?.outputMode || null,
+        generationModel,
       });
       if (reuseRegenerateBasePrompt) {
         setPrompt(composedPrompt);
@@ -7456,6 +10009,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : storefrontArtworksRemaining({
                 shopFreeRemaining: data.shopFreeRemaining,
                 freeGenerationsUsed: nextFreeUsed,
+                earnedCredits: data.earnedCredits,
+                packCredits: data.packCredits,
                 paidCredits: nextPaidCredits,
                 freeGenerationLimit,
               });
@@ -7485,6 +10040,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           };
           setCustomer(updatedCust);
           persistCustomerRecord(updatedCust);
+          // The free generation is charged just after the job is marked complete,
+          // so this status can predate the charge: re-read the wallet shortly after.
+          if (storefrontCustomerId) {
+            scheduleWalletSettleRefresh({
+              refresh: () => refreshStorefrontWalletRef.current(),
+              statusFreeUsed: nextFreeUsed,
+            });
+          }
 
           if (remaining > 0) {
             toast({
@@ -7573,7 +10136,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
           fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
           zoomPercent: zoomDefault,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
         });
         const artworkAbs = toAbsoluteImageUrl(imageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
@@ -7594,8 +10159,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           },
           linkSides: false,
           artworkUrl: artworkAbs,
-          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
-          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          // Phone / floating-decor: live fill (white default). Not baked into the PNG.
+          backgroundColor: seedFlatBackgroundColor(),
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
+          }),
         };
         setFlatPlacerState(seededFlatState);
       } else {
@@ -7613,6 +10185,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       lastFlatGalleryMockupKeyRef.current = "";
       // Reset pre-created shadow variant for this new design
       preShadowJobIdRef.current = null;
+      preShadowDesignIdRef.current = null;
+      preShadowWarmRef.current.clear();
+    preShadowSyncedRetailRef.current = null;
       setPreShadowVariantId(null);
       if (preShadowPollRef.current) { clearTimeout(preShadowPollRef.current); preShadowPollRef.current = null; }
 
@@ -7625,7 +10200,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           const artworkAbs = toAbsoluteImageUrl(imageUrl);
           void safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId: data.jobId,
               shop: panelSaveShop,
@@ -7644,16 +10219,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (isStorefront && saveCustomerId && data.jobId && merchantStudioSaveAllowed) {
         safeFetch(`${API_BASE}/api/storefront/save-design`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: identityJsonHeaders(),
           body: JSON.stringify({ jobId: data.jobId, customerId: saveCustomerId, shop: saveShop }),
         }).then(r => r.json()).then(saved => {
           console.log('[AutoSave] save-design response:', saved);
           if (saved.saved) {
+            // AOP / flat: mockup persist refreshes the gallery with the garment
+            // card. Refreshing here listed the raw artwork as its own card.
+            const deferGalleryUntilMockup = useAopCustomizer || usesFlatOnTheFlyPreview;
+            if (deferGalleryUntilMockup && !isMerchantStudio) {
+              return;
+            }
             // Refresh saved designs list
             setSavedDesignsLoading(true);
             safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: savedDesignsHeaders(),
               body: JSON.stringify({ shop: saveShop, customerId: saveCustomerId }),
             })
               .then(r => r.json()).then(d => { 
@@ -7677,7 +10258,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Also save the full design state (transform, size, color, preset) so it can be fully restored
         safeFetch(`${API_BASE}/api/storefront/save-state`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: identityJsonHeaders(),
           body: JSON.stringify({
             jobId: data.jobId,
             shop: saveShop,
@@ -7688,7 +10269,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               selectedSize,
               selectedFrameColor,
               stylePreset: selectedPreset || null,
+              catalogSlug:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
+                loadedDecorStyle?.catalogSlug ||
+                null,
+              styleName:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
+                loadedDecorStyle?.styleName ||
+                null,
+              outputMode:
+                filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
+                loadedDecorStyle?.outputMode ||
+                null,
               prompt,
+              decorBackgroundFill,
+              ...(seededFlatState ? { flatPlacerState: seededFlatState } : {}),
             },
           }),
         }).catch(() => {}); // fire-and-forget
@@ -7708,6 +10303,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         willFetch: shouldFetchMockups,
       });
       if (useAopCustomizer && imageUrl) {
+        aopEditorDismissedRef.current = false;
+        lastAopPanelUrlsRef.current = null;
+        lastHostedPrintPanelsRef.current = [];
+        storedAopPanelCaptureSignatureRef.current = null;
+        lastPersistedAopCaptureStateRef.current = null;
         setAopPendingMotifUrl(toAbsoluteImageUrl(imageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
@@ -7715,8 +10315,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         // Apron / tote / phone: open the live placer even when the product
         // has no Printify mockup flag (that used to leave Edit Placement closed
         // and "Syncing placement…" stuck forever).
+        flatEditorDismissedRef.current = false;
         setFlatRenderFailed(false);
         setFlatPlacerEditOpen(true);
+        setFlatMockupRefreshing(true);
       } else if (shouldFetchMockups) {
         console.log('[Mockups] Triggering mockup generation');
         // Set mockupTriggered synchronously so the overlay stays up between
@@ -7749,11 +10351,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Clear any stale login error so it doesn't block the next attempt.
       setLoginError(null);
     },
+    onSettled: () => {
+      generateInFlightRef.current = false;
+    },
   });
+
+  const studioGenFailure = useMemo(() => {
+    if (!isAdminTester || generateMutation.isPending || !generateMutation.isError) return null;
+    const err = generateMutation.error;
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    if (msg === "GALLERY_FULL" || /credit/i.test(msg)) return null;
+    return classifyGenerationFailure(err);
+  }, [isAdminTester, generateMutation.isPending, generateMutation.isError, generateMutation.error]);
+
+  const focusStudioPromptField = useCallback(() => {
+    const el =
+      (document.getElementById("prompt") as HTMLTextAreaElement | null) ||
+      (document.querySelector('[data-testid="input-prompt"]') as HTMLTextAreaElement | null);
+    el?.focus();
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
+    const uploadRole = pendingUploadRoleRef.current;
+    pendingUploadRoleRef.current = "pet";
+    for (const file of files) referenceRoleMapRef.current.set(file, uploadRole);
     setReferenceImages(prev => {
       const remaining = 5 - prev.length;
       return [...prev, ...files.slice(0, remaining)];
@@ -7795,6 +10419,332 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return headers;
   };
 
+  const isQuotesActivePreset = (preset: StylePreset | undefined | null) => {
+    if (!preset) return false;
+    return isQuotesCatalogSlug(
+      resolveCatalogSlug({
+        catalogSlug: preset.catalogSlug,
+        id: preset.id,
+        name: preset.name,
+        category: preset.category,
+      }) || preset.catalogSlug || preset.id,
+    );
+  };
+
+  const quotesActivePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+  const quotesMode = isQuotesActivePreset(quotesActivePreset);
+  const quotesVerbatim = quotesMode && detectQuotesVerbatimInput(prompt).mode === "verbatim";
+  const quotesShowOptions =
+    quotesMode && !quotesVerbatim && Array.isArray(quoteOptions) && quoteOptions.length === 3;
+  const quotesNeedWrite = quotesMode && !quotesVerbatim && !quotesShowOptions;
+
+  const petposterousV2 = experienceProfile?.slug === "petposterous" && !!experienceProfile?.stylePackId && !!experienceProfile?.conceptWriter;
+  // Keep one assigned DB style as the authorised pack/model carrier. Frameworks
+  // are chosen by the concept engine, never by customers as visual styles.
+  useEffect(() => {
+    if (!petposterousV2 || selectedPreset) return;
+    const carrier = filteredStylePresets.find((p) => p.catalogSlug === "pp-owner-vs-pet")
+      ?? filteredStylePresets.find((p) => p.catalogSlug?.startsWith("pp-"));
+    if (carrier) setSelectedPreset(carrier.id);
+  }, [petposterousV2, filteredStylePresets, selectedPreset]);
+  const packProductFamily = petposterousProductFamily(productTypeConfig, isApparel);
+  const packSelectedFramework = packConceptPick != null ? packConcepts?.[packConceptPick]?.conceptFramework : null;
+  const packLooks = petposterousLooks(packProductFamily, packSelectedFramework);
+  useEffect(() => {
+    if (packVisualSystem && petposterousLook(packVisualSystem)?.compatibility[packProductFamily] === "hidden") setPackVisualSystem("");
+  }, [packProductFamily, packVisualSystem]);
+
+  // Style-pack styles (visibility pack_only) on a page with a store experience profile.
+  const packStyleActive = !!experienceProfile && (quotesActivePreset as any)?.visibility === "pack_only";
+  const packCaps = packStyleActive ? parseStyleInputCapabilities(petposterousV2
+    ? { petPhoto: "optional", ownerPhoto: "optional", humor: { supported: true, default: "witty" }, relationship: { supported: true, default: "its-complicated" } }
+    : (quotesActivePreset as any)?.inputCapabilities) : null;
+  const packConceptMode = packStyleActive && !!experienceProfile?.conceptWriter;
+  // 3 fresh ideas, or the 1 saved concept of a reloaded design.
+  const packShowConcepts = packConceptMode && Array.isArray(packConcepts) && packConcepts.length > 0;
+  const packNeedConcepts = packConceptMode && !packShowConcepts;
+  const packHumor = packState.humor || packCaps?.humor.default || "";
+  const packRelationship = packState.relationship || packCaps?.relationship.default || "";
+  const resetPackConcepts = () => {
+    setPackConcepts(null);
+    setPackConceptPick(null);
+    setPackVisualSystem("");
+  };
+  const packConceptWords = (c: PackConceptOptionClient | undefined) =>
+    packState.wordsMode === "none" ? "" : packState.wordsMode === "exact" ? packState.exactWords.trim() : c?.punchline ?? "";
+
+  // Concepts belong to one style + sub-style; changing either asks for new ideas.
+  // A restored design sets the key first so its saved concept survives the restore.
+  useEffect(() => {
+    const key = `${selectedPreset}|${selectedStyleOption}`;
+    if (packConceptKeyRef.current === key) return;
+    packConceptKeyRef.current = key;
+    setPackConcepts(null);
+    setPackConceptPick(null);
+  }, [selectedPreset, selectedStyleOption]);
+
+  const runPackConcepts = async () => {
+    if (!experienceProfile || !selectedPreset) return;
+    const controls = experienceProfile.controls;
+    setPackConceptLoading(true);
+    try {
+      const res = await safeFetch(
+        `${API_BASE}/api/storefront/concept-options`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: storefrontJsonHeaders(),
+          body: JSON.stringify({
+            shop: shopDomain || undefined,
+            styleId: selectedPreset,
+            stylePackId: experienceProfile.stylePackId || undefined,
+            fields: {
+              petName: packState.petName,
+              species: choiceLabel(controls.species?.options, packState.species),
+              personalityTraits: packState.personality.map((id) => choiceLabel(controls.personality?.options, id)),
+              behavior: prompt,
+              wordsMode: packState.wordsMode,
+              exactWords: packState.exactWords,
+              humor: packHumor,
+              relationship: packRelationship,
+              subStyle: selectedStyleOption || undefined,
+              hasOwnerPhoto: referenceImages.some((f) => referenceRoleMapRef.current.get(f) === "owner"),
+            },
+          }),
+        },
+        20_000,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
+        toast({ title: "Could not write ideas", description: data.error || "Try again in a moment.", variant: "destructive" });
+        return;
+      }
+      packConceptKeyRef.current = `${selectedPreset}|${selectedStyleOption}`;
+      setPackConcepts(data.options);
+      setPackConceptPick(null);
+      setPackVisualSystem("");
+    } catch {
+      toast({ title: "Could not write ideas", description: "Try again in a moment.", variant: "destructive" });
+    } finally {
+      setPackConceptLoading(false);
+    }
+  };
+
+  const resetQuoteFlow = () => {
+    setQuoteOptions(null);
+    setQuotePickIndex(null);
+    setQuoteTheme("");
+    setQuoteRowDrafts([]);
+    setQuoteEditingIndex(null);
+  };
+
+  /** Blank canvas; keep Art Style, sub-style, and the prompt. Size: sole option only. */
+  const startFreshDesign = useCallback(() => {
+    setGeneratedDesign(null);
+    setReuseAwaitingGenerate(false);
+    setReuseRegenerateBasePrompt(null);
+    lastAopPanelUrlsRef.current = null;
+    lastHostedPrintPanelsRef.current = [];
+    setAopPrintPanelsReady(false);
+    storedAopPanelCaptureSignatureRef.current = null;
+    lastPersistedAopCaptureStateRef.current = null;
+    pendingRestoreSizeRef.current = null;
+    pendingRestoreStyleRef.current = null;
+    setShowPatternStep(false);
+    setAopPendingMotifUrl(null);
+    setAopPatternUrl(null);
+    setAopPlacementSettings(undefined);
+    setAopPatternSettings(DEFAULT_AOP_PATTERN_SETTINGS);
+    setHoodieAopPlacerState(null);
+    setFlatPlacerState(null);
+    setFlatPlacerEditOpen(false);
+    setFlatApplyStatus("idle");
+    setFlatRenderFailed(false);
+    setDesignSource(null);
+    setAddedToCart(false);
+    loadDesignAppliedRef.current = true;
+    pendingRestoreColorRef.current = null;
+    restoringSavedDesignRef.current = false;
+    setBridgeLoadDesignId("");
+    setReferenceImages([]);
+    setReferencePreviews([]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    resetQuoteFlow();
+    // Pack styles keep their brief (stored photos + chosen concept), like the prompt,
+    // so "Start Fresh" → Create Artwork regenerates the same idea.
+    setPrintifyMockups([]);
+    setPrintifyMockupImages([]);
+    setSelectedMockupIndex(0);
+    setMockupsStale(false);
+    setMockupTriggered(false);
+    setMockupLoading(false);
+    setMockupFailed(false);
+    setVariantError(null);
+    setTransform({ scale: defaultZoom, x: 50, y: 50 });
+    applyProductDefaultSizeColor();
+    try {
+      sessionStorage.removeItem(designSessionStorageKey(shopDomain, productHandle, productTypeId));
+    } catch {
+      /* ignore */
+    }
+    clearLoadDesignIdFromUrl();
+  }, [
+    applyProductDefaultSizeColor,
+    clearLoadDesignIdFromUrl,
+    defaultZoom,
+    productHandle,
+    productTypeId,
+    shopDomain,
+  ]);
+
+  /** After ATC: same fresh start, unless placer/pattern UI is still open. */
+  const resetStudioAfterPurchase = useCallback(() => {
+    if (showPatternStepRef.current || flatPlacerEditOpenRef.current) return;
+    startFreshDesign();
+  }, [startFreshDesign]);
+
+  const commitQuoteRowEdit = (i: number) => {
+    setQuoteRowDrafts((prev) => {
+      const next = [...prev];
+      const trimmed = String(next[i] || "").trim();
+      next[i] = trimmed || quoteOptions?.[i]?.quote || quoteEditSeedRef.current;
+      return next;
+    });
+    setQuotePickIndex(i);
+    setQuoteEditingIndex(null);
+  };
+
+  const beginQuoteRowEdit = (i: number) => {
+    if (quoteEditingIndex != null && quoteEditingIndex !== i) {
+      commitQuoteRowEdit(quoteEditingIndex);
+    }
+    const seed = (quoteRowDrafts[i] || quoteOptions?.[i]?.quote || "").trim();
+    quoteEditSeedRef.current = seed;
+    setQuotePickIndex(i);
+    setQuoteEditingIndex(i);
+  };
+
+  const runQuoteOptions = async (theme: string) => {
+    const trimmed = theme.trim();
+    if (!trimmed || !selectedStyleOption) {
+      if (!selectedStyleOption) {
+        alert("Please choose a quote style before writing quotes");
+      }
+      return;
+    }
+    setQuoteWriting(true);
+    try {
+      const res = await safeFetch(
+        `${API_BASE}/api/storefront/quote-options`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: storefrontJsonHeaders(),
+          body: JSON.stringify({
+            theme: trimmed,
+            voice: selectedStyleOption,
+            shop: shopDomain || undefined,
+          }),
+        },
+        15_000,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data.options) || data.options.length !== 3) {
+        const detail = [
+          data.error,
+          data.quoteStage,
+          data.anthropicStatus,
+          data.anthropicType,
+          data.anthropicMessage,
+          data.quoteDetail,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        toast({
+          title: "Could not write quotes",
+          description: detail || "Try again in a moment.",
+          variant: "destructive",
+        });
+        return;
+      }
+      setQuoteTheme(trimmed);
+      setQuoteOptions(data.options);
+      setQuoteRowDrafts(data.options.map((o: QuoteOption) => o.quote));
+      setQuotePickIndex(null);
+      setQuoteEditingIndex(null);
+    } catch {
+      toast({
+        title: "Could not write quotes",
+        description: "Try again in a moment.",
+        variant: "destructive",
+      });
+    } finally {
+      setQuoteWriting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!quotesMode) {
+      if (quoteOptions) resetQuoteFlow();
+      prevQuoteVoiceRef.current = selectedStyleOption;
+      return;
+    }
+    const prev = prevQuoteVoiceRef.current;
+    prevQuoteVoiceRef.current = selectedStyleOption;
+    if (quoteOptions && prev && prev !== selectedStyleOption) {
+      setQuotePickIndex(null);
+      setQuoteOptions(null);
+      setQuoteRowDrafts([]);
+      setQuoteEditingIndex(null);
+      const theme = quoteTheme || detectQuotesVerbatimInput(prompt).text;
+      if (theme && selectedStyleOption) void runQuoteOptions(theme);
+    }
+  }, [selectedStyleOption, quotesMode]);
+
+  const handleQuotesOrGenerateClick = () => {
+    if (generateInFlightRef.current || generateMutation.isPending) return;
+    if ((isShopify || isStorefront) && customer && !hasGenerationCapacity && !quotesNeedWrite && !packNeedConcepts) {
+      notifyInsufficientCredits();
+      return;
+    }
+    if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
+      alert("Please select an art style before generating");
+      return;
+    }
+    const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+    if (activePreset?.options?.required && selectedStyleOption === "") {
+      alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
+      return;
+    }
+    if (printSizes.length > 0 && selectedSize === "") {
+      alert("Please select a size before generating");
+      return;
+    }
+    if (shippingBlocksGenerate) return;
+    if (quotesNeedWrite) {
+      void runQuoteOptions(prompt);
+      return;
+    }
+    if (packNeedConcepts) {
+      void runPackConcepts();
+      return;
+    }
+    handleGenerate();
+  };
+
+  const quotesOrGenerateDisabled = (() => {
+    if (!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate)) return true;
+    if (generateInFlightRef.current || generateMutation.isPending || quoteWriting || packConceptLoading) return true;
+    if (customerTermsEnabled && !storefrontTerms.accepted) return true;
+    if (shippingBlocksGenerate) return true;
+    if (quotesNeedWrite) return !prompt.trim();
+    if (quotesShowOptions) return quotePickIndex == null;
+    if (packNeedConcepts) return !prompt.trim() || (petposterousV2 && (packWizardStep !== 5 || (packState.wordsMode === "exact" && (!packState.exactWords.trim() || packState.exactWords.trim().split(/\s+/).length > 6))));
+    if (packShowConcepts) return packConceptPick == null || (petposterousV2 && !packVisualSystem) || (packState.wordsMode === "exact" && !packState.exactWords.trim());
+    if (quotesVerbatim) return !detectQuotesVerbatimInput(prompt).text;
+    return !prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find((p) => p.id === selectedPreset)?.descriptionOptional;
+  })();
+
   const handleGenerate = async (options?: {
     skipStyleMismatchCheck?: boolean;
     overridePresetId?: string;
@@ -7809,6 +10759,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       return;
     }
+    if (generateInFlightRef.current || generateMutation.isPending) return;
     if (customerTermsEnabled && !storefrontTerms.accepted) {
       toast({
         title: "Please accept the terms",
@@ -7825,10 +10776,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (options?.overridePrompt != null) {
       setPrompt(options.overridePrompt);
     }
-    const effectivePrompt = composeReuseRegenerateUserPrompt(
-      reuseRegenerateBasePrompt,
-      typedPrompt,
-    );
+    const quotesPresetNow = filteredStylePresets.find((p) => p.id === (options?.overridePresetId ?? selectedPreset));
+    const quotesNow = isQuotesActivePreset(quotesPresetNow);
+    const quotesDetected = quotesNow ? detectQuotesVerbatimInput(typedPrompt) : null;
+    const quotesCommittedLine = quotesNow
+      ? quotesDetected?.mode === "verbatim"
+        ? quotesDetected.text
+        : quotePickIndex != null
+          ? (quoteRowDrafts[quotePickIndex] || quoteOptions?.[quotePickIndex]?.quote || "").trim()
+          : ""
+      : "";
+    const effectivePrompt = quotesNow
+      ? quotesCommittedLine
+      : composeReuseRegenerateUserPrompt(
+          reuseRegenerateBasePrompt,
+          typedPrompt,
+        );
 
     const activePresetForCheck = filteredStylePresets.find(p => p.id === effectivePresetId);
     if (!effectivePrompt.trim() && !activePresetForCheck?.descriptionOptional) return;
@@ -7873,7 +10836,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
-    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim()) {
+    const packNow = packStyleActive && (activePreset as any)?.visibility === "pack_only";
+    if (packConceptMode && packConceptPick == null) return;
+    if (petposterousV2 && (!packVisualSystem || !Object.prototype.hasOwnProperty.call(PETPOSTEROUS_CONCEPT_FRAMEWORKS, packSelectedFramework || ""))) return;
+    if (!options?.skipStyleMismatchCheck && activePreset && typedPrompt.trim() && !quotesNow && !packNow) {
       const mismatch = detectStylePromptMismatch(
         typedPrompt,
         activePreset.promptSuffix,
@@ -7896,7 +10862,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Build the prompt: prepend selected option fragment if present
     let fullPrompt = effectivePrompt;
     let resolvedBaseImageUrl: string | undefined;
-    if (activePreset?.options && selectedStyleOption !== "") {
+    if (activePreset?.options && selectedStyleOption !== "" && !quotesNow && !petposterousV2) {
       const selectedChoice = activePreset.options.choices.find(c => c.id === selectedStyleOption);
       if (selectedChoice) {
         fullPrompt = `${selectedChoice.promptFragment}. ${effectivePrompt}`;
@@ -7910,16 +10876,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     if (!shouldUseStyleReferenceImage(effectivePrompt, referenceImages.length > 0 || hasReuseRefs)) {
       resolvedBaseImageUrl = undefined;
     }
-    if (effectivePresetId && effectivePresetId !== "") {
-      const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
-      if (preset?.promptSuffix) {
-        fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
+    // Storefront generate: server compose owns STYLE + sizing. Keep a leading
+    // sub-style fragment on `prompt` so resolveSubStyleFragment's startsWith
+    // fallback still works if styleOptionId is missing. Do not append
+    // promptSuffix or the legacy Full-bleed tail (stale iframe suffix dirtied jobs).
+    if (!isStorefront) {
+      if (effectivePresetId && effectivePresetId !== "") {
+        const preset = filteredStylePresets.find((p) => p.id === effectivePresetId);
+        if (preset?.promptSuffix) {
+          fullPrompt = `${fullPrompt}. ${preset.promptSuffix}`;
+        }
       }
-    }
-
-    if (!reuseRegenerateBasePrompt) {
-      fullPrompt +=
-        ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+      if (!reuseRegenerateBasePrompt) {
+        fullPrompt +=
+          ". Full-bleed design, edge-to-edge artwork, no borders or margins, seamless pattern that fills the entire canvas.";
+      }
     }
 
     // Convert all reference images to base64
@@ -7962,6 +10933,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
 
     try {
+      generateInFlightRef.current = true;
       generateMutation.mutate({
         prompt: fullPrompt,
         userPrompt: effectivePrompt, // raw user text — stored separately so it can be restored cleanly
@@ -7974,7 +10946,63 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             ? productTypeConfig.frameColors[0]?.id
             : undefined),
         stylePreset: effectivePresetId && effectivePresetId !== "" ? effectivePresetId : undefined,
-        referenceImages: referenceImagesBase64.length > 0 ? referenceImagesBase64 : undefined,
+        styleOptionId: selectedStyleOption && selectedStyleOption !== "" ? selectedStyleOption : undefined,
+        quoteArtBrief:
+          quotesNow && quotesDetected?.mode !== "verbatim" && quotePickIndex != null
+            ? quoteOptions?.[quotePickIndex]?.art_brief
+            : undefined,
+        quoteFontSuggestion:
+          quotesNow && quotesDetected?.mode !== "verbatim" && quotePickIndex != null
+            ? quoteOptions?.[quotePickIndex]?.font_suggestion
+            : undefined,
+        quotesVoice: quotesNow && selectedStyleOption ? selectedStyleOption : undefined,
+        referenceImages: packNow
+          ? (() => {
+              // Role-tagged only for pack styles; stored brief photos are re-signed server-side.
+              const tagged: Array<Record<string, string | null>> = packStoredRefs.map((r) => ({
+                storagePath: r.path,
+                role: r.role,
+                label: r.label,
+              }));
+              referenceImagesBase64.forEach((b64, i) => {
+                const role = (referenceImages[i] && referenceRoleMapRef.current.get(referenceImages[i])) || "pet";
+                tagged.push({ url: b64, role, label: role === "pet" ? packState.petName.trim() || null : null });
+              });
+              return tagged.length > 0 ? (tagged as any) : undefined;
+            })()
+          : referenceImagesBase64.length > 0
+            ? referenceImagesBase64
+            : undefined,
+        ...(packNow
+          ? (() => {
+              const concept = packConceptPick != null ? packConcepts?.[packConceptPick] : undefined;
+              const controls = experienceProfile?.controls;
+              const hasPetPhoto =
+                packStoredRefs.some((r) => r.role === "pet") ||
+                referenceImages.some((file) => (referenceRoleMapRef.current.get(file) || "pet") === "pet");
+              return {
+                stylePackId: experienceProfile?.stylePackId || undefined,
+                packInputs: {
+                  humor: packHumor || undefined,
+                  relationship: packRelationship || undefined,
+                  visualJoke: concept?.visualJoke,
+                  funnyTruth: concept?.funnyTruth,
+                  subjectPriority: concept?.subjectPriority,
+                  punchline: concept?.punchline ?? "",
+                  conceptIndex: packConceptPick ?? undefined,
+                  ...(petposterousV2 ? { visualSystem: packVisualSystem, conceptFramework: concept?.conceptFramework } : {}),
+                  wordsMode: packState.wordsMode,
+                  exactWords: packState.exactWords.trim() || undefined,
+                  petName: packState.petName.trim() || undefined,
+                  species: choiceLabel(controls?.species?.options, packState.species) || undefined,
+                  personalityTraits: packState.personality.map((id) => choiceLabel(controls?.personality?.options, id)),
+                  behavior: typedPrompt.trim() || undefined,
+                  personalized: hasPetPhoto,
+                },
+              };
+            })()
+          : {}),
+        reuseRegenerate: !!reuseRegenerateBasePrompt,
         baseImageUrl: resolvedBaseImageUrl || undefined,
         shop: (isShopify || isStorefront) ? shopDomain : undefined,
         sessionToken: (isShopify && !isStorefront) ? sessionToken || undefined : undefined,
@@ -7995,6 +11023,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
       scrollArtworkIntoViewOnMobile(50);
     } catch (err: any) {
+      generateInFlightRef.current = false;
       console.error('[Generate] Mutation trigger failed:', err);
       toast({
         title: "Generation Failed",
@@ -8102,7 +11131,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           edgeWrapMode: flatEdgeWrapMode,
           decorMode: flatDecorMode,
           fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
           zoomPercent: zoomDefault,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
         });
         const artworkAbs = toAbsoluteImageUrl(importedImageUrl);
         // Honor Print Side dropdown — do not force back off when "both" is selected.
@@ -8123,8 +11154,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           },
           linkSides: false,
           artworkUrl: artworkAbs,
-          // Phone / edge-wrap: white fill so bg-removed art doesn't trip edge-gap warning.
-          backgroundColor: flatEdgeWrapMode ? "#FFFFFF" : null,
+          backgroundColor: seedFlatBackgroundColor(),
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
+          }),
         });
       } else {
         setFlatPlacerState(null);
@@ -8153,10 +11190,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       mockupColorCacheRef.current = {};
       currentMockupColorRef.current = '';
       if (useAopCustomizer && importedImageUrl) {
+        aopEditorDismissedRef.current = false;
         setAopPendingMotifUrl(toAbsoluteImageUrl(importedImageUrl));
         setAopPatternUrl(null);
         setShowPatternStep(true);
       } else if (usesFlatOnTheFlyPreview && importedImageUrl) {
+        flatEditorDismissedRef.current = false;
         setFlatPlacerEditOpen(true);
       } else if (productTypeConfig?.hasPrintifyMockups && importedImageUrl && selectedSize) {
         fetchPrintifyMockups(toAbsoluteImageUrl(importedImageUrl), productTypeConfig.id, selectedSize, selectedFrameColor || 'default', zoomDefault, 50, 50);
@@ -8278,15 +11317,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       });
   }, [isShopify, isStorefront, shopDomain, productHandle, productTypeId, productTypeConfig?.frameColors?.length]);
 
-  const findVariantId = (): string | null => {
+  const findVariantId = (opts?: { quiet?: boolean }): string | null => {
+    const log = opts?.quiet ? () => {} : (...args: unknown[]) => console.log(...args);
     if (!isShopify && !isStorefront) return null;
+
+    // Never resolve a catalog / URL default variant when the customer has not
+    // picked a required size (reuse-artwork + hoodie left selectedSize blank
+    // and still matched the PDP selectedVariant — Small at the wrong price).
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
+      log("[Design Studio] No variant found — size not selected");
+      return null;
+    }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      log("[Design Studio] No variant found — color not selected");
+      return null;
+    }
 
     const hasColors = showFrameColorSelector;
     const sizeName = printSizes.find(s => s.id === selectedSize)?.name ?? selectedSize ?? "";
     const frameName =
       frameColorObjects.find(f => f.id === selectedFrameColor)?.name ?? selectedFrameColor ?? "";
 
-    console.log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
+    log('[Design Studio] Finding variant. selectedVariantParam:', selectedVariantParam, 
                 'variants:', variants.length, 'shopifyVariants:', shopifyVariants.length,
                 'selectedSize:', selectedSize, 'selectedFrameColor:', selectedFrameColor,
                 'hasColors:', hasColors);
@@ -8304,8 +11360,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         )
       : null;
     if (fromShopify) {
-      console.log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
+      log('[Design Studio] Matched variant from shopifyVariants:', fromShopify);
       return fromShopify;
+    }
+
+    if (sizeName) {
+      const titleHit = matchShopifyVariantBySizeTitle(
+        shopifyVariants,
+        sizeName,
+        frameName,
+        selectedFrameColor || undefined,
+      );
+      if (titleHit) {
+        log('[Design Studio] Matched variant from shopifyVariants title:', titleHit);
+        return titleHit;
+      }
     }
 
     const fromVariants = variants.length > 0
@@ -8315,6 +11384,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             title: v.title,
             option1: v.option1,
             option2: v.option2,
+            option3: v.option3,
           })),
           sizeName,
           frameName,
@@ -8323,7 +11393,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         )
       : null;
     if (fromVariants) {
-      console.log('[Design Studio] Matched variant from variants:', fromVariants);
+      log('[Design Studio] Matched variant from variants:', fromVariants);
       return fromVariants;
     }
 
@@ -8332,25 +11402,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ...variants.map((v: any) => String(v.id)),
     ]);
 
+    // Size (and colour, when required) were picked but did not match the catalog.
+    // Do NOT fall back to the PDP / URL default — that is how XL at $18.95
+    // silently added Small at $27.
+    if (printSizes.length > 0 && String(selectedSize || "").trim()) {
+      log("[Design Studio] No variant found for selected size/color — refusing PDP default");
+      return null;
+    }
+
     // Only trust parent-provided IDs when they belong to the current product catalog.
     // Never fall back when the catalog is empty — that would reuse a stale ID from
     // a prior product after an in-app switch (pillow → sweatshirt).
     if (overrideVariantId && catalogIds.has(String(overrideVariantId))) {
-      console.log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
+      log('[Design Studio] Using overrideVariantId from parent:', overrideVariantId);
       return overrideVariantId;
     }
 
     if (selectedVariantParam && catalogIds.has(selectedVariantParam)) {
-      console.log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
+      log('[Design Studio] Using selectedVariantParam:', selectedVariantParam);
       return selectedVariantParam;
     }
 
     if (shopifyVariantId && catalogIds.has(String(shopifyVariantId))) {
-      console.log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
+      log('[Design Studio] Falling back to shopifyVariantId:', shopifyVariantId);
       return shopifyVariantId;
     }
 
-    console.log('[Design Studio] No variant found');
+    log('[Design Studio] No variant found');
     return null;
   };
 
@@ -8361,16 +11439,155 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     baseVariantForShadowRef.current = matched ? normalizeVariantId(matched) : "";
   }); // run after every render so it's always in sync with variant state
 
+  // Pre-mint the committed size/colour on an already-applied design.
+  // 400ms debounce cancels prior (rapid 16→20→18 → one request for 18).
+  // Tap during the window: ATC cold-mints; this POST then joins that exact
+  // persist key via server in-flight / existing — never a second product.
+  useEffect(() => {
+    if (!isStorefront || isCreatorStorefront) return;
+    const jobId = savedJobIdRef.current;
+    if (!jobId || !shopDomain || !productId) return;
+    const vid = normalizeVariantId(findVariantId({ quiet: true }) || "");
+    if (!vid) return;
+    if (mockupLoading || mockupsStale) return;
+    const artwork = generatedDesign?.imageUrl || "";
+    if (!artwork || artwork.startsWith("data:")) return;
+    const mockupUrl = getPreferredMockupUrl({ cartSafeOnly: true });
+    if (!mockupUrl.startsWith("https://")) return;
+
+    syncHoodieFingerprintRef();
+    const keys = preShadowKeyFields(jobId, vid);
+    if (!keys.designId || !keys.printConfig) return;
+    if (
+      preShadowWarmRef.current.get(vid) === keys.designId ||
+      preShadowDesignIdRef.current === keys.designId
+    ) {
+      preShadowWarmRef.current.set(vid, keys.designId);
+      return;
+    }
+
+    if (preShadowDebounceRef.current) clearTimeout(preShadowDebounceRef.current);
+    preShadowDebounceRef.current = setTimeout(() => {
+      preShadowDebounceRef.current = null;
+      if (preShadowWarmRef.current.get(vid) === keys.designId) return;
+      console.log("[PreShadow] size-change pre-mint", keys.designId, "vid", vid);
+      void safeFetch(`${API_BASE}/api/storefront/preshadow-variant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: shopDomain,
+          jobId,
+          baseProductId: productId,
+          baseVariantId: vid,
+          mockupUrl,
+          ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+          ...keys,
+        }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.started && data.shadowDesignId) {
+            preShadowWarmRef.current.set(vid, String(data.shadowDesignId));
+            startShadowVariantPoll(jobId, shopDomain, 0);
+          }
+        })
+        .catch((e) => console.warn("[PreShadow] size-change pre-mint failed", e));
+    }, PRE_SHADOW_SIZE_DEBOUNCE_MS);
+
+    return () => {
+      if (preShadowDebounceRef.current) {
+        clearTimeout(preShadowDebounceRef.current);
+        preShadowDebounceRef.current = null;
+      }
+    };
+  }, [
+    selectedSize,
+    selectedFrameColor,
+    generatedDesign?.id,
+    generatedDesign?.imageUrl,
+    shopDomain,
+    productId,
+    isStorefront,
+    isCreatorStorefront,
+    mockupLoading,
+    mockupsStale,
+    getPreferredMockupUrl,
+    preShadowKeyFields,
+    startShadowVariantPoll,
+  ]);
+
+  const pingAtcDebug = (payload: Record<string, unknown>) => {
+    console.log("[Design Studio] [ATC-debug]", payload);
+    try {
+      void safeFetch(`${API_BASE}/api/storefront/atc-debug`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop: shopDomain || undefined,
+          source: "iframe",
+          ...payload,
+        }),
+      }).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const showAtcRateLimitToast = (remainingMs: number) => {
+    const sec = Math.max(1, Math.ceil(remainingMs / 1000));
+    toast({
+      title: "Finalizing print files…",
+      description: `${ATC_SHADOW_STILL_PREPARING} Try again in ${sec}s.`,
+      duration: Math.min(12_000, remainingMs + 800),
+    });
+  };
+
   /**
    * Send add-to-cart via postMessage to the parent Shopify storefront page.
    * The parent's theme extension script handles the actual /cart/add.js fetch.
    * Returns a promise that resolves when the parent confirms the cart update.
    */
+  const ATC_SHADOW_NOT_LISTED = ATC_SHADOW_STILL_PREPARING;
+  const atcNoticeClass = (msg: string) =>
+    msg === ATC_SHADOW_STILL_PREPARING || msg === ATC_SHADOW_PREVIEW_NOT_READY
+      ? "text-muted-foreground"
+      : "text-destructive";
+  const ATC_SHADOW_PREVIEW_PENDING = ATC_SHADOW_PREVIEW_NOT_READY;
+  const ATC_HANDLER_MISSING =
+    "Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.";
+  const ATC_HANDLER_SLOW =
+    "Adding this design to the cart is taking longer than expected. Please try again.";
+
+  const repairShadowPurchasable = async (shadowId: string): Promise<boolean> => {
+    if (!shopDomain || !shadowId) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const res = await safeFetch(`${API_BASE}/api/storefront/ensure-shadow-purchasable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop: shopDomain, variantId: shadowId }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) return true;
+      console.error("[Design Studio] Shadow purchasable write did not land:", res.status, data);
+      return false;
+    } catch (e: any) {
+      console.error("[Design Studio] Shadow purchasable request failed:", e?.message || e);
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   const addToCartStorefront = (payload: {
     variantId: string;
     baseVariantId?: string;
     quantity: number;
     properties: Record<string, string>;
+    price?: string | null;
+    shadowCreated?: boolean;
   }): Promise<{ success: boolean; error?: string }> => {
     // Log bridge state for diagnostics but don't fail fast — allow postMessage attempt
     // The parent sends BRIDGE_READY every 500ms, so React state may lag real connectivity
@@ -8380,14 +11597,54 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
     return new Promise((resolve) => {
       const correlationId = `cart_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const TIMEOUT_MS = 12_000;
+      const TIMEOUT_MS = 90_000;
+      let heardFromHandler = false;
+      let timer: ReturnType<typeof setTimeout>;
 
       const cleanup = () => {
         window.removeEventListener('message', handler);
         clearTimeout(timer);
       };
 
+      const armTimeout = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          cleanup();
+          console.error('[Design Studio] Add-to-cart postMessage timed out after idle', TIMEOUT_MS, 'ms');
+          console.error('[Design Studio] Timeout diagnostics:', {
+            correlationId,
+            variantId: payload.variantId,
+            heardFromHandler,
+            parentExists: window.parent !== window,
+            topExists: window.top !== window,
+            bridgeReady: bridgeReady || !!(window as any).__aiArtBridgeReady,
+            locationOrigin: window.location.origin,
+          });
+          resolve({
+            success: false,
+            error: heardFromHandler ? ATC_HANDLER_SLOW : ATC_HANDLER_MISSING,
+          });
+        }, TIMEOUT_MS);
+      };
+
       const handler = (event: MessageEvent) => {
+        if (
+          event.data?.type === 'AI_ART_STUDIO_ATC_PROGRESS' &&
+          event.data?.correlationId === correlationId &&
+          event.data?.phase === 'finalising'
+        ) {
+          heardFromHandler = true;
+          armTimeout();
+          pingAtcDebug({
+            event: "progress_received",
+            reason: "AI_ART_STUDIO_ATC_PROGRESS",
+            attempt: event.data?.attempt,
+            created: !!payload.shadowCreated,
+            cid: correlationId,
+            variantId: payload.variantId,
+          });
+          return;
+        }
         if (
           event.data?.type === 'AI_ART_STUDIO_ADD_TO_CART_RESULT' &&
           event.data?.correlationId === correlationId
@@ -8407,19 +11664,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       };
 
-      const timer = setTimeout(() => {
-        cleanup();
-        console.error('[Design Studio] Add-to-cart postMessage timed out after', TIMEOUT_MS, 'ms');
-        console.error('[Design Studio] Timeout diagnostics:', {
-          correlationId,
-          variantId: payload.variantId,
-          parentExists: window.parent !== window,
-          topExists: window.top !== window,
-          bridgeReady: bridgeReady || !!(window as any).__aiArtBridgeReady,
-          locationOrigin: window.location.origin,
-        });
-        resolve({ success: false, error: 'Cart update timed out. The storefront page may not have the add-to-cart handler loaded. Please refresh and try again.' });
-      }, TIMEOUT_MS);
+      armTimeout();
 
       window.addEventListener('message', handler);
 
@@ -8430,16 +11675,27 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         baseVariantId: payload.baseVariantId,
         quantity: payload.quantity,
         properties: payload.properties,
-        _bridgeVersion: '1.0.0',
+        shadowCreated: !!payload.shadowCreated,
+        ...(payload.price ? { price: payload.price } : {}),
+        ...(anonSessionId ? { sessionId: anonSessionId } : {}),
+        ...(storefrontIdentityTokenRef.current ? { identityToken: storefrontIdentityTokenRef.current } : {}),
+        _bridgeVersion: '1.0.3',
       };
 
       // Send to parent (primary target)
       console.log('[Design Studio] Sending add-to-cart postMessage:', {
         correlationId,
         variantId: payload.variantId,
+        shadowCreated: !!payload.shadowCreated,
         propertyKeys: Object.keys(payload.properties),
         sentTo: 'parent',
         origin: window.location.origin,
+      });
+      pingAtcDebug({
+        event: "add_to_cart_posted",
+        created: !!payload.shadowCreated,
+        cid: correlationId,
+        variantId: payload.variantId,
       });
       window.parent.postMessage(message, '*');
 
@@ -8455,6 +11711,174 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     });
   };
 
+  // Same-origin AJAX cart add for the phone `host=page` shell. The React app runs
+  // top-level on the shop origin there, so the theme bridge (appai-art-embed.js) is
+  // NOT present and no postMessage listener answers. Mirrors the bridge addToCart():
+  // /cart.js dedup → /cart/change.js increment, else /cart/add.js with the SAME
+  // 422 publish-lag / sold-out-race retry ladder. Fulfillment body is identical to
+  // the bridge: { items:[{ id, quantity, properties }] }.
+  const addToCartDirect = async (payload: {
+    variantId: string;
+    quantity: number;
+    properties: Record<string, string>;
+    shadowCreated?: boolean;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const variantNum = Number(normalizeVariantId(payload.variantId));
+    if (!Number.isFinite(variantNum) || variantNum <= 0) {
+      return { success: false, error: "Missing variant ID" };
+    }
+
+    let props = payload.properties || {};
+    if (props["_mockup_url"] && String(props["_mockup_url"]).startsWith("data:")) {
+      props = { ...props };
+      delete props["_mockup_url"];
+      delete (props as Record<string, string>)["mockup_url"];
+    }
+
+    const postJson = async (url: string, body: unknown) => {
+      const controller = new AbortController();
+      const tid = window.setTimeout(() => controller.abort(), 15_000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify(body),
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        const json = await res.json().catch(() => ({} as any));
+        return { res, json, timeout: false, network: false };
+      } catch (e: any) {
+        const timeout = e?.name === "AbortError";
+        return {
+          res: null as Response | null,
+          json: {} as any,
+          timeout,
+          network: !timeout,
+        };
+      } finally {
+        window.clearTimeout(tid);
+      }
+    };
+
+    const doAdd = async (
+      qty: number,
+    ): Promise<
+      | { ok: true }
+      | {
+          ok: false;
+          retryable: boolean;
+          skipCartJsOnNext: boolean;
+          kind: ReturnType<typeof classifyCartAddFailure>["kind"];
+          retryAfterMs: number;
+        }
+    > => {
+      const { res, json, timeout, network } = await postJson("/cart/add.js", {
+        items: [{ id: variantNum, quantity: qty, properties: props }],
+      });
+      if (res?.ok) return { ok: true };
+      const errMsg = (json && (json.description || json.message)) || "";
+      const classified = classifyCartAddFailure({
+        status: res?.status,
+        message: errMsg,
+        timeout,
+        networkError: network,
+      });
+      return {
+        ok: false,
+        ...classified,
+        retryAfterMs: parseRetryAfterMs(res?.headers.get("Retry-After")),
+      };
+    };
+
+    // Ported verbatim from appai-art-embed.js (1564–1598) — do not re-derive.
+    // Dedup identity is _shadow_design_id (fulfillment), not _design_id (label);
+    // print-config snapshots stay distinct lines.
+    const shadowDesignIdFromProps = (p: Record<string, string>): string =>
+      String(p?.["_shadow_design_id"] || "").trim();
+
+    const findMatchingCartLine = (
+      cart: any,
+      variantId: string | number,
+      properties: Record<string, string>,
+    ): any | null => {
+      const items: any[] = (cart && cart.items) || [];
+      const incomingShadow = shadowDesignIdFromProps(properties);
+      const incomingCfg = hasPrintConfigSuffix(incomingShadow);
+      for (const item of items) {
+        const p = item.properties || {};
+        const itemShadow = String(p["_shadow_design_id"] || "").trim();
+        if (incomingShadow && itemShadow && incomingShadow === itemShadow) return item;
+        if (incomingCfg) continue; // cfg-keyed lines are distinct snapshots — never merge
+        if (String(item.variant_id) === String(variantId)) return item;
+      }
+      return null;
+    };
+
+    const tryCartDedup = async (): Promise<boolean> => {
+      try {
+        const cartRes = await fetch("/cart.js", { credentials: "same-origin" });
+        const cart = cartRes.ok ? await cartRes.json() : { items: [] };
+        const existing = findMatchingCartLine(cart, variantNum, props);
+        if (existing && existing.key) {
+          const nextQty = (Number(existing.quantity) || 1) + payload.quantity;
+          const { res } = await postJson("/cart/change.js", { id: existing.key, quantity: nextQty });
+          if (res?.ok) return true;
+        }
+      } catch {
+        /* /cart.js unavailable — proceed straight to add */
+      }
+      return false;
+    };
+
+    const cooldownLeft = readAtcRateLimitRemainingMs();
+    if (cooldownLeft > 0) {
+      setAtcCooldownUntil(Date.now() + cooldownLeft);
+      showAtcRateLimitToast(cooldownLeft);
+      return { success: false, error: ATC_SHADOW_NOT_LISTED };
+    }
+
+    // Poll /cart/add.js itself — the purchase signal. /variants/{id}.js 404s
+    // for unlisted + seo.hidden shadows even after Admin publish, so it is
+    // not a ready check. Skip /cart.js only after a clean 422 not-found.
+    const waits = ATC_STOREFRONT_PROPAGATION_WAITS_MS;
+    let repaired = false;
+    let skipCartJs = false;
+    let addCalls = 0;
+    for (let attempt = 0; attempt < ATC_MAX_CART_ADD_CALLS_PER_TAP; attempt++) {
+      if (!skipCartJs && (await tryCartDedup())) {
+        clearAtcRateLimitCooldown();
+        setAtcCooldownUntil(0);
+        return { success: true };
+      }
+      if (addCalls >= ATC_MAX_CART_ADD_CALLS_PER_TAP) break;
+      addCalls += 1;
+      const r = await doAdd(payload.quantity);
+      if (r.ok) {
+        clearAtcRateLimitCooldown();
+        setAtcCooldownUntil(0);
+        return { success: true };
+      }
+      if (!r.retryable || attempt >= ATC_MAX_CART_ADD_CALLS_PER_TAP - 1) {
+        return { success: false, error: ATC_SHADOW_NOT_LISTED };
+      }
+      skipCartJs = r.skipCartJsOnNext;
+      if (r.kind === "rate_limited") {
+        const until = writeAtcRateLimitCooldown(r.retryAfterMs);
+        setAtcCooldownUntil(until);
+        showAtcRateLimitToast(r.retryAfterMs);
+        await new Promise((res) => setTimeout(res, r.retryAfterMs));
+        continue;
+      }
+      if (r.kind === "not_found" && !repaired) {
+        repaired = true;
+        await repairShadowPurchasable(String(variantNum));
+      }
+      await new Promise((res) => setTimeout(res, waits[Math.min(attempt, waits.length - 1)] ?? ATC_RETRY_AFTER_DEFAULT_MS));
+    }
+    return { success: false, error: ATC_SHADOW_NOT_LISTED };
+  };
+
   const flushFlatPlacer = useCallback(async (opts?: { force?: boolean }) => {
     if (!flatPlacerRef.current) return false;
     return flatPlacerRef.current.applyIfNeeded(opts);
@@ -8463,12 +11887,61 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const flushHoodieAopPlacer = useCallback(async (opts?: { force?: boolean }) => {
     if (!hoodieAopPlacerRef.current) return false;
     const applied = await hoodieAopPlacerRef.current.applyIfNeeded(opts);
+    const live = hoodieAopPlacerRef.current.getState?.() ?? hoodieAopPlacerStateRef.current;
+    if (live) hoodieAopPlacerStateRef.current = live;
     if (applied) setAopPlacementDirty(false);
     return applied;
   }, []);
 
+  /** Leave the mesh editor: close immediately, then bake Pattern/Place in the background. */
+  const leaveAopEditor = useCallback(() => {
+    const live = hoodieAopPlacerRef.current?.getState?.() ?? null;
+    if (live) {
+      hoodieAopPlacerStateRef.current = live;
+      setHoodieAopPlacerState(live);
+    }
+    aopEditorDismissedRef.current = true;
+    setShowPatternStep(false);
+    void flushHoodieAopPlacer({ force: true })
+      .catch((err: unknown) => {
+        console.error("[AOP] Back flush failed:", err);
+      })
+      .finally(() => {
+        aopEditorDismissedRef.current = true;
+      });
+  }, [flushHoodieAopPlacer]);
+
+  // Persist tile size / pattern type as they change so Back is not the only write.
+  useEffect(() => {
+    if (!isStorefront || !shopDomain || !showPatternStep) return;
+    const jobId = savedJobIdRef.current;
+    const live = hoodieAopPlacerState;
+    if (!jobId || !live?.tileSettings) return;
+    const t = window.setTimeout(() => {
+      const snap = hoodieAopPlacerStateRef.current ?? live;
+      void safeFetch(`${API_BASE}/api/storefront/save-state`, {
+        method: "POST",
+        headers: identityJsonHeaders(),
+        body: JSON.stringify({
+          jobId,
+          shop: shopDomain,
+          designState: { hoodieAopPlacerState: snap },
+        }),
+      }).catch(() => {});
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [
+    isStorefront,
+    shopDomain,
+    showPatternStep,
+    hoodieAopPlacerState?.mode,
+    hoodieAopPlacerState?.tileSettings?.tileSizeInches,
+    hoodieAopPlacerState?.tileSettings?.pattern,
+  ]);
+
   /** Open the mesh placer; if the gallery is on Back, resume editing the back. */
   const openAopPlacer = useCallback(() => {
+    aopEditorDismissedRef.current = false;
     if (generatedDesign?.imageUrl) {
       setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
     }
@@ -8523,15 +11996,182 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     toast,
   ]);
 
+  /** Stale AOP/Printify mockups: rebuild from panels or flush, never silent no-op. */
+  const refreshStaleMockups = useCallback(async () => {
+    console.log("[AOP-TRACE] refreshStaleMockups start", {
+      useAopCustomizer,
+      mockupsStale,
+      hasPlacerRef: !!hoodieAopPlacerRef.current,
+      hasPanels: !!lastAopPanelUrlsRef.current?.length,
+      selectedSize,
+    });
+    if (!String(selectedSize || "").trim()) {
+      console.log("[AOP-TRACE] refreshStaleMockups abort no-size — mockupsStale unchanged");
+      setVariantError("Select a size to continue.");
+      toast({
+        title: "Select a size",
+        description: "Choose a size, then you can refresh mockups or add to cart.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!generatedDesign?.imageUrl || !productTypeConfig) {
+      console.log("[AOP-TRACE] refreshStaleMockups abort no-artwork — mockupsStale unchanged");
+      toast({
+        title: "Can't refresh mockups",
+        description: "Artwork is missing. Generate or reload the design.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const runFetch = async (
+      panels?: Array<{ position: string; dataUrl: string }>,
+    ) => {
+      setMockupError(null);
+      setMockupFailed(false);
+      try {
+        const result = await fetchPrintifyMockups(
+          toAbsoluteImageUrl(generatedDesign.imageUrl),
+          productTypeConfig.id,
+          selectedSize,
+          selectedFrameColor || "default",
+          transform.scale,
+          transform.x,
+          transform.y,
+          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
+          aopPlacementSettings?.mirrorMode,
+          useAopCustomizer
+            ? (panels ?? lastAopPanelUrlsRef.current ?? undefined)
+            : undefined,
+        );
+        console.log("[AOP-TRACE] refreshStaleMockups runFetch", {
+          ok: !!result?.ok,
+          error: result?.error ?? null,
+        });
+        if (!result?.ok) {
+          toast({
+            title: "Couldn't refresh mockups",
+            description: result?.error || "Try again.",
+            variant: "destructive",
+          });
+        }
+      } catch (err: any) {
+        console.log("[AOP-TRACE] refreshStaleMockups runFetch threw", err?.message || err);
+        toast({
+          title: "Couldn't refresh mockups",
+          description: err?.message || "Try again.",
+          variant: "destructive",
+        });
+      }
+    };
+
+    if (useAopCustomizer) {
+      if (hoodieAopPlacerRef.current) {
+        try {
+          const applied = await flushHoodieAopPlacer({ force: true });
+          console.log("[AOP-TRACE] refreshStaleMockups applied", {
+            applied,
+            willReturn: !!applied,
+          });
+          if (applied) return;
+        } catch (err: any) {
+          console.log("[AOP-TRACE] refreshStaleMockups flush threw", err?.message || err);
+          toast({
+            title: "Couldn't refresh mockups",
+            description: err?.message || "Try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      } else {
+        console.log("[AOP-TRACE] refreshStaleMockups no placer ref");
+      }
+      const panels = lastAopPanelUrlsRef.current;
+      if (panels?.length) {
+        await runFetch(panels);
+        return;
+      }
+      if (!hoodieAopPlacerRef.current && (hoodieAopPlacerState || generatedDesign.imageUrl)) {
+        pendingAopRefreshRef.current = true;
+        setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
+        setShowPatternStep(true);
+        toast({
+          title: "Rebuilding mockups…",
+          description: "Re-opening the hoodie editor so mockups can rebuild.",
+        });
+        return;
+      }
+      toast({
+        title: "Can't refresh mockups",
+        description: "Apply your pattern in the hoodie editor, then try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    await runFetch();
+  }, [
+    selectedSize,
+    generatedDesign?.imageUrl,
+    productTypeConfig,
+    selectedFrameColor,
+    transform.scale,
+    transform.x,
+    transform.y,
+    useAopCustomizer,
+    aopPatternUrl,
+    aopPlacementSettings?.mirrorMode,
+    hoodieAopPlacerState,
+    mockupsStale,
+    fetchPrintifyMockups,
+    flushHoodieAopPlacer,
+    toast,
+  ]);
+
+  useEffect(() => {
+    if (!pendingAopRefreshRef.current || !showPatternStep) return;
+    let cancelled = false;
+    let attempts = 0;
+    const t = window.setInterval(() => {
+      if (cancelled || !pendingAopRefreshRef.current) {
+        window.clearInterval(t);
+        return;
+      }
+      if (!hoodieAopPlacerRef.current) {
+        if (++attempts > 40) {
+          window.clearInterval(t);
+          pendingAopRefreshRef.current = false;
+          toast({
+            title: "Can't refresh mockups",
+            description: "Apply your pattern in the hoodie editor, then try again.",
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+      window.clearInterval(t);
+      pendingAopRefreshRef.current = false;
+      void refreshStaleMockups();
+    }, 50);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [showPatternStep, refreshStaleMockups, toast]);
+
   const flushDesignForTester = useCallback(async () => {
     if (!usesFlatOnTheFlyPreview || !generatedDesign?.imageUrl) {
-      // Mesh AOP: flush deferred placement before test order.
-      if (
-        useAopCustomizer &&
-        productTypeConfig?.panelMappingTemplate &&
-        (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
-      ) {
-        await flushHoodieAopPlacer({ force: true });
+      // Mesh AOP: always re-bake before a Preview Studio test order so hood
+      // print files cannot keep the previous session's background colour.
+      if (useAopCustomizer && productTypeConfig?.panelMappingTemplate) {
+        if (
+          isAdminTester ||
+          aopPlacementDirty ||
+          hoodieAopPlacerRef.current?.hasPendingChanges()
+        ) {
+          await flushHoodieAopPlacer({ force: true });
+        }
       }
       // Printify zoom products: placement is persisted in the background; flush now.
       if (isAdminTester && !useAopCustomizer) {
@@ -8649,49 +12289,98 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [embeddedContext, openTesterPlacementEditor]);
 
   useEffect(() => {
+    if (embeddedContext?.mode !== "admin-tester") return;
+    const ref = embeddedContext.retryFailedUploadsRef;
+    if (!ref) return;
+    ref.current = async () => {
+      await flushHoodieAopPlacer({ force: true });
+    };
+    return () => {
+      ref.current = null;
+    };
+  }, [embeddedContext, flushHoodieAopPlacer]);
+
+  useEffect(() => {
     if (!isAdminTester) return;
     emitTesterDesignStatus({
       placementEditorOpen: !!(showPatternStep || flatPlacerEditOpen),
     });
   }, [isAdminTester, showPatternStep, flatPlacerEditOpen, emitTesterDesignStatus]);
 
-  // Preview Studio: if the live AOP editor is open but persist never started
-  // (resume skip, late shop, etc.), kick one apply so the button can unlock.
+  useEffect(() => {
+    aopPersistKickAttemptedRef.current = false;
+  }, [generatedDesign?.id]);
+
+  // Preview Studio: wait until the mesh placer can actually apply. A one-shot
+  // kick on the first showPatternStep frame returns false (template/artwork
+  // still loading) and used to leave "Syncing placement…" stuck forever.
   useEffect(() => {
     if (!isAdminTester || !useAopCustomizer || !showPatternStep) return;
-    if (!generatedDesign?.imageUrl || !savedJobIdRef.current) return;
-    const aopStatus = () => testerDesignStatusRef.current.aopPanels;
-    if (aopStatus() === "saved") return;
-    if (aopStatus() === "none") {
-      emitTesterDesignStatus({ aopPanels: "saving" });
+    const jobId = savedJobIdRef.current;
+    if (!generatedDesign?.imageUrl || !jobId) return;
+
+    const hasRestoredPrintFiles = (lastAopPanelUrlsRef.current?.length ?? 0) > 0;
+    // Only skip for a saved-design reopen. Leftover panels from the previous
+    // generate must not mark this job saved or block a fresh persist.
+    if (hasRestoredPrintFiles && restoringSavedDesignRef.current) {
+      aopPersistKickAttemptedRef.current = true;
+      emitTesterDesignStatus({ jobId, aopPanels: "saved" });
+      return;
     }
+
+    if (!shouldKickAopPersist(testerDesignStatusRef.current.aopPanels, aopPersistKickAttemptedRef.current)) {
+      return;
+    }
+
     let cancelled = false;
     void (async () => {
-      for (let i = 0; i < 20 && !cancelled; i++) {
-        await new Promise((r) => setTimeout(r, 400));
-        if (cancelled) return;
-        if (aopStatus() === "saved") return;
-        if (!hoodieAopPlacerRef.current) continue;
+      for (let i = 0; i < 40 && !cancelled; i++) {
+        if (!hoodieAopPlacerRef.current) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
+        const status = testerDesignStatusRef.current.aopPanels;
+        if (!shouldKickAopPersist(status, aopPersistKickAttemptedRef.current)) return;
+        if (status === "none" || status === "saving") {
+          emitTesterDesignStatus({ jobId, aopPanels: "saving" });
+        }
         try {
-          await flushHoodieAopPlacer({ force: true });
-        } catch (err) {
-          if (!cancelled && aopStatus() !== "saved") {
-            console.warn("[AdminTester] AOP persist kick failed:", err);
-            emitTesterDesignStatus({ aopPanels: "error" });
+          const applied = await flushHoodieAopPlacer({ force: true });
+          if (cancelled) {
+            aopPersistKickAttemptedRef.current = false;
+            return;
           }
+          if (applied) {
+            aopPersistKickAttemptedRef.current = true;
+            return;
+          }
+        } catch (err) {
+          console.warn("[AdminTester] AOP persist kick failed:", err);
+          const now = testerDesignStatusRef.current.aopPanels;
+          if (now === "saved" || now === "rateLimited" || now === "error") return;
+          emitTesterDesignStatus({ aopPanels: "error" });
           return;
         }
-        if (aopStatus() === "saved") return;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (cancelled) return;
+      if (testerDesignStatusRef.current.aopPanels === "saving") {
+        emitTesterDesignStatus({
+          jobId,
+          aopPanels: "error",
+        });
       }
     })();
     return () => {
       cancelled = true;
+      if (testerDesignStatusRef.current.aopPanels === "saving") {
+        aopPersistKickAttemptedRef.current = false;
+      }
     };
   }, [
     isAdminTester,
     useAopCustomizer,
     showPatternStep,
-    generatedDesign?.imageUrl,
     generatedDesign?.id,
     flushHoodieAopPlacer,
     emitTesterDesignStatus,
@@ -8815,7 +12504,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         try {
           const res = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop,
@@ -8883,7 +12572,34 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleAddToCart = async () => {
     if (!generatedDesign || (!isShopify && !isStorefront)) return;
     if (isAddingToCart) return; // double-click guard
+    const cooldownLeft = readAtcRateLimitRemainingMs();
+    if (cooldownLeft > 0 || atcCooldownRemainingMs > 0) {
+      const wait = Math.max(cooldownLeft, atcCooldownRemainingMs);
+      setAtcCooldownUntil(Date.now() + wait);
+      setVariantError(ATC_SHADOW_NOT_LISTED);
+      showAtcRateLimitToast(wait);
+      return;
+    }
+    if (atcUpdatesPending || saveStatePending || mockupsUpdating) return;
     skipGalleryPersistRef.current = false;
+    console.log(`[EmbedDesign] ATC atcMode=${atcModeRef.current}`);
+
+    if (printSizes.length > 0 && !String(selectedSize || "").trim()) {
+      setVariantError(
+        isPhoneCaseProduct
+          ? "Please select a model before adding to cart."
+          : "Please select a size before adding to cart.",
+      );
+      return;
+    }
+    if (
+      showFrameColorSelector &&
+      !frameOptionsRedundantWithSizes &&
+      !String(selectedFrameColor || "").trim()
+    ) {
+      setVariantError("Please select a color before adding to cart.");
+      return;
+    }
 
     // Product Intelligence: refuse OOS size/colour before shadow resolve / cart.
     if (selectedSize && outOfStockSizeIds.includes(selectedSize)) {
@@ -8924,50 +12640,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     }
     flatClipConfirmProceedRef.current = false;
 
-    // Changing scale/placement on a saved design must not overwrite that job —
-    // Printify would reprint the original (or the latest) for every cart line.
-    if (usesFlatOnTheFlyPreview && !flatRenderFailed) {
-      const liveForFork = flatPlacerRef.current?.getState() || flatPlacerState;
-      const liveSig = encodeFlatLinePlacement(liveForFork);
-      const frozenSig = placementFrozenSigRef.current;
-      if (liveSig && frozenSig && liveSig !== frozenSig && savedJobIdRef.current) {
-        if (savedDesigns.length >= galleryLimit) {
-          // Cart still gets `_flat_pl`. Do not add a 21st Saved Design.
-          skipGalleryPersistRef.current = true;
-        } else {
-        const forkShop = shopDomain || savedJobShopRef.current;
-        if (forkShop) {
-          try {
-            const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-placement`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                shop: forkShop,
-                sourceJobId: savedJobIdRef.current,
-                creatorId: creatorIdParam || undefined,
-                creatorSessionId: creatorSessionIdRef.current || undefined,
-                designState: {
-                  flatPlacerState: liveForFork,
-                  selectedSize: selectedSize || null,
-                  selectedFrameColor: selectedFrameColor || null,
-                },
-              }),
-            });
-            const forkJson = await forkRes.json().catch(() => ({}));
-            if (forkRes.ok && forkJson?.jobId) {
-              savedJobIdRef.current = String(forkJson.jobId);
-              placementFrozenSigRef.current = liveSig;
-              lastFlatGalleryMockupKeyRef.current = "";
-              preShadowJobIdRef.current = null;
-            }
-          } catch (forkErr) {
-            console.warn("[Design Studio] fork-placement failed:", forkErr);
-          }
-        }
-        }
-      }
-    }
+    // Distinct cart lines come from the print-config fingerprint + `_flat_pl`
+    // at ATC. Do not fork a new job/gallery card when placement changes.
+    skipGalleryPersistRef.current = false;
 
+    // Pending covers flush/skip + snapshot + resolve + cart/add — not just the tail.
+    setIsAddingToCart(true);
+    setVariantError(null);
+    try {
     // Only re-raster/upload when placement actually changed — a clean Apply
     // already left https mockup URLs ready for shadow SKU + cart.
     const flatNeedsFlush = !!(
@@ -8986,17 +12666,58 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
+    const aopHasRestoredPanels = !!(lastAopPanelUrlsRef.current?.length);
+    const aopPendingEdits = !!hoodieAopPlacerRef.current?.hasPendingChanges();
+    // TEMP DIAGNOSTIC — cp2-b2 saved-design ATC revert trace. Remove after repro.
+    const aopTraceStoredCanonical = parseStoredAopPanelCaptureSignature(
+      storedAopPanelCaptureSignatureRef.current,
+    );
+    const aopTraceLiveCanonical = canonicalAopPanelCaptureSignature(hoodieAopPlacerState);
+    const aopTraceLastPersistedCanonical = canonicalAopPanelCaptureSignature(
+      lastPersistedAopCaptureStateRef.current,
+    );
+    const aopTraceMatchLive = aopPanelCaptureSignaturesMatch(
+      storedAopPanelCaptureSignatureRef.current,
+      hoodieAopPlacerState,
+    );
+    const aopTraceMatchLastPersisted = aopPanelCaptureSignaturesMatch(
+      storedAopPanelCaptureSignatureRef.current,
+      lastPersistedAopCaptureStateRef.current,
+    );
+    console.log("[AOP-TRACE] aopCanReuseStoredPanels inputs", {
+      hasRestoredPanels: aopHasRestoredPanels,
+      hasPendingChanges: aopPendingEdits,
+      matchLive: aopTraceMatchLive,
+      matchLastPersisted: aopTraceMatchLastPersisted,
+      storedCanonical: aopTraceStoredCanonical,
+      liveCanonical: aopTraceLiveCanonical,
+      lastPersistedCanonical: aopTraceLastPersistedCanonical,
+      storedRaw: storedAopPanelCaptureSignatureRef.current,
+      liveRaw: hoodieAopPlacerState,
+      lastPersistedRaw: lastPersistedAopCaptureStateRef.current,
+    });
+    const aopCanReusePanels = !!(
+      useAopCustomizer &&
+      aopCanReuseStoredPanels({
+        storedSignature: storedAopPanelCaptureSignatureRef.current,
+        liveState: hoodieAopPlacerState,
+        lastPersistedState: lastPersistedAopCaptureStateRef.current,
+        hasRestoredPanels: aopHasRestoredPanels,
+        hasPendingChanges: aopPendingEdits,
+      })
+    );
+    // TEMP DIAGNOSTIC — cp2-b2 saved-design ATC revert trace. Remove after repro.
+    console.log("[AOP-TRACE] aopCanReusePanels result", aopCanReusePanels);
     const aopNeedsFlush = !!(
       useAopCustomizer &&
       productTypeConfig?.panelMappingTemplate &&
-      (aopPlacementDirty || hoodieAopPlacerRef.current?.hasPendingChanges())
+      !aopCanReusePanels
     );
-    if (aopNeedsFlush) {
+    if (aopCanReusePanels) {
+      console.log("[AOP] ATC reusing stored print panels — capture signature matches");
+    } else if (aopNeedsFlush) {
       try {
         await flushHoodieAopPlacer({ force: true });
-        if (aopPanelPersistPromiseRef.current) {
-          await aopPanelPersistPromiseRef.current;
-        }
       } catch {
         setVariantError("Couldn't save your placement. Please try again.");
         skipGalleryPersistRef.current = false;
@@ -9004,6 +12725,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
     skipGalleryPersistRef.current = false;
+
+    const expectedCaptureHash = productTypeConfig?.isAllOverPrint
+      ? expectedAopCaptureHashFromLiveState(
+          hoodieAopPlacerStateRef.current ?? hoodieAopPlacerState,
+        )
+      : null;
+    if (productTypeConfig?.isAllOverPrint && !expectedCaptureHash) {
+      setVariantError("Couldn't save your placement. Please try again.");
+      skipGalleryPersistRef.current = false;
+      setIsAddingToCart(false);
+      return;
+    }
 
     if (mockupsStale) {
       setVariantError(
@@ -9020,6 +12753,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         ? "Unable to find matching product variant. Please select a valid size and color combination."
         : "Unable to find matching product variant. Please select a valid size.";
       setVariantError(errorMsg);
+      toast({
+        variant: "destructive",
+        title: "Couldn’t add to cart",
+        description: errorMsg,
+      });
       return;
     }
 
@@ -9056,27 +12794,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       !flatOnTheFlyCart
     ) {
       console.log('[Design Studio] No mockups loaded for saved design — triggering fresh mockup generation before cart add');
-      setMockupError(null);
-      setMockupFailed(false);
-      setMockupsStale(true); // will show "Refresh Mockups to Continue" then auto-proceed
-      // Trigger mockup generation — once done, atcWaitingForMockups will clear
-      // and the user can click Add to Cart again (or we auto-proceed via the button state)
-      fetchPrintifyMockups(
-        toAbsoluteImageUrl(generatedDesign.imageUrl),
-        productTypeConfig.id,
-        selectedSize,
-        selectedFrameColor || 'default',
-        transform.scale,
-        transform.x,
-        transform.y
-      );
+      await refreshStaleMockups();
       return; // don't proceed with cart add yet — wait for mockups
     }
 
-    setIsAddingToCart(true);
-
     // Normalize variant ID (strip GID prefix if present)
-    const normalizedVariant = normalizeVariantId(variantId);
+    const atcFrontVariantId = normalizeVariantId(variantId);
+    const atcFrontVariant =
+      shopifyVariants.find((v) => normalizeVariantId(String(v.id)) === atcFrontVariantId) ?? null;
+    // Print sides products: a back print sells as the size/colour's Front + Back
+    // variant at its own price. Legacy products (no option, or twin missing)
+    // keep the Front variant + bothPriceOverride surcharge below.
+    const atcBothTierVariant = printPlacementUsesBoth
+      ? printSidesTwinVariant(shopifyVariants, atcFrontVariant, "both")
+      : null;
+    const normalizedVariant = atcBothTierVariant
+      ? normalizeVariantId(String(atcBothTierVariant.id))
+      : atcFrontVariantId;
 
     // Build the full artwork URL — try to get hosted with a 10s cap, but don't block cart add
     let artworkFullUrl = '';
@@ -9139,6 +12873,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return Math.abs(h).toString(36).slice(0, 4);
     })();
     const _readableDesignId = [_productLabel, _styleLabel].filter(Boolean).join(' · ') + (_shortHash ? ` #${_shortHash}` : '');
+    const shadowDesignId = String(savedJobIdRef.current || generatedDesign.id || "").trim();
     const properties: Record<string, string> = {
       '_design_id': _readableDesignId || _rawId,
     };
@@ -9160,17 +12895,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor,
       productTypeId,
     );
+    // freezeAopLineSnapshot fires in parallel with resolve-design-variant below
+    // only when Apply's 12-upload persist is already done. If persist is still
+    // running, skip the snapshot on the ATC critical path — cart returns now,
+    // and we stamp _aop_pl in the background (checkout stays gated until then).
+    const aopPersistInFlightAtClick = aopPanelPersistInFlightRef.current;
+    const aopSnapshotPromise: Promise<string | null> =
+      productTypeConfig?.isAllOverPrint &&
+      shopDomain &&
+      savedJobIdRef.current &&
+      expectedCaptureHash &&
+      !aopPersistInFlightAtClick
+        ? freezeAopLineSnapshot(shopDomain, savedJobIdRef.current, expectedCaptureHash)
+        : Promise.resolve(null);
+
     const liveFlatAtc = flatPlacerRef.current?.getState() || flatPlacerState;
     const flatSnapAtc = encodeFlatLinePlacement(liveFlatAtc);
     if (flatSnapAtc) properties[LINE_FLAT_PLACEMENT_KEY] = flatSnapAtc;
+    const totePrintBackAtc =
+      printPlacement === "both" || liveFlatAtc?.enabled?.back === true;
     if (toteFoldedLayout) {
       const toteSnapAtc = encodeToteLinePlacement({
         scale: transform.scale,
         x: transform.x,
         y: transform.y,
+        printBack: totePrintBackAtc,
       });
       if (toteSnapAtc) properties[LINE_TOTE_PLACEMENT_KEY] = toteSnapAtc;
     }
+    // Same builder + sanitizer as Apply pre-mint. Artwork identity is
+    // generatedDesign.imageUrl (already https after generate) — not the
+    // ensureHostedUrl result used only for the cart _artwork_url property.
+    syncHoodieFingerprintRef();
+    const persistShadowDesignId = shadowDesignId
+      ? atcShadowDesignId(
+          shadowDesignId,
+          normalizedVariant,
+          sanitizePrintConfigInput(buildAtcPrintConfigInputRef.current()) ??
+            buildAtcPrintConfigInputRef.current(),
+        )
+      : "";
+    if (persistShadowDesignId) {
+      properties["_shadow_design_id"] = persistShadowDesignId;
+    }
+    console.log("[Design Studio] ATC persist key", persistShadowDesignId, "vid", normalizedVariant);
 
     // Resolve the unique design variant before adding to cart.
     // Fast path: use pre-created shadow variant if available (created in background after mockups).
@@ -9183,94 +12951,329 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       frameColorObjects.find((f) => f.id === selectedFrameColor)?.name ??
       selectedFrameColor ??
       "";
-    const atcFrontPrice = parseFloat(
-      shopifyVariants.find((v) => String(v.id) === String(normalizedVariant))?.price || "0",
-    );
-    const bothRetailForAtc = printPlacementUsesBoth
+    const atcFrontPrice = parseFloat(atcFrontVariant?.price || "0");
+    const atcBothTierPrice = parseFloat(atcBothTierVariant?.price || "0");
+    const bothRetailForAtc = atcBothTierVariant && atcBothTierPrice > 0
+      ? atcBothTierPrice
+      : printPlacementUsesBoth
       ? bothRetailAboveFront(
           resolveBothRetailDollars({
             sizeName: atcSizeName,
             colorName: atcColorName,
-            shopifyVariantId: normalizedVariant,
+            shopifyVariantId: atcFrontVariantId,
           }),
           atcFrontPrice,
         ) ?? estimateBothRetailFromFront(atcFrontPrice)
       : null;
     const bothPriceOverride =
       bothRetailForAtc != null ? bothRetailForAtc.toFixed(2) : null;
+    const mappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    const displayedFromSizeDropdown =
+      mappedCents > 0 ? (mappedCents / 100).toFixed(2) : null;
+    // Headline is presentment display-only (≈ €16,95). ATC MUST send shop
+    // currency from buildPriceMap / variant.price — never the converted
+    // headline. Wiring headline presentment into resolve-design-variant or
+    // CART_STATE.price re-mints shadow products (2026-08 bug).
+    const displayedRetailForAtc =
+      bothPriceOverride ||
+      displayedFromSizeDropdown ||
+      (atcFrontPrice > 0 ? atcFrontPrice.toFixed(2) : null);
+    console.log("[Design Studio] ATC retail lock", {
+      displayedRetailForAtc,
+      displayedFromSizeDropdown,
+      bothPriceOverride,
+      atcFrontPrice,
+      variantId: normalizedVariant,
+      frontVariantId: atcFrontVariantId,
+      bothTierVariant: !!atcBothTierVariant,
+      size: atcSizeName,
+      color: atcColorName,
+    });
 
-    const shadowDesignId = String(savedJobIdRef.current || generatedDesign.id || "").trim();
     const preShadowMatchesJob =
       !!preShadowVariantId &&
       !!shadowDesignId &&
-      preShadowJobIdRef.current === shadowDesignId &&
-      !bothPriceOverride;
+      preShadowJobIdRef.current === shadowDesignId;
 
-    let finalVariantId = normalizedVariant;
-    // Creator checkout thumbnails come from the shadow product image, not
-    // `_mockup_url`. Always re-resolve so a second design cannot reuse the
-    // previous job's variant (cart page would look right, checkout would not).
-    if (preShadowMatchesJob && !isCreatorStorefront) {
-      // Instant — shadow product was pre-created in the background
-      finalVariantId = preShadowVariantId;
-      console.log('[Design Studio] Using pre-created shadow variant (instant):', finalVariantId);
-      // Extend the shadow product expiry to 7 days now that it's been added to cart
-      if (preShadowProductId && shopDomain) {
-        safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
-        }).catch(() => {});
+    // Skip the on-demand resolve wait when preShadow is already synced against
+    // the same (job, retail). The shadow variant image / title were already
+    // written when it was minted; syncShadowVariantPrice is fired in the
+    // background so any Admin price drift is corrected asynchronously.
+    // A different retail (both-tier surcharge, retail change) invalidates the
+    // fast path and forces an inline resolve so the customer pays the right price.
+    const canSkipResolveInline =
+      !hasPrintConfigSuffix(persistShadowDesignId) &&
+      preShadowMatchesJob &&
+      !!preShadowVariantId &&
+      !!displayedRetailForAtc &&
+      preShadowSyncedRetailRef.current?.jobId === shadowDesignId &&
+      preShadowSyncedRetailRef.current?.retail === displayedRetailForAtc;
+
+    /** Awaited CONTINUE + Online Store publish — never fire-and-forget. Fast-path must not skip this. */
+    const runEnsureShadowPurchasable = async (shadowId: string): Promise<boolean> => {
+      return repairShadowPurchasable(shadowId);
+    };
+
+    /** Best-effort resolve-design-variant with a single retry on network failure. */
+    const runResolveVariant = async (
+      opts: { attempts: number; label: string },
+    ): Promise<{
+      shadowVariantId: string | null;
+      matched: boolean;
+      created: boolean;
+      stillPreparing?: boolean;
+    }> => {
+      if (!shopDomain || !mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
+        return { shadowVariantId: null, matched: false, created: false };
       }
-    } else if (shopDomain) {
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < opts.attempts; attempt++) {
         if (attempt > 0) {
           await new Promise((r) => setTimeout(r, 1200 * attempt));
-          const retriedMockup = await ensureCartMockupUrl(getPreferredMockupUrl());
-          if (retriedMockup) mockupFullUrl = retriedMockup;
-        }
-        if (!mockupFullUrl || !mockupFullUrl.startsWith("https://")) {
-          console.warn("[Design Studio] Shadow resolve skipped — mockup not hosted yet", attempt);
-          continue;
         }
         try {
-          console.log(
-            `[Design Studio] Resolving unique design variant before cart add (attempt ${attempt + 1})...`,
-          );
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 20000);
+          const timeout = setTimeout(() => controller.abort(), PRE_SHADOW_AWAIT_MS + 5_000);
           const resolveRes = await safeFetch(`${API_BASE}/api/storefront/resolve-design-variant`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               shop: shopDomain,
               ...(productId ? { productId } : {}),
               variantId: normalizedVariant,
-              designId: shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
+              designId: persistShadowDesignId || reusableShadowDesignId(shadowDesignId, normalizedVariant) || shadowDesignIdForCart(shadowDesignId, mockupFullUrl),
               mockupUrl: mockupFullUrl,
               productTypeId: productTypeConfig?.id ?? productTypeId,
               sizeId: selectedSize,
               colorId: selectedFrameColor || "default",
-              ...(bothPriceOverride ? { price: bothPriceOverride } : {}),
+              ...(anonSessionId ? { sessionId: anonSessionId } : {}),
+              printSides: printPlacementUsesBoth ? "both" : "front",
             }),
             signal: controller.signal,
           });
           clearTimeout(timeout);
           if (resolveRes.ok) {
             const data = await resolveRes.json();
+            if (data.code === "still_preparing" || data.error === ATC_SHADOW_STILL_PREPARING) {
+              console.log(`[Design Studio] ${opts.label} still preparing — not a hard fail`);
+              return { shadowVariantId: null, matched: false, created: false, stillPreparing: true };
+            }
             if (data.success && data.variantId) {
-              finalVariantId = data.variantId;
-              console.log("[Design Studio] Resolved unique variant (on demand):", finalVariantId);
-              if (normalizeVariantId(finalVariantId) !== normalizedVariant) break;
+              console.log(`[Design Studio] ${opts.label} resolved shadow variant:`, {
+                variantId: data.variantId,
+                reused: !!data.reused,
+                created: !!data.created,
+                priceSource: data.priceSource,
+              });
+              const shadowId = String(data.variantId);
+              const matched = normalizeVariantId(shadowId) !== normalizedVariant;
+              if (matched) return { shadowVariantId: shadowId, matched: true, created: !!data.created };
             }
           } else {
-            console.warn("[Design Studio] resolve-design-variant failed:", resolveRes.status);
+            console.warn(`[Design Studio] ${opts.label} failed:`, resolveRes.status);
           }
         } catch (e: any) {
-          console.warn("[Design Studio] resolve-design-variant error/timeout:", e?.message || e);
+          console.warn(`[Design Studio] ${opts.label} error/timeout:`, e?.message || e);
         }
       }
+      return { shadowVariantId: null, matched: false, created: false };
+    };
+
+    // Fast-path still AWAITS CONTINUE repair. Skipping resolve must not skip policy write.
+    const baseFirstAtc = atcModeRef.current === "base-first" && !isCreatorStorefront;
+    const baseFirstReady =
+      baseFirstAtc &&
+      !!preShadowVariantId &&
+      !!preShadowDesignIdRef.current &&
+      preShadowDesignIdRef.current === persistShadowDesignId;
+    if (baseFirstAtc && persistShadowDesignId && !baseFirstReady) {
+      properties["_appai_swap_key"] = persistShadowDesignId;
     }
+    const inlineResolvePromise: Promise<{ shadowVariantId: string | null; matched: boolean; created: boolean; stillPreparing?: boolean }> = baseFirstAtc
+      ? Promise.resolve(
+          baseFirstReady
+            ? { shadowVariantId: String(preShadowVariantId), matched: true, created: false }
+            : { shadowVariantId: null, matched: false, created: false },
+        )
+      : canSkipResolveInline
+      ? (async () => {
+          console.log(
+            "[Design Studio] ATC fast-path — reusing preShadow variant",
+            preShadowVariantId,
+            "for job",
+            shadowDesignId,
+            "@ retail",
+            displayedRetailForAtc,
+          );
+          const repaired = await runEnsureShadowPurchasable(String(preShadowVariantId));
+          if (!repaired) {
+            console.warn("[Design Studio] Fast-path repair failed — falling through to full resolve");
+            return runResolveVariant({ attempts: 3, label: "resolve-design-variant (after fast-path repair fail)" });
+          }
+          void runResolveVariant({ attempts: 1, label: "resolve-design-variant (bg price sync)" }).catch(() => {});
+          return { shadowVariantId: preShadowVariantId, matched: true, created: false };
+        })()
+      : runResolveVariant({ attempts: 3, label: "resolve-design-variant" });
+
+    // Await resolve (+ snapshot only when persist is already done). AOP lines
+    // without a ready snapshot get `_print_files_pending` and finalize after cart-add.
+    let finalVariantId = normalizedVariant;
+    let shadowJustCreated = false;
+    let needsBackgroundAopFinalize = false;
+    let resolveStillPreparing = false;
+    try {
+      const [aopSnap, resolveResult] = await Promise.all([
+        aopSnapshotPromise,
+        inlineResolvePromise,
+      ]);
+      if (aopSnap) {
+        properties[LINE_AOP_PANELS_KEY] = aopSnap;
+        delete properties[LINE_AOP_PENDING_KEY];
+      } else if (productTypeConfig?.isAllOverPrint && savedJobIdRef.current) {
+        if (aopPanelPersistInFlightRef.current || aopPersistInFlightAtClick) {
+          properties[LINE_AOP_PENDING_KEY] = "1";
+          if (expectedCaptureHash) properties[LINE_AOP_CAPTURE_KEY] = expectedCaptureHash;
+          needsBackgroundAopFinalize = true;
+          console.log("[AOP] ATC returning before panel persist — checkout gated until _aop_pl stamps");
+        } else {
+          const lateSnap = await freezeAopLineSnapshot(
+            shopDomain,
+            savedJobIdRef.current,
+            expectedCaptureHash,
+          );
+          if (lateSnap) {
+            properties[LINE_AOP_PANELS_KEY] = lateSnap;
+          } else {
+            properties[LINE_AOP_PENDING_KEY] = "1";
+            if (expectedCaptureHash) properties[LINE_AOP_CAPTURE_KEY] = expectedCaptureHash;
+            needsBackgroundAopFinalize = true;
+            console.warn("[AOP] Snapshot missed after persist — background retry + checkout gate");
+          }
+        }
+      }
+      resolveStillPreparing = !!resolveResult.stillPreparing;
+      if (resolveResult.matched && resolveResult.shadowVariantId) {
+        finalVariantId = resolveResult.shadowVariantId;
+        shadowJustCreated = !!resolveResult.created;
+        if (shadowJustCreated) {
+          pingAtcDebug({
+            event: "shadow_created_atc",
+            created: true,
+            variantId: finalVariantId,
+          });
+        }
+        if (displayedRetailForAtc) {
+          preShadowSyncedRetailRef.current = {
+            jobId: shadowDesignId,
+            retail: displayedRetailForAtc,
+          };
+        }
+      }
+    } catch (parallelErr: any) {
+      console.warn("[Design Studio] ATC snapshot+resolve failed:", parallelErr?.message || parallelErr);
+    }
+
+    // Resolve returned nothing (network / timeout). Fall back to the Apply-time
+    // pre-mint ONLY when it was minted under the exact key ATC is persisting —
+    // a legacy job::variant pre-mint or a stale cfg hash must not be used.
+    const preShadowKeyMatches = hasPrintConfigSuffix(persistShadowDesignId)
+      ? !!preShadowDesignIdRef.current && preShadowDesignIdRef.current === persistShadowDesignId
+      : true;
+    if (
+      !baseFirstAtc &&
+      shopDomain &&
+      !atcBothTierVariant &&
+      preShadowKeyMatches &&
+      preShadowMatchesJob &&
+      preShadowVariantId &&
+      normalizeVariantId(finalVariantId) === normalizedVariant
+    ) {
+      const repaired = await runEnsureShadowPurchasable(String(preShadowVariantId));
+      if (repaired) {
+        finalVariantId = preShadowVariantId;
+        console.warn("[Design Studio] Resolve did not return a shadow — falling back to repaired pre-created variant", finalVariantId, "key", persistShadowDesignId);
+      } else {
+        console.error("[Design Studio] PreShadow fallback refused — CONTINUE write did not land");
+      }
+    }
+    if (preShadowProductId && shopDomain && normalizeVariantId(finalVariantId) !== normalizedVariant) {
+      safeFetch(`${API_BASE}/api/storefront/shadow-product/cart-added`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop: shopDomain, shadowProductId: preShadowProductId }),
+      }).catch(() => {});
+    }
+
+    try {
+      const lastAtcVariant =
+        typeof sessionStorage !== "undefined"
+          ? sessionStorage.getItem("appai:lastAtcVariant")
+          : null;
+      console.log("[Design Studio] ATC variant compare", {
+        finalVariantId,
+        baseVariantId: normalizedVariant,
+        preShadowVariantId,
+        usedPreShadowFallback:
+          preShadowMatchesJob && String(finalVariantId) === String(preShadowVariantId),
+        shadowDesignId: properties._shadow_design_id || shadowDesignId,
+        lastAtcVariantId: lastAtcVariant,
+        sameAsLastAdd: lastAtcVariant === String(finalVariantId),
+        isShadow: String(finalVariantId) !== String(normalizedVariant),
+      });
+      sessionStorage.setItem("appai:lastAtcVariant", String(finalVariantId));
+    } catch (_) {
+      /* sessionStorage may be blocked in the iframe */
+    }
+
+    const kickBackgroundAopFinalize = (creatorCartId?: string) => {
+      const jobId = savedJobIdRef.current;
+      if (!needsBackgroundAopFinalize || !jobId || !shopDomain) return;
+      beginAopFinalizeToast(jobId, shopDomain, expectedCaptureHash);
+      void (async () => {
+        try {
+          if (aopPanelPersistPromiseRef.current) {
+            await aopPanelPersistPromiseRef.current;
+          }
+          let snap: string | null = null;
+          for (let i = 0; i < 8 && !snap; i++) {
+            snap = await freezeAopLineSnapshot(shopDomain, jobId, expectedCaptureHash);
+            if (!snap) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+          }
+          if (!snap) {
+            endAopFinalizeToast(jobId, false);
+            return;
+          }
+          if (isCreatorStorefront && creatorCartId) {
+            const stampRes = await safeFetch(`${API_BASE}/api/creators/cart/stamp-aop-pl`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                creatorUsername: creatorUsernameParam,
+                cartId: creatorCartId,
+                jobId,
+                snapshot: snap,
+              }),
+            });
+            if (!stampRes.ok) {
+              endAopFinalizeToast(jobId, false);
+              return;
+            }
+          } else {
+            try {
+              window.parent.postMessage(
+                { type: "AI_ART_STUDIO_STAMP_AOP_PL", jobId, shop: shopDomain, snapshot: snap },
+                "*",
+              );
+            } catch {
+              /* ignore */
+            }
+          }
+          endAopFinalizeToast(jobId, true);
+        } catch (err) {
+          console.error("[AOP] background finalize failed", err);
+          endAopFinalizeToast(jobId, false);
+        }
+      })();
+    };
 
     // Creator Marketplace: Storefront API cart on platform shop → checkout URL.
     // Checkout thumbnails come from the shadow variant image (not line properties),
@@ -9315,15 +13318,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           itemCount: Number(cartData.itemCount) || (existingCart?.itemCount || 0) + 1,
           username: creatorUsernameParam,
         });
+        kickBackgroundAopFinalize(String(cartData.cartId));
         placementFrozenSigRef.current = encodeFlatLinePlacement(
           flatPlacerRef.current?.getState() || flatPlacerState,
         );
         setAddedToCart(true);
         const itemCount = Number(cartData.itemCount) || 1;
-        toast({
-          title: itemCount > 1 ? `Added to cart (${itemCount} items)` : "Added to cart",
-          description: "Keep designing another product, or open the cart when you’re ready to checkout.",
-        });
+        if (!needsBackgroundAopFinalize) {
+          toast({
+            title: itemCount > 1 ? `Added to cart (${itemCount} items)` : "Added to cart",
+            description: "Keep designing another product, or open the cart when you’re ready to checkout.",
+          });
+        }
         setIsAddingToCart(false);
         setTimeout(() => {
           setAddedToCart(false);
@@ -9338,23 +13344,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       }
     }
 
+    if (
+      !baseFirstAtc &&
+      (!finalVariantId ||
+      normalizeVariantId(finalVariantId) === normalizedVariant)
+    ) {
+      console.error("[Design Studio] Refusing base-catalog ATC — shadow is not storefront-ready", {
+        finalVariantId,
+        baseVariantId: normalizedVariant,
+      });
+      setVariantError(resolveStillPreparing ? ATC_SHADOW_STILL_PREPARING : ATC_SHADOW_PREVIEW_PENDING);
+      setIsAddingToCart(false);
+      return;
+    }
+
     // Storefront mode: use postMessage to parent (AJAX cart, no navigation)
     if (isStorefront) {
       try {
-        const result = await addToCartStorefront({
-          variantId: finalVariantId,
-          baseVariantId: normalizedVariant,
-          quantity: 1,
-          properties,
-        });
+        const result = isTopLevelHost
+          ? await addToCartDirect({
+              variantId: finalVariantId,
+              quantity: 1,
+              properties,
+              shadowCreated: shadowJustCreated,
+            })
+          : await addToCartStorefront({
+              variantId: finalVariantId,
+              baseVariantId: normalizedVariant,
+              quantity: 1,
+              properties,
+              price: displayedRetailForAtc,
+              shadowCreated: shadowJustCreated,
+            });
 
         if (result.success) {
           console.log('[Design Studio] Storefront add-to-cart success');
+          kickBackgroundAopFinalize();
           setAddedToCart(true);
-          toast({
-            title: "Added to cart!",
-            description: "Your custom design has been added to the cart.",
-          });
+          void refreshShopCartCount();
+          if (!needsBackgroundAopFinalize) {
+            toast({
+              title: "Added to cart!",
+              description: "Your custom design has been added to the cart.",
+            });
+          }
           // Tell parent to re-run cart image swap after a short delay so the
           // freshly-added item's DOM element is in place.
           if (mockupFullUrl) {
@@ -9384,11 +13417,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             resetStudioAfterPurchase();
           }, 2500);
         } else {
-          setVariantError(`Failed to add to cart: ${result.error || 'Unknown error'}`);
+          const raw = String(result.error || "");
+          const remaining = readAtcRateLimitRemainingMs();
+          if (remaining > 0) {
+            setAtcCooldownUntil(Date.now() + remaining);
+            showAtcRateLimitToast(remaining);
+          }
+          setVariantError(atcCustomerSafeError(raw));
         }
       } catch (e: any) {
         console.error('[Design Studio] Add-to-cart error:', e);
-        setVariantError(`Failed to add to cart: ${e.message || 'Unknown error'}`);
+        setVariantError(atcCustomerSafeError(e?.message));
       } finally {
         setIsAddingToCart(false);
       }
@@ -9411,6 +13450,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       if (cartResponse.ok) {
         console.log('[Design Studio] Admin-embedded cart add success');
+        kickBackgroundAopFinalize();
         setAddedToCart(true);
         toast({
           title: "Added to cart!",
@@ -9435,6 +13475,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     } finally {
       setIsAddingToCart(false);
     }
+    } finally {
+      setIsAddingToCart(false);
+    }
   };
 
   /**
@@ -9452,7 +13495,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   const handleHoodieAopApply = useCallback(async (
     result: HoodieAopPlacerApplyResult,
   ) => {
-    setHoodieAopPlacerState(result.state);
+    const applySeq = ++hoodieApplySeqRef.current;
+    // Live editor state is the source of truth. A stale in-flight Apply used
+    // to write the previous tile size (e.g. 3.2) over 0.8 / Offset.
+    const liveState = hoodieAopPlacerStateRef.current ?? result.state;
     setAopPlacementDirty(false);
     // NOTE: Do NOT call `setShowPatternStep(false)` here. Apply is deferred
     // (ATC / leave / Printers Mockup) — closing on every apply would boot
@@ -9470,69 +13516,203 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ? null
       : result.renderPrintPanels();
 
+    // Best-effort observability only — never awaited, never blocks the caller,
+    // never touches aopPanelPersistSeqRef/InFlightRef/PromiseRef. Records the
+    // latest failure/no-op reason on the job so a permanently-stranded line
+    // (missing aopPrintPanelUrls forever) stops being invisible in the DB.
+    const reportAopPanelPersistDiagnostic = (
+      shop: string,
+      jobId: string,
+      outcome: "no_op" | "error",
+      reason: string,
+    ) => {
+      if (!isStorefront) return;
+      try {
+        void safeFetch(`${API_BASE}/api/storefront/aop-panel-persist-diagnostic`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shop, jobId, outcome, reason }),
+        }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
+
     const persistPrintPanels = async () => {
       if (!(isStorefront || isAdminTester) || !savedJobIdRef.current) {
+        // No jobId yet to attach a diagnostic to — this specific no-op shape
+        // is only visible via the DB sweep (valid hoodieAopPlacerState with
+        // no aopPrintPanelUrls), not this per-job record.
         return;
       }
       if (!panelSaveShop) {
         console.warn("[HoodieAopApply] No shop for print-panel persist");
+        reportAopPanelPersistDiagnostic(shopDomain, savedJobIdRef.current, "no_op", "no_shop");
         if (isAdminTester) emitTesterDesignStatus({ aopPanels: "error" });
+        if (isAdminTester) throw new Error("No shop for print-panel persist");
         return;
       }
       const panelJobId = savedJobIdRef.current;
       const seq = ++aopPanelPersistSeqRef.current;
       const isStale = () => seq !== aopPanelPersistSeqRef.current;
-      const panelCaptureSignature = JSON.stringify({
-        mode: result.state.mode,
-        artworkUrl: result.state.artworkUrl,
-        backgroundColor: result.state.backgroundColor,
-        tileSettings: result.state.tileSettings,
-        pocketsEnabled: result.state.pocketsEnabled,
-        placements: result.state.placements,
-        enabled: result.state.enabled,
-        sleevesMirrored: result.state.sleevesMirrored,
-        legsSynced: result.state.legsSynced,
-        legsMirrored: result.state.legsMirrored,
-        wrapBackMode: result.state.wrapBackMode,
-      });
+      const persistState = hoodieAopPlacerStateRef.current ?? liveState;
+      const panelCaptureSignature = canonicalAopPanelCaptureSignature(persistState);
       const panelsForSave = isAdminTester
         ? (result.renderPrintPanels() ?? mockupPanels)
         : (fullPrintPanels ?? result.renderPrintPanels());
       if (!panelsForSave?.length) {
+        reportAopPanelPersistDiagnostic(panelSaveShop, panelJobId, "no_op", "no_panels_rendered");
         if (isAdminTester && !isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+        if (isAdminTester) throw new Error("No print panels to persist");
         return;
       }
+      const positions = panelsForSave.map((p) => p.position);
+      // Signature match alone proves every panel's bytes are unchanged since
+      // the last successful persist — a stronger guarantee than the
+      // per-panel hash `hasReusableHostedPrintSet` used to require (that
+      // hash is deliberately left empty on cross-session restores, so it
+      // could never pass on the first persist after a reload/reopen,
+      // forcing a full render + re-upload storm of every panel even when
+      // nothing changed). Only the signature match is required now; URL
+      // coverage is still all-or-nothing (see resolveSignatureMatchedPanels).
+      const signatureMatchedPanels = aopPanelCaptureSignaturesMatch(
+        storedAopPanelCaptureSignatureRef.current,
+        persistState,
+      )
+        ? resolveSignatureMatchedPanels(positions, lastHostedPrintPanelsRef.current)
+        : null;
+      const canSkipUploads = !!signatureMatchedPanels;
       if (isAdminTester) {
         emitTesterDesignStatus({ jobId: panelJobId, aopPanels: "saving" });
       }
       const persistWork = (async () => {
+        aopPanelPersistInFlightRef.current = true;
         try {
           if (isStale()) return;
-          const aopPrintPanelUrls = await Promise.all(
-            panelsForSave.map(async ({ position, dataUrl }) => ({
-              position,
-              url: await ensureHostedUrl(dataUrl),
-            })),
-          );
+          let aopPrintPanelUrls: Array<{ position: string; url: string }>;
+          if (canSkipUploads) {
+            aopPrintPanelUrls = signatureMatchedPanels!;
+          } else {
+            const hostedResult = await hostPrintPanelsBatched({
+              panels: panelsForSave,
+              previous: lastHostedPrintPanelsRef.current,
+              host: ensureHostedUrl,
+              reuseKey: persistState.backgroundColor ?? "",
+            });
+            // Replace — never keep leftover sleeve/cuff/back URLs from the
+            // previous colour. Merge was how navy solids leaked into teal jobs.
+            lastHostedPrintPanelsRef.current = hostedResult.hosted;
+            if (hostedResult.hosted.length < positions.length && !hostedResult.rateLimited) {
+              throw new Error(
+                `Incomplete print panel upload (${hostedResult.hosted.length}/${positions.length})`,
+              );
+            }
+            if (hostedResult.rateLimited) {
+              const err = new UploadRateLimitedError(
+                hostedResult.rateLimited.retryAfterSec,
+              );
+              if (!isStale()) {
+                emitTesterDesignStatus({
+                  aopPanels: "rateLimited",
+                  retryAfterSec: err.retryAfterSec,
+                  rateLimitedUntil: Date.now() + err.retryAfterSec * 1000,
+                });
+              }
+              throw err;
+            }
+            aopPrintPanelUrls = hostedResult.hosted.map((p) => ({
+              position: p.position,
+              url: p.url,
+            }));
+          }
           if (isStale()) return;
-          await safeFetch(`${API_BASE}/api/storefront/save-state`, {
+          const saveRes = await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId: panelJobId,
               shop: panelSaveShop,
-              designState: { aopPrintPanelUrls, aopPanelCaptureSignature: panelCaptureSignature },
+              designState: {
+                aopPrintPanelUrls,
+                aopPanelCaptureSignature: panelCaptureSignature,
+                // Tester Apply returns before the storefront persist below, so the
+                // placer state (background colour, placements) must ride along here.
+                ...(isAdminTester ? { hoodieAopPlacerState: persistState } : {}),
+              },
             }),
           });
+          // A non-2xx here means the panels are hosted but the job never
+          // recorded them — the snapshot gate would 409 forever. Fail the
+          // persist so it lands in the same locked-checkout state as an
+          // upload failure instead of being marked saved silently.
+          if (!saveRes.ok) {
+            throw new Error(`save-state failed (${saveRes.status})`);
+          }
+          storedAopPanelCaptureSignatureRef.current = panelCaptureSignature;
+          lastPersistedAopCaptureStateRef.current = persistState;
           console.log(
             "[HoodieAopApply] Saved aopPrintPanelUrls on job",
             panelJobId,
             aopPrintPanelUrls.map((p) => p.position).join(","),
           );
-          if (!isStale()) emitTesterDesignStatus({ aopPanels: "saved" });
+          if (!isStale()) {
+            emitTesterDesignStatus({
+              aopPanels: "saved",
+              retryAfterSec: undefined,
+              rateLimitedUntil: undefined,
+            });
+            // Lifestyle mockup is not load-bearing for the cart — the local
+            // composite feeds `_mockup_url` and the shadow variant. Run it only
+            // once panels are confirmed hosted AND recorded, so it never
+            // competes with the uploads the checkout gate depends on. Merge
+            // mode: no `mockupLoading`, no sequence bump, and its catch exits
+            // before the branch that could re-arm `mockupsStale`.
+            // Preview Studio deliberately skips lifestyle mockups (see the
+            // admin-tester branch below) and awaits this persist before the
+            // front composite exists, so it must not fire here either.
+            const deferredMockupUrl = isAdminTester
+              ? null
+              : aopBaseMockupsRef.current[0]?.url ?? aopPatternUrlRef.current ?? null;
+            if (
+              deferredMockupUrl &&
+              productTypeConfig?.hasPrintifyMockups &&
+              selectedSize &&
+              mockupPanels?.length
+            ) {
+              void fetchPrintifyMockups(
+                deferredMockupUrl,
+                productTypeConfig.id,
+                selectedSize,
+                selectedFrameColor || "default",
+                transform.scale,
+                50,
+                50,
+                deferredMockupUrl,
+                undefined,
+                mockupPanels,
+                undefined,
+                persistState.backgroundColor,
+                { mergePersonViews: true },
+              );
+            }
+          }
         } catch (e) {
           console.error("[HoodieAopApply] Failed to persist print panels:", e);
-          if (!isStale()) emitTesterDesignStatus({ aopPanels: "error" });
+          if (!isStale() && !isUploadRateLimitedError(e)) {
+            emitTesterDesignStatus({ aopPanels: "error" });
+            // Stale (superseded by a newer Apply) and rate-limited (expected,
+            // retryable) are not genuine failures — only record the case
+            // nothing else is going to retry.
+            reportAopPanelPersistDiagnostic(
+              panelSaveShop,
+              panelJobId,
+              "error",
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+          if (isAdminTester) throw e;
+        } finally {
+          aopPanelPersistInFlightRef.current = false;
         }
       })();
       aopPanelPersistPromiseRef.current = persistWork;
@@ -9553,6 +13733,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           setMockupFailed(false);
           setMockupError(null);
           setMockupsStale(false);
+          // "See it worn" needs both flats on the job; host the back and
+          // persist the pair off the critical path.
+          const backCanvas = result.renderView("back");
+          const testerJobId = savedJobIdRef.current;
+          const testerShop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
+          if (backCanvas && testerJobId && testerShop) {
+            void ensureHostedUrl(backCanvas.toDataURL("image/jpeg", 0.85))
+              .then((backHosted) =>
+                safeFetch(`${API_BASE}/api/storefront/save-state`, {
+                  method: "POST",
+                  headers: identityJsonHeaders(),
+                  body: JSON.stringify({
+                    jobId: testerJobId,
+                    shop: testerShop,
+                    designState: { hoodieAopMockups: { front: frontHosted, back: backHosted } },
+                  }),
+                }),
+              )
+              .catch((err) => console.warn("[HoodieAopApply] Tester back render persist failed:", err));
+          }
         } catch (err: any) {
           console.warn("[HoodieAopApply] Tester preview upload failed:", err);
         }
@@ -9578,15 +13778,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     setMockupLoading(true);
     setMockupTriggered(true);
     try {
-      const [frontHosted, backHosted] = await Promise.all([
-        ensureHostedUrl(frontDataUrl),
-        backDataUrl ? ensureHostedUrl(backDataUrl) : Promise.resolve<string | null>(null),
-      ]);
+      // Cart / shadow-SKU read the front raster only. Await that upload;
+      // host the back in the background and feed save-state / save-mockups
+      // once it lands (those writes were already fire-and-forget).
+      const frontHosted = await ensureHostedUrl(frontDataUrl);
+      const backHostedPromise = backDataUrl
+        ? ensureHostedUrl(backDataUrl)
+        : Promise.resolve<string | null>(null);
 
       const images: { url: string; label: string }[] = [
         { url: frontHosted, label: "front" },
       ];
-      if (backHosted) images.push({ url: backHosted, label: "back" });
+      // Keep the previous back slot so Printers Mockup index stays stable
+      // while the new back raster uploads off the critical path.
+      const priorBack = aopBaseMockupsRef.current.find((img) => img.label === "back");
+      if (priorBack) images.push(priorBack);
 
       aopBaseMockupsRef.current = images;
       // Keep on-demand Printers/lifestyle shots across placement applies —
@@ -9595,6 +13801,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       const withOnDemandUrls = withOnDemand.map((i) => i.url);
       setPrintifyMockupImages(withOnDemand);
       setPrintifyMockups(withOnDemandUrls);
+      // For AOP the local composites ARE the mockups. Record them under the
+      // size:colour key so coming back to this combination short-circuits at
+      // the cache guard instead of re-firing a panel-bearing Printify POST.
+      if (useAopCustomizer && selectedSize) {
+        const aopCacheKey = mockupCacheKey(selectedSize, selectedFrameColor || "default");
+        currentMockupColorRef.current = aopCacheKey;
+        mockupColorCacheRef.current[aopCacheKey] = {
+          urls: withOnDemandUrls,
+          images: withOnDemand,
+        };
+      }
       setSelectedMockupIndex((prev) => {
         // Stick keeps Printers Mockup (person or pillow lifestyle) after
         // placement edits; mode switch clears stick so apply lands on live editor.
@@ -9615,6 +13832,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setAopPatternUrl(frontHosted);
       setMockupFailed(false);
       setMockupError(null);
+      console.log("[AOP-TRACE] setMockupsStale(false) handleHoodieAopApply");
       setMockupsStale(false);
 
       if (
@@ -9622,21 +13840,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         selectedSize &&
         mockupPanels?.length
       ) {
+        // The Printify lifestyle call used to fire here, competing with the
+        // panel uploads for a mobile uplink. It now runs from the persist
+        // success block once the panels are confirmed hosted. These two
+        // assignments stay — the ATC no-mockups safety net reads them.
         lastAopPanelUrlsRef.current = mockupPanels;
-        void fetchPrintifyMockups(
-          frontHosted,
-          productTypeConfig.id,
-          selectedSize,
-          selectedFrameColor || "default",
-          transform.scale,
-          50,
-          50,
-          frontHosted,
-          undefined,
-          mockupPanels,
-          undefined,
-          result.state.backgroundColor,
-        );
+        setAopPrintPanelsReady(true);
       }
 
       // Persist print panels in the background so ATC is not blocked.
@@ -9654,99 +13863,140 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       //      gallery reads as the thumbnail, so without it product-20
       //      designs would fall back to the raw artwork on a flat hoodie
       //      instead of the customer's actual placement preview.
-      if (isStorefront && savedJobIdRef.current && shopDomain) {
-        const jobId = savedJobIdRef.current;
-        void safeFetch(`${API_BASE}/api/storefront/save-state`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jobId,
-            shop: shopDomain,
-            productTypeId: productTypeId || undefined,
-            pageHandle: activeProductContext.pageHandle || undefined,
-            designState: {
-              hoodieAopPlacerState: result.state,
-              aopPatternUrl: frontHosted,
-              hoodieAopMockups: { front: frontHosted, back: backHosted },
-              productTypeId: productTypeId || undefined,
-              pageHandle: activeProductContext.pageHandle || undefined,
-            },
-          }),
-        }).catch((e) => {
-          console.error("[HoodieAopApply] Failed to persist designState:", e);
-        });
-
-        // `save-mockups` only persists URLs that start with "http" (it was
-        // built for Printify CDN URLs). Our local renders come back from
-        // ensureHostedUrl as a *relative* App Proxy path
-        // (`/apps/appai/objects/...`), which the endpoint would silently
-        // drop — leaving `mockupUrls` empty so the Saved Designs gallery
-        // falls back to the raw artwork. Convert to an absolute app-origin
-        // URL so it survives the filter AND renders as an <img> in the
-        // gallery (which passes http URLs through unchanged).
-        const toAbsoluteMockupUrl = (u: string | null): string | null => {
-          if (!u) return null;
-          if (u.startsWith("http://") || u.startsWith("https://")) return u;
-          const resolved = toAbsoluteImageUrl(u);
-          if (resolved.startsWith("http")) return resolved;
-          // Still relative → force onto the app origin, stripping the
-          // proxy prefix so it hits the app's /objects/ route directly.
-          const path = u.startsWith(PROXY_PREFIX) ? u.slice(PROXY_PREFIX.length) : u;
-          return `${DIRECT_APP_API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-        };
-        const frontAbs = toAbsoluteMockupUrl(frontHosted);
-        const backAbs = toAbsoluteMockupUrl(backHosted);
-        // Include current on-demand Printers/lifestyle shots so Saved Designs /
-        // ATC reopen keep them (front/back-only overwrite dropped them before).
-        const onDemandAbs = aopPersonMockupsRef.current
-          .map((m) => toAbsoluteMockupUrl(m.url))
-          .filter((u): u is string => !!u && u.startsWith("http"));
-        const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
-          (u): u is string => !!u,
-        );
-        if (mockupUrls.length > 0) {
-          void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+      void backHostedPromise
+        .then((backHosted) => {
+          if (applySeq !== hoodieApplySeqRef.current) return;
+          const persistHoodie = hoodieAopPlacerStateRef.current ?? liveState;
+          if (backHosted) {
+            const baseWithBack = [
+              { url: frontHosted, label: "front" },
+              { url: backHosted, label: "back" },
+            ];
+            aopBaseMockupsRef.current = baseWithBack;
+            const withBackOnDemand = [...baseWithBack, ...aopPersonMockupsRef.current];
+            setPrintifyMockupImages(withBackOnDemand);
+            setPrintifyMockups(withBackOnDemand.map((i) => i.url));
+            if (!priorBack) {
+              setSelectedMockupIndex((prev) => (prev >= 1 ? prev + 1 : prev));
+            }
+          }
+          if (!(isStorefront && savedJobIdRef.current && shopDomain)) return;
+          const jobId = savedJobIdRef.current;
+          void safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
               productTypeId: productTypeId || undefined,
-              // Front first (gallery thumbnail), back second.
-              mockupUrls,
+              pageHandle: activeProductContext.pageHandle || undefined,
+              designState: {
+                hoodieAopPlacerState: persistHoodie,
+                aopPatternUrl: frontHosted,
+                hoodieAopMockups: { front: frontHosted, back: backHosted },
+                productTypeId: productTypeId || undefined,
+                pageHandle: activeProductContext.pageHandle || undefined,
+                selectedSize: selectedSizeRef.current || selectedSize || null,
+                selectedFrameColor:
+                  selectedFrameColorRef.current || selectedFrameColor || undefined,
+                stylePreset: selectedPreset && selectedPreset !== "" ? selectedPreset : null,
+                catalogSlug:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.catalogSlug ||
+                  loadedDecorStyle?.catalogSlug ||
+                  null,
+                styleName:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.name ||
+                  loadedDecorStyle?.styleName ||
+                  null,
+                outputMode:
+                  filteredStylePresets.find((p) => p.id === selectedPreset)?.outputMode ||
+                  loadedDecorStyle?.outputMode ||
+                  null,
+              },
             }),
-          })
-            .then(() => {
-              // Tell the parent storefront page to re-pull the gallery so a
-              // changed thumbnail shows up the next time the Saved Designs
-              // drawer is opened — no full page reload needed. Posted after
-              // the DB write resolves so the refetch sees the new URL.
-              try {
-                window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
-              } catch {
-                /* cross-origin parent — ignore */
-              }
-              // Also refresh the in-iframe (product-page) Saved Designs
-              // gallery so its thumbnail updates on the fly without the
-              // customer reopening the panel.
-              if (storefrontCustomerId && shopDomain) {
-                void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
-                })
-                  .then((r) => r.json())
-                  .then((d) => {
-                    if (d?.designs) setSavedDesigns(d.designs);
-                  })
-                  .catch(() => {});
-              }
+          }).catch((e) => {
+            console.error("[HoodieAopApply] Failed to persist designState:", e);
+          });
+
+          // `save-mockups` persists hosted http(s) and clean data: previews.
+          // Relative App Proxy paths (`/apps/appai/objects/...`) must be
+          // converted to an absolute app-origin URL so they survive; data:
+          // must stay data: (never host-concat).
+          const frontAbs = toAbsoluteMockupUrlForSave(frontHosted);
+          const backAbs = toAbsoluteMockupUrlForSave(backHosted);
+          // Include current on-demand Printers/lifestyle shots so Saved Designs /
+          // ATC reopen keep them (front/back-only overwrite dropped them before).
+          const onDemandAbs = aopPersonMockupsRef.current
+            .map((m) => toAbsoluteMockupUrlForSave(m.url))
+            .filter((u): u is string => !!u && u.startsWith("http"));
+          const mockupUrls = [frontAbs, backAbs, ...onDemandAbs].filter(
+            (u): u is string => !!u,
+          );
+          if (mockupUrls.length > 0) {
+            // Hoodie/mesh AOP pre-mint (new surface): same cfg-keyed PreShadow as
+            // flat/Printify so first-tap ATC reuses an already-propagated shadow.
+            // Hash the state we are persisting (== render state ATC will hash).
+            const hoodieBaseVariant =
+              frontAbs && frontAbs.startsWith("https://") ? baseVariantForShadowRef.current : "";
+            syncHoodieFingerprintRef(persistHoodie);
+            const hoodiePreShadow =
+              productId && hoodieBaseVariant
+                ? {
+                    baseProductId: productId,
+                    baseVariantId: hoodieBaseVariant,
+                    ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                    ...preShadowKeyFields(jobId, hoodieBaseVariant),
+                  }
+                : {};
+            void safeFetch(`${API_BASE}/api/storefront/save-mockups`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jobId,
+                shop: shopDomain,
+                productTypeId: productTypeId || undefined,
+                // Front first (gallery thumbnail), back second.
+                mockupUrls,
+                ...hoodiePreShadow,
+              }),
             })
-            .catch((e) => {
-              console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
-            });
-        }
-      }
+              .then(() => {
+                if (productId && hoodieBaseVariant) {
+                  startShadowVariantPoll(jobId, shopDomain, 3000);
+                }
+                // Tell the parent storefront page to re-pull the gallery so a
+                // changed thumbnail shows up the next time the Saved Designs
+                // drawer is opened — no full page reload needed. Posted after
+                // the DB write resolves so the refetch sees the new URL.
+                try {
+                  window.parent.postMessage({ type: "APPAI_REFRESH_GALLERY" }, "*");
+                } catch {
+                  /* cross-origin parent — ignore */
+                }
+                // Also refresh the in-iframe (product-page) Saved Designs
+                // gallery so its thumbnail updates on the fly without the
+                // customer reopening the panel.
+                if (storefrontCustomerId && shopDomain) {
+                  void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
+                    method: "POST",
+                    headers: savedDesignsHeaders(),
+                    body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
+                  })
+                    .then((r) => r.json())
+                    .then((d) => {
+                      if (d?.designs) setSavedDesigns(d.designs);
+                    })
+                    .catch(() => {});
+                }
+              })
+              .catch((e) => {
+                console.error("[HoodieAopApply] Failed to save mockup URLs:", e);
+              });
+          }
+        })
+        .catch((e) => {
+          console.error("[HoodieAopApply] Back mockup upload failed:", e);
+        });
     } catch (err: any) {
       console.error("[HoodieAopApply] Upload failed:", err);
       setMockupError(err?.message || "Failed to apply design");
@@ -9766,8 +14016,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     activeProductContext.pageHandle,
     selectedSize,
     selectedFrameColor,
+    selectedPreset,
+    filteredStylePresets,
+    loadedDecorStyle,
     transform.scale,
     fetchPrintifyMockups,
+    productId,
+    preShadowKeyFields,
+    startShadowVariantPoll,
   ]);
 
   /** Persist flat on-the-fly preview rasters to the job + refresh Saved Designs gallery. */
@@ -9791,7 +14047,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (currentHandle || currentTypeId) {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: shopDomain,
@@ -9800,6 +14056,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               designState: {
                 productTypeId: currentTypeId,
                 pageHandle: currentHandle,
+                flatMockups: {
+                  front: absUrls[0],
+                  back: absUrls[1] || absUrls[0],
+                },
               },
             }),
           }).catch(() => {});
@@ -9814,7 +14074,18 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             // Same PreShadow kickoff as Printify mockup save — ATC can use
             // preShadowVariantId instantly once the poll lands.
             ...(productId && baseVariantForShadow
-              ? { baseProductId: productId, baseVariantId: baseVariantForShadow }
+              ? {
+                  baseProductId: productId,
+                  baseVariantId: baseVariantForShadow,
+                  ...(displayedRetailRef.current ? { price: displayedRetailRef.current } : {}),
+                  // Pre-mint under the cfg-keyed id ATC will look up (server re-derives).
+                  ...(jobId
+                    ? (() => {
+                        syncHoodieFingerprintRef();
+                        return preShadowKeyFields(jobId, baseVariantForShadow);
+                      })()
+                    : {}),
+                }
               : {}),
           }),
         });
@@ -9830,7 +14101,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         if (storefrontCustomerId && shopDomain) {
           void safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: savedDesignsHeaders(),
             body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
           })
             .then((r) => r.json())
@@ -9849,6 +14120,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       storefrontCustomerId,
       productId,
       startShadowVariantPoll,
+      preShadowKeyFields,
       activeProductContext.pageHandle,
       productTypeId,
     ],
@@ -9880,6 +14152,21 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return;
     }
 
+    // Active Art Style dropdown only — not generate-time loadedDecorStyle.
+    // A style change between generate and Apply must persist the new selection.
+    const activeStyleId =
+      selectedPreset && selectedPreset !== "" ? selectedPreset : null;
+    const activeStyleRow = activeStyleId
+      ? filteredStylePresets.find((p) => String(p.id) === String(activeStyleId)) ||
+        stylePresets.find((p) => String(p.id) === String(activeStyleId))
+      : undefined;
+    const flatApplyStyleHints = {
+      stylePreset: activeStyleId,
+      catalogSlug: activeStyleRow?.catalogSlug ?? null,
+      styleName: activeStyleRow?.name ?? null,
+      outputMode: activeStyleRow?.outputMode ?? null,
+    };
+
     const persistTesterPlacement = async () => {
       const jobId = savedJobIdRef.current;
       const shop = shopDomain || savedJobShopRef.current || adminTesterShopRef.current;
@@ -9901,7 +14188,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       emitTesterDesignStatus({ jobId, aopPanels: "saving" });
       await safeFetch(`${API_BASE}/api/storefront/save-state`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: identityJsonHeaders(),
         body: JSON.stringify({
           jobId,
           shop,
@@ -9912,6 +14199,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             artworkUrl: artworkUrl || null,
             productTypeId: productTypeId || undefined,
             pageHandle: activeProductContext.pageHandle || undefined,
+            generationModel:
+              generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
+            ...flatApplyStyleHints,
           },
           productTypeId: productTypeId || undefined,
           pageHandle: activeProductContext.pageHandle || undefined,
@@ -10041,7 +14331,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         try {
           await safeFetch(`${API_BASE}/api/storefront/save-state`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               jobId,
               shop: panelSaveShop,
@@ -10053,6 +14343,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 artworkUrl: artworkUrl || null,
                 productTypeId: productTypeId || undefined,
                 pageHandle: activeProductContext.pageHandle || undefined,
+                generationModel:
+                  generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
+                ...flatApplyStyleHints,
               },
               productTypeId: productTypeId || undefined,
               pageHandle: activeProductContext.pageHandle || undefined,
@@ -10107,8 +14400,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     frameColorsArePhoneModels,
     flatPlacerEditOpen,
     generatedDesign?.imageUrl,
+    generatedDesign?.generationModel,
+    loadedDecorStyle?.generationModel,
     productTypeId,
     activeProductContext.pageHandle,
+    selectedPreset,
+    filteredStylePresets,
+    stylePresets,
   ]);
 
   const handleFlatPlacerViewChange = useCallback(() => {
@@ -10171,8 +14469,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     try {
       const response = await safeFetch(`${API_BASE}/api/designs/share`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: storefrontJsonHeaders(),
         body: JSON.stringify({
+          sessionId: anonSessionId || undefined,
           imageUrl: toAbsoluteImageUrl(generatedDesign.imageUrl),
           prompt: generatedDesign.prompt,
           stylePreset: selectedPreset !== "" ? selectedPreset : null,
@@ -10320,6 +14619,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const navigateToReuseProduct = useCallback(
     async (handle: string, opts: { designId?: string | null; regenerate?: boolean; artworkUrl?: string; prompt?: string }) => {
+      const originStyle = {
+        ...carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null),
+        stylePreset:
+          carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+          selectedPreset ||
+          null,
+      };
       // Regenerate: stay in the iframe, switch product in-app, attach reference immediately.
       // Full-page nav was dropping sessionStorage/URL handoff so Body Pillow landed blank.
       if (opts.regenerate && opts.artworkUrl) {
@@ -10385,18 +14691,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       }
 
-      // As-is: fork artwork onto a NEW job for the TARGET product. Never
-      // loadDesignId of the source job — that kept the tee's productTypeId
+      // As-is: fork FIRST so refresh can recover, then switch the iframe.
+      // Never loadDesignId of the source job — that kept the tee's productTypeId
       // so Saved Designs later opened the reuse source instead of leggings.
       if (!opts.regenerate && opts.artworkUrl) {
+        const abs = toAbsoluteImageUrl(opts.artworkUrl);
         writeReuseHandoff({
           jobId: null,
-          artworkUrl: opts.artworkUrl,
+          artworkUrl: abs,
           prompt: opts.prompt,
           autoGenerate: false,
+          ...originStyle,
         });
+        reuseInAppBusyRef.current = true;
         setReuseBusy(true);
         setReuseBusyLabel("Opening product…");
+        let forkedJobId: string | null = null;
         try {
           const pageRes = await safeFetch(
             `${API_BASE}/api/storefront/customizer-page?shop=${encodeURIComponent(shopDomain)}` +
@@ -10413,13 +14723,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             : "";
           if (!targetProductTypeId) throw new Error("Target product has no product type");
 
-          await switchToCustomizerPageByHandle(handle);
-          const abs = toAbsoluteImageUrl(opts.artworkUrl);
-          let forkedJobId: string | null = null;
+          setReuseBusyLabel("Saving artwork…");
           if (shopDomain) {
             const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: identityJsonHeaders(),
               body: JSON.stringify({
                 shop: shopDomain,
                 artworkUrl: abs,
@@ -10427,6 +14735,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 productTypeId: targetProductTypeId,
                 customerId: storefrontCustomerId || undefined,
                 pageHandle: handle,
+                stylePreset: originStyle.stylePreset,
+                catalogSlug: originStyle.catalogSlug,
+                styleName: originStyle.styleName,
+                // Carries a style-pack creative brief to the new job (server checks same shop).
+                sourceJobId: savedJobIdRef.current || undefined,
               }),
             });
             if (forkRes.ok) {
@@ -10436,31 +14749,45 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               console.warn("[ReuseArtwork] fork-design failed:", forkRes.status);
             }
           }
+          if (!forkedJobId) throw new Error("Could not save reused artwork");
+
+          writeReuseHandoff({
+            jobId: forkedJobId,
+            artworkUrl: abs,
+            prompt: opts.prompt,
+            autoGenerate: false,
+            ...originStyle,
+          });
           savedJobIdRef.current = forkedJobId;
-          loadDesignAppliedRef.current = false;
-          clearLoadDesignIdFromUrl();
           openPlacementEditorOnApplyRef.current = true;
           setReuseAwaitingGenerate(false);
-          setGeneratedDesign({
-            id: forkedJobId || `reuse-${Date.now()}`,
-            imageUrl: abs,
-            prompt: opts.prompt || "",
-          });
           setReuseRegenerateBasePrompt(null);
           if (opts.prompt) setPrompt(opts.prompt);
-          if (useAopCustomizer) {
-            setAopPendingMotifUrl(abs);
-            setAopPatternUrl(null);
-            setShowPatternStep(true);
-          } else if (usesFlatOnTheFlyPreview) {
-            setFlatPlacerEditOpen(true);
-          }
-          clearReuseHandoff();
-          setReuseBusy(false);
+          pendingReuseApplyRef.current = {
+            jobId: forkedJobId,
+            artworkUrl: abs,
+            prompt: opts.prompt || "",
+            productTypeId: targetProductTypeId,
+            ...originStyle,
+          };
+
+          setReuseBusyLabel("Opening product…");
+          await switchToCustomizerPageByHandle(handle, { loadDesignId: forkedJobId });
           return;
         } catch (err: any) {
           console.error("[ReuseArtwork] in-app as-is failed, falling back to page nav:", err);
+          pendingReuseApplyRef.current = null;
           setReuseBusyLabel("Opening product page…");
+          if (forkedJobId) {
+            writeReuseHandoff({
+              jobId: forkedJobId,
+              artworkUrl: abs,
+              prompt: opts.prompt,
+              autoGenerate: false,
+              ...originStyle,
+            });
+            opts = { ...opts, designId: forkedJobId };
+          }
         } finally {
           reuseInAppBusyRef.current = false;
         }
@@ -10483,17 +14810,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           autoGenerate: true,
         });
         params.set("autoReuseGenerate", "1");
-        if (opts.designId) params.set("reuseJobId", opts.designId);
+        // Job id travels in the reuse handoff only — never the URL.
         // Always include artwork URL as fallback when handoff/job status fails.
         if (opts.artworkUrl) params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       } else if (opts.artworkUrl) {
         writeReuseHandoff({
-          jobId: null,
+          jobId: opts.designId || null,
           artworkUrl: opts.artworkUrl,
           prompt: opts.prompt,
           autoGenerate: false,
+          ...originStyle,
         });
+        if (opts.designId) writeReopenDesign(hostWindow(), { id: opts.designId, handle });
         params.set("reuseArtworkUrl", opts.artworkUrl);
         if (opts.prompt) params.set("reusePrompt", opts.prompt.slice(0, 500));
       }
@@ -10505,7 +14834,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setReuseBusy(true);
       setReuseBusyLabel("Opening product page…");
       try {
-        window.parent.location.href = url;
+        hostWindow().location.href = url;
       } catch {
         window.location.href = url;
       }
@@ -10520,6 +14849,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       clearLoadDesignIdFromUrl,
       creatorUsernameParam,
       creatorIdParam,
+      loadedDecorStyle,
+      selectedPreset,
     ],
   );
 
@@ -10670,7 +15001,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         try {
           const forkRes = await safeFetch(`${API_BASE}/api/storefront/fork-design`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: identityJsonHeaders(),
             body: JSON.stringify({
               shop: shopDomain,
               artworkUrl: abs,
@@ -10680,6 +15011,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               pageHandle: activeProductContext.pageHandle || productHandle || undefined,
               size: selectedSize || undefined,
               frameColor: selectedFrameColor || undefined,
+              stylePreset:
+                carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+                selectedPreset ||
+                undefined,
+              catalogSlug: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).catalogSlug || undefined,
+              styleName: carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).styleName || undefined,
+              sourceJobId: savedJobIdRef.current || undefined,
             }),
           });
           if (forkRes.ok) {
@@ -10694,22 +15032,80 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       loadDesignAppliedRef.current = false;
       clearLoadDesignIdFromUrl();
       openPlacementEditorOnApplyRef.current = true;
+      aopEditorDismissedRef.current = false;
+      flatEditorDismissedRef.current = false;
       setReuseAwaitingGenerate(false);
       setGeneratedDesign({
         id: forkedJobId || opts.designId || `reuse-${Date.now()}`,
         imageUrl: abs,
         prompt: originalPrompt,
       });
+      {
+        const originStyle = {
+          ...carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null),
+          stylePreset:
+            carriedStyleHints(loadedDecorStyle as Record<string, unknown> | null).stylePreset ||
+            selectedPreset ||
+            null,
+        };
+        if (styleHintsHaveIdentity(originStyle)) {
+          setLoadedDecorStyle(originStyle);
+          pendingRestoreStyleRef.current = originStyle;
+          if (filteredStylePresets.length > 0) {
+            const styleId = resolveSavedStyleDropdownId(
+              filteredStylePresets,
+              originStyle,
+              stylePresets,
+              "reuse-apply-here",
+            );
+            if (styleId) {
+              setSelectedPreset(styleId);
+              pendingRestoreStyleRef.current = null;
+            }
+          }
+        }
+      }
       setReuseRegenerateBasePrompt(null);
       if (originalPrompt) setPrompt(originalPrompt);
-      if (!selectedSize && printSizes[0]?.id) {
-        setSelectedSize(printSizes[0].id);
-      }
       if (useAopCustomizer) {
         setAopPendingMotifUrl(abs);
         setAopPatternUrl(null);
         setShowPatternStep(true);
       } else if (usesFlatOnTheFlyPreview) {
+        const seedScale = flatDefaultPlacementScale({
+          edgeWrapMode: flatEdgeWrapMode,
+          decorMode: flatDecorMode,
+          fabricWeave: !!flatFabricWeave,
+          probeCatalogGuide,
+          zoomPercent: defaultZoom,
+          blueprintId: productTypeConfig?.printifyBlueprintId,
+        });
+        setFlatPlacerState({
+          view: "front",
+          placements: {
+            front: { scale: seedScale, offsetX: 0, offsetY: 0 },
+            back: { scale: seedScale, offsetX: 0, offsetY: 0 },
+          },
+          enabled: {
+            front:
+              !supportsPrintPlacementSelection ||
+              printPlacement === "front" ||
+              printPlacement === "both",
+            back: supportsPrintPlacementSelection
+              ? printPlacement === "back" || printPlacement === "both"
+              : false,
+          },
+          linkSides: false,
+          artworkUrl: abs,
+          backgroundColor: seedFlatBackgroundColor(),
+          needsSafeFit: flatShouldFitToSafeArea({
+            edgeWrapMode: flatEdgeWrapMode,
+            decorMode: flatDecorMode,
+            fabricWeave: !!flatFabricWeave,
+            probeCatalogGuide,
+            blueprintId: productTypeConfig?.printifyBlueprintId,
+          }),
+        });
         setFlatPlacerEditOpen(true);
       }
     },
@@ -10725,6 +15121,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedSize,
       printSizes,
       clearLoadDesignIdFromUrl,
+      flatEdgeWrapMode,
+      flatDecorMode,
+      flatFabricWeave,
+      probeCatalogGuide,
+      defaultZoom,
+      supportsPrintPlacementSelection,
+      printPlacement,
+      showDecorFloatingFill,
+      liveDecorFillHex,
+      loadedDecorStyle,
+      selectedPreset,
+      filteredStylePresets,
+      stylePresets,
     ],
   );
 
@@ -10740,7 +15149,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       try {
         const r = await safeFetch(
           `${API_BASE}/api/creators/storefront/${encodeURIComponent(username)}/recent-designs/${encodeURIComponent(design.jobId)}?${qs}`,
-          { method: "DELETE" },
+          {
+            method: "DELETE",
+            headers: storefrontIdentityToken ? { Authorization: `Bearer ${storefrontIdentityToken}` } : {},
+          },
         );
         if (!r.ok) {
           const data = await r.json().catch(() => ({}));
@@ -10760,7 +15172,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         setDeletingCreatorDesignId(null);
       }
     },
-    [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, toast],
+    [creatorUsernameRaw, creatorUsernameParam, storefrontCustomerId, storefrontIdentityToken, toast],
   );
 
   const handleRecentCreatorDesignPick = useCallback((design: RecentCreatorDesign) => {
@@ -10805,12 +15217,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
   const clearReuseUrlParams = useCallback(() => {
     try {
-      const parentUrl = new URL(window.parent.location.href);
+      const parentUrl = new URL(hostWindow().location.href);
       parentUrl.searchParams.delete("reuseArtworkUrl");
       parentUrl.searchParams.delete("reusePrompt");
       parentUrl.searchParams.delete("reuseJobId");
       parentUrl.searchParams.delete("autoReuseGenerate");
-      window.parent.history.replaceState({}, "", parentUrl.toString());
+      hostWindow().history.replaceState({}, "", parentUrl.toString());
     } catch {
       /* ignore */
     }
@@ -10850,6 +15262,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       prompt: promptText,
     });
     if (promptText) setPrompt(promptText);
+    {
+      const originStyle = carriedStyleHints(handoff as Record<string, unknown> | null);
+      if (styleHintsHaveIdentity(originStyle)) {
+        setLoadedDecorStyle(originStyle);
+        pendingRestoreStyleRef.current = originStyle;
+      }
+    }
     clearReuseHandoff();
     clearReuseUrlParams();
   }, [
@@ -10892,9 +15311,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
         if (jobId && shopDomain) {
           try {
+            const reuseQs = new URLSearchParams({
+              jobId,
+              shop: shopDomain,
+              t: String(Date.now()),
+            });
+            if (anonSessionId) reuseQs.set("sessionId", anonSessionId);
             const statusRes = await safeFetch(
-              `${API_BASE}/api/storefront/generate/status?jobId=${encodeURIComponent(jobId)}&shop=${encodeURIComponent(shopDomain)}&t=${Date.now()}`,
-              { credentials: "include" },
+              `${API_BASE}/api/storefront/generate/status?${reuseQs.toString()}`,
+              { credentials: "include", headers: identityJsonHeaders() },
               30000,
             );
             if (statusRes.ok) {
@@ -10980,7 +15405,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   useEffect(() => {
     if (!reuseAwaitingGenerate && !autoReuseHydratedRef.current) return;
     if (configLoading || !productTypeConfig) return;
-    if (printSizes.length === 0 || selectedSize) return;
+    if (printSizes.length !== 1 || selectedSize) return;
     const first = printSizes[0];
     if (!first?.id) return;
     setSelectedSize(first.id);
@@ -11041,14 +15466,32 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
       if (type === "AI_ART_STUDIO_DESIGNER_CONFIG" && event.data.designerConfig) {
         applyDesignerConfig(event.data.designerConfig, "POSTMESSAGE CONFIG");
-        if (Array.isArray(event.data.stylePresets)) {
+        const incomingPt = String(
+          event.data.designerConfig.id || event.data.designerConfig.productTypeId || "",
+        );
+        const previousPt = lastDesignerProductTypeRef.current;
+        const productTypeChanged = Boolean(incomingPt && previousPt && incomingPt !== previousPt);
+        if (incomingPt) lastDesignerProductTypeRef.current = incomingPt;
+        if (productTypeChanged) {
+          stylePresetsOwnedRef.current = false;
+        }
+        const applyParentPresets = shouldApplyParentStylePresets({
+          owned: stylePresetsOwnedRef.current,
+          incomingProductTypeId: incomingPt || null,
+          currentProductTypeId: previousPt || null,
+        });
+        if (Array.isArray(event.data.stylePresets) && applyParentPresets) {
           setStylePresets(event.data.stylePresets);
         }
-        if (event.data.styleConfig !== undefined) {
+        if (event.data.styleConfig !== undefined && applyParentPresets) {
           setPageStyleConfig(parseCustomizerPageStyleConfig(event.data.styleConfig));
+          setExperienceProfile(parsePublicExperienceProfile(event.data.experienceProfile));
         }
         if (typeof event.data.freshDesignAllowed === "boolean") {
           setFreshDesignAllowed(event.data.freshDesignAllowed);
+        }
+        if (productTypeChanged) {
+          void refetchStylePresetsRef.current();
         }
         setConfigLoading(false);
       }
@@ -11096,6 +15539,19 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         console.log('[Design Studio] SHOPIFY_VARIANTS received:', mapped.length, 'variants');
         setShopifyVariants(mapped);
         setVariants(mapped);
+        const pres = applyPresentmentPayload(event.data.presentment);
+        if (pres) {
+          if (pres.currency) setActiveCurrency(pres.currency);
+          if (Object.keys(pres.pricesByVariantId).length > 0) {
+            setPresentmentPricesByVariantId(pres.pricesByVariantId);
+          }
+          presentmentMetaRef.current = {
+            rate: pres.rate,
+            shopCurrency: pres.shopCurrency,
+            country: pres.country,
+            locale: pres.locale,
+          };
+        }
         const base = event.data.baseVariantId ? String(event.data.baseVariantId) : null;
         if (base) {
           setShopifyVariantId(base);
@@ -11106,142 +15562,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         }
       }
 
-      // Style presets pushed by parent after bridge handshake (avoids /api/config round-trip)
+      // Style presets pushed by parent after bridge handshake (avoids /api/config round-trip).
+      // After the iframe owns a successful fetch, ignore heartbeat dumps so they cannot clobber
+      // a newer merchant-scoped snapshot. First paint still applies (owned is false).
       if (type === "AI_ART_STUDIO_STYLE_PRESETS" && Array.isArray(event.data.stylePresets)) {
-        console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
-        setStylePresets(event.data.stylePresets);
+        if (
+          shouldApplyParentStylePresets({
+            owned: stylePresetsOwnedRef.current,
+            incomingProductTypeId: null,
+            currentProductTypeId: lastDesignerProductTypeRef.current || null,
+          })
+        ) {
+          console.log('[Design Studio] STYLE_PRESETS received:', event.data.stylePresets.length, 'presets');
+          setStylePresets(event.data.stylePresets);
+        } else {
+          console.log('[Design Studio] STYLE_PRESETS ignored — iframe owns a fresher snapshot');
+        }
       }
 
       // Store theme: apply merchant's colors, fonts and radius to the iframe's CSS variables
       if (type === "AI_ART_STUDIO_THEME" && event.data.theme) {
-        const t = event.data.theme as Record<string, string>;
-        const root = document.documentElement.style;
-
-        // -- Background & text --
-        const bgHSL = cssColorToHSL(t.backgroundColor);
-        const fgHSL = cssColorToHSL(t.textColor);
-        if (bgHSL) root.setProperty('--background', bgHSL);
-        if (fgHSL) {
-          // Guard body text against the body background. Some themes set a
-          // light heading/body colour intended for dark hero sections; applied
-          // verbatim it renders white-on-pale inside the studio's light cards.
-          // The guard is a no-op whenever the merchant's pair already contrasts.
-          const safeFg = ensureContrastingForeground(bgHSL, fgHSL) ?? fgHSL;
-          root.setProperty('--foreground', safeFg);
-          // Tentative card-foreground = guarded body text. Re-validated against
-          // --card below once it's set, since input bg can differ from
-          // body bg and would otherwise leave invisible card text.
-          root.setProperty('--card-foreground', safeFg);
-        }
-
-        // -- Primary button --
-        const btnBgHSL = cssColorToHSL(t.buttonBg);
-        const btnFgHSL = cssColorToHSL(t.buttonColor);
-        if (btnBgHSL) {
-          root.setProperty('--primary', btnBgHSL);
-          root.setProperty('--ring', btnBgHSL);
-          root.setProperty('--sidebar-primary', btnBgHSL);
-          // Derive primary-border as slightly darker
-          root.setProperty('--primary-border', adjustHSLLightness(btnBgHSL, -8));
-          // Bulletproof: if the merchant's button text colour didn't
-          // extract (or extracted to something low-contrast like inherited
-          // body text), force a black/white pair against the button bg.
-          // Without this, active segmented buttons render as solid black
-          // rectangles with invisible text on themes that use color: inherit.
-          const safePrimaryFg = ensureContrastingForeground(btnBgHSL, btnFgHSL);
-          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
-        } else if (btnFgHSL) {
-          // btn bg missing but fg extracted — still guard against default dark primary.
-          const safePrimaryFg = ensureContrastingForeground('0 0% 9%', btnFgHSL);
-          if (safePrimaryFg) root.setProperty('--primary-foreground', safePrimaryFg);
-        }
-        if (t.buttonRadius) {
-          // Shopify buttons may have e.g. "4px" or "24px"; map to --radius
-          root.setProperty('--radius', t.buttonRadius);
-        }
-
-        // -- Fonts --
-        if (t.fontFamily) {
-          root.setProperty('--font-sans', t.fontFamily);
-        }
-        if (t.inputFontFamily) {
-          root.setProperty('--appai-control-font-family', t.inputFontFamily);
-        }
-        if (t.inputFontSize) {
-          root.setProperty('--appai-control-font-size', t.inputFontSize);
-        } else if (t.fontSize) {
-          root.setProperty('--appai-control-font-size', t.fontSize);
-        }
-        if (t.inputFontWeight) {
-          root.setProperty('--appai-control-font-weight', t.inputFontWeight);
-        }
-        if (t.headingFontFamily && t.headingFontFamily !== t.fontFamily) {
-          root.setProperty('--font-heading', t.headingFontFamily);
-        }
-
-        // -- Input border --
-        const inputBorderHSL = cssColorToHSL(t.inputBorderColor);
-        if (inputBorderHSL) {
-          root.setProperty('--border', inputBorderHSL);
-          root.setProperty('--input', inputBorderHSL);
-        }
-        const inputBgHSL = cssColorToHSL(t.inputBg);
-        // The studio is a light-surface UI: its cards/panels render on
-        // `--background` AND `--card`, so these must stay on the same
-        // light/dark side. A mis-extracted input bg (e.g. from a dark
-        // footer/search field) would otherwise invert `--card`, flip
-        // `--card-foreground` to white, and render white-on-pale text in
-        // panels that use `bg-background` (Saved Designs, Redeem, etc.).
-        // App default `--background` is white, so when the theme didn't supply
-        // a background colour treat the surface as light (lightness 100).
-        const effectiveBgHSL = bgHSL ?? '0 0% 100%';
-        const bgLightness = hslLightness(effectiveBgHSL) ?? 100;
-        const cardLightness = hslLightness(inputBgHSL);
-        let cardHSL = inputBgHSL;
-        if (cardLightness === null || Math.abs(bgLightness - cardLightness) > 25) {
-          // No usable input bg, or it disagrees with the page background —
-          // derive a card surface from the background instead of trusting it.
-          cardHSL = adjustHSLLightness(effectiveBgHSL, bgLightness >= 50 ? -3 : 6);
-        }
-        if (cardHSL) {
-          root.setProperty('--card', cardHSL);
-          // Guarantee card text contrasts the (reconciled) card surface.
-          const safeCardFg = ensureContrastingForeground(cardHSL, fgHSL);
-          if (safeCardFg) root.setProperty('--card-foreground', safeCardFg);
-        }
-
-        // -- Accent (links) --
-        const accentHSL = cssColorToHSL(t.accentColor);
-        if (accentHSL) {
-          root.setProperty('--accent', accentHSL);
-          const safeAccentFg = ensureContrastingForeground(accentHSL, fgHSL);
-          if (safeAccentFg) root.setProperty('--accent-foreground', safeAccentFg);
-        }
-
-        // -- Derived secondary/muted colors from background --
-        if (bgHSL) {
-          // Secondary is slightly off-background (darker in light mode)
-          root.setProperty('--secondary', adjustHSLLightness(bgHSL, -6));
-          root.setProperty('--secondary-border', adjustHSLLightness(bgHSL, -14));
-          // Muted is a subtle mid-tone
-          root.setProperty('--muted', adjustHSLLightness(bgHSL, -8));
-          // Dropdown surfaces — must set foreground too or Radix Select items
-          // inherit default dark text on a dark extracted popover (black-on-black).
-          const popoverHSL = adjustHSLLightness(bgHSL, -3);
-          root.setProperty('--popover', popoverHSL);
-          const safePopoverFg = ensureContrastingForeground(popoverHSL, fgHSL);
-          if (safePopoverFg) root.setProperty('--popover-foreground', safePopoverFg);
-        }
-        if (fgHSL) {
-          // Muted foreground is a lighter version of the text color, but still
-          // guarded so it can't drop below readable contrast on its surface.
-          const mutedBg = bgHSL ? adjustHSLLightness(bgHSL, -8) : null;
-          const secBg = bgHSL ? adjustHSLLightness(bgHSL, -6) : null;
-          const mutedFg = adjustHSLLightness(fgHSL, 30);
-          root.setProperty('--muted-foreground', ensureContrastingForeground(mutedBg, mutedFg) ?? mutedFg);
-          root.setProperty('--secondary-foreground', ensureContrastingForeground(secBg, fgHSL) ?? fgHSL);
-        }
-
+        applyStoreThemeVars(event.data.theme as Record<string, string>);
+        applyExperienceBrandVars(experienceProfileRef.current?.brand);
         console.log('[Design Studio] Applied store theme CSS variables');
       }
 
@@ -11260,16 +15602,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (type === "AI_ART_STUDIO_SWITCH_SAVED_DESIGN" && event.data.design) {
         void (async () => {
           try {
-            const pageHandle = await resolveSavedDesignPageHandle(event.data.design);
-            if (!pageHandle) {
-              loadSavedDesignInPlace(event.data.design);
-              return;
-            }
-            await switchToSavedDesignProduct(event.data.design);
+            await openSavedDesignFromGalleryRef.current(event.data.design);
           } catch (error) {
-            console.error('[SavedDesigns] Parent-requested in-app switch failed:', error);
+            console.error('[SavedDesigns] Parent-requested open failed:', error);
             setConfigLoading(false);
             setIsInAppProductSwitching(false);
+            setReuseBusy(false);
             loadSavedDesignInPlace(event.data.design);
           }
         })();
@@ -11305,7 +15643,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     // Bridge handshake: retry IFRAME_READY every 2s until parent responds with BRIDGE_READY
     let bridgeTimeout: ReturnType<typeof setTimeout> | null = null;
     let iframeReadyTimer: ReturnType<typeof setInterval> | null = null;
-    if (isStorefront) {
+    if (isStorefront && !isTopLevelHost) {
       const sendIframeReady = () => {
         if ((window as any).__aiArtBridgeReady) return; // already connected
         console.log('[Design Studio] Sending IFRAME_READY to parent');
@@ -11361,7 +15699,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       if (bridgeTimeout) clearTimeout(bridgeTimeout);
       if (iframeReadyTimer) clearInterval(iframeReadyTimer);
     };
-  }, [isStorefront, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants]);
+  }, [isStorefront, isTopLevelHost, debugBridge, applyDesignerConfig, switchToSavedDesignProduct, loadSavedDesignInPlace, resolveSavedDesignPageHandle, productTypeId, shopifyVariants, activeProductContext.pageHandle]);
 
   useEffect(() => {
     if (!isEmbedded && !isStorefront) return;
@@ -11377,21 +15715,31 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   }, [isEmbedded, isStorefront, mobileNativeScroll]);
 
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
-    // Send resize messages so the parent container grows with our content (no scrollbar).
-    if (mobileNativeScroll) return;
-    // Debounced to 120ms and filtered to ignore sub-threshold changes so the iframe
-    // container does not jump while the mobile URL bar is auto-hiding/showing.
+    // Desktop: grow the parent iframe to content height (parent page scrolls).
+    // Mobile shell: the PARENT pins the iframe to its own visualViewport
+    // (the phone screen, including URL-bar show/hide). Never post
+    // scrollHeight (useIsMobile is false on the first paint) or the child's
+    // visualViewport (that is the iframe box, not the phone).
+    const isPhoneShell = () => {
+      try {
+        return window.matchMedia("(max-width: 767px)").matches;
+      } catch {
+        return window.innerWidth < 768;
+      }
+    };
     let lastSent = 0;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const sendHeight = () => {
+      if (isPhoneShell() || isMobile) return;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
         const h = Math.max(
           document.documentElement.scrollHeight,
           document.body.scrollHeight,
-          document.documentElement.offsetHeight
+          document.documentElement.offsetHeight,
         );
         if (Math.abs(h - lastSent) < 4) return;
         lastSent = h;
@@ -11400,12 +15748,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const observer = new ResizeObserver(sendHeight);
     observer.observe(document.body);
-    sendHeight(); // send immediately on mount
+    sendHeight();
     return () => {
       observer.disconnect();
       if (debounceTimer !== null) clearTimeout(debounceTimer);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll, isMobile]);
 
   // Wheel event forwarding: when the mouse is over the iframe but NOT inside an open
   // Radix dropdown, forward wheel events to the parent page so it can scroll normally.
@@ -11414,6 +15762,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   // Skip forwarding when the pointer is over a nested scrollable panel (e.g. placer
   // controls column) so the inner panel can scroll with the mouse wheel.
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
 
     const findScrollableAncestor = (el: Element | null): Element | null => {
@@ -11537,23 +15886,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     return () => {
       window.removeEventListener('wheel', handleWheel, { capture: true } as EventListenerOptions);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
-  // Mobile native scroll mode: minimal, passive boundary-only touch handoff.
-  // The iframe scrolls its own content natively (no JS per frame). But iOS
-  // Safari does NOT propagate iframe touch-scroll to the parent — once the
-  // iframe hits its top/bottom boundary the user gets stuck and can't reach
-  // the footer (or the area above the iframe). This handler does nothing
-  // while the iframe is scrolling internally; only when scrollTop is at the
-  // boundary AND the finger keeps moving in the same direction does it
-  // forward deltaY to the parent. Listener is `passive: true` so it never
-  // blocks the native iframe scroll.
+  // Bbox / handles only — empty canvas is a sibling (overlay root is
+  // pointer-events-none) so closest() misses it. All three: storefront AOP
+  // is design-rect-overlay, not data-appai-drag-surface.
+  const ARTWORK_DRAG_SURFACE_SELECTOR =
+    '[data-appai-drag-surface], [data-testid="design-rect-overlay"], [data-testid="flat-rect-overlay"]';
+  const touchStartedOnArtwork = (e: TouchEvent): boolean => {
+    const el = e.target instanceof Element ? e.target : (e.target as Node | null)?.parentElement;
+    return !!el?.closest(ARTWORK_DRAG_SURFACE_SELECTOR);
+  };
+
+  // Boundary-only handoff. Option A: inverted gate — OFF on mobile-native
+  // (path (b) below owns those gestures).
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
-    if (!mobileNativeScroll) return;
+    if (mobileNativeScroll) return;
     let lastY = 0;
     let pendingDeltaY = 0;
     let rafId = 0;
+    let startedOnArtwork = false;
     const flush = () => {
       rafId = 0;
       const d = pendingDeltaY;
@@ -11564,6 +15918,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const onTouchStart = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
+      startedOnArtwork = touchStartedOnArtwork(e);
       lastY = e.touches[0].clientY;
       pendingDeltaY = 0;
       if (rafId) {
@@ -11574,7 +15929,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     };
     const onTouchMove = (e: TouchEvent) => {
       if (e.touches.length !== 1) return;
-      if (showPatternStep) return;
+      if (startedOnArtwork) return;
       const y = e.touches[0].clientY;
       const dy = lastY - y; // positive = finger moving up = scroll-down direction
       lastY = y;
@@ -11597,33 +15952,22 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
     };
-  }, [isEmbedded, isStorefront, mobileNativeScroll, showPatternStep]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
-  // Legacy (non-mobile-native) touch-scroll forwarding effect. Only attaches
-  // when `mobileNativeScroll` is false — desktop or any context where the
-  // iframe is a full-content-height block in the parent page and we need to
-  // forward gestures so the parent scrolls.
+  // Native-parent-scroll trial (Option A): iframe overflow:hidden has no
+  // range, so WebKit chains in-iframe vertical drags to the parent. Do not
+  // preventDefault or post touchscroll — InstantScrollBy was fighting that
+  // native scroll. Artwork latch and inner-scroller yield stay.
   useEffect(() => {
+    if (isTopLevelHost) return;
     if (!isEmbedded && !isStorefront) return;
-    if (mobileNativeScroll) return;
+    if (!mobileNativeScroll) return;
     const PAGE_SCROLL_THRESHOLD_PX = 6;
     const HORIZONTAL_GESTURE_RATIO = 1.25;
     let touchStartX = 0;
     let touchStartY = 0;
     let touchLastY = 0;
-    let pageScrollGesture = false;
-    let gestureBlocked = false;
-    let pendingDeltaY = 0;
-    let rafId = 0;
-    // Track last few deltas to estimate fling velocity on touchend
-    const recentDeltas: number[] = [];
-
-    const canPageScrollInsideIframe = (deltaY: number): boolean => {
-      if (!mobileNativeScroll) return false;
-      const el = document.scrollingElement || document.documentElement;
-      const maxScrollTop = el.scrollHeight - el.clientHeight;
-      return deltaY > 0 ? el.scrollTop < maxScrollTop - 1 : el.scrollTop > 1;
-    };
+    let startedOnArtwork = false;
 
     const canScrollNode = (node: Element, deltaY: number): boolean => {
       const style = window.getComputedStyle(node);
@@ -11646,100 +15990,43 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       return false;
     };
 
-    const flushScroll = () => {
-      rafId = 0;
-      const deltaY = pendingDeltaY;
-      pendingDeltaY = 0;
-      if (Math.abs(deltaY) > 0.1) {
-        window.parent.postMessage({ type: 'ai-art-studio:touchscroll', deltaY }, '*');
-      }
-    };
-
-    const queueScroll = (deltaY: number) => {
-      pendingDeltaY += deltaY;
-      if (!rafId) rafId = window.requestAnimationFrame(flushScroll);
-    };
-
     const onTouchStart = (e: TouchEvent) => {
       const touch = e.touches[0];
+      startedOnArtwork = touchStartedOnArtwork(e);
       touchStartX = touch?.clientX ?? 0;
       touchStartY = touch?.clientY ?? 0;
       touchLastY = touchStartY;
-      pageScrollGesture = false;
-      gestureBlocked = false;
-      pendingDeltaY = 0;
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
-        rafId = 0;
-      }
-      recentDeltas.length = 0;
-      // Cancel any ongoing fling when user touches again
       window.parent.postMessage({ type: 'ai-art-studio:touchcancel' }, '*');
     };
 
     const onTouchMove = (e: TouchEvent) => {
-      if (showPatternStep) return;
+      if (startedOnArtwork) return;
       const currentY = e.touches[0]?.clientY ?? 0;
       const currentX = e.touches[0]?.clientX ?? touchStartX;
       const totalX = currentX - touchStartX;
       const totalY = currentY - touchStartY;
-      const deltaY = touchLastY - currentY; // positive = finger moving up = scroll down
+      const deltaY = touchLastY - currentY;
       touchLastY = currentY;
       if (Math.abs(deltaY) < 0.5) return;
-      const target = e.target as Element | null;
-
-      if (!pageScrollGesture && !gestureBlocked) {
-        const absX = Math.abs(totalX);
-        const absY = Math.abs(totalY);
-        if (absX > PAGE_SCROLL_THRESHOLD_PX && absX > absY * HORIZONTAL_GESTURE_RATIO) {
-          gestureBlocked = true;
-          return;
-        }
-        if (absY < PAGE_SCROLL_THRESHOLD_PX) return;
-        if (isInsideScrollable(target, deltaY)) {
-          gestureBlocked = true;
-          return;
-        }
-        if (canPageScrollInsideIframe(deltaY)) {
-          gestureBlocked = true;
-          return;
-        }
-        pageScrollGesture = true;
+      const absX = Math.abs(totalX);
+      const absY = Math.abs(totalY);
+      if (absX > PAGE_SCROLL_THRESHOLD_PX && absX > absY * HORIZONTAL_GESTURE_RATIO) {
+        return;
       }
-
-      if (!pageScrollGesture || gestureBlocked) return;
-      e.preventDefault();
-      // Keep last 6 deltas for velocity estimation
-      recentDeltas.push(deltaY);
-      if (recentDeltas.length > 6) recentDeltas.shift();
-      queueScroll(deltaY);
-    };
-
-    const onTouchEnd = () => {
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
-        flushScroll();
+      if (absY < PAGE_SCROLL_THRESHOLD_PX) return;
+      if (isInsideScrollable(e.target as Element | null, deltaY)) {
+        return;
       }
-      if (!pageScrollGesture || recentDeltas.length < 2) return;
-      // Average of last few deltas = estimated velocity (px per touchmove frame)
-      const velocity = recentDeltas.reduce((a, b) => a + b, 0) / recentDeltas.length;
-      if (Math.abs(velocity) > 2) {
-        window.parent.postMessage({ type: 'ai-art-studio:touchfling', velocityY: velocity }, '*');
-      }
+      // Vertical page drag: no preventDefault, no touchscroll — native parent.
     };
 
     document.addEventListener('touchstart', onTouchStart, { passive: true });
-    document.addEventListener('touchmove', onTouchMove, { passive: false });
-    document.addEventListener('touchend', onTouchEnd, { passive: true });
-    document.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
     return () => {
-      if (rafId) window.cancelAnimationFrame(rafId);
       document.removeEventListener('touchstart', onTouchStart);
       document.removeEventListener('touchmove', onTouchMove);
-      document.removeEventListener('touchend', onTouchEnd);
-      document.removeEventListener('touchcancel', onTouchEnd);
     };
-  }, [isEmbedded, isStorefront, showPatternStep, mobileNativeScroll]);
+  }, [isEmbedded, isStorefront, isTopLevelHost, mobileNativeScroll]);
 
   // Counteract Radix UI's body scroll lock in iframe context.
   // Radix adds overflow:hidden + padding-right to body[data-scroll-locked] when
@@ -11833,6 +16120,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setPhoneViewerHeightPx(null);
       return;
     }
+    // Mobile: the form column is covered by the fixed canvas and its controls
+    // are gated off, so it is NOT a valid measurement source. Source the height
+    // from the fixed canvas box (measurement source only — placer logic
+    // unchanged). The ResizeObserver re-fires with the new fixed-box dimensions
+    // whenever the bars retract / the viewport rotates, so the phone-case /
+    // flat viewer recomputes to the correct size instead of freezing.
+    if (isMobile) {
+      const box = artworkColumnRef.current;
+      if (!box) return;
+      const sync = () => {
+        const h = box.clientHeight;
+        if (h <= 0) return;
+        const capped = Math.min(
+          Math.max(200, Math.round(h)),
+          Math.floor(window.innerHeight * 0.98),
+        );
+        setPhoneViewerHeightPx((prev) => (prev === capped ? prev : capped));
+      };
+      sync();
+      const ro = new ResizeObserver(sync);
+      ro.observe(box);
+      window.addEventListener("resize", sync);
+      return () => {
+        ro.disconnect();
+        window.removeEventListener("resize", sync);
+      };
+    }
     const form = formColumnRef.current;
     if (!form) return;
     const sync = () => {
@@ -11860,7 +16174,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       ro.disconnect();
       window.removeEventListener("resize", sync);
     };
-  }, [flatEdgeWrapMode, flatPlacerActive]);
+  }, [flatEdgeWrapMode, flatPlacerActive, isMobile]);
 
   // Flat placer: skip local Front rasters only. Catalog Views + Printers stay reachable.
   // Snap hidden Front back to Artwork — stepping backward wraps onto View N closeups.
@@ -11985,6 +16299,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       setLifestyleShotLoading(true);
       setLifestyleShotError(null);
       lastAopPanelUrlsRef.current = panels;
+      setAopPrintPanelsReady(true);
       // Body/lumbar pillows have no Front Person cameras — request in-situ
       // lifestyle/context (bed/room). Fall back to product cameras if none.
       const isPillowAop = isPillowWrapBlueprint(
@@ -12100,7 +16415,12 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       // Phone cases + aprons: bake the same print file as order fulfillment,
       // then ask Printify at scale=1 center. Raw art + cover-scale made Lifestyle
       // Woman/Man much smaller than the in-app Artwork slide.
-      const bakeLifestylePrint = flatEdgeWrapMode || looksLikeApron || toteFoldedLayout;
+      const bakeLifestylePrint =
+        flatEdgeWrapMode ||
+        looksLikeApron ||
+        toteFoldedLayout ||
+        flatDecorMode ||
+        !!flatFabricWeave;
       if (bakeLifestylePrint) {
         const bakeEndpoint = isStorefront
           ? `${API_BASE}/api/storefront/bake-flat-print`
@@ -12385,9 +16705,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl,
               garmentColorHex: colorizeSharedBlank ? selectedGarmentHex : null,
               catalogSizeAspectRatio:
-                !flatDecorMode && orientationBlankOverride
+                !flatDecorMode &&
+                (orientationBlankOverride || catalogSizeBlankBlueprint)
                   ? catalogSizeAspectRatio
                   : null,
+              catalogBlueprintId: catalogSizeBlankBlueprint
+                ? productTypeConfig?.printifyBlueprintId ?? null
+                : null,
+              catalogSizeKey: catalogSizeBlankBlueprint ? catalogSizeKey : null,
+              generationModel:
+                generatedDesign?.generationModel || loadedDecorStyle?.generationModel || null,
             },
           );
           if (cancelled || !dataUrl) continue;
@@ -12489,6 +16816,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     colorizeSharedBlank,
     selectedGarmentHex,
     catalogSizeAspectRatio,
+    catalogSizeBlankBlueprint,
+    catalogSizeKey,
+    productTypeConfig?.printifyBlueprintId,
     persistFlatMockupsForGallery,
     flatMockupRefreshNonce,
     flatPlacerActive,
@@ -12547,11 +16877,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         matchedVariant = shopifyVariants.find((v) => String(v.id) === matchedId);
       }
       if (!matchedVariant) {
-        matchedVariant = shopifyVariants.find((v) => {
-          const t = (v.title || "").toLowerCase();
-          const sn = size.name.toLowerCase();
-          return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
-        });
+        const titleId = matchShopifyVariantBySizeTitle(
+          shopifyVariants,
+          size.name,
+          frameName,
+          selectedFrameColor || undefined,
+        );
+        if (titleId) {
+          matchedVariant = shopifyVariants.find((v) => String(v.id) === titleId);
+        }
       }
 
       if (matchedVariant?.price) {
@@ -12606,40 +16940,37 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       selectedFrameColor || undefined,
     );
     // Same size-title fallback as buildPriceMap so the headline / ATC variant
-    // stay in sync when option matching misses (e.g. "3XL / Dark Heather").
+    // stay in sync when option matching misses (e.g. "Heather Grey / XL").
     if (!matchedId && sizeName) {
-      const sn = sizeName.toLowerCase();
-      const fallback = shopifyVariants.find((v) => {
-        const t = (v.title || "").toLowerCase();
-        return t === sn || t.startsWith(`${sn} /`) || t.startsWith(`${sn}/`);
-      });
-      if (fallback) matchedId = String(fallback.id);
+      matchedId = matchShopifyVariantBySizeTitle(
+        shopifyVariants,
+        sizeName,
+        frameName,
+        selectedFrameColor || undefined,
+      );
     }
 
     if (matchedId) {
       setShopifyVariantId(matchedId);
       setOverrideVariantId(matchedId);
     }
+    const mappedCents = selectedSize ? buildPriceMap()[selectedSize] : 0;
+    displayedRetailRef.current =
+      mappedCents > 0 ? (mappedCents / 100).toFixed(2) : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSize, selectedFrameColor, shopifyVariants, isStorefront]);
 
-  // Fetch saved designs when logged in
-  const isLoggedIn = storefrontLoggedIn;
-  const artworksRemainingLabel = (() => {
-    if (sessionLoading && !customer) {
-      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
-    }
-    if (!isLoggedIn && creditBreakdown.paidTotal === 0 && creditBreakdown.shopFreeRemaining > 0) {
-      return `${creditBreakdown.shopFreeRemaining} free artwork${creditBreakdown.shopFreeRemaining !== 1 ? "s" : ""} remaining`;
-    }
-    return formatStorefrontCreditsSplit(creditBreakdown);
-  })();
+  // Fetch saved designs for the session identity (signed-in OR anonymous).
+  // Anonymous sessions still get a customerId from bootstrap — skipping this
+  // fetch meant gallery taps had nothing to restore besides a 2s status
+  // fallback, which often never applied and left a blank canvas.
   useEffect(() => {
-    if (!isLoggedIn || !storefrontCustomerId || !shopDomain) return;
+    if (!storefrontCustomerId || !shopDomain || !storefrontIdentityToken) return;
     setSavedDesignsLoading(true);
     safeFetch(`${API_BASE}/api/storefront/customizer/my-designs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: savedDesignsHeaders(),
+      credentials: 'include',
       body: JSON.stringify({ shop: shopDomain, customerId: storefrontCustomerId }),
     })
       .then(r => r.json())
@@ -12650,12 +16981,57 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       })
       .catch(() => {})
       .finally(() => setSavedDesignsLoading(false));
-  }, [isLoggedIn, storefrontCustomerId, shopDomain]);
+  }, [storefrontCustomerId, shopDomain, storefrontIdentityToken]);
+
+  const isLoggedIn = storefrontLoggedIn;
+  const artworksRemainingLabel = (() => {
+    if (sessionLoading && !customer) {
+      return `${freeGenerationLimit || STOREFRONT_FREE_GENERATION_LIMIT} free artworks`;
+    }
+    if (!isLoggedIn && creditBreakdown.paidTotal === 0 && creditBreakdown.shopFreeRemaining > 0) {
+      return `${creditBreakdown.shopFreeRemaining} free artwork${creditBreakdown.shopFreeRemaining !== 1 ? "s" : ""} remaining`;
+    }
+    return formatStorefrontCreditsSplit(creditBreakdown);
+  })();
+
+  const leaveCustomizerToHome = useCallback(() => {
+    const mockupUrl = getPreferredMockupUrl({ cartSafeOnly: true }) || "";
+    try {
+      window.parent.postMessage({ type: "ai-art-studio:exit", mockupUrl }, "*");
+    } catch {
+      /* ignore */
+    }
+    const goHome = () => {
+      try {
+        hostWindow().location.assign("/");
+      } catch {
+        window.location.assign("/");
+      }
+    };
+    if (isTopLevelHost || window.parent === window) {
+      goHome();
+      return;
+    }
+    window.setTimeout(() => {
+      try {
+        const path = hostWindow().location.pathname || "";
+        if (
+          path.includes("/pages/") ||
+          path.includes("/s/designer") ||
+          path.includes("/apps/appai")
+        ) {
+          goHome();
+        }
+      } catch {
+        goHome();
+      }
+    }, 450);
+  }, [getPreferredMockupUrl, isTopLevelHost]);
 
   // Only wait for config to load - session can load in background
   // Session is only needed for generating, not for viewing the UI
   if (configLoading) {
-    if (isInAppProductSwitching || reuseBusy) {
+    if (isInAppProductSwitching || reuseBusy || isTopLevelHost) {
       return (
         <div
           className="min-h-[520px] flex flex-col items-center justify-center gap-3 bg-[#f4f4f5]"
@@ -12705,6 +17081,29 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
   );
   const atcFlatOnTheFly = flatPlacerEligible;
   const atcMockupsStaleBlocks = mockupsStale && !atcFlatOnTheFly;
+  const atcNeedsSize = !String(selectedSize || "").trim();
+  const atcCanRefresh =
+    !useAopCustomizer ||
+    aopPrintPanelsReady ||
+    !!hoodieAopPlacerRef.current ||
+    !!hoodieAopPlacerState;
+  const atcShowSelectSize = !!(generatedDesign && atcNeedsSize);
+  const atcShowRefresh =
+    atcMockupsStaleBlocks && !atcNeedsSize && atcCanRefresh;
+  const atcCatalogMiss = !findVariantId({ quiet: true });
+  const atcPendingFreeze = atcUpdatesPending || saveStatePending;
+  const atcPrimaryDisabled =
+    isAddingToCart ||
+    atcCooldownRemainingMs > 0 ||
+    atcWaitingForMockups ||
+    mockupsUpdating ||
+    flatPlacerSaveBlocking ||
+    aopPlacerSaveBlocking ||
+    atcPendingFreeze ||
+    (atcCatalogMiss &&
+      !atcMockupsStaleBlocks &&
+      !atcNeedsSize &&
+      !(useAopCustomizer && !aopPatternUrl));
   const showingMockupAtArtworkSlot = !!(
     showsPrintifyMockupPreview &&
     generatedDesign?.imageUrl &&
@@ -12718,6 +17117,81 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     !showingMockupAtArtworkSlot
   );
 
+  // Phone-shell converted price. Desktop shows this as the form-column headline
+  // (text-product-price), which mobile CSS-collapses. Reuses the exact desktop
+  // converter + shop-currency source. DISPLAY ONLY — never feeds message.price.
+  const renderMobileHeadlinePrice = () => {
+    if (!(isShopify || isStorefront)) return null;
+    if (!shopifyVariants || shopifyVariants.length === 0) return null;
+
+    const meta = presentmentMetaRef.current;
+    const toDisplay = (shopAmount: number, showFrom: boolean, variantId?: string | null) =>
+      formatStorefrontHeadlineDisplay({
+        shopAmount,
+        showFrom,
+        variantId,
+        activeCurrency,
+        shopCurrency: meta.shopCurrency,
+        rate: meta.rate,
+        pricesByVariantId: presentmentPricesByVariantId,
+        country: meta.country,
+        locale: meta.locale,
+        allowAjaxPresentment: !printPlacementUsesBoth,
+      });
+
+    const sizeSelected = Boolean(selectedSize);
+    const priceMap = buildPriceMap();
+    const mappedCents = sizeSelected && selectedSize ? priceMap[selectedSize] : undefined;
+
+    let display: { text: string; converted: boolean } | null = null;
+    if (sizeSelected && mappedCents && mappedCents > 0) {
+      display = toDisplay(mappedCents / 100, false, shopifyVariantId);
+    } else {
+      const resolved = resolveStorefrontHeadlinePrice({
+        variants: shopifyVariants,
+        sizeSelected,
+        matchedVariantId: shopifyVariantId,
+        bothPrice: null,
+        hasBothRetailPrices: false,
+        printPlacementUsesBoth,
+      });
+      if (resolved) display = toDisplay(resolved.amount, resolved.showFrom, shopifyVariantId);
+    }
+    if (!display) return null;
+
+    const sizeName = sizeSelected
+      ? (printSizes.find((s) => s.id === selectedSize)?.name ?? "")
+      : "";
+
+    return (
+      <div
+        className="appai-mprimary-price flex items-baseline justify-center gap-2 pb-0.5 text-sm"
+        data-testid="mobile-headline-price"
+      >
+        {sizeName ? <span className="font-medium text-foreground">{sizeName}</span> : null}
+        <span className="font-semibold text-foreground">{display.text}</span>
+        {display.converted ? (
+          <span className="text-[10px] font-normal text-muted-foreground">
+            Final price at checkout
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  const aopLifestyleStatus = useAopCustomizer
+    ? aopLifestyleMockupNotice({ pending: mockupPending, error: mockupError })
+    : null;
+  const renderAopLifestyleNotice = (testId: string) =>
+    aopLifestyleStatus ? (
+      <p
+        className="text-[11px] leading-snug text-center text-muted-foreground px-1 pb-1"
+        data-testid={testId}
+      >
+        {aopLifestyleStatus}
+      </p>
+    ) : null;
+
   const renderPrimaryAction = (className = "", testIdSuffix = "") => {
     const withSuffix = (id: string) => testIdSuffix ? `${id}-${testIdSuffix}` : id;
 
@@ -12727,13 +17201,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           addedToCart ? (
             <Button
               className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-              onClick={() => {
-                if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
-                  window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
-                  return;
-                }
-                window.parent.location.href = "/cart";
-              }}
+              onClick={openStorefrontCart}
               data-testid={withSuffix("button-view-cart")}
             >
               <CheckCircle className="w-5 h-5 mr-2" />
@@ -12746,48 +17214,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   handleApplyPatternToContinue();
                   return;
                 }
-                if (atcMockupsStaleBlocks) {
-                  if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                    if (generatedDesign?.imageUrl) {
-                      setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                      setShowPatternStep(true);
-                    }
-                    return;
-                  }
-                  if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                    setMockupError(null);
-                    setMockupFailed(false);
-                    setPrintifyMockups([]);
-                    setPrintifyMockupImages([]);
-                    setSelectedMockupIndex(0);
-                    setMockupsStale(false);
-                    mockupColorCacheRef.current = {};
-                    currentMockupColorRef.current = '';
-                    fetchPrintifyMockups(
-                      toAbsoluteImageUrl(generatedDesign.imageUrl),
-                      productTypeConfig.id,
-                      selectedSize,
-                      selectedFrameColor || 'default',
-                      transform.scale,
-                      transform.x,
-                      transform.y,
-                      useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                      aopPlacementSettings?.mirrorMode,
-                      useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                    );
-                  }
+                if (atcShowSelectSize || atcMockupsStaleBlocks) {
+                  void refreshStaleMockups();
                 } else {
                   handleAddToCart();
                 }
               }}
-              disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
+              disabled={atcPrimaryDisabled}
               className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid={withSuffix("button-add-to-cart")}
             >
               {isAddingToCart ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  <span className="shimmer-text-white">Adding to Cart...</span>
+                  <span className="shimmer-text-white">{atcWorkingLabel}</span>
                 </>
               ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                 <>
@@ -12796,12 +17236,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     Saving design…
                   </span>
                 </>
-              ) : atcWaitingForMockups || atcRefreshingMockups ? (
+              ) : atcWaitingForMockups || atcRefreshingMockups || mockupsUpdating ? (
                 <>
                   <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                  <span className="shimmer-text-white">Refreshing Mockups…</span>
+                  <span className="shimmer-text-white">Updating mockups…</span>
                 </>
-              ) : atcMockupsStaleBlocks ? (
+              ) : atcShowSelectSize ? (
+                <span className="shimmer-text-white">Select a size</span>
+              ) : atcShowRefresh ? (
                 <>
                   <RefreshCcw className="w-5 h-5 mr-2" />
                   <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -12817,43 +17259,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             </Button>
           )
         ) : (
+          <>
+          {shippingWarnedRow ? (
+            <ShippingWarnedEstimate
+              country={shipCountryForCoverage}
+              firstItemCents={shippingWarnedRow.firstItemCents}
+              matchedZone={shippingWarnedRow.matchedZone}
+            />
+          ) : null}
           <Button
-            onClick={() => {
-              if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
-                notifyInsufficientCredits();
-                return;
-              }
-              if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                alert("Please select an art style before generating");
-                return;
-              }
-              const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-              if (activePreset?.options?.required && selectedStyleOption === "") {
-                alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-                return;
-              }
-              if (printSizes.length > 0 && selectedSize === "") {
-                alert("Please select a size before generating");
-                return;
-              }
-              handleGenerate();
-            }}
-            disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
+            onClick={handleQuotesOrGenerateClick}
+            disabled={quotesOrGenerateDisabled}
             className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
             data-testid={withSuffix("button-generate")}
           >
-            {generateMutation.isPending ? (
+            {generateMutation.isPending || quoteWriting || packConceptLoading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                <span className="shimmer-text-white">Generating...</span>
+                <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : packConceptLoading ? "Writing ideas..." : "Generating..."}</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 mr-2" />
-                <span className="shimmer-text-white">Generate Artwork</span>
+                <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : packNeedConcepts ? xc("conceptButtonLabel", "Give me 3 ideas") : xc("generateButtonLabel", "Generate Artwork")}</span>
               </>
             )}
           </Button>
+          </>
         )}
         {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
           <StorefrontTermsAccept
@@ -12866,49 +17298,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
         {(isShopify || isStorefront) && generatedDesign ? (
           <div className="mt-1 flex flex-col items-center gap-1">
             {variantError && (
-              <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
+              <p className={`${atcNoticeClass(variantError)} text-xs text-center`} data-testid={withSuffix("text-variant-error-atc")}>{variantError}</p>
             )}
-            {isStorefront && bridgeError && (
+            {isStorefront && !isTopLevelHost && bridgeError && (
               <p className="text-destructive text-xs text-center" data-testid={withSuffix("text-bridge-error")}>{bridgeError}</p>
             )}
             {freshDesignAllowed && (
               <button
                 type="button"
-                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                onClick={() => {
-                  setGeneratedDesign(null);
-                  setReuseAwaitingGenerate(false);
-                  setReuseRegenerateBasePrompt(null);
-                  lastAopPanelUrlsRef.current = null;
-                  setFlatPlacerState(null);
-                  setFlatPlacerEditOpen(false);
-                  setFlatApplyStatus("idle");
-                  setFlatRenderFailed(false);
-                  setDesignSource(null);
-                  setAddedToCart(false);
-                  loadDesignAppliedRef.current = true;
-                  pendingRestoreColorRef.current = null;
-                  restoringSavedDesignRef.current = false;
-                  setBridgeLoadDesignId('');
-                  setReferenceImages([]);
-                  setReferencePreviews([]);
-                  if (fileInputRef.current) fileInputRef.current.value = '';
-                  setSelectedPreset('');
-                  setSelectedStyleOption('');
-                  applyProductDefaultSizeColor();
-                  try {
-                    const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                    sessionStorage.removeItem(stateKey);
-                  } catch (_) {}
-                  clearLoadDesignIdFromUrl();
-                }}
+                className="appai-mprimary-extras text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                onClick={() => startFreshDesign()}
               >
                 <Plus className="w-3 h-3" />
                 Start Fresh Design
               </button>
             )}
             {isStorefront && (
-              <div className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+              <div className="appai-mprimary-extras text-xs text-muted-foreground flex items-center justify-center gap-1">
                 {artworksRemainingLabel}
                 <button
                   type="button"
@@ -12923,7 +17329,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           </div>
         ) : (
           (isShopify || isStorefront) && (
-            <div className="text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
+            <div className="appai-mprimary-extras text-xs text-muted-foreground mt-1 flex items-center justify-center gap-1">
               {artworksRemainingLabel}
               <button
                 type="button"
@@ -12940,14 +17346,802 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
     );
   };
 
+  // ── Mobile customizer control nodes (Checkpoint 2) ─────────────────────────
+  // Single source of truth for each control. The desktop form column renders
+  // these via {!isMobile && …} at their original positions (byte-for-byte
+  // output); MobileCustomizerShell renders the SAME element objects inside its
+  // sheets. One instance per session — reused, never re-implemented.
+  const mStyleSelectorNode = petposterousV2 ? null : (
+    <StyleSelector
+      stylePresets={filteredStylePresets}
+      selectedStyle={selectedPreset}
+      onStyleChange={(id) => {
+        setSelectedPreset(id);
+        setSelectedStyleOption("");
+        const preset = filteredStylePresets.find((p) => p.id === id);
+        const catalogSlug = preset?.catalogSlug || id || null;
+        const cfg = resolveStyleBackgroundConfig(
+          {
+            catalogSlug,
+            outputMode: preset?.outputMode,
+            backgroundSelectorEnabled: preset?.backgroundSelectorEnabled,
+            defaultBackgroundColor: preset?.defaultBackgroundColor,
+            backgroundRequired: preset?.backgroundRequired,
+          },
+          {
+            isApparelProduct: isApparel,
+            designerType: productTypeConfig?.designerType,
+            catalogSlug,
+            styleName: preset?.name || null,
+            styleId: id,
+            outputMode: preset?.outputMode,
+            generationModel: preset?.generationModel,
+            useAopCustomizer,
+            edgeWrapMode: flatEdgeWrapMode,
+          },
+          null,
+        );
+        applyLiveDecorFill(cfg.defaultFill ?? "none");
+      }}
+    />
+  );
+  const mStyleHelperNode = (
+    <div className="mt-0.5 min-h-[1rem]">
+      {!petposterousV2 && selectedPreset === "" && (
+        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
+      )}
+    </div>
+  );
+  const mDecorFillNode =
+    showDecorFloatingFill && !flatEdgeWrapMode && !useAopCustomizer && !flatPlacerActive ? (
+      <DecorFloatingFillPicker value={decorBackgroundFill} onChange={applyLiveDecorFill} />
+    ) : null;
+  // Background tray tool is always present (plan: Style · Background · Adjust ·
+  // Options · Prompt). AOP / phone / flat hide the form-column picker because
+  // those products already have a fill control — still show a working picker
+  // here so the tool is never filtered out of the bottom bar.
+  const mBackgroundNode =
+    showDecorFloatingFill && !flatEdgeWrapMode ? (
+      <DecorFloatingFillPicker value={decorBackgroundFill} onChange={applyLiveDecorFill} />
+    ) : (
+      <DecorFloatingFillPicker
+        value={
+          useAopCustomizer
+            ? hoodieAopPlacerState?.backgroundColor || decorBackgroundFill || "#FFFFFF"
+            : decorBackgroundFill
+        }
+        onChange={applyLiveDecorFill}
+      />
+    );
+  const mOrientationPillsNode = (
+    <div className="space-y-1" data-testid="container-size-orientation-pills">
+      <Label className="text-xs">Orientation</Label>
+      <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
+        {(
+          [
+            { id: "horizontal" as const, name: "Horizontal" },
+            { id: "vertical" as const, name: "Vertical" },
+            { id: "square" as const, name: "Square" },
+          ] as const
+        )
+          .filter((choice) => {
+            if (!availableCanvasOrientations.includes(choice.id)) return false;
+            if (showSquareOrientationPillOnly) return choice.id === "square";
+            return true;
+          })
+          .map((choice) => {
+            const isSelected = sizeCanvasOrientation === choice.id;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                onClick={() => applyCanvasOrientation(choice.id)}
+                data-testid={`button-size-orientation-${choice.id}`}
+                style={
+                  isSelected
+                    ? {
+                        backgroundColor: "#111827",
+                        color: "#ffffff",
+                        border: "2px solid #111827",
+                        borderRadius: "9999px",
+                        padding: "5px 14px",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        outline: "none",
+                      }
+                    : {
+                        backgroundColor: "transparent",
+                        color: "#374151",
+                        border: "1px solid #9ca3af",
+                        borderRadius: "9999px",
+                        padding: "5px 14px",
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        outline: "none",
+                      }
+                }
+              >
+                {choice.name}
+              </button>
+            );
+          })}
+      </div>
+      <div className="mt-0.5 min-h-[1rem]" />
+    </div>
+  );
+  const mSizeSelectorNode = printSizes.length > 0 ? (
+    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
+      <SizeSelector
+        sizes={sortSizesByRetailPrice(countryAwareSizes, buildPriceMap())}
+        selectedSize={sizeSelectorValue}
+        label={isPhoneCaseProduct ? "Model" : "Size"}
+        onSizeChange={(sizeId) => {
+          applySelectedSize(sizeId);
+          if (isMobile) {
+            window.setTimeout(() => dismissMobileSheet({ retractRail: true }), 160);
+          }
+        }}
+        prices={buildPriceMap()}
+        priceCurrencyCode={sizeDropdownCurrencyCode}
+        outOfStockSizeIds={outOfStockSizeIds}
+        mintedCatalog={mintedCatalog}
+        selectedColorName={frameColorObjects.find((c) => c.id === selectedFrameColor)?.name}
+        selectedColorId={selectedFrameColor}
+      />
+      <FindMySizeButton
+        guide={productTypeConfig?.sizeFinder}
+        onUseSize={(name) => {
+          const match = printSizes.find((size) => size.name.toLowerCase() === name.toLowerCase());
+          if (match) applySelectedSize(match.id);
+        }}
+      />
+      <div className="mt-0.5 min-h-[1rem]">
+        {selectedSize === "" && (
+          <p className="text-[11px] text-muted-foreground leading-tight">
+            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
+          </p>
+        )}
+      </div>
+    </div>
+  ) : null;
+  const mColourControlNode = showFrameColorSelector ? (
+    <FrameColorSelector
+      frameColors={frameColorObjects}
+      selectedFrameColor={selectedFrameColor}
+      onFrameColorChange={handleCustomerFrameColorChange}
+      colorLabel={productTypeConfig?.colorLabel || "Color"}
+      mintedCatalog={mintedCatalog}
+      selectedSizeName={printSizes.find((s) => s.id === selectedSize)?.name}
+    />
+  ) : null;
+  // Shipping & returns / details / size chart for the shell's Info sheet. The
+  // in-flow `md:hidden` copy is suppressed while the shell owns the layout, so
+  // this is the only place a phone customer can reach the terms.
+  const mProductInfoNode = isStorefront || isShopify ? (
+    <ProductInfoSections
+      description={productTypeConfig?.description}
+      productName={productTypeConfig?.name || displayName}
+      commerceTerms={isStorefront}
+      commerceTermsOrigin={centralAppUrl}
+      onSectionClose={isMobile ? () => dismissMobileSheet({ retractRail: true }) : undefined}
+    />
+  ) : null;
+  const mPrintSideNode = supportsPrintPlacementSelection ? (
+    <div className="space-y-1">
+      <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
+      <Select
+        value={printPlacement}
+        onValueChange={(value) => {
+          const nextPlacement = value as "front" | "back" | "both";
+          setPrintPlacement(nextPlacement);
+          if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
+            return;
+          }
+          const flatOnTheFly = usesFlatOnTheFlyPreview;
+          if (flatOnTheFly) {
+            setFlatPlacerState((prev) => ({
+              view: prev?.view ?? "front",
+              placements: prev?.placements ?? {
+                front: { scale: 1, offsetX: 0, offsetY: 0 },
+                back: { scale: 1, offsetX: 0, offsetY: 0 },
+              },
+              artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
+              enabled: {
+                front: nextPlacement === "front" || nextPlacement === "both",
+                back: nextPlacement === "back" || nextPlacement === "both",
+              },
+              linkSides: false,
+              backgroundColor: prev?.backgroundColor ?? null,
+            }));
+            currentMockupColorRef.current = "";
+            lastFlatGalleryMockupKeyRef.current = "";
+            return;
+          }
+          fetchPrintifyMockups(
+            toAbsoluteImageUrl(generatedDesign.imageUrl),
+            productTypeConfig.id,
+            selectedSize,
+            selectedFrameColor || "default",
+            transform.scale,
+            transform.x,
+            transform.y,
+            undefined,
+            undefined,
+            undefined,
+            nextPlacement,
+          );
+        }}
+      >
+        <SelectTrigger id="print-placement-select" className="h-9">
+          <SelectValue placeholder="Select print side" />
+        </SelectTrigger>
+        <SelectContent position="popper">
+          <SelectItem value="front">Print on Front Only</SelectItem>
+          <SelectItem value="back">Print on Back Only</SelectItem>
+          <SelectItem value="both">Print on Both Sides</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+  ) : null;
+  const mStyleSubOptionsNode = !petposterousV2 && showPresetsParam && selectedPreset !== "" ? (() => {
+    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    if (!activePreset?.options) return null;
+    const { label, choices } = activePreset.options;
+    return (
+      <div style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '12px', marginTop: '4px' }}>
+        <Label style={{ display: 'block', marginBottom: '8px' }}>{label}</Label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          {choices.map((choice) => {
+            const isSelected = selectedStyleOption === choice.id;
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                onClick={() => {
+                  setSelectedStyleOption(choice.id);
+                  const orient =
+                    parseCanvasOrientationFromLabel(choice.name) ||
+                    parseCanvasOrientationFromLabel(choice.id);
+                  if (orient) applyCanvasOrientation(orient);
+                }}
+                data-testid={`button-style-option-${choice.id}`}
+                style={isSelected
+                  ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
+                  : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
+                }
+              >
+                {choice.name}
+              </button>
+            );
+          })}
+        </div>
+        {activePreset.options.required && selectedStyleOption === "" && (
+          <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose an art style option to continue</p>
+        )}
+      </div>
+    );
+  })() : null;
+  const mStyleBasePreviewNode = (() => {
+    if (petposterousV2) return null;
+    const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+    let previewUrl: string | undefined;
+    if (selectedStyleOption !== "" && activePreset?.options) {
+      const choice = activePreset.options.choices.find((c: any) => c.id === selectedStyleOption);
+      if ((choice as any)?.baseImageUrl) previewUrl = (choice as any).baseImageUrl;
+    }
+    if (!previewUrl && (activePreset as any)?.baseImageUrl) previewUrl = (activePreset as any).baseImageUrl;
+    if (!previewUrl) return null;
+    return (
+      <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
+        <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
+        <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
+      </div>
+    );
+  })();
+  // Prompt textarea reused in the mobile Prompt sheet (same value/onChange as
+  // desktop, including the "start fresh when a saved design is loaded" guard).
+  /** Quotes' three rows (desktop + mobile), unchanged markup via ConceptOptionsPicker. */
+  const quotesPickerNode = quotesShowOptions ? (
+    <ConceptOptionsPicker
+      rows={quoteRowDrafts.map((line) => ({ primary: line }))}
+      pick={quotePickIndex}
+      onPick={(i) => {
+        if (quoteEditingIndex != null && quoteEditingIndex !== i) {
+          commitQuoteRowEdit(quoteEditingIndex);
+        }
+        setQuotePickIndex(i);
+      }}
+      idStem="quote"
+      boxTestId="quotes-options-box"
+      edit={{
+        editingIndex: quoteEditingIndex,
+        onChange: (i, value) => {
+          const next = [...quoteRowDrafts];
+          next[i] = value;
+          setQuoteRowDrafts(next);
+          setQuotePickIndex(i);
+        },
+        onCommit: (i) => commitQuoteRowEdit(i),
+        onBegin: (i) => beginQuoteRowEdit(i),
+        onRevert: (i) => {
+          setQuoteRowDrafts((prev) => {
+            const next = [...prev];
+            next[i] = quoteEditSeedRef.current;
+            return next;
+          });
+          setQuoteEditingIndex(null);
+        },
+        ariaLabel: (i) => `Edit quote ${i + 1}`,
+      }}
+      newLink={{ label: "New theme", onClick: () => resetQuoteFlow(), testId: "button-quotes-new-theme" }}
+      moreLink={{
+        label: "More quotes",
+        onClick: () => void runQuoteOptions(quoteTheme),
+        disabled: quoteWriting || !quoteTheme,
+        testId: "button-quotes-more",
+      }}
+    />
+  ) : null;
+
+  /** Style-pack concepts: punchline + short visual idea; the rest stays hidden. */
+  const packPickerNode = packShowConcepts ? (
+    <>
+    <ConceptOptionsPicker
+      rows={packConcepts!.map((c) => ({
+        primary: packState.wordsMode === "none" ? "No words" : packConceptWords(c) || "No words",
+        secondary: c.visualJoke,
+      }))}
+      pick={packConceptPick}
+      onPick={(index) => { setPackConceptPick(index); setPackVisualSystem(""); setPackMoreLooks(false); }}
+      idStem="concept"
+      boxTestId="concept-options-box"
+      newLink={{ label: "Change the story", onClick: resetPackConcepts, testId: "button-concepts-new" }}
+      moreLink={{
+        label: "3 more ideas",
+        onClick: () => void runPackConcepts(),
+        disabled: packConceptLoading,
+        testId: "button-concepts-more",
+      }}
+    />
+    {petposterousV2 && packConceptPick != null ? (
+      <div className="space-y-2 pt-3" data-testid="petposterous-look-selector">
+        <Label>LOOK</Label>
+        <div className="flex flex-wrap gap-2">
+          {[...packLooks.recommended, ...(packMoreLooks ? packLooks.more : [])].map((look) => (
+            <Button key={look.id} type="button" variant={packVisualSystem === look.id ? "default" : "outline"}
+              aria-pressed={packVisualSystem === look.id} onClick={() => setPackVisualSystem(look.id)}
+              data-testid={`look-${look.id}`}>{look.label}</Button>
+          ))}
+        </div>
+        {packLooks.more.length ? <button type="button" className="text-xs underline" onClick={() => setPackMoreLooks(!packMoreLooks)}>{packMoreLooks ? "Fewer styles" : "More Styles"}</button> : null}
+        {!packVisualSystem ? <p className="text-xs text-muted-foreground">Choose a look for your artwork.</p> : null}
+      </div>
+    ) : null}
+    </>
+  ) : null;
+
+  const packOwnerAllowed = packStyleActive && packCaps?.ownerPhoto !== "unsupported";
+  /** Stored photos from a reloaded design + the secondary owner upload. Pack styles only. */
+  const packUploadExtrasNode = packStyleActive ? (
+    <div className="space-y-1.5" data-testid="pack-upload-extras">
+      {packStoredRefs.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {packStoredRefs.map((r, idx) => (
+            <div key={r.path} className="relative shrink-0">
+              {r.url ? (
+                <img src={r.url} alt={r.label || r.role} className="w-9 h-9 object-cover rounded" data-testid={`img-stored-reference-${idx}`} />
+              ) : (
+                <div className="w-9 h-9 rounded bg-muted" />
+              )}
+              {r.role === "owner" ? (
+                <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+              ) : null}
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                onClick={() => setPackStoredRefs((prev) => prev.filter((_, i) => i !== idx))}
+                data-testid={`button-clear-stored-reference-${idx}`}
+              >
+                <X className="w-2.5 h-2.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {packOwnerAllowed && referenceImages.length + packStoredRefs.length < 5 ? (
+        <button
+          type="button"
+          className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => {
+            pendingUploadRoleRef.current = "owner";
+            fileInputRef.current?.click();
+          }}
+          data-testid="button-add-owner-photo"
+        >
+          + {xc("ownerUploadLabel", "Add owner photo")} <span className="text-[11px]">(optional)</span>
+        </button>
+      ) : null}
+    </div>
+  ) : null;
+  const isOwnerReference = (idx: number) =>
+    packStyleActive && !!referenceImages[idx] && referenceRoleMapRef.current.get(referenceImages[idx]) === "owner";
+
+  const packControlProps = experienceProfile ? {
+    profile: experienceProfile,
+    capabilities: packCaps,
+    state: { ...packState, humor: packHumor, relationship: packRelationship },
+    onChange: (patch: Partial<PackCreativeState>) => {
+      setPackState((prev) => ({ ...prev, ...patch }));
+      if (!("wordsMode" in patch) && !("exactWords" in patch)) resetPackConcepts();
+    },
+  } : null;
+  const packControlsNode = packStyleActive && packControlProps ? (
+    petposterousV2 ? <PackCreativeWizard {...packControlProps}
+      step={packWizardStep} onStepChange={setPackWizardStep} showingConcepts={packShowConcepts}
+      onEditStory={() => { resetPackConcepts(); setPackWizardStep(0); }} />
+      : <PackCreativeControls {...packControlProps} />
+  ) : null;
+  const showPackStory = !petposterousV2 || packWizardStep === 5 || packShowConcepts;
+
+  const mPromptNode = (() => {
+    const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
+    const _descOptional = !!_activePresetForLabel?.descriptionOptional;
+    return (
+      <div className="space-y-1">
+        {packControlsNode}
+        {showPackStory ? <>
+        <Label htmlFor="prompt-mobile" className="text-xs">
+          {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
+          {reuseRegenerateBasePrompt ? (
+            <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional changes)</span>
+          ) : _descOptional ? (
+            <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">(optional)</span>
+          ) : null}
+        </Label>
+        {reuseRegenerateBasePrompt ? (
+          <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">{reuseRegenerateBasePrompt}</p>
+        ) : null}
+        {quotesShowOptions ? quotesPickerNode : packShowConcepts ? packPickerNode : (
+        <Textarea
+          id="prompt-mobile"
+          data-testid="input-prompt-mobile"
+          placeholder={(() => {
+            if (reuseRegenerateBasePrompt) return "Optional: add changes, e.g. change the colours from red to green";
+            const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
+            if (isQuotesActivePreset(activePreset)) return activePreset?.promptPlaceholder || QUOTES_PLACEHOLDER;
+            const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+            if (literal) return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
+            if (activePreset?.descriptionOptional) return activePreset.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+            return activePreset?.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+          })()}
+          value={prompt}
+          onChange={(e) => {
+            if (generatedDesign && loadDesignAppliedRef.current && effectiveLoadDesignId) {
+              setGeneratedDesign(null);
+              setDesignSource(null);
+              setAddedToCart(false);
+              loadDesignAppliedRef.current = false;
+              setBridgeLoadDesignId('');
+              setPrintifyMockups([]);
+              setPrintifyMockupImages([]);
+              setSelectedMockupIndex(0);
+              try {
+                const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
+                sessionStorage.removeItem(stateKey);
+              } catch (_) {}
+              clearReopenDesign(hostWindow());
+              const url = new URL(window.location.href);
+              url.searchParams.delete('loadDesignId');
+              window.history.replaceState({}, '', url.toString());
+              try {
+                const parentUrl = new URL(hostWindow().location.href);
+                parentUrl.searchParams.delete('loadDesignId');
+                hostWindow().history.replaceState({}, '', parentUrl.toString());
+              } catch (_) {}
+            }
+            setPrompt(e.target.value);
+          }}
+          className="min-h-[96px] text-sm"
+        />
+        )}
+        </> : null}
+      </div>
+    );
+  })();
+  const mUploadNode = (
+    <div className="space-y-2">
+      <Button
+        type="button"
+        variant="outline"
+        className="w-full h-11"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={referenceImages.length >= 5}
+        data-testid="button-upload-reference-mobile-sheet"
+      >
+        <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
+        {isImporting
+          ? "Importing..."
+          : referenceImages.length >= 5
+            ? "Max 5 images"
+            : referenceImages.length > 0
+              ? `Upload another (${referenceImages.length}/5)`
+              : xc("uploadLabel", "Upload")}
+      </Button>
+      <p className="text-xs text-muted-foreground text-center">
+        {referencePreviews.length > 0
+          ? `${referencePreviews.length} image${referencePreviews.length === 1 ? "" : "s"} attached`
+          : xc("uploadCaption", "Reference images (optional, up to 5)")}
+      </p>
+      {packUploadExtrasNode}
+      {referencePreviews.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {referencePreviews.map((preview, idx) => (
+            <div key={idx} className="relative shrink-0">
+              <img
+                src={preview}
+                alt={`Reference ${idx + 1}`}
+                className="w-12 h-12 object-cover rounded"
+                data-testid={`img-reference-preview-mobile-${idx}`}
+              />
+              {isOwnerReference(idx) ? (
+                <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+              ) : null}
+              <Button
+                type="button"
+                variant="destructive"
+                size="icon"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4"
+                onClick={() => clearReferenceImage(idx)}
+                data-testid={`button-clear-reference-mobile-${idx}`}
+              >
+                <X className="w-2.5 h-2.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={`p-2 sm:p-3 relative ${
         isEmbedded || isStorefront || isAdminTester || isMerchantStudio
           ? "bg-transparent"
           : "bg-background min-h-screen"
+      }${isMobile ? " appai-mobile-shell" : ""}${
+        isMobile && useAopCustomizer && showPatternStep && !!aopPendingMotifUrl
+          ? " appai-mobile-modebar-on"
+          : ""
       }`}
+      {...(mobileNativeScroll ? { "data-appai-pan-x-root": "" } : {})}
     >
+      {isMobile && searchParams.get("debugoverlay") === "1" && (
+        <MobileDebugOverlay />
+      )}
+      {isMobile && (
+        <MobileCustomizerShell
+          brandName={
+            experienceProfile?.brand?.name && !isCreatorStorefront
+              ? resolveMobileShellBrandName({ profileBrandName: experienceProfile.brand.name })
+              : shellBrandName
+          }
+          brandLogoUrl={isCreatorStorefront ? undefined : experienceProfile?.brand?.logoUrl}
+          isLoggedIn={isLoggedIn}
+          creditsLabel={creditBreakdown?.total ?? 0}
+          onBack={() => {
+            try {
+              if (
+                embeddedContext?.mode === "admin-tester" &&
+                embeddedContext.onLeaveProduct
+              ) {
+                if (showPatternStepRef.current && productTypeConfig?.panelMappingTemplate) {
+                  aopEditorDismissedRef.current = true;
+                  void flushHoodieAopPlacer({ force: true }).finally(() => {
+                    embeddedContext.onLeaveProduct?.();
+                  });
+                  return;
+                }
+                if (flatPlacerEditOpenRef.current) {
+                  void flushFlatPlacer({ force: true }).finally(() => {
+                    embeddedContext.onLeaveProduct?.();
+                  });
+                  return;
+                }
+                embeddedContext.onLeaveProduct();
+                return;
+              }
+              // Use refs — a stale showPatternStep=false here used to
+              // location.assign("/") / postMessage exit, remounting the
+              // saved design without the tile/offset just chosen.
+              if (
+                hoodieAopPlacerRef.current ||
+                (showPatternStepRef.current && productTypeConfig?.panelMappingTemplate)
+              ) {
+                leaveAopEditor();
+                return;
+              }
+              if (showPatternStepRef.current) {
+                aopEditorDismissedRef.current = true;
+                setShowPatternStep(false);
+                return;
+              }
+              if (flatPlacerEditOpenRef.current) {
+                flatEditorDismissedRef.current = true;
+                setFlatPlacerEditOpen(false);
+                const frontIdx = postGenGalleryItems.findIndex(
+                  (item) => item.kind === "mockup",
+                );
+                if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                void flushFlatPlacer({ force: true });
+                return;
+              }
+              leaveCustomizerToHome();
+            } catch {
+              leaveCustomizerToHome();
+            }
+          }}
+          onHome={leaveCustomizerToHome}
+          onOpenCart={openStorefrontCart}
+          cartCount={cartItemCount ?? 0}
+          onHelp={() => {
+            setAopSheetRequest((prev) => ({
+              id: "info",
+              nonce: (prev?.nonce ?? 0) + 1,
+            }));
+          }}
+          onOpenCredits={() => setCreditsPopoverOpen(true)}
+          onOpenGallery={() => {
+            setShowSavedDesigns((open) => !open);
+            setShowOtpLogin(false);
+            setShowCouponInput(false);
+            setShowArtClassSignup(false);
+          }}
+          onLogin={() => {
+            setShowOtpLogin(true);
+            setShowSavedDesigns(false);
+            setShowCouponInput(false);
+            setShowArtClassSignup(false);
+          }}
+          showModeToggle={
+            !!(useAopCustomizer && showPatternStep && aopPendingMotifUrl)
+          }
+          mode={hoodieAopPlacerState?.mode ?? "place"}
+          onModeChange={(m) => {
+            hoodieAopPlacerRef.current?.setMode(m);
+            if (m === "pattern") {
+              setAopSheetRequest((prev) => ({
+                id: "adjust",
+                nonce: (prev?.nonce ?? 0) + 1,
+              }));
+            }
+          }}
+          openSheetRequest={aopSheetRequest}
+          closeSheetRequest={mobileSheetCloseRequest}
+          chromeCovered={showSavedDesigns || showOtpLogin || showCouponInput}
+          primaryAction={
+            <>
+              {renderMobileHeadlinePrice()}
+              {renderAopLifestyleNotice("mobile-lifestyle-mockup-status")}
+              {renderPrimaryAction("", "mshell")}
+            </>
+          }
+          railSlots={[
+            {
+              id: "size",
+              label: isPhoneCaseProduct ? "Model" : "Size",
+              icon: <Ruler />,
+              title: isPhoneCaseProduct ? "Choose a model" : "Size & ratio",
+              subtitle: "Choose before generating — it sets your artwork's shape.",
+              content: mSizeSelectorNode,
+              needsAttention: printSizes.length > 0 && selectedSize === "",
+            },
+            {
+              id: "layout",
+              label: "Layout",
+              icon: <LayoutTemplate />,
+              title: "Layout & orientation",
+              subtitle: "Choose the orientation for your artwork.",
+              content:
+                showSizeDrivenOrientationPills || showSquareOrientationPillOnly
+                  ? mOrientationPillsNode
+                  : null,
+            },
+            {
+              id: "colour",
+              label: productTypeConfig?.colorLabel || "Colour",
+              icon: <Palette />,
+              title: `Product ${(productTypeConfig?.colorLabel || "colour").toLowerCase()}`,
+              subtitle: "Pick the item colour.",
+              content: mColourControlNode,
+            },
+            {
+              id: "info",
+              label: "Info",
+              icon: <Info />,
+              title: "Product info",
+              subtitle: "Details, sizing and shipping.",
+              content: mProductInfoNode,
+            },
+          ]}
+          bottomSlots={[
+            {
+              id: "style",
+              label: "Style",
+              icon: <Sparkles />,
+              title: "Art style",
+              subtitle: "How your artwork is generated.",
+              content:
+                // Petposterous V2: no customer style choice (LOOK sits with the concepts).
+                !petposterousV2 && showPresetsParam && filteredStylePresets.length > 0 ? (
+                  <div className="space-y-2">
+                    {mStyleSelectorNode}
+                    {mStyleHelperNode}
+                    {mStyleSubOptionsNode}
+                    {mStyleBasePreviewNode}
+                  </div>
+                ) : null,
+            },
+            {
+              id: "background",
+              label: "Background",
+              icon: <Droplet />,
+              title: "Background",
+              subtitle: "Fills what your artwork doesn't cover.",
+              content: mBackgroundNode,
+            },
+            {
+              id: "adjust",
+              label: "Adjust",
+              icon: <SlidersHorizontal />,
+              title: "Adjust artwork",
+              subtitle: "Pinch, drag & twist directly on the canvas.",
+              content: (
+                <div className="space-y-3">
+                  <div ref={setAopAdjustSlotEl} />
+                  {!useAopCustomizer && (
+                    <p className="text-sm text-muted-foreground">
+                      Pinch to scale, drag to move and twist to rotate directly on the
+                      preview.
+                    </p>
+                  )}
+                </div>
+              ),
+            },
+            {
+              id: "options",
+              label: "Options",
+              icon: <Layers />,
+              title: "Product options",
+              subtitle: "Specific to this product.",
+              content:
+                useAopCustomizer || mPrintSideNode ? (
+                  <div className="space-y-3">
+                    <div ref={setAopOptionsSlotEl} />
+                    {mPrintSideNode}
+                  </div>
+                ) : null,
+            },
+            {
+              id: "prompt",
+              label: "Prompt",
+              icon: <Type />,
+              title: xc("promptLabel", "Describe your artwork"),
+              subtitle: "Generate from text, or upload your own image.",
+              content: (
+                <div className="space-y-2">
+                  {mPromptNode}
+                  {mUploadNode}
+                </div>
+              ),
+            },
+          ]}
+        />
+      )}
       {reuseBusy && (
         <div
           className="fixed inset-0 z-[200] flex flex-col items-center justify-center gap-3 bg-background/80 backdrop-blur-[1px]"
@@ -13089,7 +18283,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   Working…
                 </>
               ) : reuseDialog?.applyHere ? (
-                "Regenerate from"
+                xc("regenerateButtonLabel", "Regenerate from")
               ) : (
                 "Use as reference"
               )}
@@ -13145,7 +18339,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   Working…
                 </>
               ) : (
-                "Regenerate from"
+                xc("regenerateButtonLabel", "Regenerate from")
               )}
             </Button>
             <Button
@@ -13343,7 +18537,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           if (open) setPackCheckoutError(null);
         }}
       >
-        <DialogContent className="text-sm space-y-3 sm:max-w-sm">
+        <DialogContent className="text-sm space-y-3 sm:max-w-sm max-h-[min(92dvh,calc(100dvh-1.5rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Studio Credits</DialogTitle>
           </DialogHeader>
@@ -13387,10 +18581,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       </li>
                     );
                   }
-                  const dollars = Math.max(0, Math.round((rung.thresholdCents ?? 0) / 100));
+                  const label = rung.thresholdDisplay || `$${(rung.thresholdCents ?? 5000) / 100} USD`;
                   return (
                     <li key={rung.rungKey}>
-                      Make a physical purchase over ${dollars} = {creditLabel}
+                      Make a physical purchase over {label} = {creditLabel}
                     </li>
                   );
                 })}
@@ -13433,6 +18627,45 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             {packCheckoutError ? (
               <p className="text-xs text-destructive">{packCheckoutError}</p>
             ) : null}
+            {isLoggedIn ? (
+              <div className="pt-3 mt-1 border-t border-border space-y-2">
+                <p className="font-medium text-foreground text-xs">Have a credit code?</p>
+                {couponError && (
+                  <p className="text-destructive text-xs" data-testid="text-credits-coupon-error">
+                    {couponError}
+                  </p>
+                )}
+                {couponSuccess && (
+                  <p className="text-green-600 text-xs" data-testid="text-credits-coupon-success">
+                    {couponSuccess}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Enter code"
+                    value={couponCode}
+                    onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                    className="flex-1 px-3 py-2 text-sm border rounded-md bg-background"
+                    disabled={couponLoading}
+                    data-testid="input-credits-coupon"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!couponCode.trim() || couponLoading}
+                    onClick={() => void redeemStorefrontCoupon()}
+                    data-testid="button-credits-coupon-redeem"
+                  >
+                    {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Redeem"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground pt-2">
+                Sign in to redeem a credit code.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             {!storefrontLoggedIn && (
@@ -13469,6 +18702,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </Button>
             )}
           </div>
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full md:hidden"
+            onClick={() => setCreditsPopoverOpen(false)}
+            data-testid="button-credits-dialog-close"
+          >
+            Close
+          </Button>
         </DialogContent>
       </Dialog>
       {/* Guide box shimmer + title shimmer animations */}
@@ -13502,18 +18744,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
       `}</style>
         <div
           className={
+          `${
           (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
             ? "w-full max-w-[min(100%,92rem)] mx-auto px-1 sm:px-2 space-y-2"
             : "max-w-6xl mx-auto space-y-2"
+          }${isMobile ? " appai-mobile-inflow" : ""}`
           }
         >
         {/* Free generation limit reached — prompt to create account */}
-        {freeLimitReached && (
+        {freeLimitReached && creditBreakdown.total === 0 && (
           <Card className="border-orange-500 bg-orange-50 dark:bg-orange-950">
             <CardContent className="py-3">
               <p className="text-orange-700 dark:text-orange-300 text-sm font-medium">
                 {storefrontLoggedIn
-                  ? "No free generations or shop rewards left on this shop. Buy a pack below to keep generating."
+                  ? "No free generations, shop rewards, or pack credits left on this shop. Buy a pack below to keep generating."
                   : `You've used all ${freeGenerationLimit} free generations. Create an account or buy a pack to continue designing!`}
               </p>
             </CardContent>
@@ -13593,7 +18837,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           className={`grid grid-cols-1 gap-3 sm:gap-4 ${
             (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
               ? "lg:grid-cols-[minmax(0,1fr)_minmax(220px,280px)_minmax(0,1fr)] lg:items-start"
-              : "md:grid-cols-2"
+              : "md:grid-cols-2 md:items-start"
           }`}
         >
           {/* Generator/form panel — right on desktop, first on mobile */}
@@ -13603,13 +18847,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-3 lg:col-start-3 lg:self-start"
                 : "md:order-2"
-            }`}
+            }${isMobile ? " appai-mobile-form" : ""}`}
           >
             {/* User account pills — shown above form on desktop, top of page on mobile */}
             {(isStorefront || (!isShopify && !isStorefront)) && (
               <div className="relative">
                 {isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam) ? (
                   <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <ShipCountrySelector compact />
                     <a
                       href={`/c/${encodeURIComponent(creatorUsernameRaw || creatorUsernameParam)}/products`}
                       className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
@@ -13668,7 +18913,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   )}
                   {isLoggedIn && (
                     <StudioMenuIconButton
-                      label={`Saved Designs${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
+                      label={`${xc("savedDesignsLabel", "Saved Designs")}${savedDesigns.length > 0 ? ` (${savedDesigns.length}/${galleryLimit})` : ""}`}
                       icon={Images}
                       active={showSavedDesigns}
                       danger={savedDesigns.length >= galleryLimit}
@@ -13695,7 +18940,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     />
                   )}
                   <StudioMenuIconButton
-                    label="Art Class newsletter"
+                    label={xc("emailCaptureMenuLabel", "Art Class newsletter")}
                     icon={GraduationCap}
                     active={showArtClassSignup}
                     onClick={() => {
@@ -13723,11 +18968,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
                 {/* Auth panel — absolute overlay, doesn't push content */}
                 {showOtpLogin && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border-primary bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Sign in or create account</h3>
+                          <h3 className="text-sm font-semibold">{xc("accountHeading", "Sign in or create account")}</h3>
                           <button
                             onClick={() => { setShowOtpLogin(false); setOtpStep('email'); setOtpError(null); setOtpCode(''); }}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -13736,7 +18981,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           </button>
                         </div>
                         <p className="text-xs text-muted-foreground mb-3">
-                          Save designs, track credits, and pick up where you left off. New here? We&apos;ll create your account automatically.
+                          {xc("accountBody", "Save designs, track credits, and pick up where you left off. New here? We'll create your account automatically.")}
                         </p>
                         {otpError && (
                           <p className="text-destructive text-xs mb-2">{otpError}</p>
@@ -13908,8 +19153,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 )}
 
                 {/* Saved Designs dropdown panel */}
-                {showSavedDesigns && isLoggedIn && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '500px', width: '100%' }}>
+                {showSavedDesigns && (
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '500px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         {isCreatorStorefront ? (
@@ -13919,18 +19164,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           />
                         ) : null}
                         <div className="mb-3 rounded-md border bg-muted/50 p-3">
-                          <p className="text-sm font-medium mb-1">Studio Art Class</p>
+                          <p className="text-sm font-medium mb-1">{xc("emailCaptureHeading", "Studio Art Class")}</p>
                           <StudioNewsletterSignup
                             source="store_user"
                             shopDomain={shopDomain}
                             creatorUsername={creatorUsernameParam}
                             customerId={storefrontCustomerId || customer?.id}
+                            identityToken={storefrontIdentityToken}
                             variant="compact"
                             hideIntro
+                            buttonLabel={experienceProfile?.copy?.emailCaptureButton}
+                            successHeading={experienceProfile?.copy?.emailCaptureSuccessHeading}
+                            successBody={experienceProfile?.copy?.emailCaptureSuccessBody}
+                            onCreditGranted={() => void refreshStorefrontWallet()}
                           />
                         </div>
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Saved Designs ({galleryGenerateSlots}/{galleryLimit})</h3>
+                          <h3 className="text-sm font-semibold">{xc("savedDesignsLabel", "Saved Designs")} ({galleryGenerateSlots}/{galleryLimit})</h3>
                           <button
                             onClick={() => setShowSavedDesigns(false)}
                             className="text-muted-foreground hover:text-foreground bg-transparent border-none cursor-pointer p-1"
@@ -13938,6 +19188,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             <X className="w-4 h-4" />
                           </button>
                         </div>
+                        {experienceProfile?.copy?.savedDesignsIntro ? (
+                          <p className="mb-3 text-xs text-muted-foreground" data-testid="text-saved-designs-intro">
+                            {experienceProfile.copy.savedDesignsIntro}
+                          </p>
+                        ) : null}
                         {galleryGenerateSlots >= galleryLimit - 4 && galleryGenerateSlots < galleryLimit && (
                           <div className="mb-3 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800">
                             You're almost at your {galleryLimit}-design limit. Delete unwanted designs to make room.
@@ -13996,47 +19251,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                         params.set("creatorUsername", originCreator);
                                         if (d.creatorId) params.set("creatorId", String(d.creatorId));
                                         params.set("storefront", "true");
-                                        params.set("loadDesignId", clickedId);
+                                        writeReopenDesign(hostWindow(), { id: clickedId, handle });
                                         window.location.assign(`/s/designer?${params.toString()}`);
                                         return;
                                       }
                                     }
-                                    // If this design belongs to a different product type, switch
-                                    // the iframe's active customizer context without navigating the
-                                    // Shopify parent document.
-                                    const currentProductTypeId = productTypeId ? String(productTypeId) : null;
-                                    const designProductTypeId = d.productTypeId ? String(d.productTypeId) : null;
-                                    const designPageHandle = d.pageHandle ? String(d.pageHandle) : null;
-                                    const currentPageHandle = activeProductContext.pageHandle || null;
-                                    const isDifferentProduct =
-                                      (!!designProductTypeId &&
-                                        !!currentProductTypeId &&
-                                        designProductTypeId !== currentProductTypeId) ||
-                                      (!!designPageHandle &&
-                                        !!currentPageHandle &&
-                                        designPageHandle !== currentPageHandle);
-                                    const needsNavigation = isDifferentProduct;
-                                    if (needsNavigation) {
-                                      void (async () => {
-                                        try {
-                                          const pageHandle = await resolveSavedDesignPageHandle(d);
-                                          if (!pageHandle) {
-                                            // Leftover job from a product not in this shop —
-                                            // reuse the artwork on the page they are already on.
-                                            loadSavedDesignInPlace(d);
-                                            return;
-                                          }
-                                          await switchToSavedDesignProduct(d);
-                                        } catch (error: any) {
-                                          console.error('[SavedDesigns] Cross-product in-app switch failed:', error);
-                                          setConfigLoading(false);
-                                          setIsInAppProductSwitching(false);
-                                          loadSavedDesignInPlace(d);
-                                        }
-                                      })();
-                                    } else {
-                                      loadSavedDesignInPlace(d);
-                                    }
+                                    void (async () => {
+                                      try {
+                                        await openSavedDesignFromGallery(d);
+                                      } catch (error: any) {
+                                        console.error("[SavedDesigns] Open failed:", error);
+                                        setReuseBusy(false);
+                                        loadSavedDesignInPlace(d);
+                                      }
+                                    })();
                                   }}
                                 >
                                   <div className="aspect-square relative bg-muted">
@@ -14047,6 +19275,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                       const displaySrc = mockupAbs || artworkAbs;
                                       return displaySrc ? (
                                         <img
+                                          key={displaySrc}
                                           src={displaySrc}
                                           alt={d.baseTitle || 'Saved design'}
                                           className="w-full h-full object-cover"
@@ -14093,7 +19322,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                                       if (effectiveCustomerId) deleteParams.set('customerId', effectiveCustomerId);
                                       const r = await safeFetch(`${API_BASE}/api/storefront/customizer/my-designs/${d.id}?${deleteParams.toString()}`, {
                                         method: 'DELETE',
-                                        headers: { 'Content-Type': 'application/json' },
+                                        headers: savedDesignsHeaders(),
                                       });
                                       if (r.ok) {
                                         setSavedDesigns(prev => prev.filter(x => x.id !== d.id));
@@ -14131,7 +19360,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
                 {/* Coupon Code dropdown panel */}
                 {showCouponInput && isLoggedIn && (
-                  <div className="absolute left-0 top-full mt-2 z-50" style={{ maxWidth: '400px', width: '100%' }}>
+                  <div className="absolute left-0 top-full mt-2 z-50 appai-mobile-escape-overlay" style={{ maxWidth: '400px', width: '100%' }}>
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
@@ -14157,28 +19386,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           <Button
                             size="sm"
                             disabled={!couponCode.trim() || couponLoading}
-                            onClick={() => {
-                              setCouponLoading(true);
-                              setCouponError(null);
-                              setCouponSuccess(null);
-                              safeFetch(`${API_BASE}/api/storefront/auth/redeem-coupon`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ code: couponCode.trim(), customerId: storefrontCustomerId, shop: shopDomain }),
-                              })
-                                .then(r => r.json())
-                                .then(data => {
-                                  if (data.ok && data.creditsAdded > 0) {
-                                    setCouponSuccess(`${data.creditsAdded} credit${data.creditsAdded !== 1 ? 's' : ''} added!`);
-                                    setCustomer(prev => prev ? { ...prev, credits: data.newBalance } : prev);
-                                    setCouponCode('');
-                                  } else {
-                                    setCouponError(data.error || 'Invalid code');
-                                  }
-                                })
-                                .catch(() => setCouponError('Failed to redeem code'))
-                                .finally(() => setCouponLoading(false));
-                            }}
+                            onClick={() => void redeemStorefrontCoupon()}
                           >
                             {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Redeem'}
                           </Button>
@@ -14192,7 +19400,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     <Card className="border bg-background shadow-lg">
                       <CardContent className="py-4">
                         <div className="flex items-center justify-between mb-3">
-                          <h3 className="text-sm font-semibold">Studio Art Class</h3>
+                          <h3 className="text-sm font-semibold">{xc("emailCaptureHeading", "Studio Art Class")}</h3>
                           <button
                             type="button"
                             onClick={() => setShowArtClassSignup(false)}
@@ -14206,7 +19414,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                           shopDomain={shopDomain}
                           creatorUsername={creatorUsernameParam}
                           customerId={storefrontCustomerId || customer?.id}
+                          identityToken={storefrontIdentityToken}
                           variant="compact"
+                          introText={experienceProfile?.copy?.emailCaptureBody}
+                          buttonLabel={experienceProfile?.copy?.emailCaptureButton}
+                            successHeading={experienceProfile?.copy?.emailCaptureSuccessHeading}
+                            successBody={experienceProfile?.copy?.emailCaptureSuccessBody}
+                          onCreditGranted={() => void refreshStorefrontWallet()}
                         />
                       </CardContent>
                     </Card>
@@ -14221,19 +19435,49 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   className="text-lg font-bold leading-tight"
                   data-testid="text-product-title"
                 >
-                  {displayName || productTypeConfig?.name || productTitle}
+                  {petposterousV2 ? productTypeConfig?.name || displayName || productTitle : displayName || productTypeConfig?.name || productTitle}
                 </h1>
                 {shopifyVariants.length > 0 && (() => {
                   const sizeSelected = Boolean(selectedSize);
                   const priceMap = buildPriceMap();
                   const mappedCents =
                     sizeSelected && selectedSize ? priceMap[selectedSize] : undefined;
-                  // Size dropdown and headline must show the same number.
-                  if (sizeSelected && mappedCents && mappedCents > 0) {
+                  const presentmentHeadline = (
+                    shopAmount: number,
+                    showFrom: boolean,
+                    variantId?: string | null,
+                  ) => {
+                    const meta = presentmentMetaRef.current;
+                    const display = formatStorefrontHeadlineDisplay({
+                      shopAmount,
+                      showFrom,
+                      variantId,
+                      activeCurrency,
+                      shopCurrency: meta.shopCurrency,
+                      rate: meta.rate,
+                      pricesByVariantId: presentmentPricesByVariantId,
+                      country: meta.country,
+                      locale: meta.locale,
+                      allowAjaxPresentment: !printPlacementUsesBoth,
+                    });
                     return (
                       <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                        {`$${(mappedCents / 100).toFixed(2)}`}
+                        {display.text}
+                        {display.converted ? (
+                          <span className="block text-[11px] font-normal leading-tight">
+                            Final price at checkout
+                          </span>
+                        ) : null}
                       </p>
+                    );
+                  };
+                  // Size dropdown stays shop-currency (buildPriceMap). Headline may
+                  // show presentment display-only. Do not sync those numbers.
+                  if (sizeSelected && mappedCents && mappedCents > 0) {
+                    return presentmentHeadline(
+                      mappedCents / 100,
+                      false,
+                      shopifyVariantId,
                     );
                   }
                   const activeId = sizeSelected
@@ -14269,12 +19513,10 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     printPlacementUsesBoth,
                   });
                   if (!headline) return null;
-                  return (
-                    <p className="text-base font-semibold text-muted-foreground" data-testid="text-product-price">
-                      {headline.showFrom
-                        ? `from $${headline.amount.toFixed(2)}`
-                        : `$${headline.amount.toFixed(2)}`}
-                    </p>
+                  return presentmentHeadline(
+                    headline.amount,
+                    headline.showFrom,
+                    selected?.id ?? shopifyVariantId ?? shopifyVariants[0]?.id,
                   );
                 })()}
               </div>
@@ -14290,13 +19532,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     addedToCart ? (
                       <Button
                         className="w-full h-11 text-base font-medium bg-green-600 hover:bg-green-700 text-white"
-                        onClick={() => {
-                          if (isCreatorStorefront && (creatorUsernameRaw || creatorUsernameParam)) {
-                            window.location.href = creatorCartPath(creatorUsernameRaw || creatorUsernameParam);
-                            return;
-                          }
-                          window.parent.location.href = "/cart";
-                        }}
+                        onClick={openStorefrontCart}
                         data-testid="button-view-cart"
                       >
                         <CheckCircle className="w-5 h-5 mr-2" />
@@ -14309,49 +19545,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             handleApplyPatternToContinue();
                             return;
                           }
-                          if (atcMockupsStaleBlocks) {
-                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                              if (generatedDesign?.imageUrl) {
-                                setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                                setShowPatternStep(true);
-                              }
-                              return;
-                            }
-                            // Refresh mockups first, then the button will switch to Add to Cart
-                            if (generatedDesign?.imageUrl && productTypeConfig && selectedSize) {
-                              setMockupError(null);
-                              setMockupFailed(false);
-                              setPrintifyMockups([]);
-                              setPrintifyMockupImages([]);
-                              setSelectedMockupIndex(0);
-                              setMockupsStale(false);
-                              mockupColorCacheRef.current = {};
-                              currentMockupColorRef.current = '';
-                              fetchPrintifyMockups(
-                                toAbsoluteImageUrl(generatedDesign.imageUrl),
-                                productTypeConfig.id,
-                                selectedSize,
-                                selectedFrameColor || 'default',
-                                transform.scale,
-                                transform.x,
-                                transform.y,
-                                useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                                aopPlacementSettings?.mirrorMode,
-                                useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                              );
-                            }
+                          if (atcShowSelectSize || atcMockupsStaleBlocks) {
+                            void refreshStaleMockups();
                           } else {
                             handleAddToCart();
                           }
                         }}
-                        disabled={isAddingToCart || atcWaitingForMockups || mockupLoading || flatPlacerSaveBlocking || aopPlacerSaveBlocking}
+                        disabled={atcPrimaryDisabled}
                         className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black disabled:opacity-50 disabled:cursor-not-allowed"
                         data-testid="button-add-to-cart"
                       >
                         {isAddingToCart ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Adding to Cart...</span>
+                            <span className="shimmer-text-white">{atcWorkingLabel}</span>
                           </>
                         ) : flatPlacerSaveBlocking || aopPlacerSaveBlocking ? (
                           <>
@@ -14360,12 +19567,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                               Saving design…
                             </span>
                           </>
-                        ) : atcWaitingForMockups || atcRefreshingMockups ? (
+                        ) : atcWaitingForMockups || atcRefreshingMockups || mockupsUpdating ? (
                           <>
                             <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                            <span className="shimmer-text-white">Refreshing Mockups…</span>
+                            <span className="shimmer-text-white">Updating mockups…</span>
                           </>
-                        ) : atcMockupsStaleBlocks ? (
+                        ) : atcShowSelectSize ? (
+                          <span className="shimmer-text-white">Select a size</span>
+                        ) : atcShowRefresh ? (
                           <>
                             <RefreshCcw className="w-5 h-5 mr-2" />
                             <span className="shimmer-text-white">Refresh Mockups to Continue</span>
@@ -14384,43 +19593,33 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     )
                   ) : (
                     /* ── Generate state ── */
+                    <>
+                    {shippingWarnedRow ? (
+                      <ShippingWarnedEstimate
+                        country={shipCountryForCoverage}
+                        firstItemCents={shippingWarnedRow.firstItemCents}
+                        matchedZone={shippingWarnedRow.matchedZone}
+                      />
+                    ) : null}
                     <Button
-                      onClick={() => {
-                        if ((isShopify || isStorefront) && customer && !hasGenerationCapacity) {
-                          notifyInsufficientCredits();
-                          return;
-                        }
-                        if (showPresetsParam && filteredStylePresets.length > 0 && selectedPreset === "") {
-                          alert("Please select an art style before generating");
-                          return;
-                        }
-                        const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                        if (activePreset?.options?.required && selectedStyleOption === "") {
-                          alert(`Please choose a ${activePreset.options.label.toLowerCase()} before generating`);
-                          return;
-                        }
-                        if (printSizes.length > 0 && selectedSize === "") {
-                          alert("Please select a size before generating");
-                          return;
-                        }
-                        handleGenerate();
-                      }}
-                      disabled={!freshDesignAllowed || (!!effectiveLoadDesignId && !reuseAwaitingGenerate) || (!prompt.trim() && !reuseRegenerateBasePrompt && !filteredStylePresets.find(p => p.id === selectedPreset)?.descriptionOptional) || generateMutation.isPending || (customerTermsEnabled && !storefrontTerms.accepted)}
+                      onClick={handleQuotesOrGenerateClick}
+                      disabled={quotesOrGenerateDisabled}
                       className="w-full h-11 text-base font-medium bg-black text-white border-black hover:bg-black/90 dark:bg-black dark:text-white dark:border-black"
                       data-testid="button-generate"
                     >
-                      {generateMutation.isPending ? (
+                      {generateMutation.isPending || quoteWriting || packConceptLoading ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          <span className="shimmer-text-white">Generating...</span>
+                          <span className="shimmer-text-white">{quoteWriting ? "Writing quotes..." : packConceptLoading ? "Writing ideas..." : "Generating..."}</span>
                         </>
                       ) : (
                         <>
                           <Sparkles className="w-4 h-4 mr-2" />
-                          <span className="shimmer-text-white">Generate Artwork</span>
+                          <span className="shimmer-text-white">{quotesNeedWrite ? "Write 3 quotes" : packNeedConcepts ? xc("conceptButtonLabel", "Give me 3 ideas") : xc("generateButtonLabel", "Generate Artwork")}</span>
                         </>
                       )}
                     </Button>
+                    </>
                   )}
                   {customerTermsEnabled && !(generatedDesign && !reuseAwaitingGenerate) ? (
                     <StorefrontTermsAccept
@@ -14434,38 +19633,16 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   {(isShopify || isStorefront) && generatedDesign ? (
                     <div className="mt-1 flex flex-col items-center gap-1">
                       {variantError && (
-                        <p className="text-destructive text-xs text-center" data-testid="text-variant-error-atc">{variantError}</p>
+                        <p className={`${atcNoticeClass(variantError)} text-xs text-center`} data-testid="text-variant-error-atc">{variantError}</p>
                       )}
-                      {isStorefront && bridgeError && (
+                      {isStorefront && !isTopLevelHost && bridgeError && (
                         <p className="text-destructive text-xs text-center" data-testid="text-bridge-error">{bridgeError}</p>
                       )}
                       {freshDesignAllowed && (
                         <button
                           type="button"
                           className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
-                          onClick={() => {
-                            setGeneratedDesign(null);
-                            setReuseAwaitingGenerate(false);
-                            setReuseRegenerateBasePrompt(null);
-                            lastAopPanelUrlsRef.current = null;
-                            setDesignSource(null);
-                            setAddedToCart(false);
-                            loadDesignAppliedRef.current = true;
-                            pendingRestoreColorRef.current = null;
-                            restoringSavedDesignRef.current = false;
-                            setBridgeLoadDesignId('');
-                            setReferenceImages([]);
-                            setReferencePreviews([]);
-                            if (fileInputRef.current) fileInputRef.current.value = '';
-                            setSelectedPreset('');
-                            setSelectedStyleOption('');
-                            applyProductDefaultSizeColor();
-                            try {
-                              const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
-                              sessionStorage.removeItem(stateKey);
-                            } catch (_) {}
-                            clearLoadDesignIdFromUrl();
-                          }}
+                          onClick={() => startFreshDesign()}
                         >
                           <Plus className="w-3 h-3" />
                           Start Fresh Design
@@ -14532,19 +19709,20 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   <Button
                     type="button"
                     variant="outline"
-                    className="w-full h-11"
+                    className="w-full h-11 hidden md:flex"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={referenceImages.length >= 5}
                     data-testid="button-upload-reference"
                   >
                     <ImagePlus className="w-4 h-4 mr-2 shrink-0" />
-                    {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : "Upload"}
+                    {isImporting ? "Importing..." : referenceImages.length >= 5 ? "Max 5 images" : xc("uploadLabel", "Upload")}
                   </Button>
-                  <p className="text-xs text-muted-foreground mt-1 text-center">
-                    Reference Images (optional, up to 5)
+                  <p className="hidden md:block text-xs text-muted-foreground mt-1 text-center">
+                    {xc("uploadCaption", "Reference Images (optional, up to 5)")}
                   </p>
+                  {packUploadExtrasNode ? <div className="hidden md:block mt-1.5">{packUploadExtrasNode}</div> : null}
                   {referencePreviews.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    <div className="hidden md:flex flex-wrap gap-1.5 mt-1.5">
                       {referencePreviews.map((preview, idx) => (
                         <div key={idx} className="relative shrink-0">
                           <img
@@ -14553,6 +19731,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             className="w-9 h-9 object-cover rounded"
                             data-testid={`img-reference-preview-${idx}`}
                           />
+                          {isOwnerReference(idx) ? (
+                            <span className="absolute bottom-0 left-0 right-0 rounded-b bg-black/60 text-center text-[9px] text-white">Me</span>
+                          ) : null}
                           <Button
                             type="button"
                             variant="destructive"
@@ -14575,323 +19756,50 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                 </div>
               </div>
 
+              {isCreatorStorefront && shippingDownsell ? (
+                <ShippingSizeDownsell
+                  country={shippingDownsell.country}
+                  requestedSizeId={shippingDownsell.requestedSizeId}
+                  requestedSizeLabel={
+                    printSizes.find((s) => s.id === shippingDownsellSizeId)?.name
+                  }
+                  shipsToSizes={shippingDownsell.shipsToSizes}
+                  suggestedSizeId={shippingDownsell.suggestedSizeId}
+                  catalogSizes={printSizes}
+                  onSwitchSize={applySelectedSize}
+                />
+              ) : null}
+
               {/* Art Style | Orientation (or Size), then Size | Color when orientation pills show */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-start">
-                {showPresetsParam && filteredStylePresets.length > 0 && (
+                {!isMobile && showPresetsParam && filteredStylePresets.length > 0 && (
                   <div data-guide-box={guideActiveBox === 1 ? "active" : undefined}>
-                    <StyleSelector
-                      stylePresets={filteredStylePresets}
-                      selectedStyle={selectedPreset}
-                      onStyleChange={(id) => { setSelectedPreset(id); setSelectedStyleOption(""); }}
-                    />
+                    {mStyleSelectorNode}
                     {/* Reserve helper-line height so Art Style / Size triggers stay aligned. */}
-                    <div className="mt-0.5 min-h-[1rem]">
-                      {selectedPreset === "" && (
-                        <p className="text-[11px] text-muted-foreground leading-tight">Please select an art style before generating</p>
-                      )}
-                    </div>
+                    {mStyleHelperNode}
+                    {mDecorFillNode}
                   </div>
                 )}
 
-                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) ? (
-                  <div className="space-y-1" data-testid="container-size-orientation-pills">
-                    <Label className="text-xs">Orientation</Label>
-                    <div className="flex flex-wrap gap-1.5 min-h-9 items-center">
-                      {(
-                        [
-                          { id: "horizontal" as const, name: "Horizontal" },
-                          { id: "vertical" as const, name: "Vertical" },
-                          { id: "square" as const, name: "Square" },
-                        ] as const
-                      )
-                        .filter((choice) => {
-                          if (!availableCanvasOrientations.includes(choice.id)) return false;
-                          if (showSquareOrientationPillOnly) return choice.id === "square";
-                          return true;
-                        })
-                        .map((choice) => {
-                          const isSelected = sizeCanvasOrientation === choice.id;
-                          return (
-                            <button
-                              key={choice.id}
-                              type="button"
-                              onClick={() => applyCanvasOrientation(choice.id)}
-                              data-testid={`button-size-orientation-${choice.id}`}
-                              style={
-                                isSelected
-                                  ? {
-                                      backgroundColor: "#111827",
-                                      color: "#ffffff",
-                                      border: "2px solid #111827",
-                                      borderRadius: "9999px",
-                                      padding: "5px 14px",
-                                      fontSize: "12px",
-                                      fontWeight: 600,
-                                      cursor: "pointer",
-                                      outline: "none",
-                                    }
-                                  : {
-                                      backgroundColor: "transparent",
-                                      color: "#374151",
-                                      border: "1px solid #9ca3af",
-                                      borderRadius: "9999px",
-                                      padding: "5px 14px",
-                                      fontSize: "12px",
-                                      fontWeight: 500,
-                                      cursor: "pointer",
-                                      outline: "none",
-                                    }
-                              }
-                            >
-                              {choice.name}
-                            </button>
-                          );
-                        })}
-                    </div>
-                    <div className="mt-0.5 min-h-[1rem]" />
-                  </div>
-                ) : (
-                  printSizes.length > 0 && (
-                    <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                      <SizeSelector
-                        sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
-                        selectedSize={selectedSize}
-                        label={isPhoneCaseProduct ? "Model" : "Size"}
-                        onSizeChange={(sizeId) => {
-                          const prevSize = printSizes.find((s) => s.id === selectedSize);
-                          const nextSize = printSizes.find((s) => s.id === sizeId);
-                          if (
-                            generatedDesign?.imageUrl &&
-                            prevSize &&
-                            nextSize &&
-                            prevSize.id !== nextSize.id
-                          ) {
-                            const prevAr = resolveSizeAspectRatio(
-                              prevSize,
-                              productTypeConfig?.aspectRatio,
-                            );
-                            const nextAr = resolveSizeAspectRatio(
-                              nextSize,
-                              productTypeConfig?.aspectRatio,
-                            );
-                            if (prevAr !== nextAr) {
-                              toast({
-                                title: isPhoneCaseProduct
-                                  ? "Model proportions changed"
-                                  : "Size proportions changed",
-                                description:
-                                  "Generate new artwork so it matches this size's aspect ratio.",
-                              });
-                            }
-                          }
-                          setSelectedSize(sizeId);
-                          if (frameOptionsRedundantWithSizes) {
-                            const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
-                            if (matched) setSelectedFrameColor(matched);
-                          }
-                          const flatOnTheFly = usesFlatOnTheFlyPreview;
-                          if (!flatOnTheFly) {
-                            setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                          }
-                        }}
-                        prices={buildPriceMap()}
-                        outOfStockSizeIds={outOfStockSizeIds}
-                      />
-                      <div className="mt-0.5 min-h-[1rem]">
-                        {selectedSize === "" && (
-                          <p className="text-[11px] text-muted-foreground leading-tight">
-                            {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )
-                )}
+                {!isMobile &&
+                  ((showSizeDrivenOrientationPills || showSquareOrientationPillOnly)
+                    ? mOrientationPillsNode
+                    : mSizeSelectorNode)}
 
-                {(showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
-                  printSizes.length > 0 && (
-                  <div data-guide-box={guideActiveBox === 2 ? "active" : undefined}>
-                    <SizeSelector
-                      sizes={sortSizesByRetailPrice(orientationFilteredSizes, buildPriceMap())}
-                      selectedSize={selectedSize}
-                      label={isPhoneCaseProduct ? "Model" : "Size"}
-                      onSizeChange={(sizeId) => {
-                        const prevSize = printSizes.find((s) => s.id === selectedSize);
-                        const nextSize = printSizes.find((s) => s.id === sizeId);
-                        if (
-                          generatedDesign?.imageUrl &&
-                          prevSize &&
-                          nextSize &&
-                          prevSize.id !== nextSize.id
-                        ) {
-                          const prevAr = resolveSizeAspectRatio(
-                            prevSize,
-                            productTypeConfig?.aspectRatio,
-                          );
-                          const nextAr = resolveSizeAspectRatio(
-                            nextSize,
-                            productTypeConfig?.aspectRatio,
-                          );
-                          if (prevAr !== nextAr) {
-                            toast({
-                              title: isPhoneCaseProduct
-                                ? "Model proportions changed"
-                                : "Size proportions changed",
-                              description:
-                                "Generate new artwork so it matches this size's aspect ratio.",
-                            });
-                          }
-                        }
-                        setSelectedSize(sizeId);
-                        if (frameOptionsRedundantWithSizes) {
-                          const matched = resolveFrameColorForSize(nextSize, frameColorObjects);
-                          if (matched) setSelectedFrameColor(matched);
-                        }
-                        const flatOnTheFly = usesFlatOnTheFlyPreview;
-                        if (!flatOnTheFly) {
-                          setTransform({ scale: defaultZoom, x: 50, y: 50 });
-                        }
-                      }}
-                      prices={buildPriceMap()}
-                      outOfStockSizeIds={outOfStockSizeIds}
-                    />
-                    <div className="mt-0.5 min-h-[1rem]">
-                      {selectedSize === "" && (
-                        <p className="text-[11px] text-muted-foreground leading-tight">
-                          {isPhoneCaseProduct ? "Please select a model" : "Please select a size"}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {!isMobile &&
+                  (showSizeDrivenOrientationPills || showSquareOrientationPillOnly) &&
+                  mSizeSelectorNode}
 
-                {showFrameColorSelector && (
-                  <FrameColorSelector
-                    frameColors={frameColorObjects}
-                    selectedFrameColor={selectedFrameColor}
-                    onFrameColorChange={setSelectedFrameColor}
-                    colorLabel={productTypeConfig?.colorLabel || "Color"}
-                    variantMap={productTypeConfig?.variantMap}
-                    selectedSize={selectedSize}
-                  />
-                )}
+                {!isMobile && mColourControlNode}
 
-                {supportsPrintPlacementSelection && (
-                  <div className="space-y-1">
-                    <Label htmlFor="print-placement-select" className="text-xs">Print Side</Label>
-                    <Select
-                      value={printPlacement}
-                      onValueChange={(value) => {
-                        const nextPlacement = value as "front" | "back" | "both";
-                        setPrintPlacement(nextPlacement);
-                        if (!generatedDesign?.imageUrl || !productTypeConfig || !selectedSize || useAopCustomizer) {
-                          return;
-                        }
-                        const flatOnTheFly = usesFlatOnTheFlyPreview;
-                        if (flatOnTheFly) {
-                          setFlatPlacerState((prev) => ({
-                            view: prev?.view ?? "front",
-                            placements: prev?.placements ?? {
-                              front: { scale: 1, offsetX: 0, offsetY: 0 },
-                              back: { scale: 1, offsetX: 0, offsetY: 0 },
-                            },
-                            artworkUrl: prev?.artworkUrl ?? (generatedDesign?.imageUrl ? toAbsoluteImageUrl(generatedDesign.imageUrl) : null),
-                            enabled: {
-                              front: nextPlacement === "front" || nextPlacement === "both",
-                              back: nextPlacement === "back" || nextPlacement === "both",
-                            },
-                            linkSides: false,
-                            backgroundColor: prev?.backgroundColor ?? null,
-                          }));
-                          currentMockupColorRef.current = "";
-                          lastFlatGalleryMockupKeyRef.current = "";
-                          return;
-                        }
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || "default",
-                          transform.scale,
-                          transform.x,
-                          transform.y,
-                          undefined,
-                          undefined,
-                          undefined,
-                          nextPlacement,
-                        );
-                      }}
-                    >
-                      <SelectTrigger id="print-placement-select" className="h-9">
-                        <SelectValue placeholder="Select print side" />
-                      </SelectTrigger>
-                      <SelectContent position="popper">
-                        <SelectItem value="front">Print on Front Only</SelectItem>
-                        <SelectItem value="back">Print on Back Only</SelectItem>
-                        <SelectItem value="both">Print on Both Sides</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
+                {!isMobile && mPrintSideNode}
               </div>
 
               {/* Style Sub-Options */}
-              {showPresetsParam && selectedPreset !== "" && (() => {
-                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                if (!activePreset?.options) return null;
-                const { label, choices } = activePreset.options;
-                return (
-                  <div style={{ border: '1px solid #d1d5db', borderRadius: '6px', padding: '12px', marginTop: '4px' }}>
-                    <Label style={{ display: 'block', marginBottom: '8px' }}>{label}</Label>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                      {choices.map((choice) => {
-                        const isSelected = selectedStyleOption === choice.id;
-                        return (
-                          <button
-                            key={choice.id}
-                            type="button"
-                            onClick={() => {
-                              setSelectedStyleOption(choice.id);
-                              const orient =
-                                parseCanvasOrientationFromLabel(choice.name) ||
-                                parseCanvasOrientationFromLabel(choice.id);
-                              if (orient) applyCanvasOrientation(orient);
-                            }}
-                            data-testid={`button-style-option-${choice.id}`}
-                            style={isSelected
-                              ? { backgroundColor: '#111827', color: '#ffffff', border: '2px solid #111827', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', outline: 'none' }
-                              : { backgroundColor: 'transparent', color: '#374151', border: '1px solid #9ca3af', borderRadius: '9999px', padding: '5px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', outline: 'none' }
-                            }
-                          >
-                            {choice.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {activePreset.options.required && selectedStyleOption === "" && (
-                      <p style={{ fontSize: '12px', color: '#d97706', fontWeight: 500, marginTop: '6px' }}>Please choose an art style option to continue</p>
-                    )}
-                  </div>
-                );
-              })()}
+              {!isMobile && mStyleSubOptionsNode}
 
               {/* Style base image preview */}
-              {(() => {
-                const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                let previewUrl: string | undefined;
-                if (selectedStyleOption !== "" && activePreset?.options) {
-                  const choice = activePreset.options.choices.find((c: any) => c.id === selectedStyleOption);
-                  if ((choice as any)?.baseImageUrl) previewUrl = (choice as any).baseImageUrl;
-                }
-                if (!previewUrl && (activePreset as any)?.baseImageUrl) previewUrl = (activePreset as any).baseImageUrl;
-                if (!previewUrl) return null;
-                return (
-                  <div className="flex items-center gap-2 p-2 rounded-md bg-muted/50 border">
-                    <img src={previewUrl} alt="Art style reference" className="w-10 h-10 rounded object-cover" />
-                    <span className="text-xs text-muted-foreground">Art style reference — AI will use this as visual inspiration</span>
-                  </div>
-                );
-              })()}
+              {!isMobile && mStyleBasePreviewNode}
 
               {isCreatorStorefront && recentCreatorDesigns.length > 0 ? (
                 <div className="space-y-1.5" data-testid="creator-recent-designs">
@@ -14938,13 +19846,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               ) : null}
 
               {/* Prompt Description */}
-              {(() => {
+              {!isMobile && (() => {
                 const _activePresetForLabel = filteredStylePresets.find(p => p.id === selectedPreset);
                 const _descOptional = !!_activePresetForLabel?.descriptionOptional;
                 return (
               <div className="space-y-1" data-guide-box={guideActiveBox === 3 ? "active" : undefined}>
+                {packControlsNode}
+                {showPackStory ? <>
                 <Label htmlFor="prompt" data-testid="label-prompt" className="text-xs">
-                  Describe your artwork
+                  {quotesMode ? "Theme" : xc("promptLabel", "Describe your artwork")}
                   {reuseRegenerateBasePrompt ? (
                     <span className="ml-1.5 text-[11px] font-normal text-muted-foreground">
                       (optional changes)
@@ -14961,6 +19871,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     {reuseRegenerateBasePrompt}
                   </p>
                 ) : null}
+                {quotesShowOptions ? (
+                  quotesPickerNode
+                ) : packShowConcepts ? (
+                  packPickerNode
+                ) : (
                 <Textarea
                   id="prompt"
                   data-testid="input-prompt"
@@ -14969,10 +19884,17 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       return "Optional: add changes, e.g. change the colours from red to green";
                     }
                     const activePreset = filteredStylePresets.find(p => p.id === selectedPreset);
-                    if (activePreset?.descriptionOptional) {
-                      return activePreset.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+                    if (isQuotesActivePreset(activePreset)) {
+                      return activePreset?.promptPlaceholder || QUOTES_PLACEHOLDER;
                     }
-                    return activePreset?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
+                    const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+                    if (literal) {
+                      return literalPlaceholder(literal) || activePreset?.promptPlaceholder || "Write your text here";
+                    }
+                    if (activePreset?.descriptionOptional) {
+                      return activePreset.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Leave blank to let the style speak for itself, or describe what you'd like...";
+                    }
+                    return activePreset?.promptPlaceholder || experienceProfile?.copy?.promptPlaceholder || "Describe the artwork you want to create... e.g., 'A serene sunset over mountains with golden clouds'";
                   })()}
                   value={prompt}
                   onChange={(e) => {
@@ -14992,20 +19914,45 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         const stateKey = designSessionStorageKey(shopDomain, productHandle, productTypeId);
                         sessionStorage.removeItem(stateKey);
                       } catch (_) {}
+                      clearReopenDesign(hostWindow());
                       const url = new URL(window.location.href);
                       url.searchParams.delete('loadDesignId');
                       window.history.replaceState({}, '', url.toString());
                       try {
-                        const parentUrl = new URL(window.parent.location.href);
+                        const parentUrl = new URL(hostWindow().location.href);
                         parentUrl.searchParams.delete('loadDesignId');
-                        window.parent.history.replaceState({}, '', parentUrl.toString());
+                        hostWindow().history.replaceState({}, '', parentUrl.toString());
                       } catch (_) {}
                     }
                     setPrompt(e.target.value);
                   }}
                   className="min-h-[64px] text-sm"
                 />
+                )}
+                {(() => {
+                  if (quotesShowOptions && quotePickIndex != null) {
+                    const words = countWords(quoteRowDrafts[quotePickIndex] || "");
+                    if (words <= QUOTES_LITERAL_MAX_WORDS) return null;
+                    return (
+                      <p className="text-[11px] text-amber-700" data-testid="text-quotes-word-limit">
+                        {words} words — this style renders cleanly at up to {QUOTES_LITERAL_MAX_WORDS}. Extra words may garble.
+                      </p>
+                    );
+                  }
+                  const activePreset = filteredStylePresets.find((p) => p.id === selectedPreset);
+                  if (isQuotesActivePreset(activePreset)) return null;
+                  const literal = findLiteralSlot(parseUserSlotSchema((activePreset as any)?.userSlotSchema));
+                  if (!literal?.maxWords) return null;
+                  const words = countWords(prompt);
+                  if (words <= literal.maxWords) return null;
+                  return (
+                    <p className="text-[11px] text-amber-700" data-testid="text-literal-word-limit">
+                      {words} words — this style renders cleanly at up to {literal.maxWords}. Extra words may garble.
+                    </p>
+                  );
+                })()}
                 {renderPrimaryAction("md:hidden", "mobile")}
+                </> : null}
               </div>
                 );
               })()}
@@ -15015,9 +19962,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   className="hidden md:block"
                   description={productTypeConfig?.description}
                   productName={productTypeConfig?.name || displayName}
-                  sizeChart={sizeChart}
-                  sizeChartLoading={sizeChartLoading}
-                  blueprintId={productTypeConfig?.printifyBlueprintId}
                   commerceTerms={isStorefront}
                   commerceTermsOrigin={centralAppUrl}
                 />
@@ -15032,12 +19976,25 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
           {/* Artwork preview panel — left on desktop, second on mobile */}
           <div
             ref={artworkColumnRef}
-            className={`order-2 min-w-0 w-full ${
+            className={`relative order-2 min-w-0 w-full ${
               (showPatternStep && aopPendingMotifUrl) || flatPlacerActive
                 ? "lg:order-1 lg:col-span-2 flex min-h-0 flex-col"
                 : "space-y-3 md:order-1"
+            }${isMobile ? " appai-mobile-canvas" : ""}${
+              isMobile &&
+              ((showPatternStep && aopPendingMotifUrl) || flatPlacerActive)
+                ? " appai-mobile-canvas--placer"
+                : ""
             }`}
           >
+            {isAdminTester && (generateMutation.isPending || studioGenFailure) ? (
+              <PreviewStudioGenOverlay
+                pending={generateMutation.isPending}
+                failure={generateMutation.isPending ? null : studioGenFailure}
+                onRetry={() => handleQuotesOrGenerateClick()}
+                onEditPrompt={focusStudioPromptField}
+              />
+            ) : null}
 
             {/* AOP Pattern Step — full-column in-flow when active (3-col desktop layout) */}
             {showPatternStep && aopPendingMotifUrl ? (
@@ -15046,24 +20003,27 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   {/* Back / Share — mesh AOP flushes on Back / ATC / Printers Mockup
                       (not on every nudge). */}
                   {(isStorefront || isShopify || isAdminTester) && (
-                    <div className="flex w-full gap-2 justify-stretch">
+                    <div
+                      className={`flex w-full justify-stretch${isMobile ? " gap-1" : " gap-2"}`}
+                    >
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="flex-1 min-w-0"
+                        className={`flex-1 min-w-0${isMobile ? " h-7" : ""}`}
                         onClick={() => {
-                          void flushHoodieAopPlacer().finally(() => {
-                            if (
-                              isAdminTester &&
-                              embeddedContext?.mode === "admin-tester" &&
-                              embeddedContext.onLeaveProduct
-                            ) {
-                              embeddedContext.onLeaveProduct();
-                              return;
-                            }
-                            setShowPatternStep(false);
-                          });
+                          if (
+                            isAdminTester &&
+                            embeddedContext?.mode === "admin-tester" &&
+                            embeddedContext.onLeaveProduct
+                          ) {
+                            aopEditorDismissedRef.current = true;
+                            void flushHoodieAopPlacer({ force: true }).finally(() => {
+                              embeddedContext.onLeaveProduct?.();
+                            });
+                            return;
+                          }
+                          leaveAopEditor();
                         }}
                         title={
                           isAdminTester
@@ -15079,7 +20039,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="flex-1 min-w-0"
+                        className={`flex-1 min-w-0${isMobile ? " h-7" : ""}`}
                         onClick={handleShare}
                         disabled={isSharing || !generatedDesign?.imageUrl}
                         data-testid="button-share-hoodie-placer"
@@ -15093,6 +20053,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       </Button>
                     </div>
                   )}
+                  {/* Saved designs reopen straight into the placer, which replaces the
+                      preview box — keep See it worn reachable here too. */}
+                  {testerPreview?.toolbar ? (
+                    <div className="flex justify-center">{testerPreview.toolbar}</div>
+                  ) : null}
+                  {testerPreview?.imageUrl ? (
+                    <div className="relative mx-auto flex aspect-square w-full max-w-[520px] items-center justify-center bg-background">
+                      <img
+                        src={testerPreview.imageUrl}
+                        alt="Lifestyle mockup"
+                        className="max-h-full max-w-full object-contain"
+                        data-testid="img-see-it-worn-placer"
+                      />
+                      {testerPreview.caption ? (
+                        <p className="absolute bottom-1 left-2 right-2 truncate text-center text-[11px] text-muted-foreground">
+                          {testerPreview.caption}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <HoodieAopPlacer
                     // Re-mount when the customer regenerates artwork or
                     // switches products so the placer re-seeds initialState
@@ -15104,10 +20084,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     templateName={productTypeConfig.panelMappingTemplate}
                     placeholderPositions={productTypeConfig.placeholderPositions}
                     initialState={{
-                      // New artwork remounts the placer. Spreading a prior
-                      // placement makes HoodieAopPlacer treat it as a resume
-                      // and skip the persist that unlocks Send a Test Order.
-                      ...(hoodieAopPlacerState?.artworkUrl === aopPendingMotifUrl
+                      // Resume whenever we have saved placements — don't
+                      // require artwork URLs to match. Preview Studio load
+                      // used to drop offset/bg because job URL ≠ pending URL.
+                      ...((hoodieAopPlacerState?.placements ||
+                        hoodieAopPlacerState?.enabled ||
+                        aopArtworkUrlsMatch(
+                          hoodieAopPlacerState?.artworkUrl,
+                          aopPendingMotifUrl,
+                        ))
                         ? hoodieAopPlacerState
                         : {}),
                       // Always seed the latest AI-generated motif as the
@@ -15127,17 +20112,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     onApply={handleHoodieAopApply}
                     onApplyStatusChange={(s) => {
                       setAopApplyStatus(s);
-                      if (s === "saved") setAopPlacementDirty(false);
+                      if (s === "saved") {
+                        setAopPlacementDirty(false);
+                        if (isAdminTester && savedJobIdRef.current) {
+                          emitTesterDesignStatus({
+                            jobId: savedJobIdRef.current,
+                            aopPanels: "saved",
+                          });
+                        }
+                      }
                     }}
                     // Resume: skip one-shot initial apply (mockup already persisted).
                     // Fresh designs still apply once for the first cart image.
                     skipInitialAutoApply={
                       !!hoodieAopPlacerState &&
-                      hoodieAopPlacerState.artworkUrl === aopPendingMotifUrl
+                      aopArtworkUrlsMatch(
+                        hoodieAopPlacerState.artworkUrl,
+                        aopPendingMotifUrl,
+                      )
                     }
                     canvasOverrideUrl={hoodieCanvasOverrideUrl}
                     canvasOverrideLabel={hoodieCanvasOverrideLabel}
                     onEngageLiveEditor={engageAopLiveEditor}
+                    allowTemplateDefaultsEdit={isAdminTester}
+                    mobileShell={isMobile}
+                    mobileSheetTargets={
+                      isMobile
+                        ? { options: aopOptionsSlotEl, adjust: aopAdjustSlotEl }
+                        : undefined
+                    }
                     printersMockupAction={
                       canRequestAopPrintersMockup
                         ? {
@@ -15154,6 +20157,61 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             error: lifestyleShotError,
                           }
                         : null
+                    }
+                    underPreviewSlot={
+                      showsPrintifyMockupPreview &&
+                      generatedDesign?.imageUrl &&
+                      postGenGalleryItems.length > 1 ? (
+                    <div
+                      className="flex justify-center gap-3 pt-2 pb-1"
+                      data-testid="hoodie-placer-gallery-dots"
+                    >
+                      {postGenGalleryItems.map((item, idx) => {
+                        if (!isAopPlacerGalleryReachable(item)) return null;
+                        return (
+                          <button
+                            key={`${item.kind}-${idx}`}
+                            type="button"
+                            onClick={() => {
+                              lastManualGalleryNavRef.current = Date.now();
+                              stickAopPersonGalleryRef.current = !!(
+                                item.kind === "mockup" &&
+                                isPrintifyOnDemandMockupLabel(item.label)
+                              );
+                              setSelectedMockupIndex(idx);
+                            }}
+                            aria-label={
+                              item.kind === "artwork" ? "Front View" : item.label
+                            }
+                            className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "opacity-100"
+                                : "opacity-40 hover:opacity-70"
+                            }`}
+                          >
+                            <span
+                              className={`rounded-full transition-all duration-200 ${
+                                selectedMockupIndex === idx
+                                  ? "w-4 h-2 bg-foreground"
+                                  : "w-2 h-2 bg-foreground/60"
+                              }`}
+                            />
+                            {item.kind !== "artwork" ? (
+                            <span
+                              className={`text-[10px] leading-tight font-medium ${
+                                selectedMockupIndex === idx
+                                  ? "text-foreground"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {item.kind === "artwork" ? "Front View" : item.label}
+                            </span>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                      ) : null
                     }
                   />
                   {showsPrintifyMockupPreview &&
@@ -15216,57 +20274,6 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       </button>
                     </>
                   )}
-                  {showsPrintifyMockupPreview &&
-                    generatedDesign?.imageUrl &&
-                    postGenGalleryItems.length > 1 && (
-                    <div
-                      className="flex justify-center gap-3 mt-1 lg:pr-80"
-                      data-testid="hoodie-placer-gallery-dots"
-                    >
-                      {postGenGalleryItems.map((item, idx) => {
-                        if (!isAopPlacerGalleryReachable(item)) return null;
-                        return (
-                          <button
-                            key={`${item.kind}-${idx}`}
-                            type="button"
-                            onClick={() => {
-                              lastManualGalleryNavRef.current = Date.now();
-                              stickAopPersonGalleryRef.current = !!(
-                                item.kind === "mockup" &&
-                                isPrintifyOnDemandMockupLabel(item.label)
-                              );
-                              setSelectedMockupIndex(idx);
-                            }}
-                            aria-label={
-                              item.kind === "artwork" ? "Front View" : item.label
-                            }
-                            className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                              selectedMockupIndex === idx
-                                ? "opacity-100"
-                                : "opacity-40 hover:opacity-70"
-                            }`}
-                          >
-                            <span
-                              className={`rounded-full transition-all duration-200 ${
-                                selectedMockupIndex === idx
-                                  ? "w-4 h-2 bg-foreground"
-                                  : "w-2 h-2 bg-foreground/60"
-                              }`}
-                            />
-                            <span
-                              className={`text-[10px] leading-tight font-medium ${
-                                selectedMockupIndex === idx
-                                  ? "text-foreground"
-                                  : "text-muted-foreground"
-                              }`}
-                            >
-                              {item.kind === "artwork" ? "Front View" : item.label}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
               ) : (
               <PatternCustomizer
@@ -15327,6 +20334,9 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   setMockupFailed(false);
                   setMockupsStale(false);
                   preShadowJobIdRef.current = null;
+                  preShadowDesignIdRef.current = null;
+                  preShadowWarmRef.current.clear();
+    preShadowSyncedRetailRef.current = null;
                   setPreShadowVariantId(null);
                   setPreShadowProductId(null);
                   if (preShadowPollRef.current) {
@@ -15366,24 +20376,57 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     const seq = ++aopPanelPersistSeqRef.current;
                     const isStale = () => seq !== aopPanelPersistSeqRef.current;
                     emitTesterDesignStatus({ jobId: panelJobId, aopPanels: 'saving' });
-                    void (async () => {
+                    // Mirror handleHoodieAopApply's in-flight bookkeeping: ATC's
+                    // freezeAopLineSnapshot race guard (aopPanelPersistInFlightRef /
+                    // aopPanelPersistPromiseRef) only defers to the background finalize
+                    // path when it can see this persist running. Without it, a fresh-gen
+                    // ATC click lands before aopPrintPanelUrls is saved and
+                    // aop-line-snapshot 400s with "No print panels to freeze".
+                    const persistWork = (async () => {
+                      aopPanelPersistInFlightRef.current = true;
                       try {
                         const printPanels = isMerchantStudio && options.getPrintPanelUrls
                           ? await options.getPrintPanelUrls()
                           : (options.printPanelUrls || options.panelUrls);
                         if (!printPanels?.length || isStale()) return;
 
-                        const aopPrintPanelUrls = await Promise.all(
-                          printPanels.map(async ({ position, dataUrl }) => ({
-                            position,
-                            url: await ensureHostedUrl(dataUrl),
-                          }))
-                        );
+                        const hostedResult = await hostPrintPanelsBatched({
+                          panels: printPanels,
+                          previous: lastHostedPrintPanelsRef.current,
+                          host: ensureHostedUrl,
+                          reuseKey: nextPlacement?.bgColor ?? "",
+                        });
+                        lastHostedPrintPanelsRef.current = hostedResult.hosted;
+                        if (
+                          hostedResult.hosted.length < printPanels.length &&
+                          !hostedResult.rateLimited
+                        ) {
+                          throw new Error(
+                            `Incomplete print panel upload (${hostedResult.hosted.length}/${printPanels.length})`,
+                          );
+                        }
+                        if (hostedResult.rateLimited) {
+                          const err = new UploadRateLimitedError(
+                            hostedResult.rateLimited.retryAfterSec,
+                          );
+                          if (!isStale()) {
+                            emitTesterDesignStatus({
+                              aopPanels: "rateLimited",
+                              retryAfterSec: err.retryAfterSec,
+                              rateLimitedUntil: Date.now() + err.retryAfterSec * 1000,
+                            });
+                          }
+                          throw err;
+                        }
+                        const aopPrintPanelUrls = hostedResult.hosted.map((p) => ({
+                          position: p.position,
+                          url: p.url,
+                        }));
                         if (isStale()) return;
 
                         await safeFetch(`${API_BASE}/api/storefront/save-state`, {
                           method: "POST",
-                          headers: { "Content-Type": "application/json" },
+                          headers: identityJsonHeaders(),
                           body: JSON.stringify({
                             jobId: panelJobId,
                             shop: panelSaveShop,
@@ -15398,20 +20441,28 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         if (!isStale()) emitTesterDesignStatus({ aopPanels: 'saved' });
                       } catch (e) {
                         console.error("[AOP] Failed to persist print panel URLs:", e);
-                        if (!isStale()) emitTesterDesignStatus({ aopPanels: 'error' });
+                        if (!isStale() && !isUploadRateLimitedError(e)) {
+                          emitTesterDesignStatus({ aopPanels: 'error' });
+                        }
+                      } finally {
+                        aopPanelPersistInFlightRef.current = false;
                       }
                     })();
+                    aopPanelPersistPromiseRef.current = persistWork;
                   }
                 }}
                 footerSlot={
-                  (isStorefront || isShopify) ? (
+                  !isMobile && (isStorefront || isShopify) ? (
                     <div className="flex w-full gap-2 justify-stretch">
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
                         className="flex-1 min-w-0"
-                        onClick={() => setShowPatternStep(false)}
+                        onClick={() => {
+                          aopEditorDismissedRef.current = true;
+                          setShowPatternStep(false);
+                        }}
                         title="Return to product preview without applying"
                         data-testid="button-back-from-pattern"
                       >
@@ -15444,7 +20495,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               // mockup flow for calibrated flat/mesh products). Falls back to
               // the Printify flow automatically if the renderer/assets fail.
               <div className="flex min-h-0 flex-col gap-2">
-                {(isStorefront || isShopify || isAdminTester) && (
+                {!isMobile && (isStorefront || isShopify || isAdminTester) && (
                   <div className="flex w-full gap-2 justify-stretch">
                     <Button
                       type="button"
@@ -15452,22 +20503,24 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       size="sm"
                       className="flex-1 min-w-0"
                       onClick={() => {
-                        void flushFlatPlacer().finally(() => {
-                          if (
-                            isAdminTester &&
-                            embeddedContext?.mode === "admin-tester" &&
-                            embeddedContext.onLeaveProduct
-                          ) {
-                            embeddedContext.onLeaveProduct();
-                            return;
-                          }
-                          setFlatPlacerEditOpen(false);
-                          // Prefer Front composite over Artwork (avoids blank+art stack).
-                          const frontIdx = postGenGalleryItems.findIndex(
-                            (item) => item.kind === "mockup",
-                          );
-                          if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
-                        });
+                        flatEditorDismissedRef.current = true;
+                        if (
+                          isAdminTester &&
+                          embeddedContext?.mode === "admin-tester" &&
+                          embeddedContext.onLeaveProduct
+                        ) {
+                          void flushFlatPlacer({ force: true }).finally(() => {
+                            embeddedContext.onLeaveProduct?.();
+                          });
+                          return;
+                        }
+                        setFlatPlacerEditOpen(false);
+                        // Prefer Front composite over Artwork (avoids blank+art stack).
+                        const frontIdx = postGenGalleryItems.findIndex(
+                          (item) => item.kind === "mockup",
+                        );
+                        if (frontIdx >= 0) setSelectedMockupIndex(frontIdx);
+                        void flushFlatPlacer({ force: true });
                       }}
                       data-testid="button-back-flat-placer"
                     >
@@ -15493,7 +20546,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                   </div>
                 )}
                 <div className="relative min-h-0">
-                  {(flatMockupRefreshing || (flatDecorMode && mockupsStale)) && (
+                  {(mockupsUpdating || (flatDecorMode && mockupsStale)) && (
                     <div
                       className="absolute inset-0 flex items-end justify-center pb-4 pointer-events-none z-20"
                       data-testid="overlay-flat-mockups-updating"
@@ -15503,13 +20556,13 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         className="pointer-events-auto text-white text-sm font-semibold bg-black/60 rounded-full px-3 py-1.5 animate-pulse"
                         onClick={handleRefreshFlatMockups}
                       >
-                        {flatMockupRefreshing ? "Updating mockups…" : "Refresh your Mockups"}
+                        {mockupsUpdating ? "Updating mockups…" : "Refresh your Mockups"}
                       </button>
                     </div>
                   )}
                   <FlatProductPlacer
                     ref={flatPlacerRef}
-                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
+                    key={`flat-${productTypeConfig?.id ?? 0}-${flatPlacerGeometryKey}-${flatBlankColorId}-${catalogSizeKey ?? ""}-${orientationBlankOverride ?? ""}-${generatedDesign?.id ?? generatedDesign?.imageUrl}-r${flatMockupRefreshNonce}`}
                     manifest={productTypeConfig.flatCalibration}
                     colorId={flatBlankColorId}
                     placementGeometryKey={flatPlacerGeometryKey}
@@ -15546,14 +20599,35 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       flatDecorMode ? null : orientationBlankOverride || colorBlankOverrideUrl
                     }
                     garmentColorHex={colorizeSharedBlank ? selectedGarmentHex : null}
+                    decorGenerateFill={
+                      showDecorFloatingFill && !flatEdgeWrapMode
+                        ? {
+                            value: decorBackgroundFill,
+                            onChange: applyLiveDecorFill,
+                          }
+                        : null
+                    }
                     catalogSizeAspectRatio={
-                      !flatDecorMode && orientationBlankOverride
+                      !flatDecorMode &&
+                      (orientationBlankOverride || catalogSizeBlankBlueprint)
                         ? catalogSizeAspectRatio
                         : null
+                    }
+                    catalogBlueprintId={
+                      catalogSizeBlankBlueprint
+                        ? productTypeConfig?.printifyBlueprintId ?? null
+                        : null
+                    }
+                    catalogSizeKey={catalogSizeBlankBlueprint ? catalogSizeKey : null}
+                    generationModel={
+                      generatedDesign?.generationModel ||
+                      loadedDecorStyle?.generationModel ||
+                      null
                     }
                     // Tester auto-flushes Apply after generate; never seed "saved"
                     // from onChange alone or flush becomes a no-op.
                     skipInitialAutoApply={!isAdminTester && !!flatPlacerState}
+                    mobileShell={isMobile}
                     canvasOverrideUrl={flatCanvasOverrideUrl}
                     canvasOverrideLabel={flatCanvasOverrideLabel}
                     viewerHeightPx={
@@ -15584,6 +20658,67 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                             error: lifestyleShotError,
                           }
                         : null
+                    }
+                    underPreviewSlot={
+                      showsPrintifyMockupPreview &&
+                      generatedDesign?.imageUrl &&
+                      postGenGalleryItems.length > 1 ? (
+                  <div
+                    className={`flex justify-center gap-3 pt-2 pb-1${
+                      flatEdgeWrapMode ? " shrink-0" : ""
+                    }`}
+                    data-testid="flat-placer-gallery-dots"
+                  >
+                    {postGenGalleryItems.map((item, idx) => {
+                      if (!isFlatPlacerGalleryReachable(item)) return null;
+                      return (
+                        <button
+                          key={`${item.kind}-${idx}`}
+                          type="button"
+                          onClick={() => {
+                            lastManualGalleryNavRef.current = Date.now();
+                            stickAopPersonGalleryRef.current = !!(
+                              item.kind === "mockup" &&
+                              isPrintifyOnDemandMockupLabel(item.label)
+                            );
+                            setSelectedMockupIndex(idx);
+                          }}
+                          aria-label={
+                            item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label
+                          }
+                          className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
+                            selectedMockupIndex === idx
+                              ? "opacity-100"
+                              : "opacity-40 hover:opacity-70"
+                          }`}
+                        >
+                          <span
+                            className={`rounded-full transition-all duration-200 ${
+                              selectedMockupIndex === idx
+                                ? "w-4 h-2 bg-foreground"
+                                : "w-2 h-2 bg-foreground/60"
+                            }`}
+                          />
+                          {!(isMobile && item.kind === "artwork") ? (
+                          <span
+                            className={`text-[10px] leading-tight font-medium ${
+                              selectedMockupIndex === idx
+                                ? "text-foreground"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {item.kind === "artwork" && flatEdgeWrapMode
+                              ? "Front"
+                              : item.label}
+                          </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                      ) : null
                     }
                   />
                   {/* Gallery arrows while placer is open (ProductMockup arrows are hidden). */}
@@ -15634,72 +20769,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     </>
                   )}
                 </div>
-                {/* Dots while placer is open. lg:pr-80 centers under canvas (not controls). */}
-                {showsPrintifyMockupPreview &&
-                  generatedDesign?.imageUrl &&
-                  postGenGalleryItems.length > 1 && (
-                  <div
-                    className={`flex justify-center gap-3 mt-1 lg:pr-80${
-                      flatEdgeWrapMode ? " shrink-0" : ""
-                    }`}
-                    data-testid="flat-placer-gallery-dots"
-                  >
-                    {postGenGalleryItems.map((item, idx) => {
-                      if (!isFlatPlacerGalleryReachable(item)) return null;
-                      return (
-                        <button
-                          key={`${item.kind}-${idx}`}
-                          type="button"
-                          onClick={() => {
-                            lastManualGalleryNavRef.current = Date.now();
-                            stickAopPersonGalleryRef.current = !!(
-                              item.kind === "mockup" &&
-                              isPrintifyOnDemandMockupLabel(item.label)
-                            );
-                            setSelectedMockupIndex(idx);
-                          }}
-                          aria-label={
-                            item.kind === "artwork" && flatEdgeWrapMode
-                              ? "Front"
-                              : item.label
-                          }
-                          className={`flex flex-col items-center gap-0.5 transition-all duration-200 ${
-                            selectedMockupIndex === idx
-                              ? "opacity-100"
-                              : "opacity-40 hover:opacity-70"
-                          }`}
-                        >
-                          <span
-                            className={`rounded-full transition-all duration-200 ${
-                              selectedMockupIndex === idx
-                                ? "w-4 h-2 bg-foreground"
-                                : "w-2 h-2 bg-foreground/60"
-                            }`}
-                          />
-                          <span
-                            className={`text-[10px] leading-tight font-medium ${
-                              selectedMockupIndex === idx
-                                ? "text-foreground"
-                                : "text-muted-foreground"
-                            }`}
-                          >
-                            {item.kind === "artwork" && flatEdgeWrapMode
-                              ? "Front"
-                              : item.label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
             ) : (<>
             {/* Edit / Reuse / Share — above the viewing window (closed preview) */}
             {generatedDesign?.imageUrl && !showPatternStep && !flatPlacerActive && (
               <div
-                className="flex items-center justify-between gap-2 flex-wrap pb-2"
+                className="flex flex-col gap-1 pb-2"
                 data-testid="container-artwork-actions-top"
               >
+                <div className="flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-2 flex-wrap min-w-0">
                   {useAopCustomizer && !flatPlacerEligible && (
                     <Button
@@ -15719,6 +20797,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       variant="outline"
                       size="sm"
                       onClick={() => {
+                        flatEditorDismissedRef.current = false;
                         setFlatRenderFailed(false);
                         setFlatPlacerEditOpen(true);
                       }}
@@ -15783,6 +20862,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     disabled={isSharing || !generatedDesign?.imageUrl}
                     className="shrink-0"
                     data-testid="button-share"
+                    title="Copy a link that opens this design on another device"
                   >
                     {isSharing ? (
                       <Loader2 className="w-4 h-4 animate-spin mr-1" />
@@ -15792,6 +20872,23 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                     <span className="text-xs">Share</span>
                   </Button>
                 </div>
+                </div>
+                {!storefrontLoggedIn && (
+                  <p className="text-[11px] text-muted-foreground" data-testid="text-guest-share-recovery">
+                    Not signed in. Share copies a link that opens this design on another device, or if this browser’s data is cleared.
+                  </p>
+                )}
+              </div>
+            )}
+            {designAccessDenied && !generatedDesign?.imageUrl && (
+              <div
+                className="mb-3 rounded-md border border-border bg-muted/40 px-3 py-2"
+                data-testid="design-access-denied"
+              >
+                <p className="text-sm font-medium">This design isn’t available in this browser.</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  If you made it without signing in, it stays on the browser where you created it. On that browser, use Share — it copies a link that opens the design here. If you were signed in when you made it, sign in on this device and open it from My Designs.
+                </p>
               </div>
             )}
             {/* Main interactive canvas - full size, always visible for editing */}
@@ -15893,6 +20990,26 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               data-testid="container-mockup"
               data-appai-wheel-forward="true"
             >
+              {testerPreview?.imageUrl ? (
+                <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-background">
+                  <img
+                    src={testerPreview.imageUrl}
+                    alt="Lifestyle mockup"
+                    className="max-h-full max-w-full object-contain"
+                    data-testid="img-see-it-worn"
+                  />
+                  {testerPreview.caption ? (
+                    <p className="absolute bottom-1 left-2 right-2 truncate text-center text-[11px] text-muted-foreground">
+                      {testerPreview.caption}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {testerPreview?.toolbar ? (
+                <div className="pointer-events-none absolute left-2 right-2 top-2 z-40 flex justify-center">
+                  <div className="pointer-events-auto">{testerPreview.toolbar}</div>
+                </div>
+              ) : null}
               <div className="absolute inset-0">
                 {(() => {
                   const isGeneratingArtwork = generateMutation.isPending;
@@ -15970,6 +21087,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         printifyTransformEligible
                       }
                       designerType={productTypeConfig?.designerType || "generic"}
+                      artworkBackgroundColor={
+                        showDecorFloatingFill &&
+                        !flatEdgeWrapMode &&
+                        !usesFlatOnTheFlyPreview &&
+                        !useAopCustomizer
+                          ? liveDecorFillHex
+                          : null
+                      }
                       printShape={productTypeConfig?.printShape || "rectangle"}
                       canvasConfig={productTypeConfig?.canvasConfig}
                       blankImageUrl={(() => {
@@ -16111,8 +21236,8 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
 
               {/* Stale / updating mockups overlay (Printify + flat framed decor) */}
               {generatedDesign?.imageUrl &&
-                ((atcHasMockups && atcMockupsStaleBlocks && !mockupLoading) ||
-                  flatMockupRefreshing ||
+                ((atcHasMockups && atcMockupsStaleBlocks && !mockupsUpdating) ||
+                  mockupsUpdating ||
                   (flatDecorMode && mockupsStale)) && (
                 <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none z-20">
                   <button
@@ -16146,7 +21271,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                       }
                     }}
                   >
-                    {flatMockupRefreshing || mockupLoading
+                    {mockupsUpdating
                       ? "Updating mockups…"
                       : "Refresh your Mockups"}
                   </button>
@@ -16238,34 +21363,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                          if (generatedDesign?.imageUrl && productTypeConfig) {
-                            if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                              setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                              setShowPatternStep(true);
-                              return;
-                            }
-                            if (!selectedSize) return;
-                            setMockupError(null);
-                            setMockupFailed(false);
-                            setPrintifyMockups([]);
-                            setPrintifyMockupImages([]);
-                            setSelectedMockupIndex(0);
-                            setMockupsStale(false);
-                            mockupColorCacheRef.current = {};
-                            currentMockupColorRef.current = '';
-                            fetchPrintifyMockups(
-                              toAbsoluteImageUrl(generatedDesign.imageUrl),
-                              productTypeConfig.id,
-                              selectedSize,
-                              selectedFrameColor || 'default',
-                              transform.scale,
-                              transform.x,
-                              transform.y,
-                              useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                              aopPlacementSettings?.mirrorMode,
-                              useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                            );
-                          }
+                          void refreshStaleMockups();
                         }}
                         disabled={mockupLoading || !generatedDesign?.imageUrl}
                         title="Refresh Mockups"
@@ -16290,35 +21388,15 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               <div className="border-t pt-3" data-testid="container-mockup-status">
                 <div className="flex items-center gap-2 py-2 px-3 bg-destructive/10 rounded-md">
                   <span className="text-sm text-destructive flex-1">
-                    Preview unavailable — {mockupError || 'mockup generation failed'}. You can still add to cart.
+                    {useAopCustomizer && aopLifestyleStatus
+                      ? aopLifestyleStatus
+                      : `Preview unavailable — ${mockupError || "mockup generation failed"}. You can still add to cart.`}
                   </span>
                   <button
                     type="button"
                     className="text-xs text-destructive underline shrink-0"
                     onClick={() => {
-                      if (generatedDesign?.imageUrl && productTypeConfig) {
-                        if (useAopCustomizer && !lastAopPanelUrlsRef.current?.length) {
-                          setAopPendingMotifUrl(toAbsoluteImageUrl(generatedDesign.imageUrl));
-                          setShowPatternStep(true);
-                          return;
-                        }
-                        if (!selectedSize) return;
-                        setMockupError(null);
-                        setMockupFailed(false);
-                        setMockupTriggered(true);
-                        fetchPrintifyMockups(
-                          toAbsoluteImageUrl(generatedDesign.imageUrl),
-                          productTypeConfig.id,
-                          selectedSize,
-                          selectedFrameColor || "default",
-                          transform.scale,
-                          50,
-                          50,
-                          useAopCustomizer && aopPatternUrl ? aopPatternUrl : undefined,
-                          aopPlacementSettings?.mirrorMode,
-                          useAopCustomizer ? (lastAopPanelUrlsRef.current ?? undefined) : undefined
-                        );
-                      }
+                      void refreshStaleMockups();
                     }}
                   >
                     Retry
@@ -16338,7 +21416,7 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             )}
 
             {variantError && (
-              <p className="text-destructive text-sm" data-testid="text-variant-error">
+              <p className={`${atcNoticeClass(variantError)} text-sm`} data-testid="text-variant-error">
                 {variantError}
               </p>
             )}
@@ -16349,14 +21427,11 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
               </div>
             )}
 
-            {(isStorefront || isShopify) && (
+            {!isMobile && (isStorefront || isShopify) && (
               <ProductInfoSections
                 className="md:hidden border-t pt-4 mt-2"
                 description={productTypeConfig?.description}
                 productName={productTypeConfig?.name || displayName}
-                sizeChart={sizeChart}
-                sizeChartLoading={sizeChartLoading}
-                blueprintId={productTypeConfig?.printifyBlueprintId}
                 commerceTerms={isStorefront}
                 commerceTermsOrigin={centralAppUrl}
               />
@@ -16398,14 +21473,14 @@ export default function EmbedDesign({ embeddedContext, testerActions }: EmbedDes
             </button>
           </div>
           <p className="text-sm text-muted-foreground">
-            You've reached your {galleryLimit}-design limit. To generate a new design, open your <strong>Saved Designs</strong> gallery and delete one or more designs you no longer need.
+            You've reached your {galleryLimit}-design limit. To generate a new design, open your <strong>{xc("savedDesignsLabel", "Saved Designs")}</strong> gallery and delete one or more designs you no longer need.
           </p>
           <div className="flex gap-2 pt-1">
             <button
               className="flex-1 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
               onClick={() => { setShowGalleryFullModal(false); setShowSavedDesigns(true); }}
             >
-              Open Saved Designs
+              Open {xc("savedDesignsLabel", "Saved Designs")}
             </button>
             <button
               className="px-4 py-2 rounded-md border text-sm font-medium hover:bg-muted transition-colors"

@@ -1,20 +1,29 @@
 /**
  * Shopify app identities this backend can speak for.
  *
- * Railway production normally has the public App Store app
- * (SHOPIFY_API_KEY / SHOPIFY_API_SECRET). The creator checkout shop uses a
- * separate custom-distribution clone (CREATOR_SHOPIFY_API_KEY / SECRET) so
- * we can install without App Store review. Same code, two client IDs.
+ * Railway normally has the public App Store app
+ * (SHOPIFY_API_KEY / SHOPIFY_API_SECRET). Optional extra apps are added only
+ * when their own env pair is set:
+ *   creators     — CREATOR_SHOPIFY_API_KEY / CREATOR_SHOPIFY_API_SECRET
+ *   petposterous — PETPOSTEROUS_SHOPIFY_API_KEY / PETPOSTEROUS_SHOPIFY_API_SECRET
+ * A missing pair leaves that slot out of the list. Primary and creators keep
+ * today's behaviour when the petposterous pair is absent.
  */
 import crypto from "crypto";
 
-export type ShopifyAppLabel = "primary" | "creators";
+export type ShopifyAppLabel = "primary" | "creators" | "petposterous";
 
 export type ShopifyAppCredentials = {
   label: ShopifyAppLabel;
   apiKey: string;
   apiSecret: string;
 };
+
+const APP_ENV: Array<{ label: ShopifyAppLabel; key: string; secrets: string[] }> = [
+  { label: "primary", key: "SHOPIFY_API_KEY", secrets: ["SHOPIFY_API_SECRET", "SHOPIFY_API_SECRET_KEY"] },
+  { label: "creators", key: "CREATOR_SHOPIFY_API_KEY", secrets: ["CREATOR_SHOPIFY_API_SECRET"] },
+  { label: "petposterous", key: "PETPOSTEROUS_SHOPIFY_API_KEY", secrets: ["PETPOSTEROUS_SHOPIFY_API_SECRET"] },
+];
 
 function trimEnv(...names: string[]): string {
   for (const name of names) {
@@ -26,16 +35,13 @@ function trimEnv(...names: string[]): string {
 
 export function listShopifyAppCredentials(): ShopifyAppCredentials[] {
   const out: ShopifyAppCredentials[] = [];
-  const primaryKey = trimEnv("SHOPIFY_API_KEY");
-  const primarySecret = trimEnv("SHOPIFY_API_SECRET", "SHOPIFY_API_SECRET_KEY");
-  if (primaryKey && primarySecret) {
-    out.push({ label: "primary", apiKey: primaryKey, apiSecret: primarySecret });
-  }
-
-  const creatorKey = trimEnv("CREATOR_SHOPIFY_API_KEY");
-  const creatorSecret = trimEnv("CREATOR_SHOPIFY_API_SECRET");
-  if (creatorKey && creatorSecret && creatorKey !== primaryKey) {
-    out.push({ label: "creators", apiKey: creatorKey, apiSecret: creatorSecret });
+  const seenKeys = new Set<string>();
+  for (const spec of APP_ENV) {
+    const apiKey = trimEnv(spec.key);
+    const apiSecret = trimEnv(...spec.secrets);
+    if (!apiKey || !apiSecret || seenKeys.has(apiKey)) continue;
+    seenKeys.add(apiKey);
+    out.push({ label: spec.label, apiKey, apiSecret });
   }
   return out;
 }
@@ -53,13 +59,31 @@ export function getCreatorsShopifyCredentials(): ShopifyAppCredentials | null {
   return listShopifyAppCredentials().find((c) => c.label === "creators") ?? null;
 }
 
-/** `/shopify/install?app=creators` → clone client id. */
+export function credentialsForAppLabel(label: string | null | undefined): ShopifyAppCredentials | null {
+  if (!label) return null;
+  return listShopifyAppCredentials().find((c) => c.label === label) ?? null;
+}
+
+/**
+ * `/shopify/install?app=creators` → clone client id (falls back to primary when
+ * the clone env is unset, as before). `?app=petposterous` is the Petposterous
+ * custom app and does not fall back: an unset pair disables that install.
+ */
 export function credentialsForInstallHint(hint?: string | null): ShopifyAppCredentials | null {
   const h = String(hint || "").trim().toLowerCase();
   if (h === "creators" || h === "creator" || h === "clone") {
     return getCreatorsShopifyCredentials() || getPrimaryShopifyCredentials();
   }
+  if (h === "petposterous" || h === "pet") {
+    return credentialsForAppLabel("petposterous");
+  }
   return getPrimaryShopifyCredentials();
+}
+
+/** A shop with no recorded app still accepts any configured secret (today). A bound shop accepts only its own. */
+export function shopAcceptsApp(boundLabel: string | null | undefined, matchedLabel: string): boolean {
+  if (!boundLabel) return true;
+  return boundLabel === matchedLabel;
 }
 
 export function timingSafeEqualString(a: string, b: string): boolean {
@@ -80,14 +104,18 @@ export function hmacHexMatchesAnySecret(message: string, hmacHex: string): boole
   return false;
 }
 
-export function hmacBase64MatchesAnySecret(payload: Buffer | string, hmacB64: string): boolean {
+export function matchAppByBase64Hmac(payload: Buffer | string, hmacB64: string): ShopifyAppCredentials | null {
   const expected = String(hmacB64 || "");
   const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, "utf8");
   for (const c of listShopifyAppCredentials()) {
     const digest = crypto.createHmac("sha256", c.apiSecret).update(buf).digest("base64");
-    if (timingSafeEqualString(digest, expected)) return true;
+    if (timingSafeEqualString(digest, expected)) return c;
   }
-  return false;
+  return null;
+}
+
+export function hmacBase64MatchesAnySecret(payload: Buffer | string, hmacB64: string): boolean {
+  return matchAppByBase64Hmac(payload, hmacB64) != null;
 }
 
 /** Shopify OAuth callback query HMAC (hex). */

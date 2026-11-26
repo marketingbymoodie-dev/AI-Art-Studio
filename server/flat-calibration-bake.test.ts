@@ -49,6 +49,29 @@ describe("resolveFlatPrintFileDims landscape", () => {
     expect(dims).toEqual({ width: 4000, height: 3000 });
   });
 
+  it("uses the 36x24 harvest canvas for hyphen size ids, not the first black frame", () => {
+    const manifest = {
+      ...decorManifest,
+      blanks: {
+        "14x11:black": { front: "https://example.com/14.png" },
+        "36x24:black": { front: "https://example.com/36.png" },
+      },
+      geometryByBlank: {
+        "14x11:black": {
+          front: { printFileDims: { width: 4200, height: 3300 } },
+        },
+        "36x24:black": {
+          front: { printFileDims: { width: 10800, height: 7200 } },
+        },
+      },
+    };
+    const dims = resolveFlatPrintFileDims(manifest as any, "front", {
+      sizeId: "36-x-24",
+      frameColorId: "black",
+    });
+    expect(dims).toEqual({ width: 10800, height: 7200 });
+  });
+
   it("keeps portrait dims for portrait size ids", () => {
     const dims = resolveFlatPrintFileDims(decorManifest as any, "front", {
       sizeId: "16x20",
@@ -86,6 +109,36 @@ describe("resolveFlatPrintFileDims catalog size blanks (wall decals)", () => {
     });
     expect(dims).toEqual({ width: 3600, height: 2700 });
     // Axis-swap of 2400×3600 would be 3600×2400 (3:2) — wrong.
+    expect(dims).not.toEqual({ width: 3600, height: 2400 });
+  });
+});
+
+describe("resolveFlatPrintFileDims catalog size blanks (indoor tapestry)", () => {
+  const tapestryManifest = {
+    ...decorManifest,
+    blueprintId: 241,
+    name: "Indoor Wall Tapestry",
+    decorPerSize: false,
+    views: {
+      front: {
+        ...decorManifest.views.front,
+        printFileDims: { width: 2400, height: 3600 },
+      },
+    },
+  };
+
+  it("uses 26:36 print dims for 26x36", () => {
+    const dims = resolveFlatPrintFileDims(tapestryManifest as any, "front", {
+      sizeId: "26x36",
+    });
+    expect(dims).toEqual({ width: 2600, height: 3600 });
+  });
+
+  it("uses 36:26 for 36x26 (not landscape-swapped 3:2)", () => {
+    const dims = resolveFlatPrintFileDims(tapestryManifest as any, "front", {
+      sizeId: "36x26",
+    });
+    expect(dims).toEqual({ width: 3600, height: Math.round((3600 * 26) / 36) });
     expect(dims).not.toEqual({ width: 3600, height: 2400 });
   });
 });

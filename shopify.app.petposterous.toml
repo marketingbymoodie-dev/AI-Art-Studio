@@ -1,0 +1,64 @@
+# Petposterous custom-distribution app (petposterous.myshopify.com).
+# Hosted on the production Railway app. Not the public App Store app.
+# scope-drift: ignore
+# Install only after this config is released:
+#   /shopify/install?shop=petposterous.myshopify.com&app=petposterous
+# The ?app=petposterous hint is on that install URL. The callback allowlist
+# stays the bare production paths, because the server sends redirect_uri without
+# a query and reads the app from the signed OAuth state.
+# Deploy with: shopify app deploy --config petposterous
+# Do not deploy shopify.app.production.toml for this app.
+
+client_id = "f7e475da64e6e048d4972c9a12fea6c6"
+name = "AI Art Studio Petposterous"
+application_url = "https://appai-pod-production.up.railway.app"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = false
+
+[webhooks]
+api_version = "2026-01"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/data_request" ]
+uri = "/shopify/webhooks/customers-data-request"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "customers/redact" ]
+uri = "/shopify/webhooks/customers-redact"
+
+[[webhooks.subscriptions]]
+compliance_topics = [ "shop/redact" ]
+uri = "/shopify/webhooks/shop-redact"
+
+[[webhooks.subscriptions]]
+topics = [ "app/uninstalled" ]
+uri = "/shopify/webhooks/uninstall"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/paid" ]
+uri = "/shopify/webhooks/orders-paid"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/cancelled" ]
+uri = "/shopify/webhooks/orders-cancelled"
+
+[[webhooks.subscriptions]]
+topics = [ "refunds/create" ]
+uri = "/shopify/webhooks/refunds-create"
+
+[access_scopes]
+scopes = "read_products,read_themes,write_products,write_themes,write_content,read_content,write_publications,read_online_store_navigation,write_online_store_navigation,read_customers,write_customers,read_orders,write_resource_feedbacks,write_shipping,read_locations,write_inventory,write_validations,write_orders,read_metaobjects,write_metaobjects,write_app_proxy"
+
+[app_proxy]
+prefix = "apps"
+subpath = "appai"
+url = "https://appai-pod-production.up.railway.app/api/proxy"
+
+[auth]
+redirect_urls = [
+  "https://appai-pod-production.up.railway.app/auth/callback",
+  "https://appai-pod-production.up.railway.app/shopify/callback",
+  "https://appai-pod-production.up.railway.app/api/auth/callback"
+]

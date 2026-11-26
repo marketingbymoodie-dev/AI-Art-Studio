@@ -6,6 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { comboIsMinted, type ShopifyVariantMatchEntry } from "@shared/shopifyVariantMatch";
 import type { PrintSize } from "./types";
 
 interface SizeSelectorProps {
@@ -16,8 +17,17 @@ interface SizeSelectorProps {
   /** Override label — phone cases use "Model". */
   label?: string;
   prices?: Record<string, number>;
+  /**
+   * Shop-currency ISO to append after `$40.95` when presentment ≠ shop.
+   * DISPLAY ONLY — do not change `prices` cents. Omit when USD is active.
+   */
+  priceCurrencyCode?: string | null;
   /** Size ids that are out of stock for the current colour (Product Intelligence). */
   outOfStockSizeIds?: Set<string> | string[];
+  /** Minted Shopify catalog — greys sizes that are not minted for the selected colour. */
+  mintedCatalog?: ShopifyVariantMatchEntry[] | null;
+  selectedColorName?: string;
+  selectedColorId?: string;
 }
 
 export function SizeSelector({
@@ -27,12 +37,20 @@ export function SizeSelector({
   showLabel = true,
   label = "Size",
   prices,
+  priceCurrencyCode,
   outOfStockSizeIds,
+  mintedCatalog = null,
+  selectedColorName,
+  selectedColorId,
 }: SizeSelectorProps) {
   const oos =
     outOfStockSizeIds instanceof Set
       ? outOfStockSizeIds
       : new Set(outOfStockSizeIds || []);
+  const catalog = mintedCatalog && mintedCatalog.length > 0 ? mintedCatalog : null;
+  const colorName = String(selectedColorName || "").trim();
+  const colorId = String(selectedColorId || "").trim();
+  const hasColor = !!(colorName || colorId);
 
   return (
     <div className="space-y-1">
@@ -44,17 +62,30 @@ export function SizeSelector({
         <SelectContent position="popper" className="max-h-64 overflow-y-auto">
           {sizes.map((size) => {
             const stockOut = oos.has(size.id);
+            const unminted =
+              !!catalog &&
+              hasColor &&
+              !comboIsMinted(catalog, size.name, colorName, colorId || undefined);
+            const disabled = stockOut || unminted;
+            const reason = unminted
+              ? "Not available in this colour"
+              : stockOut
+                ? "Out of stock"
+                : "";
             return (
               <SelectItem
                 key={size.id}
                 value={size.id}
-                disabled={stockOut}
+                disabled={disabled}
+                title={disabled ? reason : undefined}
                 data-testid={`option-size-${size.id}`}
               >
-                <span className={stockOut ? "opacity-50" : undefined}>
+                <span className={disabled ? "opacity-50" : undefined}>
                   {size.name}
-                  {prices?.[size.id] ? ` - $${(prices[size.id] / 100).toFixed(2)}` : ""}
-                  {stockOut ? " — Out of stock" : ""}
+                  {prices?.[size.id]
+                    ? ` - $${(prices[size.id] / 100).toFixed(2)}${priceCurrencyCode ? ` ${priceCurrencyCode}` : ""}`
+                    : ""}
+                  {reason ? ` — ${reason}` : ""}
                 </span>
               </SelectItem>
             );

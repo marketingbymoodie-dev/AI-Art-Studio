@@ -1,8 +1,18 @@
 import type { ArtworkPlacement } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import type { FlatCalibrationManifest } from "@/pages/embed-design";
+import {
+  CATALOG_SIZE_BLANK_BLUEPRINTS,
+  shouldApplyCatalogBlankShading,
+} from "@shared/catalogSizeBlanks";
 import type { FlatProductPlacerState } from "../index";
-import { loadFlatImageRelaxed, loadFlatViewAssets, resolveFlatBlank, resolveFlatViewCalibration, type FlatViewName } from "./flatAssets";
-import { renderFlatView } from "./flatRender";
+import {
+  loadFlatImageRelaxed,
+  loadFlatViewAssets,
+  resolveFlatBlank,
+  resolveFlatViewCalibration,
+  type FlatViewName,
+} from "./flatAssets";
+import { printCanvasFillForView, renderFlatView } from "./flatRender";
 
 /**
  * Client-side flat mockup raster for a single view — no upload. Used when the
@@ -20,23 +30,33 @@ export async function renderFlatMockupDataUrl(
     landscapeOrientation?: boolean;
     blankUrlOverride?: string | null;
     catalogSizeAspectRatio?: string | null;
+    catalogBlueprintId?: number | null;
+    catalogSizeKey?: string | null;
     garmentColorHex?: string | null;
+    generationModel?: string | null;
   },
 ): Promise<string | null> {
   const refitCatalogSizeGuide =
-    !!opts?.blankUrlOverride && !!opts?.catalogSizeAspectRatio;
+    !!(opts?.catalogSizeAspectRatio || opts?.catalogSizeKey) &&
+    (!!opts?.blankUrlOverride ||
+      opts?.catalogBlueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals);
   const assets = await loadFlatViewAssets(manifest, colorId, view, {
     landscapeOrientation: opts?.landscapeOrientation,
     blankUrlOverride: opts?.blankUrlOverride,
     sizeAspectRatio: opts?.catalogSizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
-  const calib = resolveFlatViewCalibration(manifest, colorId, view, {
+  const calibBase = resolveFlatViewCalibration(manifest, colorId, view, {
     landscapeOrientation: !!opts?.landscapeOrientation,
     sizeAspectRatio: opts?.catalogSizeAspectRatio,
     refitCatalogSizeGuide,
+    catalogBlueprintId: opts?.catalogBlueprintId,
+    catalogSizeKey: opts?.catalogSizeKey,
   });
-  if (!assets?.blank || !calib) return null;
+  if (!assets?.blank || !calibBase) return null;
+  const calib = calibBase;
 
   const includeArtwork = !!placerState.enabled[view];
   const artwork =
@@ -49,6 +69,8 @@ export async function renderFlatMockupDataUrl(
     /^#[0-9a-fA-F]{6}$/.test(placerState.backgroundColor.trim())
       ? placerState.backgroundColor.trim()
       : null;
+  const decorMode = opts?.decorMode === true || !!manifest.decorPerSize;
+  const edgeWrapMode = !!manifest.edgeWrap;
   renderFlatView({
     target: canvas,
     blank: assets.blank,
@@ -58,13 +80,22 @@ export async function renderFlatMockupDataUrl(
     view: calib,
     placement: placerState.placements[view] as ArtworkPlacement,
     tier: manifest.tier,
-    forceShadingMap: !!manifest.edgeWrap,
-    edgeWrapMode: !!manifest.edgeWrap,
-    decorMode: opts?.decorMode === true || !!manifest.decorPerSize,
+    forceShadingMap: edgeWrapMode,
+    edgeWrapMode,
+    decorMode,
     fabricWeave: opts?.fabricWeave === true,
+    catalogBlankShade: shouldApplyCatalogBlankShading(opts?.catalogBlueprintId),
     // Phone cases: customer BG colour must survive colour-swap re-bake.
-    printCanvasBackgroundColor: manifest.edgeWrap ? bg : null,
+    // Apparel: no fill on a face whose artwork is off.
+    printCanvasBackgroundColor: printCanvasFillForView({
+      backgroundColor: bg,
+      enabled: includeArtwork,
+      decorMode,
+      edgeWrapMode,
+    }),
     garmentColorHex: opts?.garmentColorHex ?? null,
+    blueprintId: manifest.blueprintId,
+    generationModel: opts?.generationModel ?? null,
   });
 
   try {

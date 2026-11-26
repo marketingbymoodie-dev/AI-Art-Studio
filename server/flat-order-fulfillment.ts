@@ -12,6 +12,13 @@
  *   - the disabled-by-default `orders/paid` webhook (live, gated behind
  *     FLAT_ORDER_FULFILLMENT_ENABLED).
  *
+ * TENANT ISOLATION (do not set FLAT_ORDER_FULFILLMENT_ENABLED on a build without it):
+ *   line properties are customer-controlled, so a resolved job must belong to the
+ *   order's shop (`checkFulfillmentTenancy`), and a shadow / design-product variant
+ *   keyed to a different real job holds the line. Every AppAI line that is not
+ *   sent to Printify is tagged/noted on the Shopify order and listed under
+ *   `metadata.needsAttention` (server/fulfillment-attention.ts) — never a silent skip.
+ *
  * DATA RESOLUTION PATH (verified against the codebase):
  *   line.properties `_appai_job_id`  → generation_jobs.id  (print source of truth)
  *   line.properties `_flat_pl` / `_tote_pl` / `_aop_pl` → placement at add-to-cart (wins over job)
@@ -56,6 +63,7 @@ import {
   type FlatPlacement,
 } from "./flat-print-file";
 import { resolveFlatPrintFileDims, resolveFlatBakePlacementRect } from "./flat-calibration";
+import { flatArtFitForBlueprint } from "@shared/hoodieTemplate";
 import {
   resolveVariantFromMap,
   resolveVariantForSizeOnly,
@@ -73,7 +81,30 @@ import {
   decodeToteLinePlacement,
 } from "@shared/linePlacementSnapshot";
 import { loadAopLinePanelSnapshot, normalizeAopPanels, pickAopPanelsForOrderLine } from "./aop-line-snapshot";
+import { resolveDesignLiveFillHex } from "@shared/decorBackgroundFill";
 import type { ProductType, Merchant, GenerationJob } from "@shared/schema";
+import { normalizeMyshopifyShopDomain } from "./shopDomain";
+import { getCreatorPlatformShopCandidates } from "./creator-config";
+import { flagOrderNeedsAttention, type AttentionLine } from "./fulfillment-attention";
+import { PRINTIFY_FULL_BLEED } from "@shared/flywheelPromote";
+import { buildMyPetPrintArea } from "./my-pet-print-file";
+import { markMyPetPhotoPurchased } from "./my-pet";
+import {
+  alertMyPetHandoffFailed,
+  petFailureIsRetryable,
+  planMyPetRetry,
+} from "./my-pet-printify-retry";
+import { catalogueVariantForShopifyVariant } from "./catalogue-variant-fulfillment";
+import {
+  classifyPrintifySubmitError,
+  fetchShopifyOrderRecipient,
+  mergePrintifyRecipient,
+  missingPrintifyRecipientFields,
+  printifyAddressFromShopifyOrder,
+  rememberManualApprovalShop,
+  sanitizePrintifyRecipient,
+  shopRequiresManualApproval,
+} from "./printify-order-recipient";
 
 const PRINTIFY_API_BASE = "https://api.printify.com/v1";
 
@@ -178,18 +209,18 @@ export type ResolvedToteFoldedDesign = {
   /** Design product's persistent Printify product (if any) — bake-failure fallback (Phase 3). */
   printifyProductId?: string | null;
   placement: ToteFoldedPlacement;
+  backgroundColor?: string | null;
 };
 
 /**
- * A design product whose artwork already lives on a persistent Printify product
- * (server/design-product-publish.ts). No bake needed — the order line references
- * that product + variant directly. This is the ONLY fulfillment path for design
- * products outside the flat/mesh/tote_folded tiers (e.g. AOP, static/single-image).
+ * A design product whose artwork already lives on a persistent Printify product.
+ * Catalogue designs have no generation job; the stored Printify product is the
+ * order line. List-as-product rows outside the flat bake still use this path too.
  */
 export type ResolvedProductReferenceDesign = {
   designId: string;
   shop: string;
-  job: GenerationJob;
+  job: GenerationJob | null;
   productType: ProductType;
   merchant: Merchant;
   printifyProductId: string;
@@ -217,13 +248,84 @@ export type ResolvedAopDesign = {
   colorId: string;
 };
 
+/**
+ * A My Pet design — a pet-swap image edit of a flywheel catalogue design,
+ * never baked through flat-calibration (the catalogue's single product type
+ * has none). Its own print file is built fresh from the stored edited
+ * artwork (server/my-pet-print-file.ts) at order time.
+ */
+export type ResolvedPetDesign = {
+  designId: string;
+  shop: string;
+  job: GenerationJob;
+  productType: ProductType;
+  merchant: Merchant;
+  artStyle: string;
+  editedArtworkPath: string;
+  petPhotoId: string | null;
+  sizeId: string;
+  colorId: string;
+  /** Catalogue variant_map id. The line colour name ("Blue") is not this. */
+  printifyVariantId?: number | null;
+};
+
 export type ResolveResult =
   | { ok: true; kind: "flat"; design: ResolvedFlatDesign }
   | { ok: true; kind: "tote_folded"; design: ResolvedToteFoldedDesign }
   | { ok: true; kind: "product_reference"; design: ResolvedProductReferenceDesign }
   | { ok: true; kind: "aop"; design: ResolvedAopDesign }
-  | { ok: false; skip: true; reason: string }
-  | { ok: false; skip: false; reason: string };
+  | { ok: true; kind: "pet_design"; design: ResolvedPetDesign }
+  | { ok: false; skip: true; reason: string; attention?: boolean; unidentified?: boolean; pet?: boolean }
+  | { ok: false; skip: false; reason: string; attention?: boolean; unidentified?: boolean; pet?: boolean };
+
+/** Line properties that only AppAI writes — a line carrying any of them is ours. */
+const APPAI_LINE_KEYS = ["_appai_job_id", "_shadow_design_id", "_design_id"] as const;
+
+export function lineCarriesAppaiDesign(line: Pick<NormalizedOrderLine, "properties">): boolean {
+  return APPAI_LINE_KEYS.some((k) => String(line.properties?.[k] ?? "").trim() !== "");
+}
+
+function shopKey(shop: string | null | undefined): string {
+  return normalizeMyshopifyShopDomain(shop);
+}
+
+/**
+ * Two shop domains name the same tenant. The creator platform shop was renamed
+ * (see creator-config), so its jobs can carry either the old or new domain.
+ */
+export function shopsMatchForFulfillment(a: string | null | undefined, b: string | null | undefined): boolean {
+  const ka = shopKey(a);
+  const kb = shopKey(b);
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  const platform = getCreatorPlatformShopCandidates().map(shopKey);
+  return platform.includes(ka) && platform.includes(kb);
+}
+
+/**
+ * Tenant isolation for an order line: the generation job (and the shadow row,
+ * when the line bought one) must belong to the shop that took the order.
+ * `allowShoplessOrder` is only for admin draft tests whose product type has no
+ * shop domain; live webhook orders always carry the verified shop header.
+ */
+export function checkFulfillmentTenancy(args: {
+  orderShop: string | null | undefined;
+  jobShop: string | null | undefined;
+  shadowShop?: string | null;
+  allowShoplessOrder?: boolean;
+}): { ok: true } | { ok: false; reason: string } {
+  if (!shopKey(args.orderShop)) {
+    if (args.allowShoplessOrder) return { ok: true };
+    return { ok: false, reason: "order has no shop — refusing to resolve artwork" };
+  }
+  if (args.shadowShop != null && !shopsMatchForFulfillment(args.orderShop, args.shadowShop)) {
+    return { ok: false, reason: `shadow variant belongs to ${args.shadowShop}, not ${args.orderShop}` };
+  }
+  if (!shopsMatchForFulfillment(args.orderShop, args.jobShop)) {
+    return { ok: false, reason: `design belongs to ${args.jobShop || "no shop"}, not ${args.orderShop}` };
+  }
+  return { ok: true };
+}
 
 function parseJson<T = any>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -288,9 +390,16 @@ export function pickFlatOrderArtworkUrl(args: {
 }
 
 /**
- * Prefer designState size/colour (persisted on Apply) over stale job columns.
- * Design-product / line overrides still win for real Shopify checkouts.
- * Exported for unit tests.
+ * Size/colour for a Printify line.
+ *
+ * When a frozen cart-line field is present, it wins. The job is still the
+ * catalog/bake source and the fallback when a line field is genuinely absent
+ * (single-color products, variantMap miss, admin synthetics). Two ATCs from
+ * one saved-design ID with two colors must not both pick the job's latest
+ * designState.selectedFrameColor.
+ *
+ * Design-product listing override stays first: that is the variant the
+ * customer bought on a permanent listing, not this shared-job bug.
  */
 export function pickFlatOrderSizeColor(args: {
   designProductSizeId?: string | null;
@@ -305,15 +414,15 @@ export function pickFlatOrderSizeColor(args: {
   return {
     sizeId: String(
       args.designProductSizeId ||
-        args.designStateSize ||
         args.lineSize ||
+        args.designStateSize ||
         args.jobSize ||
         "default",
     ),
     colorId: String(
       args.designProductColorId ||
-        args.designStateColor ||
         args.lineColor ||
+        args.designStateColor ||
         args.jobColor ||
         "default",
     ),
@@ -351,10 +460,10 @@ async function findPublishedProductByVariant(
 async function findDesignProductByVariant(
   shop: string,
   variantId: string,
-): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null> {
+): Promise<{ jobId: string; sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null; printifyVariantId: number | null } | null> {
   const numeric = variantId.replace("gid://shopify/ProductVariant/", "");
-  const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null }>(
-    `SELECT job_id, variant_map, printify_product_id
+  const result = await pool.query<{ job_id: string; variant_map: any; printify_product_id: string | null; product_type_id: number | null }>(
+    `SELECT job_id, variant_map, printify_product_id, product_type_id
        FROM design_products
       WHERE shop = $1 AND variant_map::jsonb ? $2
       ORDER BY created_at DESC
@@ -363,13 +472,16 @@ async function findDesignProductByVariant(
   );
   const row = result.rows[0];
   if (!row) return null;
-  const map = parseJson<Record<string, { sizeId?: string; colorId?: string }>>(row.variant_map, {});
+  const map = parseJson<Record<string, { sizeId?: string; colorId?: string; printifyVariantId?: number | string }>>(row.variant_map, {});
   const entry = map[numeric];
+  const printifyVariantId = Number(entry?.printifyVariantId);
   return {
     jobId: row.job_id,
     sizeId: entry?.sizeId ?? null,
     colorId: entry?.colorId ?? null,
     printifyProductId: row.printify_product_id ?? null,
+    productTypeId: row.product_type_id ?? null,
+    printifyVariantId: Number.isFinite(printifyVariantId) && printifyVariantId > 0 ? printifyVariantId : null,
   };
 }
 
@@ -379,26 +491,52 @@ async function findDesignProductByVariant(
  *   { ok:false, skip:true }  — cleanly skip (mixed cart / normal product / AOP / no design)
  *   { ok:false, skip:false } — a hard error worth surfacing (e.g. missing creds)
  */
+export type ResolveOrderLineOptions = {
+  /** Admin draft tests only — see checkFulfillmentTenancy. */
+  allowShoplessOrder?: boolean;
+};
+
 export async function resolveDesignForOrderLine(
   line: NormalizedOrderLine,
   shop: string,
+  opts: ResolveOrderLineOptions = {},
+): Promise<ResolveResult> {
+  const result = await resolveDesignForOrderLineInner(line, shop, opts);
+  if (!result.ok && result.attention == null) {
+    // Any AppAI line we could not send must reach the merchant; only lines with
+    // no AppAI identity at all (normal products in a mixed cart) stay quiet.
+    return { ...result, attention: !result.unidentified || lineCarriesAppaiDesign(line) };
+  }
+  return result;
+}
+
+async function resolveDesignForOrderLineInner(
+  line: NormalizedOrderLine,
+  shop: string,
+  opts: ResolveOrderLineOptions,
 ): Promise<ResolveResult> {
   // 1) variant_id → published_products (shadow SKU) OR design_products (permanent listing)
   //    → designId (fallback to line properties for older/legacy carts)
   let designId: string | null = null;
   let resolvedShop = shop;
-  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null } | null = null;
+  let designProductOverride: { sizeId: string | null; colorId: string | null; printifyProductId: string | null; productTypeId: number | null; printifyVariantId: number | null } | null = null;
   let publishedDesignId: string | null = null;
+  let shadowShop: string | null = null;
+  let shadowBaseVariantId: string | null = null;
+  let designProductJobId: string | null = null;
   if (line.variantId) {
     const pp = await findPublishedProductByVariant(shop, line.variantId);
     if (pp) {
       publishedDesignId = pp.designId;
+      shadowShop = pp.shop || "";
       resolvedShop = pp.shop || shop;
+      shadowBaseVariantId = pp.baseVariantId || null;
     } else {
       const dp = await findDesignProductByVariant(shop, line.variantId);
       if (dp) {
         publishedDesignId = dp.jobId;
-        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId };
+        designProductJobId = dp.jobId;
+        designProductOverride = { sizeId: dp.sizeId, colorId: dp.colorId, printifyProductId: dp.printifyProductId, productTypeId: dp.productTypeId, printifyVariantId: dp.printifyVariantId };
       }
     }
   }
@@ -408,16 +546,140 @@ export async function resolveDesignForOrderLine(
     lineDesignId: line.properties["_design_id"],
   });
   if (!designId) {
-    return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)" };
+    return { ok: false, skip: true, reason: "no design id on line (normal product / mixed cart)", unidentified: true };
+  }
+
+  // The variant bought vouches for a design; a line property must not swap it.
+  if (designProductJobId && designProductJobId !== designId) {
+    return {
+      ok: false,
+      skip: false,
+      attention: true,
+      reason: `line job ${designId} does not match the design product's job ${designProductJobId}`,
+    };
+  }
+  const shadowJobId = publishedDesignId && !designProductJobId ? publishedDesignId.split("::")[0] : null;
+  if (shadowJobId && shadowJobId !== designId) {
+    // Creator-cart repair keys some shadows by cart line id (not a job) — those
+    // cannot vouch either way, so only a shadow keyed to a different real job
+    // is a conflict.
+    const shadowJob = await storage.getGenerationJob(shadowJobId);
+    if (shadowJob) {
+      return {
+        ok: false,
+        skip: false,
+        attention: true,
+        reason: `line job ${designId} does not match the shadow's job ${shadowJobId}`,
+      };
+    }
   }
 
   // 2) designId → generation_jobs
   const job = await storage.getGenerationJob(designId);
   if (!job) {
+    if (designProductOverride?.printifyProductId && designProductOverride.productTypeId) {
+      const productType = await storage.getProductType(designProductOverride.productTypeId);
+      if (!productType) {
+        return { ok: false, skip: true, reason: `product type ${designProductOverride.productTypeId} not found` };
+      }
+      if (!productType.merchantId) {
+        return { ok: false, skip: false, reason: `product type ${productType.id} has no merchant` };
+      }
+      const merchant = await storage.getMerchant(productType.merchantId);
+      if (!merchant || !merchant.printifyApiToken || !merchant.printifyShopId) {
+        return { ok: false, skip: false, reason: `merchant for product type ${productType.id} missing Printify credentials` };
+      }
+      if (!designProductOverride.sizeId || !designProductOverride.colorId) {
+        return { ok: false, skip: false, reason: `catalogue design ${designId} has no size and colour on this variant` };
+      }
+      return {
+        ok: true,
+        kind: "product_reference",
+        design: {
+          designId,
+          shop: resolvedShop,
+          job: null,
+          productType,
+          merchant,
+          printifyProductId: designProductOverride.printifyProductId,
+          sizeId: designProductOverride.sizeId,
+          colorId: designProductOverride.colorId,
+        },
+      };
+    }
     return { ok: false, skip: true, reason: `no generation job for design ${designId}` };
   }
 
   const designState = parseJson<Record<string, any>>(job.designState, {});
+  const isPetJob = designState?.source === "my-pet";
+
+  const tenancy = checkFulfillmentTenancy({
+    orderShop: shop,
+    jobShop: job.shop,
+    shadowShop,
+    allowShoplessOrder: opts.allowShoplessOrder,
+  });
+  if (!tenancy.ok) {
+    console.error(
+      `[fulfillment-tenancy] REFUSED line ${line.lineId} job=${designId} order shop=${shop || "(none)"}: ${tenancy.reason}`,
+    );
+    return { ok: false, skip: false, attention: true, pet: isPetJob || undefined, reason: `tenant check failed: ${tenancy.reason}` };
+  }
+
+  // My Pet designs never go through flat-calibration (the flywheel catalogue's
+  // product type has none) — resolve and return before any of that logic runs.
+  if (designState?.source === "my-pet") {
+    const petProductTypeId = Number(job.productTypeId);
+    if (!Number.isFinite(petProductTypeId)) {
+      return { ok: false, skip: false, pet: true, reason: `my-pet design ${designId} has no productTypeId` };
+    }
+    const petProductType = await storage.getProductType(petProductTypeId);
+    if (!petProductType) {
+      return { ok: false, skip: true, pet: true, reason: `product type ${petProductTypeId} not found` };
+    }
+    if (!petProductType.merchantId) {
+      return { ok: false, skip: false, pet: true, reason: `product type ${petProductTypeId} has no merchant` };
+    }
+    const petMerchant = await storage.getMerchant(petProductType.merchantId);
+    if (!petMerchant || !petMerchant.printifyApiToken || !petMerchant.printifyShopId) {
+      return { ok: false, skip: false, pet: true, reason: `merchant for product type ${petProductTypeId} missing Printify credentials` };
+    }
+    const editedArtworkPath = String(designState.editedArtworkPath || "");
+    if (!editedArtworkPath) {
+      return { ok: false, skip: false, pet: true, reason: `my-pet design ${designId} has no stored edited artwork` };
+    }
+    const bought = shadowBaseVariantId
+      ? await catalogueVariantForShopifyVariant(resolvedShop || shop, shadowBaseVariantId)
+      : null;
+    const { sizeId, colorId } = pickFlatOrderSizeColor({
+      designProductSizeId: bought?.sizeId || designProductOverride?.sizeId,
+      designProductColorId: bought?.colorId || designProductOverride?.colorId,
+      designStateSize: designState?.sizeId,
+      designStateColor: designState?.colorName,
+      lineSize: line.properties["_size"] || line.properties["Size"],
+      lineColor: line.properties["_color"] || line.properties["Color"],
+      jobSize: job.size,
+      jobColor: job.frameColor,
+    });
+    return {
+      ok: true,
+      kind: "pet_design",
+      design: {
+        designId,
+        shop: resolvedShop,
+        job,
+        productType: petProductType,
+        merchant: petMerchant,
+        artStyle: String(designState.artStyle || ""),
+        editedArtworkPath,
+        petPhotoId: designState.petPhotoId ? String(designState.petPhotoId) : null,
+        sizeId,
+        colorId,
+        printifyVariantId: bought?.printifyVariantId || designProductOverride?.printifyVariantId || null,
+      },
+    };
+  }
+
   const flatPlacerState = designState?.flatPlacerState as
     | {
         placements?: Partial<Record<ViewName, FlatPlacement>>;
@@ -475,6 +737,7 @@ export async function resolveDesignForOrderLine(
     }
 
     const lineTote = decodeToteLinePlacement(line.properties[LINE_TOTE_PLACEMENT_KEY]);
+    const lineFlat = decodeFlatLinePlacement(line.properties[LINE_FLAT_PLACEMENT_KEY]);
     const fps = designState?.flatPlacerState as
       | {
           placements?: { front?: { scale?: number; offsetX?: number; offsetY?: number } };
@@ -482,7 +745,12 @@ export async function resolveDesignForOrderLine(
         }
       | undefined;
     const front = fps?.placements?.front;
-    const printBack = fps?.enabled?.back !== false;
+    const printBack =
+      lineTote?.printBack != null
+        ? lineTote.printBack
+        : lineFlat?.enabled.back != null
+          ? lineFlat.enabled.back
+          : fps?.enabled?.back !== false;
     const dsScale = Number(designState?.scale ?? 100);
     const dsX = Number(designState?.x ?? 50);
     const dsY = Number(designState?.y ?? 50);
@@ -525,6 +793,8 @@ export async function resolveDesignForOrderLine(
         sizeId,
         colorId,
         placement,
+        backgroundColor:
+          lineFlatEarly?.backgroundColor ?? resolveDesignLiveFillHex(designState),
         printifyProductId: designProductOverride?.printifyProductId ?? null,
       },
     };
@@ -582,6 +852,11 @@ export async function resolveDesignForOrderLine(
       // Cart-line snapshot wins so two ATCs from the same job keep independent panels.
       const linePanels = await loadAopLinePanelSnapshot(line.properties[LINE_AOP_PANELS_KEY]);
       const panels = pickAopPanelsForOrderLine(linePanels, normalizeAopPanels(rawPanels));
+      if ((!linePanels || linePanels.length === 0) && panels.length > 0) {
+        console.error(
+          `[flat-order-fulfillment] AOP line ${line.lineId} job=${designId} has no _aop_pl — falling back to shared job panels (last-write-wins). Flat/mesh lines are unaffected.`,
+        );
+      }
       if (panels.length === 0) {
         return {
           ok: false,
@@ -757,6 +1032,35 @@ export function resolvePrintifyTarget(
   return { blueprintId, providerId, printifyVariantId };
 }
 
+/**
+ * Prefer the Printify variant stamped on the cart line at ATC. Job/map
+ * resolution is fallback only when `_printify_variant_id` is absent.
+ */
+export function resolvePrintifyTargetForOrderLine(
+  productType: ProductType,
+  sizeId: string,
+  colorId: string,
+  lineProps?: Record<string, string> | null,
+): PrintifyTarget | null {
+  const mapped = resolvePrintifyTarget(productType, sizeId, colorId);
+  const lineVid = Number(String(lineProps?._printify_variant_id || "").trim());
+  if (Number.isFinite(lineVid) && lineVid > 0) {
+    const lineBp = Number(String(lineProps?._printify_blueprint_id || "").trim());
+    const lineProv = Number(String(lineProps?._printify_provider_id || "").trim());
+    const blueprintId =
+      Number.isFinite(lineBp) && lineBp > 0
+        ? lineBp
+        : mapped?.blueprintId ?? Number(productType.printifyBlueprintId);
+    const providerId =
+      Number.isFinite(lineProv) && lineProv > 0
+        ? lineProv
+        : mapped?.providerId ?? Number(productType.printifyProviderId ?? 1);
+    if (!Number.isFinite(blueprintId) || blueprintId <= 0) return mapped;
+    return { blueprintId, providerId, printifyVariantId: lineVid };
+  }
+  return mapped;
+}
+
 // ── Printify REST helpers ────────────────────────────────────────────────────────
 async function pf<T = any>(pathname: string, token: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${PRINTIFY_API_BASE}${pathname}`, {
@@ -809,6 +1113,7 @@ async function buildPrintAreasForDesign(
       printFileDims: { width: dims.width, height: dims.height },
       placementRect: placementRect ?? undefined,
       backgroundColor: design.backgroundColor ?? null,
+      artFit: flatArtFitForBlueprint((design.productType as { printifyBlueprintId?: number | null }).printifyBlueprintId),
     });
     const url = await persistBakedPrintFile(design.productType.id, design.designId, view, baked.buffer);
     if (!url) {
@@ -857,7 +1162,11 @@ async function buildToteFoldedPrintAreasForDesign(
     const base = process.env.PUBLIC_APP_URL || process.env.APP_URL || "";
     artworkUrl = `${base.replace(/\/$/, "")}${artworkUrl}`;
   }
-  const foldedPng = await buildToteFoldedPrintPngFromUrl(artworkUrl, design.placement);
+  const foldedPng = await buildToteFoldedPrintPngFromUrl(
+    artworkUrl,
+    design.placement,
+    design.backgroundColor ?? null,
+  );
   const prepared = await prepareBakeUploadBuffer(foldedPng);
   const path = `tote-folded-orders/${design.productType.id}/${design.designId}-${Date.now()}.${prepared.ext}`;
   const url = await uploadToFlatCalibrationBucket(path, prepared.buffer, prepared.contentType);
@@ -873,13 +1182,42 @@ async function buildToteFoldedPrintAreasForDesign(
 }
 
 // ── Idempotency ──────────────────────────────────────────────────────────────────
-async function findExistingSubmission(idempotencyKey: string): Promise<{ printifyOrderId: string | null; status: string } | null> {
-  const result = await pool.query<{ printify_order_id: string | null; status: string }>(
-    `SELECT printify_order_id, status FROM flat_order_submissions WHERE idempotency_key = $1 LIMIT 1`,
+function parseSubmissionMeta(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; }
+  }
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
+}
+
+async function findExistingSubmission(idempotencyKey: string): Promise<{
+  printifyOrderId: string | null;
+  status: string;
+  attemptCount: number;
+  error: string | null;
+  metadata: Record<string, unknown>;
+} | null> {
+  const result = await pool.query<{
+    printify_order_id: string | null;
+    status: string;
+    attempt_count: number | null;
+    error: string | null;
+    metadata: unknown;
+  }>(
+    `SELECT printify_order_id, status, attempt_count, error, metadata
+     FROM flat_order_submissions WHERE idempotency_key = $1 LIMIT 1`,
     [idempotencyKey],
   );
   const row = result.rows[0];
-  return row ? { printifyOrderId: row.printify_order_id, status: row.status } : null;
+  if (!row) return null;
+  return {
+    printifyOrderId: row.printify_order_id,
+    status: row.status,
+    attemptCount: Number(row.attempt_count) || 0,
+    error: row.error,
+    metadata: parseSubmissionMeta(row.metadata),
+  };
 }
 
 async function recordSubmission(row: {
@@ -895,20 +1233,36 @@ async function recordSubmission(row: {
   sentToProduction: boolean;
   isTest: boolean;
   printFileUrls?: Record<string, string> | null;
+  /** Bucket paths. Signed print-file URLs are not stored. Null keeps the previous value on conflict. */
+  printFilePaths?: Record<string, string> | null;
+  /** Null keeps the previous attempt count on conflict. */
+  attemptCount?: number | null;
+  /** Null clears the next attempt. */
+  nextAttemptAt?: Date | null;
   error?: string | null;
   metadata?: Record<string, unknown> | null;
 }): Promise<void> {
+  const urlPayload = row.printFileUrls && Object.keys(row.printFileUrls).length > 0
+    ? JSON.stringify(row.printFileUrls)
+    : null;
+  const pathPayload = row.printFilePaths && Object.keys(row.printFilePaths).length > 0
+    ? JSON.stringify(row.printFilePaths)
+    : null;
   await pool.query(
     `INSERT INTO flat_order_submissions
        (idempotency_key, shop, shopify_order_id, shopify_line_id, design_id, product_type_id,
-        printify_shop_id, printify_order_id, status, sent_to_production, is_test, print_file_urls, error, metadata)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        printify_shop_id, printify_order_id, status, sent_to_production, is_test, print_file_urls, error,
+        print_file_paths, attempt_count, next_attempt_at, metadata)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15, 0),$16,$17)
      ON CONFLICT (idempotency_key) DO UPDATE SET
-        printify_order_id = EXCLUDED.printify_order_id,
+        printify_order_id = COALESCE(EXCLUDED.printify_order_id, flat_order_submissions.printify_order_id),
         status = EXCLUDED.status,
         sent_to_production = EXCLUDED.sent_to_production,
         print_file_urls = EXCLUDED.print_file_urls,
         error = EXCLUDED.error,
+        print_file_paths = COALESCE($14::jsonb, flat_order_submissions.print_file_paths),
+        attempt_count = COALESCE($15, flat_order_submissions.attempt_count),
+        next_attempt_at = $16,
         metadata = EXCLUDED.metadata,
         updated_at = NOW()`,
     [
@@ -923,8 +1277,11 @@ async function recordSubmission(row: {
       row.status,
       row.sentToProduction,
       row.isTest,
-      row.printFileUrls ? JSON.stringify(row.printFileUrls) : null,
+      urlPayload,
       row.error ?? null,
+      pathPayload,
+      row.attemptCount ?? null,
+      row.nextAttemptAt ?? null,
       row.metadata ? JSON.stringify(row.metadata) : null,
     ],
   );
@@ -944,15 +1301,23 @@ export type SubmitFlatOrderArgs = {
   idempotencyKey: string;
   /** Marks the submission row as a test (admin draft). */
   isTest?: boolean;
+  /** Admin draft tests only — see checkFulfillmentTenancy. */
+  allowShoplessOrder?: boolean;
   shippingMethod?: number;
+  /** Set by the retry poller. A webhook replay must not start a second submit. */
+  resumeRetry?: boolean;
 };
 
 export type SubmitFlatOrderResult = {
-  status: "submitted" | "skipped" | "duplicate" | "failed";
+  status: "submitted" | "skipped" | "duplicate" | "failed" | "retrying" | "awaiting_approval" | "needs_address";
   printifyOrderId?: string | null;
   eligibleLines: number;
   skippedReasons: string[];
+  /** AppAI lines that were NOT sent to Printify — the merchant must handle these. */
+  needsAttention?: AttentionLine[];
   printFileUrls?: Record<string, string>;
+  /** Bucket paths for My Pet print files. Signed URLs are not logged. */
+  printFilePaths?: Record<string, string>;
   error?: string;
   sentToProduction: boolean;
 };
@@ -971,15 +1336,46 @@ export async function submitFlatOrderToPrintify(
     args.shopifyOrder?.shop_domain || args.shopifyOrder?.__shop || "",
   );
 
-  // Idempotency: never re-submit the same key.
+  // Idempotency: a submitted order is never sent again. A retry that is already
+  // scheduled or in flight is left to the poller, unless this call IS the poller.
   const existing = await findExistingSubmission(args.idempotencyKey);
-  if (existing && existing.status === "submitted") {
+  if (existing && (existing.status === "submitted" || existing.status === "awaiting_approval")) {
     return {
       status: "duplicate",
       printifyOrderId: existing.printifyOrderId,
       eligibleLines: 0,
       skippedReasons: [],
-      sentToProduction: sendToProduction,
+      sentToProduction: existing.status === "submitted" && sendToProduction,
+    };
+  }
+  if (existing && existing.status === "needs_address" && !args.resumeRetry) {
+    return {
+      status: "needs_address",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? "shipping address unavailable",
+      sentToProduction: false,
+    };
+  }
+  if (existing && !args.resumeRetry && (existing.status === "retrying" || existing.status === "submitting")) {
+    return {
+      status: "retrying",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? undefined,
+      sentToProduction: false,
+    };
+  }
+  if (existing && !args.resumeRetry && existing.status === "failed") {
+    return {
+      status: "failed",
+      printifyOrderId: existing.printifyOrderId,
+      eligibleLines: 0,
+      skippedReasons: [],
+      error: existing.error ?? undefined,
+      sentToProduction: false,
     };
   }
 
@@ -1001,33 +1397,91 @@ export async function submitFlatOrderToPrintify(
   };
   const lineItems: Array<BakedLineItem | ProductRefLineItem> = [];
   const allUrls: Record<string, string> = {};
+  const petPaths: Record<string, string> = {};
+  const petErrors: string[] = [];
+  let hadPetLine = false;
+  const handoffSnapshot = {
+    shopifyOrder: args.shopifyOrder,
+    lines: args.lines,
+    sendToProduction,
+    addressTo: args.addressTo,
+    idempotencyKey: args.idempotencyKey,
+    isTest: args.isTest === true,
+    allowShoplessOrder: args.allowShoplessOrder === true,
+    shippingMethod: args.shippingMethod ?? 1,
+  };
   let printifyShopId: string | null = null;
   let printifyToken: string | null = null;
   let firstDesignId: string | null = null;
   let firstProductTypeId: number | null = null;
   let resolvedShop = shopHeader;
+  const needsAttention: AttentionLine[] = [];
+  const queuedLines: AttentionLine[] = [];
+  const holdLine = (line: NormalizedOrderLine, reason: string) => {
+    skippedReasons.push(`line ${line.lineId}: ${reason}`);
+    needsAttention.push({ lineId: line.lineId, variantId: line.variantId, quantity: line.quantity, reason });
+  };
+  const flagAttention = async () => {
+    if (needsAttention.length === 0) return null;
+    return flagOrderNeedsAttention({
+      shop: shopHeader,
+      shopifyOrder: args.shopifyOrder,
+      lines: needsAttention,
+      isTest: args.isTest === true,
+    });
+  };
 
   for (const line of args.lines) {
     let resolved: ResolveResult;
     try {
-      resolved = await resolveDesignForOrderLine(line, shopHeader);
+      resolved = await resolveDesignForOrderLine(line, shopHeader, {
+        allowShoplessOrder: args.allowShoplessOrder === true,
+      });
     } catch (e: any) {
-      skippedReasons.push(`line ${line.lineId}: resolve error ${e?.message || e}`);
+      const reason = `resolve error ${e?.message || e}`;
+      if (lineCarriesAppaiDesign(line)) holdLine(line, reason);
+      else skippedReasons.push(`line ${line.lineId}: ${reason}`);
       continue;
     }
     if (!resolved.ok) {
-      skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
+      if (resolved.pet) {
+        hadPetLine = true;
+        petErrors.push(resolved.reason);
+      }
+      if (resolved.attention) holdLine(line, resolved.reason);
+      else skippedReasons.push(`line ${line.lineId}: ${resolved.reason}`);
       continue;
     }
 
     const productType = resolved.design.productType;
     const designId = resolved.design.designId;
     const merchant = resolved.design.merchant;
-    const target = resolvePrintifyTarget(productType, resolved.design.sizeId, resolved.design.colorId);
+    const mappedTarget = resolvePrintifyTargetForOrderLine(
+      productType,
+      resolved.design.sizeId,
+      resolved.design.colorId,
+      line.properties,
+    );
+    const catalogueVariantId = resolved.kind === "pet_design" ? Number(resolved.design.printifyVariantId) : NaN;
+    const blueprintId = Number(productType.printifyBlueprintId);
+    const target =
+      Number.isFinite(catalogueVariantId) && catalogueVariantId > 0 && Number.isFinite(blueprintId) && blueprintId > 0
+        ? {
+            blueprintId,
+            providerId: Number(productType.printifyProviderId ?? mappedTarget?.providerId ?? 1),
+            printifyVariantId: catalogueVariantId,
+          }
+        : mappedTarget;
     if (!target) {
-      skippedReasons.push(`line ${line.lineId}: no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`);
+      const reason = `no Printify variant for ${resolved.design.sizeId}:${resolved.design.colorId}`;
+      if (resolved.kind === "pet_design") {
+        hadPetLine = true;
+        petErrors.push(reason);
+      }
+      holdLine(line, reason);
       continue;
     }
+    const lineQueued: AttentionLine = { lineId: line.lineId, variantId: line.variantId, quantity: line.quantity, reason: "" };
     printifyShopId = String(merchant.printifyShopId);
     printifyToken = String(merchant.printifyApiToken);
     firstDesignId = firstDesignId ?? designId;
@@ -1037,6 +1491,7 @@ export async function submitFlatOrderToPrintify(
     // Design product whose artwork already lives on a persistent Printify product
     // (AOP / static products with no on-the-fly bake path) — reference it directly.
     if (resolved.kind === "product_reference") {
+      queuedLines.push(lineQueued);
       lineItems.push({
         product_id: resolved.design.printifyProductId,
         variant_id: target.printifyVariantId,
@@ -1079,11 +1534,10 @@ export async function submitFlatOrderToPrintify(
         allUrls[`${designId}:${position}`] = src;
       }
       if (Object.keys(printAreas).length === 0) {
-        skippedReasons.push(
-          `line ${line.lineId}: no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`,
-        );
+        holdLine(line, `no AOP print panels match Printify placeholders for variant ${target.printifyVariantId}`);
         continue;
       }
+      queuedLines.push(lineQueued);
       lineItems.push({
         print_provider_id: target.providerId,
         blueprint_id: target.blueprintId,
@@ -1092,6 +1546,43 @@ export async function submitFlatOrderToPrintify(
         external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
         print_areas: printAreas,
       });
+      continue;
+    }
+
+    // My Pet: build the print file fresh from the stored pet-edited artwork
+    // (built only now, on purchase — never at preview time) and submit it
+    // full-bleed, same as a catalogue promote image.
+    if (resolved.kind === "pet_design") {
+      hadPetLine = true;
+      let printArea: { url: string; path: string };
+      try {
+        printArea = await buildMyPetPrintArea({
+          renderId: designId,
+          editedArtworkPath: resolved.design.editedArtworkPath,
+          artStyle: resolved.design.artStyle,
+          productTypeId: productType.id,
+          productTypePlaceholderPositions: productType.placeholderPositions,
+          productTypeName: productType.name,
+        });
+      } catch (e: any) {
+        const reason = `my-pet print file failed: ${e?.message || e}`;
+        petErrors.push(reason);
+        holdLine(line, reason);
+        continue;
+      }
+      queuedLines.push(lineQueued);
+      petPaths[`${designId}:front`] = printArea.path;
+      lineItems.push({
+        print_provider_id: target.providerId,
+        blueprint_id: target.blueprintId,
+        variant_id: target.printifyVariantId,
+        quantity: line.quantity,
+        external_id: `${shopifyOrderId || "test"}:${line.lineId || designId}`,
+        print_areas: { front: [{ src: printArea.url, ...PRINTIFY_FULL_BLEED, angle: 0 }] },
+      });
+      if (resolved.design.petPhotoId) {
+        void markMyPetPhotoPurchased(resolved.design.petPhotoId, String(shopifyOrderId || line.lineId));
+      }
       continue;
     }
 
@@ -1119,6 +1610,7 @@ export async function submitFlatOrderToPrintify(
         console.warn(
           `[flat-order-fulfillment] line ${line.lineId}: bake failed (${e?.message || e}) — falling back to product-reference order`,
         );
+        queuedLines.push(lineQueued);
         lineItems.push({
           product_id: resolved.design.printifyProductId,
           variant_id: target.printifyVariantId,
@@ -1127,10 +1619,11 @@ export async function submitFlatOrderToPrintify(
         });
         continue;
       }
-      skippedReasons.push(`line ${line.lineId}: bake failed ${e?.message || e}`);
+      holdLine(line, `bake failed ${e?.message || e}`);
       continue;
     }
     Object.assign(allUrls, built.urls);
+    queuedLines.push(lineQueued);
     lineItems.push({
       print_provider_id: target.providerId,
       blueprint_id: target.blueprintId,
@@ -1141,7 +1634,65 @@ export async function submitFlatOrderToPrintify(
     });
   }
 
+  async function recordPetHandoffFailure(
+    reasons: string[],
+    extra: Record<string, unknown>,
+  ): Promise<SubmitFlatOrderResult> {
+    const message = reasons.filter(Boolean).join("; ") || "My Pet order was not sent to Printify";
+    const retryable = reasons.some((reason) => petFailureIsRetryable(reason));
+    const plan = planMyPetRetry(existing?.attemptCount ?? 0, retryable);
+    let founderAlerted = existing?.metadata?.founderAlerted === true;
+    if (plan.status === "failed" && !founderAlerted) {
+      await alertMyPetHandoffFailed({
+        shop: resolvedShop || null,
+        shopifyOrderId: shopifyOrderId || null,
+        idempotencyKey: args.idempotencyKey,
+        attempts: plan.attempt,
+        error: message,
+        alreadyAlerted: false,
+      });
+      founderAlerted = true;
+    }
+    const keptOrderId =
+      (typeof extra.printifyOrderId === "string" && extra.printifyOrderId) ||
+      existing?.printifyOrderId ||
+      null;
+    await recordSubmission({
+      idempotencyKey: args.idempotencyKey,
+      shop: resolvedShop,
+      shopifyOrderId,
+      designId: firstDesignId,
+      productTypeId: firstProductTypeId,
+      printifyShopId,
+      printifyOrderId: keptOrderId,
+      status: plan.status,
+      sentToProduction: false,
+      isTest: args.isTest === true,
+      printFileUrls: allUrls,
+      printFilePaths: petPaths,
+      attemptCount: plan.attempt,
+      nextAttemptAt: plan.delayMs != null ? new Date(Date.now() + plan.delayMs) : null,
+      error: message,
+      metadata: { ...extra, retry: handoffSnapshot, founderAlerted },
+    });
+    return {
+      status: plan.status,
+      printifyOrderId: keptOrderId,
+      eligibleLines: lineItems.length,
+      skippedReasons,
+      needsAttention,
+      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+      error: message,
+      sentToProduction: false,
+    };
+  }
+
   if (lineItems.length === 0 || !printifyToken || !printifyShopId) {
+    const shopifyFlag = await flagAttention();
+    if (hadPetLine) {
+      const reasons = petErrors.length > 0 ? petErrors : ["My Pet order was not sent to Printify"];
+      return recordPetHandoffFailure(reasons, { skippedReasons, needsAttention, shopifyFlag });
+    }
     await recordSubmission({
       idempotencyKey: args.idempotencyKey,
       shop: resolvedShop,
@@ -1152,12 +1703,68 @@ export async function submitFlatOrderToPrintify(
       status: "skipped",
       sentToProduction: false,
       isTest: args.isTest === true,
-      metadata: { skippedReasons },
+      metadata: { skippedReasons, needsAttention, shopifyFlag },
     });
     return {
       status: "skipped",
       eligibleLines: 0,
       skippedReasons,
+      needsAttention,
+      sentToProduction: false,
+    };
+  }
+
+  let addressTo = args.isTest
+    ? args.addressTo
+    : mergePrintifyRecipient(
+        sanitizePrintifyRecipient(args.addressTo),
+        printifyAddressFromShopifyOrder(args.shopifyOrder),
+      );
+  if (!args.isTest) {
+    const fetched = await fetchShopifyOrderRecipient(resolvedShop || shopHeader, shopifyOrderId);
+    if (fetched) addressTo = mergePrintifyRecipient(addressTo, sanitizePrintifyRecipient(fetched));
+  }
+  handoffSnapshot.addressTo = addressTo;
+  const missingAddress = args.isTest ? [] : missingPrintifyRecipientFields(addressTo);
+  const knownOrderId =
+    existing?.printifyOrderId ||
+    classifyPrintifySubmitError(existing?.error || "").existingOrderId;
+  if (missingAddress.length > 0) {
+    const message = `shipping address unavailable to the app (${missingAddress.join(", ")}). Printify order was not given a blank recipient.`;
+    const shopifyFlag = needsAttention.length
+      ? await flagAttention()
+      : await flagOrderNeedsAttention({
+          shop: shopHeader,
+          shopifyOrder: args.shopifyOrder,
+          lines: [],
+          isTest: args.isTest === true,
+        });
+    await recordSubmission({
+      idempotencyKey: args.idempotencyKey,
+      shop: resolvedShop,
+      shopifyOrderId,
+      designId: firstDesignId,
+      productTypeId: firstProductTypeId,
+      printifyShopId,
+      printifyOrderId: knownOrderId,
+      status: "needs_address",
+      sentToProduction: false,
+      isTest: false,
+      printFileUrls: allUrls,
+      printFilePaths: petPaths,
+      nextAttemptAt: null,
+      error: message,
+      metadata: { skippedReasons, needsAttention, shopifyFlag, retry: handoffSnapshot },
+    });
+    console.error(`[flat-order-fulfillment] ${message} order=${shopifyOrderId || "?"}`);
+    return {
+      status: "needs_address",
+      printifyOrderId: knownOrderId,
+      eligibleLines: lineItems.length,
+      skippedReasons,
+      needsAttention,
+      printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+      error: message,
       sentToProduction: false,
     };
   }
@@ -1168,70 +1775,197 @@ export async function submitFlatOrderToPrintify(
     line_items: lineItems,
     shipping_method: args.shippingMethod ?? 1,
     send_shipping_notification: false,
-    address_to: args.addressTo,
+    address_to: addressTo,
   };
 
-  try {
-    const created = await pf<{ id: string }>(`/shops/${printifyShopId}/orders.json`, printifyToken, {
-      method: "POST",
-      body: JSON.stringify(orderBody),
-    });
-    const printifyOrderId = String(created.id);
-
-    if (sendToProduction) {
-      await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}/send_to_production.json`, printifyToken, {
+  let printifyOrderId = knownOrderId;
+  if (!printifyOrderId) {
+    try {
+      const created = await pf<{ id: string }>(`/shops/${printifyShopId}/orders.json`, printifyToken, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify(orderBody),
       });
+      printifyOrderId = String(created.id);
+    } catch (e: any) {
+      const error = e?.message || String(e);
+      const conflict = classifyPrintifySubmitError(error);
+      if (conflict.existingOrderId) {
+        printifyOrderId = conflict.existingOrderId;
+      } else {
+        for (const q of queuedLines) {
+          needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
+        }
+        const shopifyFlag = await flagAttention();
+        if (hadPetLine) {
+          return recordPetHandoffFailure([error, ...petErrors], { skippedReasons, needsAttention, shopifyFlag });
+        }
+        await recordSubmission({
+          idempotencyKey: args.idempotencyKey,
+          shop: resolvedShop,
+          shopifyOrderId,
+          designId: firstDesignId,
+          productTypeId: firstProductTypeId,
+          printifyShopId,
+          status: "failed",
+          sentToProduction: false,
+          isTest: args.isTest === true,
+          printFileUrls: allUrls,
+          error,
+          nextAttemptAt: null,
+          metadata: { skippedReasons, needsAttention, shopifyFlag },
+        });
+        return {
+          status: "failed",
+          eligibleLines: lineItems.length,
+          skippedReasons,
+          needsAttention,
+          error,
+          sentToProduction: false,
+        };
+      }
     }
+  } else {
+    try {
+      await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}.json`, printifyToken, {
+        method: "PUT",
+        body: JSON.stringify({ address_to: addressTo }),
+      });
+    } catch (e: any) {
+      console.warn(
+        `[flat-order-fulfillment] could not update recipient on Printify order ${printifyOrderId}:`,
+        e?.message || e,
+      );
+    }
+  }
 
-    await recordSubmission({
-      idempotencyKey: args.idempotencyKey,
-      shop: resolvedShop,
-      shopifyOrderId,
-      designId: firstDesignId,
-      productTypeId: firstProductTypeId,
-      printifyShopId,
-      printifyOrderId,
-      status: "submitted",
-      sentToProduction: sendToProduction,
-      isTest: args.isTest === true,
-      printFileUrls: allUrls,
-      metadata: { skippedReasons, lineCount: lineItems.length },
-    });
-
-    return {
-      status: "submitted",
-      printifyOrderId,
-      eligibleLines: lineItems.length,
-      skippedReasons,
-      printFileUrls: allUrls,
-      sentToProduction: sendToProduction,
-    };
-  } catch (e: any) {
-    const error = e?.message || String(e);
-    await recordSubmission({
-      idempotencyKey: args.idempotencyKey,
-      shop: resolvedShop,
-      shopifyOrderId,
-      designId: firstDesignId,
-      productTypeId: firstProductTypeId,
-      printifyShopId,
-      status: "failed",
-      sentToProduction: false,
-      isTest: args.isTest === true,
-      printFileUrls: allUrls,
-      error,
-      metadata: { skippedReasons },
-    });
+  if (!printifyOrderId) {
     return {
       status: "failed",
       eligibleLines: lineItems.length,
       skippedReasons,
-      error,
+      needsAttention,
+      error: "Printify order id missing after create",
       sentToProduction: false,
     };
   }
+
+  let sentToProduction = false;
+  let awaitingApproval = false;
+  if (sendToProduction) {
+    if (shopRequiresManualApproval(String(printifyShopId))) {
+      awaitingApproval = true;
+    } else {
+      try {
+        await pf(`/shops/${printifyShopId}/orders/${printifyOrderId}/send_to_production.json`, printifyToken, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+        sentToProduction = true;
+      } catch (e: any) {
+        const error = e?.message || String(e);
+        const hold = classifyPrintifySubmitError(error);
+        if (hold.manualHold) {
+          rememberManualApprovalShop(String(printifyShopId));
+          awaitingApproval = true;
+        } else {
+          for (const q of queuedLines) {
+            needsAttention.push({ ...q, reason: `Printify order failed: ${error}` });
+          }
+          const shopifyFlag = await flagAttention();
+          if (hadPetLine) {
+            return recordPetHandoffFailure([error, ...petErrors], {
+              skippedReasons,
+              needsAttention,
+              shopifyFlag,
+              printifyOrderId,
+            });
+          }
+          await recordSubmission({
+            idempotencyKey: args.idempotencyKey,
+            shop: resolvedShop,
+            shopifyOrderId,
+            designId: firstDesignId,
+            productTypeId: firstProductTypeId,
+            printifyShopId,
+            printifyOrderId,
+            status: "failed",
+            sentToProduction: false,
+            isTest: args.isTest === true,
+            printFileUrls: allUrls,
+            error,
+            nextAttemptAt: null,
+            metadata: { skippedReasons, needsAttention, shopifyFlag },
+          });
+          return {
+            status: "failed",
+            printifyOrderId,
+            eligibleLines: lineItems.length,
+            skippedReasons,
+            needsAttention,
+            error,
+            sentToProduction: false,
+          };
+        }
+      }
+    }
+  }
+
+  const shopifyFlag = needsAttention.length
+    ? await flagAttention()
+    : await flagOrderNeedsAttention({
+        shop: shopHeader,
+        shopifyOrder: args.shopifyOrder,
+        lines: [],
+        isTest: args.isTest === true,
+      });
+  let founderAlerted = existing?.metadata?.founderAlerted === true;
+  if (hadPetLine && petErrors.length > 0 && !founderAlerted) {
+    await alertMyPetHandoffFailed({
+      shop: resolvedShop || null,
+      shopifyOrderId: shopifyOrderId || null,
+      idempotencyKey: args.idempotencyKey,
+      attempts: existing?.attemptCount ?? 1,
+      error: `Submitted without every My Pet line: ${petErrors.join("; ")}`,
+      alreadyAlerted: false,
+    });
+    founderAlerted = true;
+  }
+  const status = awaitingApproval ? "awaiting_approval" : "submitted";
+  await recordSubmission({
+    idempotencyKey: args.idempotencyKey,
+    shop: resolvedShop,
+    shopifyOrderId,
+    designId: firstDesignId,
+    productTypeId: firstProductTypeId,
+    printifyShopId,
+    printifyOrderId,
+    status,
+    sentToProduction,
+    isTest: args.isTest === true,
+    printFileUrls: allUrls,
+    printFilePaths: petPaths,
+    nextAttemptAt: null,
+    error: awaitingApproval ? "Printify order is awaiting manual approval" : null,
+    metadata: {
+      skippedReasons,
+      lineCount: lineItems.length,
+      needsAttention,
+      shopifyFlag,
+      founderAlerted,
+      manualApproval: awaitingApproval,
+    },
+  });
+
+  return {
+    status,
+    printifyOrderId,
+    eligibleLines: lineItems.length,
+    skippedReasons,
+    needsAttention,
+    printFileUrls: allUrls,
+    printFilePaths: Object.keys(petPaths).length ? petPaths : undefined,
+    sentToProduction,
+  };
 }
 
 /**
@@ -1354,6 +2088,7 @@ export async function submitFlatTestOrder(args: {
     addressTo: args.addressTo ?? resolveTestShipToAddress(),
     idempotencyKey,
     isTest: true,
+    allowShoplessOrder: true,
   });
 
   return { ...result, designId };

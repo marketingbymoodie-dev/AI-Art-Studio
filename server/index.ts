@@ -32,6 +32,12 @@ console.log("[SERVER STARTUP] NODE_ENV:", process.env.NODE_ENV);
 console.log("[SERVER STARTUP] Timestamp:", new Date().toISOString());
 console.log("=".repeat(60));
 
+// Safety net: an unhandled rejection or uncaught exception otherwise crashes
+// the whole process (Railway then restarts it — ~55s of 502s on every route
+// mid-reboot). Log and keep the process alive instead.
+process.on("unhandledRejection", (e) => console.error("[unhandledRejection]", e instanceof Error ? e.stack : e));
+process.on("uncaughtException", (e: any) => console.error("[uncaughtException]", e?.stack || e));
+
 const app = express();
 
 // ============================================================
@@ -162,6 +168,16 @@ declare module "http" {
 
 app.use(cookieParser());
 
+// Phase 4 Slice B: one ship-to country for listing + generate (cookie > IP > US).
+app.use((req, res, next) => {
+  void import("./ship-country-middleware")
+    .then(({ attachShipCountry }) => attachShipCountry(req, res, next))
+    .catch((err) => {
+      console.warn("[ship-country] middleware failed:", err);
+      next();
+    });
+});
+
 // Creator Marketplace host / path resolution (sets req.creatorStorefront for SPA HTML).
 app.use(async (req, res, next) => {
   if (
@@ -268,7 +284,12 @@ app.use((req, res, next) => {
     const { ensureSeedPricingCatalogue } = await import("./pricing-catalogue");
     await ensureSeedPricingCatalogue();
   } catch (migrationError) {
-    console.error("[SERVER STARTUP] Startup migration failed — continuing boot:", migrationError);
+    const err = migrationError as any;
+    console.error(
+      "[SERVER STARTUP] Startup migration failed — continuing boot:",
+      err?.stack || err,
+    );
+    console.error("[SERVER STARTUP] migration error message:", err?.message ?? String(migrationError));
   }
 
   // ✅ 1) Register API + server routes FIRST
@@ -389,9 +410,12 @@ app.use((req, res, next) => {
       // Make proxy context explicit before the Vite bundle executes. Relying
       // only on window.location path detection is fragile inside Shopify app
       // proxy if the iframe request is redirected or normalized by the theme.
+      const loggedInCustomerId = String(
+        (req.query.logged_in_customer_id as string | undefined) || "",
+      ).replace(/[^\d]/g, "");
       html = html.replace(
         /<head>/i,
-        `<head><script>window.__APPAI_API_BASE__=${JSON.stringify(P)};window.__APPAI_ROUTER_BASE__=${JSON.stringify(P)};window.__APPAI_ASSET_BASE__=${JSON.stringify(assetBase)};</script>`
+        `<head><script>window.__APPAI_API_BASE__=${JSON.stringify(P)};window.__APPAI_ROUTER_BASE__=${JSON.stringify(P)};window.__APPAI_ASSET_BASE__=${JSON.stringify(assetBase)};window.__APPAI_LOGGED_IN_CUSTOMER_ID__=${JSON.stringify(loggedInCustomerId)};</script>`
       );
 
       res.setHeader("Content-Type", "text/html");
@@ -418,8 +442,17 @@ app.use((req, res, next) => {
   }
 
   const PORT = process.env.PORT || 5000;
+  await import("./catalogue-publish-jobs")
+    .then(({ startCataloguePublishJobs }) => startCataloguePublishJobs())
+    .catch((e: any) => console.warn("[catalogue-publish-jobs] startup failed:", e?.message || e));
+  await import("./design-colour-jobs")
+    .then(({ startDesignColourJobs }) => startDesignColourJobs())
+    .catch((e: any) => console.warn("[design-colour-jobs] startup failed:", e?.message || e));
   httpServer.listen(PORT, () => {
     log(`serving on port ${PORT}`);
+    void import("./sync-variant-selection")
+      .then(({ syncDriftedVariantSelections }) => syncDriftedVariantSelections())
+      .catch((err: any) => console.error("[variant-selection] startup sync failed:", err?.message || err));
     void import("./creator-checkout-webhooks")
       .then(({ ensureCreatorCheckoutWebhooksForPlatformShop }) =>
         ensureCreatorCheckoutWebhooksForPlatformShop(),
@@ -430,11 +463,21 @@ app.use((req, res, next) => {
     void import("./printify-checkout-shipping")
       .then(({ ensurePlatformCarrierService }) => ensurePlatformCarrierService())
       .then((r) => {
-        if (!r.ok) console.warn("[carrier-shipping] startup:", r.reason);
+        if (r.intentionalSkip) console.log("[carrier-shipping] startup", r.reason);
+        else if (!r.ok) console.warn("[carrier-shipping] startup:", r.reason);
         else console.log("[carrier-shipping] startup", r.reason);
       })
       .catch((e: any) =>
         console.warn("[carrier-shipping] startup register failed:", e?.message || e),
       );
+    void import("./geoip")
+      .then(({ startGeoLite2Refresh }) => startGeoLite2Refresh())
+      .catch((e: any) => console.warn("[geoip] startup refresh failed:", e?.message || e));
+    void import("./flywheel-staging-run")
+      .then(({ runStagingFlywheelOnce }) => runStagingFlywheelOnce())
+      .catch((e: any) => console.warn("[flywheel] staging run failed:", e?.message || e));
+    void import("./my-pet-printify-retry")
+      .then(({ startMyPetPrintifyRetries }) => startMyPetPrintifyRetries())
+      .catch((e: any) => console.warn("[my-pet-printify] startup failed:", e?.message || e));
   });
 })();

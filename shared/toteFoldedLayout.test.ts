@@ -3,7 +3,10 @@ import {
   composeToteFoldedCanvas,
   normalizeToteFoldedPanelDims,
   TOTE_FOLDED_CONTAIN_BOOST,
+  TOTE_FOLDED_PRINT_CALIBRATION,
+  TOTE_FOLDED_PRINT_OPENING_LIFT,
   toteFoldedArtBox,
+  toteFoldedFaceArtBoxes,
   TOTE_FOLDED_CANVAS_HEIGHT,
   TOTE_FOLDED_CANVAS_WIDTH,
   TOTE_FOLDED_PANEL_HEIGHT,
@@ -38,11 +41,14 @@ describe("composeToteFoldedCanvas", () => {
     expect(out.width).toBe(TOTE_FOLDED_CANVAS_WIDTH);
     expect(out.height).toBe(TOTE_FOLDED_CANVAS_HEIGHT);
 
-    const cx = Math.floor(TOTE_FOLDED_PANEL_WIDTH / 2);
-    const topRow = Math.floor(TOTE_FOLDED_PANEL_HEIGHT / 2);
-    const bottomRow = TOTE_FOLDED_PANEL_HEIGHT + Math.floor(TOTE_FOLDED_PANEL_HEIGHT / 2);
-    const topIdx = (topRow * TOTE_FOLDED_CANVAS_WIDTH + cx) * 4;
-    const bottomIdx = (bottomRow * TOTE_FOLDED_CANVAS_WIDTH + cx) * 4;
+    // Sample inside each face box (opening lift moves them apart on the sheet).
+    const { front, back } = toteFoldedFaceArtBoxes(w, h);
+    const sampleX = front.left + Math.floor(front.drawW * 0.75);
+    const frontY = front.top + Math.floor(front.drawH * 0.5);
+    const backY = back.top + Math.floor(back.drawH * 0.5);
+    const topIdx = (frontY * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
+    const bottomIdx =
+      ((TOTE_FOLDED_PANEL_HEIGHT + backY) * TOTE_FOLDED_CANVAS_WIDTH + sampleX) * 4;
     expect(out.pixels[topIdx]).toBe(255);
     expect(out.pixels[bottomIdx]).toBe(0);
   });
@@ -52,18 +58,59 @@ describe("composeToteFoldedCanvas", () => {
     const containK = Math.min(TOTE_FOLDED_PANEL_WIDTH / 512, TOTE_FOLDED_PANEL_HEIGHT / 1024) * 0.6;
     const containH = Math.round(1024 * containK);
     const prior096H = Math.round(1024 * containK * 0.96);
-    expect(box.drawH).toBe(Math.round(1024 * containK * TOTE_FOLDED_CONTAIN_BOOST));
+    expect(box.drawH).toBe(
+      Math.round(
+        1024 *
+          containK *
+          TOTE_FOLDED_CONTAIN_BOOST *
+          TOTE_FOLDED_PRINT_CALIBRATION,
+      ),
+    );
     expect(TOTE_FOLDED_CONTAIN_BOOST).toBeCloseTo(0.864, 5);
+    expect(TOTE_FOLDED_PRINT_CALIBRATION).toBeCloseTo(1.03, 5);
     expect(box.drawH).toBeLessThan(containH);
     expect(box.drawH).toBeLessThan(prior096H);
     expect(box.drawH).toBeLessThan(TOTE_FOLDED_PANEL_HEIGHT);
   });
 
-  it("uses full-face offset fractions with no print-only Y lift", () => {
+  it("print calibration is print-only and only used by tote folded bake (bp 1300)", () => {
+    expect(ADJUSTABLE_TOTE_BLUEPRINT_ID).toBe(1300);
+    expect(TOTE_FOLDED_PRINT_CALIBRATION).toBeGreaterThan(1);
+    expect(
+      usesToteFoldedFulfillment({
+        isAllOverPrint: true,
+        printifyBlueprintId: 836,
+      }),
+    ).toBe(false);
+  });
+
+  it("uses full-face offset fractions on the shared box (no shared Y lift)", () => {
     const a = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
     const b = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0.1, offsetY: 0 });
     expect(b.left - a.left).toBe(Math.round(TOTE_FOLDED_PANEL_WIDTH * 0.1));
     expect(a.top).toBe(Math.round(TOTE_FOLDED_PANEL_HEIGHT * 0.5 - a.drawH / 2));
+  });
+
+  it("lifts front toward sheet top and back toward sheet bottom (not a shared Y)", () => {
+    expect(TOTE_FOLDED_PRINT_OPENING_LIFT).toBeCloseTo(0.02, 5);
+    const base = toteFoldedArtBox(100, 100, { scale: 1, offsetX: 0, offsetY: 0 });
+    const { front, back } = toteFoldedFaceArtBoxes(100, 100, {
+      scale: 1,
+      offsetX: 0,
+      offsetY: 0,
+    });
+    const lift = Math.round(TOTE_FOLDED_PANEL_HEIGHT * TOTE_FOLDED_PRINT_OPENING_LIFT);
+    expect(front.top).toBe(base.top - lift);
+    expect(back.top).toBe(base.top + lift);
+    expect(front.left).toBe(base.left);
+    expect(back.left).toBe(base.left);
+    expect(front.drawH).toBe(base.drawH);
+    expect(back.drawH).toBe(base.drawH);
+    expect(front.top).not.toBe(back.top);
+    const frontOuterGap = front.top;
+    const backOuterGap = TOTE_FOLDED_PANEL_HEIGHT - (back.top + back.drawH);
+    // Odd drawH + Math.round on the shared box can differ by 1px.
+    expect(Math.abs(frontOuterGap - backOuterGap)).toBeLessThanOrEqual(1);
   });
 });
 

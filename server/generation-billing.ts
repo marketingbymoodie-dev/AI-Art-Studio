@@ -17,6 +17,7 @@ import {
 } from "./generation-quota";
 import { syncMerchantQuotaAlerts } from "./merchant-quota-alerts";
 import { logMerchantGeneration, type MerchantGenerationLogInput } from "./merchant-generation-log";
+import { canSpendStudioCreditOnJob } from "@shared/studio-credit-spend-guard";
 import { spendStudioCredit, type CreditSource } from "./studio-credits";
 import type { ShopifyInstallation } from "@shared/schema";
 
@@ -36,15 +37,21 @@ export function resolveStorefrontBillingMode(params: {
 export async function applyCustomerBillingOnSuccess(params: {
   customerId: string;
   mode: "customer_paid" | "customer_free";
+  generationJobId: string;
   idempotencyKey: string;
   externalRef: string;
   freeGenerationLimit?: number;
   shop?: string | null;
 }): Promise<{ consumed: boolean; source: CreditSource | null }> {
-  const { customerId, mode, idempotencyKey, externalRef, freeGenerationLimit, shop } = params;
+  const { customerId, mode, generationJobId, idempotencyKey, externalRef, freeGenerationLimit, shop } = params;
+  const job = await storage.getGenerationJob(generationJobId);
+  if (!canSpendStudioCreditOnJob(job, customerId)) {
+    return { consumed: false, source: null };
+  }
   if (mode === "customer_paid") {
     const r = await spendStudioCredit({
       customerId,
+      generationJobId,
       idempotencyKey,
       externalRef,
       shop: shop ?? null,
@@ -84,10 +91,11 @@ export async function finalizeGenerationBilling(params: {
   installation: ShopifyInstallation;
   billingMode: GenerationBillingMode;
   customerId?: string | null;
+  generationJobId: string;
   idempotencyKey: string;
   freeGenerationLimit?: number;
 }): Promise<MerchantQuotaDecision | null> {
-  const { installation, billingMode, customerId, idempotencyKey, freeGenerationLimit } = params;
+  const { installation, billingMode, customerId, generationJobId, idempotencyKey, freeGenerationLimit } = params;
   const shop = installation.shopDomain ?? null;
 
   if (billingMode === "merchant") {
@@ -98,6 +106,7 @@ export async function finalizeGenerationBilling(params: {
     const result = await applyCustomerBillingOnSuccess({
       customerId,
       mode: "customer_paid",
+      generationJobId,
       idempotencyKey,
       externalRef: idempotencyKey,
       shop,
@@ -114,6 +123,7 @@ export async function finalizeGenerationBilling(params: {
     await applyCustomerBillingOnSuccess({
       customerId,
       mode: "customer_free",
+      generationJobId,
       idempotencyKey: `storefront-free-generation:${idempotencyKey}`,
       externalRef: idempotencyKey,
       freeGenerationLimit,

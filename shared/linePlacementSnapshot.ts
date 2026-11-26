@@ -3,6 +3,10 @@ export const LINE_FLAT_PLACEMENT_KEY = "_flat_pl";
 export const LINE_TOTE_PLACEMENT_KEY = "_tote_pl";
 /** Hosted JSON path/URL of AOP print panels frozen at add-to-cart. */
 export const LINE_AOP_PANELS_KEY = "_aop_pl";
+/** Set on the cart line while background panel persist/snapshot is still running. */
+export const LINE_AOP_PENDING_KEY = "_print_files_pending";
+/** Hash of the live capture this line is waiting for — gate/snapshot compare. */
+export const LINE_AOP_CAPTURE_KEY = "_aop_cap";
 
 export type LineViewPlacement = {
   scale: number;
@@ -21,11 +25,13 @@ export type DecodedToteLinePlacement = {
   scale: number;
   offsetX: number;
   offsetY: number;
+  /** Frozen at ATC when present. Missing on legacy lines. */
+  printBack?: boolean;
 };
 
 type CompactView = { s: number; x: number; y: number; r?: number; e?: 0 | 1 };
 type CompactFlat = { f?: CompactView; b?: CompactView; bg?: string | null };
-type CompactTote = { s: number; x: number; y: number };
+type CompactTote = { s: number; x: number; y: number; pb?: 0 | 1 };
 
 function round4(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -124,6 +130,7 @@ export function encodeToteLinePlacement(args: {
   y?: number | null;
   offsetX?: number | null;
   offsetY?: number | null;
+  printBack?: boolean;
 }): string | null {
   const scaleRaw = Number(args.scale);
   const hasOffsets =
@@ -141,11 +148,14 @@ export function encodeToteLinePlacement(args: {
     offsetX = ((Number(args.x) || 50) - 50) / 50;
     offsetY = ((Number(args.y) || 50) - 50) / 50;
   }
-  const json = JSON.stringify({
+  const payload: CompactTote = {
     s: round4(scale),
     x: round4(offsetX),
     y: round4(offsetY),
-  } satisfies CompactTote);
+  };
+  if (args.printBack === false) payload.pb = 0;
+  else if (args.printBack === true) payload.pb = 1;
+  const json = JSON.stringify(payload);
   return json.length < 255 ? json : null;
 }
 
@@ -160,6 +170,7 @@ export function decodeToteLinePlacement(raw?: string | null): DecodedToteLinePla
       scale: Number(parsed.s),
       offsetX: Number(parsed.x) || 0,
       offsetY: Number(parsed.y) || 0,
+      printBack: parsed.pb === 0 ? false : parsed.pb === 1 ? true : undefined,
     };
   } catch {
     return null;

@@ -1,6 +1,8 @@
 <div
   id="appai-root"
   data-shop="{{ shop.permanent_domain }}"
+  data-shop-name="{{ shop.name }}"
+  data-shop-currency="{{ shop.currency }}"
   data-customer-id="{% if customer %}{{ customer.id }}{% endif %}"
   style="display:none;"
 ></div>
@@ -22,9 +24,30 @@
 </script>
 {% endif %}
 
+{% comment %}
+  Base product page → its customizer page. UX only: checkout protection is the
+  appai-base-variant-guard validation Function. Never loaded when the product
+  hosts the legacy studio (ai_art_studio.enable); the script also stands down
+  if a studio block is on the page.
+{% endcomment %}
+{% if product and product.tags contains 'ai-art-studio-enabled' %}
+  {% comment %} enable is a single_line_text_field ("true"), not a boolean {% endcomment %}
+  {% assign appai_studio_enable = product.metafields.ai_art_studio.enable.value | append: '' | downcase | strip %}
+  {% unless appai_studio_enable == 'true' %}
+    <script
+      src="{{ 'appai-base-product-redirect.js' | asset_url }}"
+      data-appai-base-product-id="{{ product.id }}"
+      defer
+    ></script>
+  {% endunless %}
+{% endif %}
+
 <link rel="stylesheet" href="{{ 'appai-art-embed.css' | asset_url }}">
 <script src="{{ 'appai-cart-guard.js' | asset_url }}" defer></script>
-<script src="{{ 'appai-cart-images.js' | asset_url }}" defer></script>
+{% assign appai_cart_js = 'appai-cart-images.js' | asset_url %}
+<script src="{{ appai_cart_js }}{% if appai_cart_js contains '?' %}&{% else %}?{% endif %}appai=e0efac11" defer></script>
+<script src="{{ 'appai-shadow-swap.js' | asset_url }}" defer></script>
+<script src="{{ 'appai-print-files-gate.js' | asset_url }}" defer></script>
 {% comment %}
   appai-customizer-embed.js:
   - Runs on every page; detects /pages/<handle> URLs that match a merchant's customizer page.
@@ -57,6 +80,19 @@
 <script src="{{ 'appai-customizer-tray.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-last-creator.js' | asset_url }}" defer></script>
 <script src="{{ 'appai-art-embed.js' | asset_url }}" defer></script>
+<script src="{{ 'appai-default-size.js' | asset_url }}" defer></script>
+{% if product %}
+  <div hidden data-appai-find-my-size data-product-id="{{ product.id }}" data-shop="{{ shop.permanent_domain }}"{% if product.metafields.ai_art_studio.design_candidate_id.value != blank or product.tags contains 'ai-art-studio-design' %} data-appai-listing="1"{% endif %}></div>
+  <script src="{{ 'appai-find-my-size.js' | asset_url }}" defer></script>
+  {% comment %}
+    Catalogue listings carry design_candidate_id. Older design products
+    carry the ai-art-studio-design tag. Shells do not. No per-product switch.
+  {% endcomment %}
+  {% if product.metafields.ai_art_studio.design_candidate_id.value != blank or product.tags contains 'ai-art-studio-design' %}
+    <script src="{{ 'appai-hide-listing-thumbs.js' | asset_url }}" defer></script>
+  {% endif %}
+{% endif %}
+<script src="{{ 'appai-card-swatches.js' | asset_url }}" defer></script>
 
 {% schema %}
 {

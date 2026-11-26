@@ -14,17 +14,23 @@ import type {
   FrontBodyPanelPlacementBias,
   HoodieTemplate,
   HoodieView,
+  MaskLayer,
   PanelPlacementBiasPercent,
   TileSettings,
 } from "@shared/hoodieTemplate";
 import {
   designGroupsForBlueprint,
+  FRONT_POCKET_PANEL_KEYS,
+  isKangarooPocketPanelKey,
   isZipHoodieBlueprint,
   mergeFrontBodyPanelPlacementBias,
-  resolveFrontBodyPanelBias,
+  mergePanelPlacementBiasPercent,
+  resolvePrintFrontBodyPanelBias,
+  SEAM_PAIR_PANELS,
 } from "@shared/hoodieTemplate";
 import { useHoodieMapperStore } from "./store";
 import {
+  computeArtworkSampleRectForPanel,
   computeGroupRects,
   renderAopPreview,
   renderAopPreviewToCanvas,
@@ -115,6 +121,17 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   // thumbnails in the sidebar so the admin can eyeball what would be
   // sent to Printify (and what the back-view hood is reading from).
   const [showFlatPanels, setShowFlatPanels] = useState(false);
+  // Show the existing per-view Printify reference photo (already used
+  // elsewhere in this tool for mask/mesh alignment) alongside the flat
+  // print panel thumbnails, so an admin calibrating pocketPrint can
+  // compare the two without leaving this modal.
+  const [showReferenceOverlay, setShowReferenceOverlay] = useState(false);
+  // Sample-rect calibration overlay: draws the front-body and pocket
+  // panels' artwork-pixel-space crop windows as outlined boxes directly
+  // on the raw uploaded artwork, so an admin calibrating pocketPrint can
+  // judge sample continuity without involving either blank's geometry
+  // (mockup or Printify). Default off — debug-only, not a customer view.
+  const [showSampleRectOverlay, setShowSampleRectOverlay] = useState(false);
 
   // Per-group, per-view artwork placement. Modal-local overrides win
   // over template defaults until "Save as defaults" copies them back.
@@ -158,6 +175,10 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
     () => template.designGroups ?? designGroupsForBlueprint(template.blueprintId),
     [template.designGroups, template.blueprintId],
   );
+  const hasPocketPanel = useMemo(
+    () => designGroups.some((g) => g.panelKeys.some((k) => FRONT_POCKET_PANEL_KEYS.includes(k))),
+    [designGroups],
+  );
   const tileSettings: TileSettings = useMemo(() => {
     if (tileOverride) return tileOverride;
     return template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 };
@@ -194,7 +215,7 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
   );
   const setPanelBias = (
     groupId: string,
-    part: "chest" | "pocket",
+    part: "chest" | "pocket" | "pocketPrint",
     patch: Partial<PanelPlacementBiasPercent>,
   ) => {
     setPanelBiasOverrides((prev) => {
@@ -202,11 +223,26 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
         designGroups.find((g) => g.id === groupId)?.panelPlacementBias,
         prev[groupId],
       );
+      // Zip pocket bias locks offsetX to 0 (the zipper seam already fixes
+      // X) — same rule PulloverPlacementDefaultsPanel enforces for the
+      // display `pocket` field; pocketPrint must not regress it, even if
+      // a caller passes an X patch anyway (the UI also hides that slider).
+      const safePatch =
+        part === "pocketPrint" &&
+        isZipHoodieBlueprint(template.blueprintId) &&
+        patch.offsetX !== undefined
+          ? { ...patch, offsetX: 0 }
+          : patch;
+      // First edit to pocketPrint seeds from the current effective
+      // (display) value, so an untouched field (e.g. scale, when only Y
+      // is dragged) inherits pocket's current baseline instead of
+      // silently falling back to a raw default (0 offset / 1x scale).
+      const base = part === "pocketPrint" ? (current.pocketPrint ?? current.pocket) : current[part];
       return {
         ...prev,
         [groupId]: {
           ...current,
-          [part]: { ...current[part], ...patch },
+          [part]: { ...base, ...safePatch },
         },
       };
     });
@@ -869,10 +905,31 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                     },
                     seamAllowance: getSeam(g.id),
                     enabled: getEnabled(g.id),
-                    panelPlacementBias:
-                      g.id === "front-body" && isZipHoodieBlueprint(template.blueprintId)
-                        ? getPanelBias(g.id)
-                        : g.panelPlacementBias,
+                    // Existing chest/pocket bake logic is untouched on
+                    // purpose (isZipHoodieBlueprint gate and all) — widening
+                    // it risks persisting stale panelBiasOverrides entries
+                    // for pullover's chest/pocket where nothing is ever
+                    // saved today. pocketPrint is folded on top as a
+                    // separate, purely additive step for either garment.
+                    // Its offsetX is already zip-zeroed at write time by
+                    // setPanelBias (see onPanelBiasChange above), so no
+                    // additional zeroing is needed here.
+                    panelPlacementBias: (() => {
+                      const base =
+                        g.id === "front-body" && isZipHoodieBlueprint(template.blueprintId)
+                          ? getPanelBias(g.id)
+                          : g.panelPlacementBias;
+                      if (g.id !== "front-body") return base;
+                      const pocketPrintOverride = panelBiasOverrides[g.id]?.pocketPrint;
+                      if (pocketPrintOverride === undefined) return base;
+                      return {
+                        ...base,
+                        pocketPrint: mergePanelPlacementBiasPercent(
+                          base?.pocketPrint,
+                          pocketPrintOverride,
+                        ),
+                      };
+                    })(),
                     lockedRatio:
                       linkedGroupIds[g.id] && lockedRatios[g.id] !== undefined
                         ? lockedRatios[g.id]
@@ -995,6 +1052,30 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   onChange={setShowFlatPanels}
                 />
               )}
+              {showFlatPanels && template.views[view]?.referenceOverlay && (
+                <ToggleRow
+                  label="Show Printify reference photo"
+                  checked={showReferenceOverlay}
+                  onChange={setShowReferenceOverlay}
+                />
+              )}
+              {showFlatPanels &&
+                showReferenceOverlay &&
+                template.views[view]?.referenceOverlay && (
+                  <div className="mb-1.5 rounded border border-slate-800 bg-slate-950 p-1.5">
+                    <div className="mb-1 text-[10px] text-slate-500">
+                      Reference photo — visual ground truth for calibrating
+                      pocket print bias, not pixel-aligned to the panel
+                      thumbnails below (different crop/scale).
+                    </div>
+                    <img
+                      src={template.views[view]!.referenceOverlay!.src}
+                      alt="Printify reference"
+                      className="max-h-64 w-full rounded object-contain"
+                      style={{ opacity: template.views[view]!.referenceOverlay!.opacity ?? 1 }}
+                    />
+                  </div>
+                )}
               {showFlatPanels && mode === "single-sheet" && artworkImg && (
                 <FlatPanelThumbnails
                   template={template}
@@ -1006,6 +1087,27 @@ export default function AopPreviewModal({ open, onOpenChange }: Props) {
                   groupPanelBiasOverrides={panelBiasOverrides}
                 />
               )}
+              {showFlatPanels && hasPocketPanel && (
+                <ToggleRow
+                  label="Show sample-rect overlay (pocketPrint calibration)"
+                  checked={showSampleRectOverlay}
+                  onChange={setShowSampleRectOverlay}
+                />
+              )}
+              {showFlatPanels &&
+                showSampleRectOverlay &&
+                hasPocketPanel &&
+                mode === "single-sheet" &&
+                artworkImg && (
+                  <SampleRectOverlayPreview
+                    template={template}
+                    artwork={artworkImg}
+                    groupPlacementOverrides={groupPlacementOverrides}
+                    groupSeamOverrides={seamOverrides}
+                    groupEnabledOverrides={enabledOverrides}
+                    groupPanelBiasOverrides={panelBiasOverrides}
+                  />
+                )}
               {layerSources.size > 0 && (
                 <div className="mt-1 rounded border border-purple-900/40 bg-purple-950/20 px-2 py-1 text-[10px] text-purple-200">
                   {preferLayerSources ? (
@@ -1264,8 +1366,13 @@ function FlatPanelThumbnails({
             height: calibImg.naturalHeight || calibImg.height,
           }
         : undefined;
+      // This thumbnail is captioned "these are the bitmaps that go to
+      // Printify" — it must resolve bias the same way production print
+      // export does (pocketPrint, falling back to pocket), or an admin
+      // calibrating pocketPrint here would be looking at a preview that
+      // doesn't reflect what they're actually changing.
       const panelBias = group
-        ? resolveFrontBodyPanelBias(
+        ? resolvePrintFrontBodyPanelBias(
             group,
             layer.panelKey,
             groupPanelBiasOverrides?.[group.id],
@@ -1274,6 +1381,8 @@ function FlatPanelThumbnails({
       const flat = renderHoodFlatPanel(layer, artwork, rect, {
         fallbackSize,
         panelPlacementBias: panelBias,
+        blueprintId: template.blueprintId,
+        mapDestToSafe: true,
       });
       out.push({
         id: layer.id,
@@ -1332,6 +1441,165 @@ function FlatPanelThumbnails({
       <div className="mt-1 text-[10px] text-purple-200/70">
         These are the bitmaps that go to Printify. The back-of-hood reads
         from the matching front-of-hood panel above.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pocket/front-body sample-rect calibration overlay. Draws each panel
+ * pair's artwork-pixel-space crop window (computeArtworkSampleRectForPanel)
+ * as an outlined box on the raw uploaded artwork — sidesteps both the
+ * mockup's and Printify's garment shapes entirely, since continuity here
+ * is a property of the sample crops themselves, not of how they later get
+ * warped onto either blank. See docs in the plan for why a mesh-warped
+ * composite was rejected in favor of this approach.
+ */
+function SampleRectOverlayPreview({
+  template,
+  artwork,
+  groupPlacementOverrides,
+  groupSeamOverrides,
+  groupEnabledOverrides,
+  groupPanelBiasOverrides,
+}: {
+  template: HoodieTemplate;
+  artwork: HTMLImageElement;
+  groupPlacementOverrides?: Record<string, Record<HoodieView, ArtworkPlacement>>;
+  groupSeamOverrides?: Record<string, number>;
+  groupEnabledOverrides?: Record<string, boolean>;
+  groupPanelBiasOverrides?: Record<string, FrontBodyPanelPlacementBias>;
+}) {
+  const pairs = useMemo(() => {
+    const frontLayers = (template.views.front?.layers ?? []).filter(
+      (l): l is MaskLayer & { panelKey: NonNullable<MaskLayer["panelKey"]> } =>
+        !!l.mesh && l.visible && !l.isExclusion && !!l.panelKey,
+    );
+    const frontRects = computeGroupRects(template, "front", artwork, {
+      placementOverrides: groupPlacementOverrides,
+      seamOverrides: groupSeamOverrides,
+      enabledOverrides: groupEnabledOverrides,
+    });
+    const groupFor = (layer: MaskLayer) =>
+      template.designGroups?.find((g) =>
+        layer.panelKey ? g.panelKeys.includes(layer.panelKey) : false,
+      );
+    const pocketLayers = frontLayers.filter((l) => isKangarooPocketPanelKey(l.panelKey));
+    const chestLayers = frontLayers.filter((l) => !isKangarooPocketPanelKey(l.panelKey));
+
+    const out: Array<{ label: string; chest: ReturnType<typeof computeArtworkSampleRectForPanel>; pocket: ReturnType<typeof computeArtworkSampleRectForPanel> }> = [];
+    for (const pocketLayer of pocketLayers) {
+      const group = groupFor(pocketLayer);
+      const rect = group ? frontRects.get(group.id) : null;
+      if (!group || !rect || !rect.enabled) continue;
+
+      const side = SEAM_PAIR_PANELS.left.includes(pocketLayer.panelKey)
+        ? "left"
+        : SEAM_PAIR_PANELS.right.includes(pocketLayer.panelKey)
+          ? "right"
+          : "none";
+      const chestLayer =
+        side === "none"
+          ? chestLayers.find((l) => groupFor(l)?.id === group.id)
+          : chestLayers.find((l) => SEAM_PAIR_PANELS[side].includes(l.panelKey));
+      if (!chestLayer) continue;
+
+      const chestBias = resolvePrintFrontBodyPanelBias(
+        group,
+        chestLayer.panelKey,
+        groupPanelBiasOverrides?.[group.id],
+      );
+      const pocketBias = resolvePrintFrontBodyPanelBias(
+        group,
+        pocketLayer.panelKey,
+        groupPanelBiasOverrides?.[group.id],
+      );
+      out.push({
+        label: `${chestLayer.name || chestLayer.panelKey} ↔ ${pocketLayer.name || pocketLayer.panelKey}`,
+        chest: computeArtworkSampleRectForPanel(chestLayer, artwork, rect, {
+          panelPlacementBias: chestBias,
+          blueprintId: template.blueprintId,
+        }),
+        pocket: computeArtworkSampleRectForPanel(pocketLayer, artwork, rect, {
+          panelPlacementBias: pocketBias,
+          blueprintId: template.blueprintId,
+        }),
+      });
+    }
+    return out;
+  }, [
+    template,
+    artwork,
+    groupPlacementOverrides,
+    groupSeamOverrides,
+    groupEnabledOverrides,
+    groupPanelBiasOverrides,
+  ]);
+
+  const dataUrls = useMemo(() => {
+    const aw = artwork.naturalWidth || artwork.width;
+    const ah = artwork.naturalHeight || artwork.height;
+    if (!(aw > 0) || !(ah > 0)) return [];
+    const MAX_DIM = 640;
+    const scale = Math.min(1, MAX_DIM / Math.max(aw, ah));
+    return pairs.map((p) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(aw * scale));
+      canvas.height = Math.max(1, Math.round(ah * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return { label: p.label, dataUrl: null };
+      ctx.drawImage(artwork, 0, 0, aw, ah, 0, 0, canvas.width, canvas.height);
+      const drawRect = (
+        r: { x: number; y: number; width: number; height: number } | null,
+        color: string,
+      ) => {
+        if (!r) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(r.x * scale, r.y * scale, r.width * scale, r.height * scale);
+      };
+      drawRect(p.chest, "#38bdf8");
+      drawRect(p.pocket, "#f472b6");
+      return { label: p.label, dataUrl: canvas.toDataURL("image/png") };
+    });
+  }, [pairs, artwork]);
+
+  if (dataUrls.length === 0) {
+    return (
+      <div className="mt-1 rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[10px] text-slate-500">
+        No pocket/front-body pair found on the front view.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1 rounded border border-fuchsia-900/40 bg-fuchsia-950/20 px-2 py-1.5">
+      <div className="mb-1 text-[10px] uppercase tracking-wide text-fuchsia-200">
+        Sample-rect overlay
+      </div>
+      {dataUrls.map((d) =>
+        d.dataUrl ? (
+          <img
+            key={d.label}
+            src={d.dataUrl}
+            alt={d.label}
+            className="mb-1 w-full rounded"
+          />
+        ) : null,
+      )}
+      <div className="text-[10px] leading-snug text-fuchsia-200/70">
+        Blue = front-body sample window · Pink = pocket sample window
+        (pocketPrint bias) — edges should touch/continue for seamless art
+        across the seam. Assumes 0° placement rotation. This shows the
+        artwork crop windows only, not how either warps onto the mockup or
+        Printify's blank.
+      </div>
+      <div className="mt-1 text-[10px] leading-snug text-amber-300/80">
+        Pre-warp model only: this shows source-crop adjacency, not the
+        post-warp seam on Printify's blank (buildFlatMeshTargetPoints runs
+        after this). Use it to get pocketPrint into the right neighborhood
+        and catch gross art errors — a value is only certified by a real
+        test order confirming the actual print file, not by this view.
       </div>
     </div>
   );
@@ -1627,7 +1895,7 @@ function GroupsPanel({
   getPanelBias: (groupId: string) => FrontBodyPanelPlacementBias;
   onPanelBiasChange: (
     groupId: string,
-    part: "chest" | "pocket",
+    part: "chest" | "pocket" | "pocketPrint",
     patch: Partial<PanelPlacementBiasPercent>,
   ) => void;
   onPlacementChange: (groupId: string, patch: Partial<ArtworkPlacement>) => void;
@@ -1743,7 +2011,17 @@ function GroupsPanel({
             isZipHoodieBlueprint(blueprintId) &&
             view === "front" &&
             enabled;
+          const isZipGarment = isZipHoodieBlueprint(blueprintId);
+          // Print bias applies wherever the group has a kangaroo-pocket
+          // panel — both zip halves and pullover's single front_pocket
+          // share the same underlying bias mechanism.
+          const showPocketPrintBias =
+            g.id === "front-body" &&
+            view === "front" &&
+            enabled &&
+            g.panelKeys.some((k) => FRONT_POCKET_PANEL_KEYS.includes(k));
           const panelBias = getPanelBias(g.id);
+          const pocketPrintEffective = panelBias.pocketPrint ?? panelBias.pocket;
           return (
             <div
               key={g.id}
@@ -1910,6 +2188,107 @@ function GroupsPanel({
                                 precision={1}
                                 onChange={(offsetXPercent) =>
                                   onPanelBiasChange(g.id, "pocket", { offsetXPercent })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket panels scale"
+                                unit="×"
+                                value={panelBias.pocket?.scale ?? 1}
+                                min={0.5}
+                                max={1.5}
+                                step={0.01}
+                                precision={2}
+                                onChange={(scale) =>
+                                  onPanelBiasChange(g.id, "pocket", { scale })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket panels seam"
+                                unit="%"
+                                value={(panelBias.pocket?.seamAllowance ?? seam) * 100}
+                                min={0}
+                                max={15}
+                                step={0.5}
+                                precision={1}
+                                onChange={(v) =>
+                                  onPanelBiasChange(g.id, "pocket", { seamAllowance: v / 100 })
+                                }
+                              />
+                            </>
+                          )}
+                          {showPocketPrintBias && (
+                            <>
+                              <div className="pt-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                Pocket print bias
+                              </div>
+                              <div className="text-[10px] leading-snug text-slate-500">
+                                Independent from the display Pocket values
+                                above — aligns the pocket artwork to
+                                Printify's actual blank geometry (absolute
+                                pixels). Starts from the display value until
+                                nudged. Toggle the reference photo below to
+                                compare against a real Printify render.
+                              </div>
+                              {!isZipGarment && (
+                                <PlacementSlider
+                                  label="Pocket print X"
+                                  unit="px"
+                                  value={pocketPrintEffective?.offsetX ?? 0}
+                                  min={-100}
+                                  max={100}
+                                  step={0.5}
+                                  precision={1}
+                                  onChange={(offsetX) =>
+                                    onPanelBiasChange(g.id, "pocketPrint", { offsetX })
+                                  }
+                                />
+                              )}
+                              <PlacementSlider
+                                label="Pocket print Y"
+                                unit="px"
+                                value={pocketPrintEffective?.offsetY ?? 0}
+                                min={-100}
+                                max={100}
+                                step={0.5}
+                                precision={1}
+                                onChange={(offsetY) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { offsetY })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket print scale"
+                                unit="×"
+                                value={pocketPrintEffective?.scale ?? 1}
+                                min={0.5}
+                                max={1.5}
+                                step={0.01}
+                                precision={2}
+                                onChange={(scale) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { scale })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket print width (scale X)"
+                                unit="×"
+                                value={pocketPrintEffective?.scaleX ?? 1}
+                                min={0.8}
+                                max={1.4}
+                                step={0.01}
+                                precision={3}
+                                onChange={(scaleX) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { scaleX })
+                                }
+                              />
+                              <PlacementSlider
+                                label="Pocket print seam"
+                                unit="%"
+                                value={(pocketPrintEffective?.seamAllowance ?? panelBias.pocket?.seamAllowance ?? seam) * 100}
+                                min={0}
+                                max={15}
+                                step={0.5}
+                                precision={1}
+                                onChange={(v) =>
+                                  onPanelBiasChange(g.id, "pocketPrint", { seamAllowance: v / 100 })
                                 }
                               />
                             </>

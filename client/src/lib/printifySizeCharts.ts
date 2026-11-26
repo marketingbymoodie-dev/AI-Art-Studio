@@ -1,5 +1,6 @@
 import { supabase } from "./supabaseClient";
 import { API_BASE } from "./urlBase";
+import { safeFetch } from "./safeFetch";
 
 export type RawSizeChartRow = string[];
 
@@ -115,9 +116,10 @@ async function getSizeChartByBlueprintIdFromApi(
   const timeout = globalThis.setTimeout(() => controller.abort(), 7000);
 
   try {
-    const response = await fetch(
+    const response = await safeFetch(
       `${API_BASE}/api/storefront/size-chart/${encodeURIComponent(String(blueprintId))}`,
-      { headers: { Accept: "application/json" }, signal: controller.signal }
+      { headers: { Accept: "application/json" }, signal: controller.signal },
+      7000,
     );
     if (!response.ok) return null;
     const payload = await response.json();

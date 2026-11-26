@@ -6,7 +6,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Pipette,
   RotateCcw,
@@ -61,8 +63,17 @@ import {
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
 import DesignRectHandlesOverlay from "@/components/hoodie-template-mapper/DesignRectHandlesOverlay";
 import { extractArtworkPalette, type PaletteSwatch } from "./extractPalette";
+import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
 import { API_BASE } from "@/lib/urlBase";
 import { safeFetch } from "@/lib/safeFetch";
+import { publishTemplateToSupabase, saveTemplate } from "@/components/hoodie-template-mapper/api";
+import {
+  PocketSampleDragLayer,
+  PulloverPlacementDefaultsPanel,
+  type PocketSamplePlacement,
+  type PulloverCalibrationTarget,
+} from "./PulloverPlacementDefaultsPanel";
 
 /**
  * Customer-facing AOP artwork placer.
@@ -74,7 +85,8 @@ import { safeFetch } from "@/lib/safeFetch";
  *   2. View row: Front / Back / Hood
  *   3. Artwork Enabled (per-active-group)
  *   4. Background colour + eyedropper + 6 swatches (4 from artwork + B & W)
- *   5. Fine position nudge (leggings: in controls; others: under preview)
+ *   5. Fine position nudge (leggings: in controls; others: under preview on
+ *      mobile, under Artwork enabled on desktop)
  *   6. Scale slider (drives the active group)
  *   7. Reset (beside Link / Mirror)
  *
@@ -149,11 +161,52 @@ export type HoodieAopPlacerProps = {
    * (view state alone would not change).
    */
   onEngageLiveEditor?: () => void;
+  /**
+   * Preview Studio (admin-tester) only. Shows pullover hood/front/pocket
+   * numeric placement + Save-as-defaults. Storefront must leave this unset.
+   */
+  allowTemplateDefaultsEdit?: boolean;
+  /**
+   * Mobile customizer shell owns Place/Pattern, Apply Pattern, and Background.
+   * Hide those in-canvas duplicates so they don't stack under the chrome.
+   */
+  mobileShell?: boolean;
+  /**
+   * Shell sheet containers to portal the control column into on a phone. The
+   * fixed canvas has no scroll range, so any control left in the column is
+   * simply unreachable — these move the SAME nodes into the Options / Adjust
+   * sheets (refs, callbacks and placement state all stay intact). The View row
+   * deliberately stays on the canvas: it changes what you're looking at.
+   */
+  mobileSheetTargets?: {
+    options?: HTMLElement | null;
+    adjust?: HTMLElement | null;
+  };
+  /**
+   * Carousel dots (Artwork / Primary / View 2) sit under the mockup and
+   * above the Front/Back view row so they never collide with that toggle.
+   */
+  underPreviewSlot?: ReactNode;
 };
+
+/** Renders children into `target` when one is supplied, otherwise in place. */
+function SlotHost({
+  target,
+  children,
+}: {
+  target?: HTMLElement | null;
+  children: React.ReactNode;
+}) {
+  if (!target) return <>{children}</>;
+  return createPortal(children, target);
+}
 
 export type HoodieAopPlacerHandle = {
   applyIfNeeded: (opts?: { force?: boolean }) => Promise<boolean>;
   hasPendingChanges: () => boolean;
+  getState: () => HoodieAopPlacerState | null;
+  setMode: (mode: "place" | "pattern") => void;
+  setBackgroundColor: (hex: string) => void;
 };
 
 /**
@@ -221,6 +274,8 @@ export type HoodieAopPlacerState = {
    * on the back face only.
    */
   wrapBackMode: WrapBackMode;
+  /** Pocket sample-window after garment inset (Preview Studio + print). Zip uses Y + scale only. */
+  pocketSample?: PocketSamplePlacement;
 };
 
 /** Panel keys treated as "Trim" by the customer toggle (incl. sweatshirt neck rib). */
@@ -233,6 +288,35 @@ const TRIM_PANEL_KEYS = [
 ] as const;
 /** Panel keys treated as "Pockets" by the customer toggle. */
 const POCKET_PANEL_KEYS = ["pocket_left", "pocket_right", "front_pocket"] as const;
+
+const DEFAULT_POCKET_SAMPLE: PocketSamplePlacement = {
+  offsetX: 0,
+  offsetY: 0,
+  scale: 1,
+};
+
+function pocketSampleFromTemplate(template: HoodieTemplate): PocketSamplePlacement {
+  const pocket = template.designGroups?.find((g) => g.id === "front-body")?.panelPlacementBias
+    ?.pocket;
+  return {
+    offsetX: isZipHoodieBlueprint(template.blueprintId) ? 0 : pocket?.offsetX ?? 0,
+    offsetY: pocket?.offsetY ?? 0,
+    scale: pocket?.scale ?? 1,
+  };
+}
+
+function placementsClose(
+  a: ArtworkPlacement | undefined,
+  b: ArtworkPlacement | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return (
+    a.scale === b.scale &&
+    a.offsetX === b.offsetX &&
+    a.offsetY === b.offsetY &&
+    (a.rotationDeg ?? 0) === (b.rotationDeg ?? 0)
+  );
+}
 
 /**
  * Build the `panelEnabledOverrides` map the renderer expects from the
@@ -298,6 +382,7 @@ function outputSignature(s: HoodieAopPlacerState): string {
     backgroundColor: s.backgroundColor,
     tileSettings: s.tileSettings,
     wrapBackMode: s.wrapBackMode,
+    pocketSample: s.pocketSample,
   });
 }
 
@@ -472,7 +557,9 @@ function customerGroupEnabledByDefault(
       : false;
   }
   if (isZipHoodieBlueprint(blueprintId) || isPulloverHoodieBlueprint(blueprintId)) {
-    if (groupId === "front-body" || groupId === "back-body" || groupId === "hood") {
+    // Fresh hoodie: front + hood on, back off (customer can enable). Saved
+    // `back-body: true` still wins in mergeSavedCustomerEnabled.
+    if (groupId === "front-body" || groupId === "hood") {
       return group.enabled !== false;
     }
     return false;
@@ -614,9 +701,31 @@ function pillowDuplicateLinked(
  * enabled, locked-ratio) so the placer opens with the layout the admin
  * has dialed in.
  */
+function pinPulloverOperatorDefaults(
+  state: HoodieAopPlacerState,
+  template: HoodieTemplate,
+): HoodieAopPlacerState {
+  if (!isPulloverHoodieBlueprint(template.blueprintId)) return state;
+  const hood = template.designGroups?.find((g) => g.id === "hood")?.placement?.front;
+  const body = template.designGroups?.find((g) => g.id === "front-body")?.placement?.front;
+  const placements = { ...state.placements };
+  if (hood && placements.hood) {
+    placements.hood = { ...placements.hood, front: { ...hood } };
+  }
+  if (body && placements["front-body"]) {
+    placements["front-body"] = { ...placements["front-body"], front: { ...body } };
+  }
+  return {
+    ...state,
+    placements,
+    pocketSample: pocketSampleFromTemplate(template),
+  };
+}
+
 function buildInitialState(
   template: HoodieTemplate,
   saved?: Partial<HoodieAopPlacerState> | null,
+  options?: { pinPulloverOperatorDefaults?: boolean },
 ): HoodieAopPlacerState {
   const groups = template.designGroups ?? designGroupsForBlueprint(template.blueprintId);
   const isHoodieBp =
@@ -671,12 +780,17 @@ function buildInitialState(
     backgroundColor: DEFAULT_BG_COLOR,
     tileSettings: template.tileSettings ?? { pattern: "grid", tileSizeInches: 1.5 },
     wrapBackMode: saved?.wrapBackMode ?? template.wrapBackMode ?? "duplicate",
+    pocketSample: saved?.pocketSample ?? pocketSampleFromTemplate(template),
   };
   const baseWithGroups: HoodieAopPlacerState = {
     ...base,
     activeGroupId: pillow ? "front-face" : base.activeGroupId,
   };
-  if (!saved) return baseWithGroups;
+  if (!saved) {
+    return options?.pinPulloverOperatorDefaults
+      ? pinPulloverOperatorDefaults(baseWithGroups, template)
+      : baseWithGroups;
+  }
   const legsSynced = saved.legsSynced ?? base.legsSynced;
   const legsMirrored = saved.legsMirrored ?? base.legsMirrored;
   const resumed: HoodieAopPlacerState = {
@@ -695,8 +809,8 @@ function buildInitialState(
     ),
     enabled: mergeSavedCustomerEnabled(baseWithGroups.enabled, saved.enabled),
     tileSettings: { ...baseWithGroups.tileSettings, ...(saved.tileSettings ?? {}) },
-    trimEnabled: false,
-    trimLinked: false,
+    trimEnabled: saved.trimEnabled ?? false,
+    trimLinked: saved.trimLinked ?? false,
     leftSleeveLinked: saved.leftSleeveLinked ?? base.leftSleeveLinked,
     rightSleeveLinked: saved.rightSleeveLinked ?? base.rightSleeveLinked,
     sleevesMirrored: saved.sleevesMirrored ?? base.sleevesMirrored,
@@ -711,7 +825,10 @@ function buildInitialState(
         ? "front-face"
         : (saved.activeGroupId ?? baseWithGroups.activeGroupId),
   };
-  return pinHoodieBackEditSurface(resumed, template);
+  const pinned = pinHoodieBackEditSurface(resumed, template);
+  return options?.pinPulloverOperatorDefaults
+    ? pinPulloverOperatorDefaults(pinned, template)
+    : pinned;
 }
 
 /**
@@ -829,9 +946,9 @@ function unionLegDesignRects(
 }
 
 /**
- * Resolve template + overrides for preview/export. Pullover hoodies merge the
- * hood panels into front-body when linked. Zip hoodies keep admin-tuned per-group
- * placements; hood link only propagates edit deltas, not render-time overrides.
+ * Resolve template + overrides for preview/export. Pullover and zip both
+ * keep hood + front-body as two placements (zip's front:hood ratio).
+ * hoodLinked only propagates edit deltas — it does not merge panel keys.
  */
 function buildEffectiveRenderConfig(
   template: HoodieTemplate,
@@ -871,24 +988,40 @@ function buildEffectiveRenderConfig(
   } else {
     groups = migrateFrontPocketOutOfTrimGroup(groups);
   }
+  const pocket = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
+  groups = groups.map((g) => {
+    if (g.id !== "front-body") return g;
+    return {
+      ...g,
+      panelPlacementBias: {
+        ...g.panelPlacementBias,
+        pocket: {
+          offsetXPercent: g.panelPlacementBias?.pocket?.offsetXPercent ?? 0,
+          offsetYPercent: g.panelPlacementBias?.pocket?.offsetYPercent ?? 0,
+          offsetX: isZipHoodieBlueprint(template.blueprintId) ? 0 : pocket.offsetX,
+          offsetY: pocket.offsetY,
+          scale: pocket.scale,
+          // seamAllowance is template-authored (admin mapper slider) and has no
+          // placer control, so it is NOT part of PocketSamplePlacement — read it
+          // straight from the template. This literal previously omitted it, so
+          // the pocket-only seam override never reached the display render.
+          ...(g.panelPlacementBias?.pocket?.seamAllowance != null
+            ? { seamAllowance: g.panelPlacementBias.pocket.seamAllowance }
+            : {}),
+          // Same reason as seamAllowance above: template-authored, no placer
+          // control, and dropped entirely if this literal does not name it —
+          // which would leave the seam drift correction blind on display.
+          ...(g.panelPlacementBias?.pocket?.seamCalibrationScale != null
+            ? { seamCalibrationScale: g.panelPlacementBias.pocket.seamCalibrationScale }
+            : {}),
+        },
+      },
+    };
+  });
 
-  if (state.hoodLinked && isPulloverHoodieBlueprint(template.blueprintId)) {
-    groups = groups.map((g) => {
-      if (g.id === "front-body") {
-        const keys = new Set<HoodiePanelKey>([
-          ...g.panelKeys,
-          "left_hood",
-          "right_hood",
-        ]);
-        return { ...g, panelKeys: [...keys] };
-      }
-      if (g.id === "hood") {
-        return { ...g, panelKeys: [] as HoodiePanelKey[] };
-      }
-      return g;
-    });
-    enabled = { ...enabled, hood: false };
-  }
+  // Linked pullover keeps two placements (front-body + hood), same as zip.
+  // Do not merge hood panels into front-body — that discarded the zip
+  // front:hood scale/Y ratio. hoodLinked still drives edit-delta UI only.
 
   return {
     template: { ...template, designGroups: groups },
@@ -938,9 +1071,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
       onEngageLiveEditor,
+      allowTemplateDefaultsEdit = false,
+      mobileShell = false,
+      mobileSheetTargets,
+      underPreviewSlot,
     },
     ref,
   ) {
+    const optionsSlot = mobileSheetTargets?.options ?? null;
+    const adjustSlot = mobileSheetTargets?.adjust ?? null;
   const onEngageLiveEditorRef = useRef(onEngageLiveEditor);
   onEngageLiveEditorRef.current = onEngageLiveEditor;
   const onApplyStatusChangeRef = useRef(onApplyStatusChange);
@@ -1080,6 +1219,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const [applyStatus, setApplyStatus] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
+  const [calibrationTarget, setCalibrationTarget] =
+    useState<PulloverCalibrationTarget>("front-body");
+  const isPulloverOperator =
+    !!data && isPulloverHoodieBlueprint(data.template.blueprintId);
+  const isZipOperator = !!data && isZipHoodieBlueprint(data.template.blueprintId);
+  const [defaultsSaving, setDefaultsSaving] = useState(false);
+  const [defaultsError, setDefaultsError] = useState<string | null>(null);
   const setApplyStatusBoth = useCallback(
     (s: "idle" | "saving" | "saved" | "error") => {
       setApplyStatus(s);
@@ -1121,7 +1267,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             initialState.enabled ||
             initialState.tileSettings)
         );
-        return buildInitialState(data.template, initialState);
+        const next = buildInitialState(data.template, initialState, {
+          pinPulloverOperatorDefaults: allowTemplateDefaultsEdit,
+        });
+        // Pin the resume baseline NOW (saved Place mockup), not later when
+        // artworkImg arrives — a Place→Pattern switch before load would
+        // otherwise mark Pattern as already applied and Back would skip bake.
+        if (seededAsResumeRef.current) {
+          lastAppliedSignatureRef.current = outputSignature(next);
+        }
+        return next;
       }
       return prev;
     });
@@ -1159,6 +1314,14 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [state, onChange]);
 
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
+  const stateRef = useRef(state);
+  const dataRef = useRef(data);
+  const artworkImgRef = useRef(artworkImg);
+  const mockupsRef = useRef(mockups);
+  stateRef.current = state;
+  dataRef.current = data;
+  artworkImgRef.current = artworkImg;
+  mockupsRef.current = mockups;
   const [artworkLoading, setArtworkLoading] = useState(false);
   const [palette, setPalette] = useState<PaletteSwatch[]>([]);
   useEffect(() => {
@@ -1274,7 +1437,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
 
   // ---------- Canvas rendering ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const eyedropperActiveRef = useRef(false);
+  const [eyedropperOn, setEyedropperOn] = useState(false);
   useEffect(() => {
+    eyedropperActiveRef.current = eyedropperOn;
+  }, [eyedropperOn]);
+  useEffect(() => {
+    // Use `eyedropperOn` (not the ref). The ref stays true until a later
+    // effect, so a pick would update the spectrum and skip this paint —
+    // hoodie bg stayed stale. Skip only while the session is still open.
+    if (eyedropperOn) return;
     if (!data || !state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1318,7 +1490,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       legsLinked: state.mode === "pattern" && state.legsSynced,
       placeholderPositions,
     });
-  }, [data, state, mockups, artworkImg, placeholderPositions]);
+  }, [data, state, mockups, artworkImg, placeholderPositions, eyedropperOn]);
 
   // ---------- Helpers ----------
 
@@ -1345,7 +1517,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       const leggings =
         !!data && isLeggingsBlueprint(data.template.blueprintId);
       // Always show Front View editor when switching Place ↔ Pattern.
-      if (!leggings) return { ...prev, mode, view: "front" };
+      if (!leggings) {
+        const next = { ...prev, mode, view: "front" as const };
+        stateRef.current = next;
+        return next;
+      }
 
       // Leaving Place: remember session, force Link+Mirror off for clean tile symmetry.
       if (prev.mode === "place" && mode === "pattern") {
@@ -1356,23 +1532,29 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           enabled: { ...prev.enabled },
           activeGroupId: prev.activeGroupId,
         };
-        return {
+        const next = {
           ...prev,
-          mode: "pattern",
-          view: "front",
+          mode: "pattern" as const,
+          view: "front" as const,
           legsSynced: false,
           legsMirrored: false,
         };
+        stateRef.current = next;
+        return next;
       }
 
       // Returning to Place: restore last Place Link/Mirror/placements/enabled.
       if (prev.mode === "pattern" && mode === "place") {
         const snap = placeSessionRef.current;
-        if (!snap) return { ...prev, mode: "place", view: "front" };
-        return {
+        if (!snap) {
+          const next = { ...prev, mode: "place" as const, view: "front" as const };
+          stateRef.current = next;
+          return next;
+        }
+        const next = {
           ...prev,
-          mode: "place",
-          view: "front",
+          mode: "place" as const,
+          view: "front" as const,
           legsSynced: snap.legsSynced,
           legsMirrored: snap.legsMirrored,
           placements: clonePlacements(snap.placements),
@@ -1381,9 +1563,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             ? snap.activeGroupId
             : "right-leg",
         };
+        stateRef.current = next;
+        return next;
       }
 
-      return { ...prev, mode, view: "front" };
+      const next = { ...prev, mode, view: "front" as const };
+      stateRef.current = next;
+      return next;
     });
   }, [data]);
 
@@ -1500,6 +1686,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         return;
       }
 
+      // Deferred (gesture checkpoint, not CP2): pinch/twist on AOP art;
+      // tap a disabled panel → open Options with that part selected;
+      // double-tap a panel to toggle artwork (pocket vs front must not collide).
       const mockup = mockups[state.view]!;
       const effective = buildEffectiveRenderConfig(data.template, state);
       const pt = mockupPointFromClick(e, canvasRef.current, mockup);
@@ -1631,9 +1820,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [data, withFrontIfNeeded]);
 
   const setBgColor = useCallback((hex: string) => {
-    setState((prev) =>
-      prev ? { ...withFrontIfNeeded(prev), backgroundColor: hex } : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      if (prev.backgroundColor === hex) return prev;
+      return { ...withFrontIfNeeded(prev), backgroundColor: hex };
+    });
   }, [withFrontIfNeeded]);
 
   const updateActiveGroupPlacement = useCallback(
@@ -1732,7 +1923,54 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     [data, withFrontIfNeeded],
   );
 
+  const writeGroupFront = useCallback(
+    (groupId: "hood" | "front-body", next: ArtworkPlacement) => {
+      setState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          activeGroupId: groupId,
+          placements: {
+            ...prev.placements,
+            [groupId]: {
+              ...(prev.placements[groupId] ?? {}),
+              front: { ...next, scale: clampPlaceScale(next.scale) },
+              back: prev.placements[groupId]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
+            },
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const writePocketSample = useCallback((next: PocketSamplePlacement) => {
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            pocketSample: {
+              ...next,
+              offsetX: isZipOperator ? 0 : next.offsetX,
+              scale: clampPlaceScale(next.scale),
+            },
+          }
+        : prev,
+    );
+  }, [isZipOperator]);
+
   const setActiveScale = useCallback((view: HoodieView, scale: number) => {
+    if (
+      allowTemplateDefaultsEdit &&
+      (isPulloverOperator || isZipOperator) &&
+      calibrationTarget === "pocket"
+    ) {
+      writePocketSample({
+        ...(state?.pocketSample ?? DEFAULT_POCKET_SAMPLE),
+        scale: clampPlaceScale(scale),
+      });
+      return;
+    }
     setOverlayVisible(true);
     setState((prev) => {
       if (!prev) return prev;
@@ -1809,11 +2047,42 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       }
       return { ...prev, placements };
     });
-  }, [data, withFrontIfNeeded]);
+  }, [
+    data,
+    withFrontIfNeeded,
+    allowTemplateDefaultsEdit,
+    calibrationTarget,
+    isPulloverOperator,
+    isZipOperator,
+    state?.pocketSample,
+    writePocketSample,
+  ]);
 
   const nudgePlacement = useCallback(
     (axis: "x" | "y", direction: 1 | -1) => {
       if (!state || !data) return;
+      if (
+        allowTemplateDefaultsEdit &&
+        (isPulloverOperator || isZipOperator) &&
+        calibrationTarget === "pocket"
+      ) {
+        const canvas = canvasRef.current;
+        const mockupEl = mockups[state.view];
+        if (!canvas || !mockupEl) return;
+        const cr = canvas.getBoundingClientRect();
+        const mW = mockupEl.naturalWidth || mockupEl.width;
+        const mH = mockupEl.naturalHeight || mockupEl.height;
+        const deltaMock = mockupDeltaFromScreenNudge(axis, direction, cr, mW, mH);
+        const cur = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
+        writePocketSample({
+          ...cur,
+          offsetX: isZipOperator
+            ? 0
+            : cur.offsetX + (axis === "x" ? deltaMock : 0),
+          offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
+        });
+        return;
+      }
       const canvas = canvasRef.current;
       const mockupEl = mockups[state.view];
       if (!canvas || !mockupEl) return;
@@ -1839,7 +2108,17 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         offsetY: cur.offsetY + (axis === "y" ? deltaMock : 0),
       });
     },
-    [state, data, mockups, updateActiveGroupPlacement],
+    [
+      state,
+      data,
+      mockups,
+      updateActiveGroupPlacement,
+      allowTemplateDefaultsEdit,
+      calibrationTarget,
+      isPulloverOperator,
+      isZipOperator,
+      writePocketSample,
+    ],
   );
 
   const resetActivePart = useCallback(() => {
@@ -1898,62 +2177,65 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   }, [data, withFrontIfNeeded]);
 
   const setTileSettings = useCallback((patch: Partial<TileSettings>) => {
-    setState((prev) =>
-      prev
-        ? {
-            ...withFrontIfNeeded(prev),
-            tileSettings: { ...prev.tileSettings, ...patch },
-          }
-        : prev,
-    );
+    setState((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...withFrontIfNeeded(prev),
+        tileSettings: { ...prev.tileSettings, ...patch },
+      };
+      // Sync before paint so Back flush cannot bake the previous tile size.
+      stateRef.current = next;
+      return next;
+    });
   }, [withFrontIfNeeded]);
 
-  const triggerEyedropper = useCallback(async () => {
-    const W = window as any;
-    if (!W.EyeDropper) return;
-    try {
-      const ed = new W.EyeDropper();
-      const r = await ed.open();
-      if (r?.sRGBHex) setBgColor(r.sRGBHex);
-    } catch {
-      /* user cancelled — ignore */
-    }
-  }, [setBgColor]);
+  const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
+  const pickEyedropper = useCallback(
+    (hex: string) => {
+      eyedropperActiveRef.current = false;
+      setBgColor(hex);
+      setEyedropperOn(false);
+    },
+    [setBgColor],
+  );
 
   // ---------- Apply hand-off (Stage 3 will subscribe) ----------
   const renderViewToCanvas = useCallback(
     (v: HoodieView): HTMLCanvasElement | null => {
-      if (!data || !state) return null;
-      const mockup = mockups[v];
+      const liveData = dataRef.current;
+      const liveState = stateRef.current;
+      const liveArt = artworkImgRef.current;
+      if (!liveData || !liveState || !liveArt) return null;
+      const mockup = mockupsRef.current[v];
       if (!mockup) return null;
       const c = document.createElement("canvas");
       c.width = mockup.naturalWidth || mockup.width;
       c.height = mockup.naturalHeight || mockup.height;
       const ctx = c.getContext("2d");
       if (!ctx) return null;
-      const effective = buildEffectiveRenderConfig(data.template, state);
+      const effective = buildEffectiveRenderConfig(liveData.template, liveState);
       renderAopPreview(ctx, {
         template: effective.template,
         view: v,
         mockup,
-        artwork: artworkImg,
-        mode: state.mode === "pattern" ? "tile" : "single-sheet",
+        artwork: liveArt,
+        mode: liveState.mode === "pattern" ? "tile" : "single-sheet",
         showExclusions: true,
         applyShading: true,
         solidColorFallback: false,
         groupPlacementOverrides: effective.placements,
         groupEnabledOverrides: effective.enabled,
-        panelEnabledOverrides: buildPanelOverrides(state, data?.template),
-        backgroundColor: state.backgroundColor,
-        tileSettings: state.tileSettings,
-        pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
-        sleevesMirrored: state.sleevesMirrored,
-        legsMirrored: state.legsMirrored,
+        panelEnabledOverrides: buildPanelOverrides(liveState, liveData.template),
+        backgroundColor: liveState.backgroundColor,
+        tileSettings: liveState.tileSettings,
+        pixelsPerInch: liveData.template.realWorldCalibration?.pixelsPerInch,
+        sleevesMirrored: liveState.sleevesMirrored,
+        legsMirrored: liveState.legsMirrored,
         placeholderPositions,
       });
       return c;
     },
-    [data, state, mockups, artworkImg, placeholderPositions],
+    [placeholderPositions],
   );
 
   // Flat per-panel print files for order fulfillment (Phase 5 production
@@ -1962,24 +2244,27 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const renderPrintPanelsToDataUrls = useCallback((
     opts?: { maxLongEdgePx?: number },
   ): Array<{ position: string; dataUrl: string }> | null => {
-    if (!data || !state || !artworkImg) return null;
-    const effective = buildEffectiveRenderConfig(data.template, state);
+    const liveData = dataRef.current;
+    const liveState = stateRef.current;
+    const liveArt = artworkImgRef.current;
+    if (!liveData || !liveState || !liveArt) return null;
+    const effective = buildEffectiveRenderConfig(liveData.template, liveState);
     const panels = renderFlatPrintPanels({
       template: effective.template,
-      artwork: artworkImg,
-      mode: state.mode === "pattern" ? "tile" : "single-sheet",
-      tileSettings: state.tileSettings,
-      pixelsPerInch: data.template.realWorldCalibration?.pixelsPerInch,
-      backgroundColor: state.backgroundColor,
+      artwork: liveArt,
+      mode: liveState.mode === "pattern" ? "tile" : "single-sheet",
+      tileSettings: liveState.tileSettings,
+      pixelsPerInch: liveData.template.realWorldCalibration?.pixelsPerInch,
+      backgroundColor: liveState.backgroundColor,
       groupPlacementOverrides: effective.placements,
       groupEnabledOverrides: effective.enabled,
-      panelEnabledOverrides: buildPanelOverrides(state, data.template),
-      mockups,
+      panelEnabledOverrides: buildPanelOverrides(liveState, liveData.template),
+      mockups: mockupsRef.current,
       maxLongEdgePx: opts?.maxLongEdgePx,
       placeholderPositions,
-      sleevesMirrored: state.sleevesMirrored,
-      legsMirrored: state.legsMirrored,
-      legsLinked: state.mode === "pattern" && state.legsSynced,
+      sleevesMirrored: liveState.sleevesMirrored,
+      legsMirrored: liveState.legsMirrored,
+      legsLinked: liveState.mode === "pattern" && liveState.legsSynced,
     });
     // Panels are bg-filled (opaque), so JPEG is safe and 5-10× smaller than
     // PNG — matters because a zip hoodie exports ~12 panels per save.
@@ -1987,7 +2272,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
       position: p.position,
       dataUrl: p.canvas.toDataURL("image/jpeg", 0.92),
     }));
-  }, [data, state, mockups, artworkImg, placeholderPositions]);
+  }, [placeholderPositions]);
 
   const hasPendingChanges = useCallback((): boolean => {
     if (!state || !artworkImg) return false;
@@ -1998,20 +2283,37 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
   const applyInFlightRef = useRef(false);
   const applyIfNeeded = useCallback(
     async (opts?: { force?: boolean }): Promise<boolean> => {
-      if (!onApply || !state || !data || !artworkImg) return false;
-      if (applyInFlightRef.current) return false;
-      if (!opts?.force && !hasPendingChanges()) return false;
+      if (!onApply) return false;
+      if (applyInFlightRef.current) {
+        for (let i = 0; i < 200 && applyInFlightRef.current; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        if (applyInFlightRef.current) return false;
+      }
+      const liveState = stateRef.current;
+      const liveData = dataRef.current;
+      const liveArt = artworkImgRef.current;
+      if (!liveState || !liveData || !liveArt) return false;
+      if (
+        !opts?.force &&
+        lastAppliedSignatureRef.current !== null &&
+        outputSignature(liveState) === lastAppliedSignatureRef.current
+      ) {
+        return false;
+      }
       applyInFlightRef.current = true;
       setApplyStatusBoth("saving");
       try {
+        const bakeState = stateRef.current ?? liveState;
         await Promise.resolve(
           onApply({
-            state,
+            state: bakeState,
             renderView: renderViewToCanvas,
             renderPrintPanels: renderPrintPanelsToDataUrls,
           }),
         );
-        lastAppliedSignatureRef.current = outputSignature(state);
+        const saved = stateRef.current ?? liveState;
+        lastAppliedSignatureRef.current = outputSignature(saved);
         setApplyStatusBoth("saved");
         return true;
       } catch (e) {
@@ -2023,33 +2325,146 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         applyInFlightRef.current = false;
       }
     },
-    [
-      onApply,
-      state,
-      data,
-      artworkImg,
-      hasPendingChanges,
-      renderViewToCanvas,
-      renderPrintPanelsToDataUrls,
-      setApplyStatusBoth,
-    ],
+    [onApply, renderViewToCanvas, renderPrintPanelsToDataUrls, setApplyStatusBoth],
   );
 
   useImperativeHandle(
     ref,
-    () => ({ applyIfNeeded, hasPendingChanges }),
-    [applyIfNeeded, hasPendingChanges],
+    () => ({
+      applyIfNeeded,
+      hasPendingChanges,
+      getState: () => {
+        const s = stateRef.current;
+        if (!s) return null;
+        return {
+          ...s,
+          tileSettings: { ...s.tileSettings },
+          enabled: { ...s.enabled },
+        };
+      },
+      setMode,
+      setBackgroundColor: setBgColor,
+    }),
+    [applyIfNeeded, hasPendingChanges, setMode, setBgColor],
   );
+
+  useEffect(() => {
+    if (!allowTemplateDefaultsEdit) return;
+    setState((prev) => (prev && prev.hoodLinked ? { ...prev, hoodLinked: false } : prev));
+  }, [allowTemplateDefaultsEdit]);
+
+  const resetPulloverDefaults = useCallback(() => {
+    if (!data) return;
+    const template = data.template;
+    setDefaultsError(null);
+    setState((prev) => {
+      if (!prev) return prev;
+      const hood = template.designGroups?.find((g) => g.id === "hood")?.placement.front
+        ?? DEFAULT_ARTWORK_PLACEMENT;
+      const front = template.designGroups?.find((g) => g.id === "front-body")?.placement.front
+        ?? DEFAULT_ARTWORK_PLACEMENT;
+      return {
+        ...prev,
+        pocketSample: pocketSampleFromTemplate(template),
+        placements: {
+          ...prev.placements,
+          hood: {
+            ...(prev.placements.hood ?? {}),
+            front: { ...hood },
+            back: prev.placements.hood?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
+          },
+          "front-body": {
+            ...(prev.placements["front-body"] ?? {}),
+            front: { ...front },
+            back: prev.placements["front-body"]?.back ?? { ...DEFAULT_ARTWORK_PLACEMENT },
+          },
+        },
+      };
+    });
+  }, [data]);
+
+  const savePulloverDefaults = useCallback(async () => {
+    if (!data || !state) return;
+    setDefaultsSaving(true);
+    setDefaultsError(null);
+    try {
+      const hoodFront = state.placements.hood?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+      const bodyFront = state.placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT;
+      const pocket = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
+      const nextGroups = (data.template.designGroups ?? []).map((g) => {
+        if (g.id === "hood") {
+          return {
+            ...g,
+            placementAuthored: true,
+            placement: {
+              ...g.placement,
+              front: {
+                scale: hoodFront.scale,
+                offsetX: hoodFront.offsetX,
+                offsetY: hoodFront.offsetY,
+                rotationDeg: hoodFront.rotationDeg ?? 0,
+              },
+            },
+          };
+        }
+        if (g.id === "front-body") {
+          const nextFront = {
+            ...g,
+            placementAuthored: true,
+            placement: {
+              ...g.placement,
+              front: {
+                scale: bodyFront.scale,
+                offsetX: bodyFront.offsetX,
+                offsetY: bodyFront.offsetY,
+                rotationDeg: bodyFront.rotationDeg ?? 0,
+              },
+            },
+          };
+          return {
+            ...nextFront,
+            panelPlacementBias: {
+              ...g.panelPlacementBias,
+              pocket: {
+                offsetXPercent: g.panelPlacementBias?.pocket?.offsetXPercent ?? 0,
+                offsetYPercent: g.panelPlacementBias?.pocket?.offsetYPercent ?? 0,
+                offsetX: isZipHoodieBlueprint(data.template.blueprintId)
+                  ? 0
+                  : pocket.offsetX,
+                offsetY: pocket.offsetY,
+                scale: pocket.scale,
+              },
+            },
+          };
+        }
+        return g;
+      });
+      const nextTemplate = { ...data.template, designGroups: nextGroups };
+      const saved = await saveTemplate(templateName, nextTemplate);
+      const publish = saved.publish;
+      if (!publish || (publish.ok === false && !publish.skipped)) {
+        await publishTemplateToSupabase(templateName);
+      }
+      setData((prev) => (prev ? { ...prev, template: nextTemplate } : prev));
+    } catch (e) {
+      setDefaultsError(e instanceof Error ? e.message : "Failed to save defaults");
+    } finally {
+      setDefaultsSaving(false);
+    }
+  }, [data, state, templateName]);
 
   // Resume: record baseline without uploading. Fresh: one-shot apply for cart image.
   useEffect(() => {
     if (!onApply || !state || !data || !artworkImg) return;
     if (initialApplyDoneRef.current) return;
     initialApplyDoneRef.current = true;
-    const sig = outputSignature(state);
     if (skipInitialAutoApply || seededAsResumeRef.current) {
-      lastAppliedSignatureRef.current = sig;
-      setApplyStatusBoth("saved");
+      if (lastAppliedSignatureRef.current === null) {
+        lastAppliedSignatureRef.current = outputSignature(state);
+      }
+      setApplyStatusBoth(
+        outputSignature(state) !== lastAppliedSignatureRef.current ? "idle" : "saved",
+      );
       return;
     }
     void applyIfNeeded({ force: true }).catch(() => {
@@ -2123,10 +2538,17 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             ]
           )
       : !!effectiveRender.enabled[editGroupId];
+  const showOperatorDefaults =
+    allowTemplateDefaultsEdit &&
+    (isPulloverOperator || isZipOperator) &&
+    state.mode === "place";
+  const showPocketCal =
+    showOperatorDefaults && calibrationTarget === "pocket";
   const showOverlay =
     !!mockup &&
     !!artworkImg &&
     state.mode === "place" &&
+    !showPocketCal &&
     activePartEnabled &&
     // Hood/sleeve/leg handles only render on front view (back panels inherit via
     // the flat-panel bridge, no draggable equivalent).
@@ -2227,10 +2649,78 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
     ...FIXED_PALETTE,
   ];
 
+  const viewRow = (
+        <div
+          className={mobileShell ? "appai-mobile-viewrow" : undefined}
+          data-testid="hoodie-aop-view-row"
+        >
+          {!mobileShell && (
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            View
+          </div>
+          )}
+          <div className={`grid ${viewGridClass} gap-1`}>
+            {(["front", "back"] as HoodieView[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                aria-pressed={state.view === v}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.view === v,
+                )}`}
+              >
+                {v === "front" ? "Front" : "Back"}
+              </button>
+            ))}
+            {hasHoodGroup && (
+              <button
+                onClick={onHoodButton}
+                title={hoodTooltip}
+                aria-label={hoodTooltip}
+                aria-pressed={hoodSelected}
+                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  hoodSelected,
+                )}`}
+              >
+                {state.hoodLinked ? (
+                  <Link2 className="h-3 w-3" />
+                ) : (
+                  <Link2Off className="h-3 w-3" />
+                )}
+                Hood
+              </button>
+            )}
+            {hasCollarGroup && (
+              <button
+                onClick={() => onPartButton("collar")}
+                aria-pressed={state.activeGroupId === "collar"}
+                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
+                  state.activeGroupId === "collar",
+                )}`}
+              >
+                Collar
+              </button>
+            )}
+          </div>
+          {hoodSelected && (
+            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
+          )}
+        </div>
+  );
+
   return (
-    <div className="flex w-full flex-col gap-4 lg:flex-row">
-      {/* Left: live mockup with overlay */}
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-card">
+    <div className={`flex w-full flex-col gap-4 lg:flex-row${mobileShell ? " appai-mobile-placer" : ""}`}>
+      <ArtworkEyedropperSession
+        canvasRef={canvasRef}
+        active={eyedropperOn}
+        onPick={pickEyedropper}
+        onCancel={closeEyedropper}
+      />
+      {/* Left: live mockup with overlay. Outer wrapper is NOT overflow-hidden
+          so under-preview carousel labels can sit below the card (above the
+          Front/Back row) without being clipped. */}
+      <div className="relative flex min-w-0 flex-1 flex-col">
+      <div className={`relative overflow-hidden rounded-lg border border-border bg-card${mobileShell ? " appai-mobile-placer-card" : ""}`}>
         <div
           className={`relative flex max-h-[55vh] items-center justify-center bg-zinc-100 p-3 lg:max-h-none lg:p-4 ${
             isLeggings ? "lg:min-h-[min(78vh,720px)]" : "lg:aspect-square"
@@ -2292,6 +2782,30 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 onChange={(next) => updateActiveGroupPlacement(state.view, next)}
               />
             )}
+            {!canvasOverrideUrl &&
+              showPocketCal &&
+              mockup &&
+              artworkImg && (
+              <PocketSampleDragLayer
+                canvasRef={canvasRef}
+                mockup={mockup}
+                scale={(state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale}
+                onTranslate={(dx, dy) => {
+                  const cur = state.pocketSample ?? DEFAULT_POCKET_SAMPLE;
+                  writePocketSample({
+                    ...cur,
+                    offsetX: isZipOperator ? 0 : cur.offsetX + dx,
+                    offsetY: cur.offsetY + dy,
+                  });
+                }}
+                onScale={(next) => {
+                  writePocketSample({
+                    ...(state.pocketSample ?? DEFAULT_POCKET_SAMPLE),
+                    scale: clampPlaceScale(next),
+                  });
+                }}
+              />
+            )}
             {!canvasOverrideUrl && !mockup && data && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-center text-xs text-muted-foreground">
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" /> Loading mockup…
@@ -2324,13 +2838,15 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             </div>
           )}
         </div>
-        {/* Non-leggings: nudge under preview. Leggings: nudge lives in controls. */}
+        {/* Nudge: shell Adjust sheet on a phone, under the preview otherwise. */}
+        <SlotHost target={adjustSlot}>
         {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
-            className="relative z-10 border-t border-border bg-card px-3 py-2"
+            className="relative z-10 border-t border-border bg-card px-3 py-2 lg:hidden"
             onNudge={nudgePlacement}
           />
         )}
+        </SlotHost>
         {showLeggingsOffUnseenSideWarning && (
           <div
             className="relative z-10 border-t border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-950 dark:text-amber-50"
@@ -2343,14 +2859,19 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
       </div>
+      {mobileShell ? viewRow : null}
+      {underPreviewSlot ? (
+        <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
+      ) : null}
+      </div>
 
       {/* Right: controls (mirrors legacy customizer's middle-column order) */}
       <div
         data-hoodie-aop-controls
-        className="w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]"
+        className={`w-full shrink-0 space-y-4 overflow-x-hidden overflow-y-visible lg:w-80 [scrollbar-gutter:stable]${mobileShell ? " appai-mobile-placer-controls" : ""}`}
       >
-        {printersMockupAction && (
-          <div className="flex flex-col gap-1">
+        {printersMockupAction && !mobileShell && (
+          <div className="flex flex-col gap-1" data-hoodie-aop-shell-hidden>
             <button
               type="button"
               onClick={() => {
@@ -2414,7 +2935,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
         )}
 
         {/* Pattern / Place segmented toggle */}
-        <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card">
+        {!mobileShell && (
+        <div
+          data-hoodie-aop-mode-toggle
+          className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card"
+        >
           {(["pattern", "place"] as const).map((m) => (
             <button
               key={m}
@@ -2425,60 +2950,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             </button>
           ))}
         </div>
+        )}
 
         {/* View row: Front / Back / optional Hood or Collar group */}
-        <div>
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            View
-          </div>
-          <div className={`grid ${viewGridClass} gap-1`}>
-            {(["front", "back"] as HoodieView[]).map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                aria-pressed={state.view === v}
-                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  state.view === v,
-                )}`}
-              >
-                {v === "front" ? "Front" : "Back"}
-              </button>
-            ))}
-            {hasHoodGroup && (
-              <button
-                onClick={onHoodButton}
-                title={hoodTooltip}
-                aria-label={hoodTooltip}
-                aria-pressed={hoodSelected}
-                className={`relative flex items-center justify-center gap-1 rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  hoodSelected,
-                )}`}
-              >
-                {state.hoodLinked ? (
-                  <Link2 className="h-3 w-3" />
-                ) : (
-                  <Link2Off className="h-3 w-3" />
-                )}
-                Hood
-              </button>
-            )}
-            {hasCollarGroup && (
-              <button
-                onClick={() => onPartButton("collar")}
-                aria-pressed={state.activeGroupId === "collar"}
-                className={`rounded px-2 py-1.5 text-xs font-semibold border ${placerSegmentClass(
-                  state.activeGroupId === "collar",
-                )}`}
-              >
-                Collar
-              </button>
-            )}
-          </div>
-          {hoodSelected && (
-            <div className="mt-1 text-[10px] text-muted-foreground">{hoodTooltip}</div>
-          )}
-        </div>
+        {!mobileShell ? viewRow : null}
 
+        {/* Part / Pockets / Artwork-enabled → shell Options sheet on a phone. */}
+        <SlotHost target={optionsSlot}>
         {/* Place mode: pick which part to scale / enable */}
         {state.mode === "place" && placePartGroups.length > 0 && !isPillow && (
           <div>
@@ -2674,6 +3152,9 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
             )}
           </div>
         )}
+        </SlotHost>
+        {/* Link / Mirror → shell Adjust sheet on a phone. */}
+        <SlotHost target={adjustSlot}>
         {/* Pattern mode: Link / Mirror for leggings. */}
         {state.mode === "pattern" && isLeggings && (
           <div>
@@ -2755,6 +3236,8 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
 
+        </SlotHost>
+        <SlotHost target={optionsSlot}>
         {/* Pillow wrap: back face print mode */}
         {isPillow && (
           <div>
@@ -2826,7 +3309,57 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </div>
         )}
 
-        {/* Background colour */}
+        {!isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
+          <FinePositionNudgeInline
+            className="hidden rounded border border-border bg-muted/20 px-2 py-2 lg:block"
+            onNudge={nudgePlacement}
+          />
+        )}
+
+        {showOperatorDefaults && (
+          <PulloverPlacementDefaultsPanel
+            garment={isZipOperator ? "zip" : "pullover"}
+            hood={state.placements.hood?.front ?? DEFAULT_ARTWORK_PLACEMENT}
+            front={state.placements["front-body"]?.front ?? DEFAULT_ARTWORK_PLACEMENT}
+            pocket={state.pocketSample ?? DEFAULT_POCKET_SAMPLE}
+            selected={calibrationTarget}
+            saving={defaultsSaving}
+            hasOverrides={
+              !placementsClose(
+                state.placements.hood?.front,
+                data.template.designGroups?.find((g) => g.id === "hood")?.placement.front,
+              ) ||
+              !placementsClose(
+                state.placements["front-body"]?.front,
+                data.template.designGroups?.find((g) => g.id === "front-body")?.placement.front,
+              ) ||
+              (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetY !==
+                pocketSampleFromTemplate(data.template).offsetY ||
+              (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale !==
+                pocketSampleFromTemplate(data.template).scale ||
+              (!isZipOperator &&
+                (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).offsetX !==
+                  pocketSampleFromTemplate(data.template).offsetX)
+            }
+            error={defaultsError}
+            onSelect={(id) => {
+              setCalibrationTarget(id);
+              setOverlayVisible(true);
+              if (id !== "pocket") {
+                setState((prev) => (prev ? { ...prev, activeGroupId: id } : prev));
+              }
+            }}
+            onChangeHood={(next) => writeGroupFront("hood", next)}
+            onChangeFront={(next) => writeGroupFront("front-body", next)}
+            onChangePocket={writePocketSample}
+            onSave={() => void savePulloverDefaults()}
+            onReset={resetPulloverDefaults}
+          />
+        )}
+
+        </SlotHost>
+        {/* Background colour — on mobile the shell Background sheet owns this. */}
+        {!mobileShell && (
         <div>
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Background
@@ -2846,16 +3379,20 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
               spellCheck={false}
             />
-            {typeof window !== "undefined" && "EyeDropper" in window && (
-              <button
-                onClick={triggerEyedropper}
-                className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-                title="Pick a colour from anywhere on screen"
-                aria-label="Eyedropper"
-              >
-                <Pipette className="h-4 w-4" />
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setEyedropperOn((on) => !on)}
+              aria-pressed={eyedropperOn}
+              className={`flex h-8 w-8 items-center justify-center rounded border bg-card hover:bg-muted ${
+                eyedropperOn
+                  ? "border-primary text-primary"
+                  : "border-border text-card-foreground"
+              }`}
+              title="Pick a colour from the artwork"
+              aria-label="Eyedropper"
+            >
+              <Pipette className="h-4 w-4" />
+            </button>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {swatches.map((s) => (
@@ -2873,8 +3410,16 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               />
             ))}
           </div>
+          <ShadeSpectrumRow
+            hex={state.backgroundColor}
+            selected={state.backgroundColor}
+            onPick={setBgColor}
+          />
         </div>
+        )}
 
+        {/* Nudge / Scale / tile sliders → shell Adjust sheet on a phone. */}
+        <SlotHost target={adjustSlot}>
         {/* Leggings: fine-position nudges (replaces former Replace artwork slot). */}
         {isLeggings && state.mode === "place" && artworkImg && activePartEnabled && (
           <FinePositionNudgeInline
@@ -2909,7 +3454,13 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
                 )}
               </span>
               <span className="text-muted-foreground/80">
-                {Math.round(clampPlaceScale(placement.scale) * 100)}%
+                {Math.round(
+                  clampPlaceScale(
+                    showPocketCal
+                      ? (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale
+                      : placement.scale,
+                  ) * 100,
+                )}%
               </span>
             </div>
             <input
@@ -2917,7 +3468,11 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
               min={SCALE_MIN}
               max={SCALE_MAX}
               step={0.01}
-              value={clampPlaceScale(placement.scale)}
+              value={clampPlaceScale(
+                showPocketCal
+                  ? (state.pocketSample ?? DEFAULT_POCKET_SAMPLE).scale
+                  : placement.scale,
+              )}
               onChange={(e) =>
                 setActiveScale(state.view, Number(e.target.value))
               }
@@ -2996,6 +3551,7 @@ const HoodieAopPlacer = forwardRef<HoodieAopPlacerHandle, HoodieAopPlacerProps>(
           </>
         )}
 
+        </SlotHost>
         {/* Deferred-apply status — flush on ATC / leave / Printers Mockup. */}
         {onApply && artworkImg && (
           <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">

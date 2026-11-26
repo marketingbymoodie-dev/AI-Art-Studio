@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildShopifyAdminAppUrl,
   buildThemeEditorShopifyHref,
   buildThemeEditorUrl,
   httpsAdminUrlToShopifyProtocol,
+  stagingCatalogueStudioUrl,
 } from "./themeEditorUrl";
 
 describe("buildThemeEditorUrl", () => {
@@ -25,6 +27,15 @@ describe("buildThemeEditorUrl", () => {
   it("builds a shopify:// admin href that App Bridge can keep in history", () => {
     expect(buildThemeEditorShopifyHref("abc123")).toBe(
       "shopify://admin/themes/current/editor?context=apps&activateAppId=abc123%2Fai-art-embed",
+    );
+  });
+
+  it("builds the staging catalogue studio admin link", () => {
+    expect(stagingCatalogueStudioUrl()).toBe(
+      "https://admin.shopify.com/store/ai-art-studio-staging/apps/ai-art-studio-staging/admin/catalogue-studio",
+    );
+    expect(buildShopifyAdminAppUrl("studio-demo", "ai-art-studio", "/admin/settings")).toBe(
+      "https://admin.shopify.com/store/studio-demo/apps/ai-art-studio/admin/settings",
     );
   });
 

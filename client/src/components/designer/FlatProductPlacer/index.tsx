@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { Eye, EyeOff, ImagePlus, Loader2, Pipette, RotateCcw, AlertTriangle } from "lucide-react";
 import {
@@ -14,12 +15,17 @@ import {
 } from "@/components/designer/HoodieAopPlacer/extractPalette";
 import {
   FinePositionNudge,
+  FinePositionNudgeInline,
   mockupDeltaFromScreenNudge,
 } from "@/components/designer/placementNudge";
 import {
   DEFAULT_ARTWORK_PLACEMENT,
   type ArtworkPlacement,
 } from "@/components/hoodie-template-mapper/lib/aopPreview";
+import { DecorFloatingFillPicker } from "@/components/designer/DecorFloatingFillPicker";
+import { ArtworkEyedropperSession } from "@/components/designer/ArtworkEyedropperSession";
+import { ShadeSpectrumRow } from "@/components/designer/ShadeSpectrumRow";
+import { CATALOG_SIZE_BLANK_BLUEPRINTS } from "@shared/catalogSizeBlanks";
 import FlatDesignRectOverlay from "./FlatDesignRectOverlay";
 import {
   loadFlatImage,
@@ -28,6 +34,9 @@ import {
   orientFlatHarvestPixelsForLandscape,
   resolveFlatBlank,
   resolveFlatViewCalibration,
+  shouldProbeCatalogBlankGuide,
+  shouldApplyCatalogBlankShading,
+  featherCatalogGuideMask,
   resolveCalibratorLayerAdjust,
   withFlatAssetVersion,
   type FlatViewName,
@@ -35,20 +44,28 @@ import {
 import {
   flatCovers,
   flatVisibleArtBoxAxisAligned,
-  flatApparelGuideTrimmed,
+  flatApparelOpaqueTrimmed,
   flatDefaultPlacementScale,
+  flatFitPlacementToSafeArea,
+  applyFlatPreviewPlacementRect,
+  flatArtBox,
+  flatPrintAreaUncoveredByComposite,
   flatPlacementRectPx,
   flatPlacementScaleMax,
   flatPrintCanvasLayout,
   flatPrintCanvasPreviewDims,
+  flatShouldFitToSafeArea,
   renderFlatView,
-  FLAT_SCALE_MIN,
+  printCanvasFillForView,
+  shouldSyncFlatFaceScale,
+  FLAT_SCALE_FIT_FLOOR,
   type Rect,
 } from "./lib/flatRender";
 import type {
   FlatCalibrationManifest,
   FlatViewCalibration,
 } from "@/pages/embed-design";
+import { flatArtFitForBlueprint, isBeanieBlueprint } from "@shared/hoodieTemplate";
 
 /**
  * Customer-facing placer for "on-the-fly" flat / mesh products.
@@ -68,6 +85,10 @@ import type {
  *     `{scale:1}` so its own clamp does not shrink coverage.
  *   - Phone cases (`edgeWrapMode`): optional `backgroundColor` fills the blue
  *     dashed print canvas under cutout artwork.
+ *   - Decor / tote fill: `backgroundColor` paints BOTH faces, even when
+ *     artwork is off on a side (print-on-back is independent of fill).
+ *   - Apparel (t-shirt): fill is gated per face — no artwork on a side
+ *     means no background on that side (`printCanvasFillForView`).
  */
 
 type ViewName = FlatViewName;
@@ -92,6 +113,11 @@ export type FlatProductPlacerState = {
    * `null` = no customer fill (grey guide chrome in preview; transparent bake).
    */
   backgroundColor: string | null;
+  /**
+   * First-open only: contain-fit apparel into the dashed print guide, then
+   * clear. User drags/scales after that are never overwritten.
+   */
+  needsSafeFit?: boolean;
 };
 
 export type FlatProductPlacerApplyResult = {
@@ -160,9 +186,14 @@ export type FlatProductPlacerProps = {
   blankUrlOverride?: string | null;
   /**
    * Selected size aspect (`3:4`, `4:3`, …). Required when `blankUrlOverride` is a
-   * square catalog size blank so the dashed guide matches that size (wall decals).
+   * square catalog size blank so the dashed guide matches that size (wall decals / tapestry).
    */
   catalogSizeAspectRatio?: string | null;
+  /** Blueprint + size token so tapestry guides use the measured fabric bbox. */
+  catalogBlueprintId?: number | null;
+  catalogSizeKey?: string | null;
+  /** 241 preview scale (per-model hook; both currently +15%). */
+  generationModel?: string | null;
   /**
    * On-demand lifestyle/context action under "Placement ready".
    * `active` = shimmer + clickable; inactive = dimmed, no shimmer.
@@ -187,6 +218,22 @@ export type FlatProductPlacerProps = {
   viewerHeightPx?: number | null;
   /** Recolor a shared default blank to the selected garment colour. */
   garmentColorHex?: string | null;
+  /**
+   * Live floating-decor fill. Changing colour updates `backgroundColor` and
+   * re-renders immediately — no generate / credit.
+   */
+  decorGenerateFill?: {
+    value: string;
+    onChange: (next: string) => void;
+    hint?: string;
+  } | null;
+  /** Mobile customizer shell owns Generate/ATC and Background — hide duplicates. */
+  mobileShell?: boolean;
+  /**
+   * Carousel dots sit under the mockup and above the Front/Back view row
+   * so labels stay fully visible.
+   */
+  underPreviewSlot?: ReactNode;
 };
 
 type LoadedAssets = {
@@ -225,15 +272,17 @@ function applyPlacementToState(
   view: ViewName,
   next: ArtworkPlacement,
   _availableViews: ViewName[],
+  syncScaleAcrossFaces: boolean,
 ): FlatProductPlacerState {
   const placements = { ...prev.placements, [view]: next };
-  // Print-on-back uses the same artwork — keep scale matched to the side being edited.
-  if (prev.enabled.front && prev.enabled.back) {
+  // Totes only: keep both faces at the same scale while both prints are on.
+  // Locked flat apparel writes this view only (pre-40a5a6c).
+  if (syncScaleAcrossFaces && prev.enabled.front && prev.enabled.back) {
     const other: ViewName = view === "front" ? "back" : "front";
     const otherCur = placements[other] ?? next;
     placements[other] = { ...otherCur, scale: next.scale };
   }
-  return { ...prev, linkSides: false, placements };
+  return { ...prev, linkSides: false, placements, needsSafeFit: false };
 }
 
 function buildInitialState(
@@ -261,6 +310,7 @@ function buildInitialState(
     linkSides: false,
     artworkUrl: saved?.artworkUrl ?? null,
     backgroundColor: resolvedBg,
+    needsSafeFit: saved?.needsSafeFit ?? !saved?.placements,
   };
   if (!saved) return base;
   return {
@@ -270,6 +320,7 @@ function buildInitialState(
     enabled: { ...base.enabled, ...(saved.enabled ?? {}) },
     linkSides: false,
     backgroundColor: resolvedBg,
+    needsSafeFit: saved.needsSafeFit ?? !saved.placements,
   };
 }
 
@@ -294,31 +345,63 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       landscapeOrientation = false,
       blankUrlOverride = null,
       catalogSizeAspectRatio = null,
+      catalogBlueprintId = null,
+      catalogSizeKey = null,
+      generationModel = null,
       lifestyleAction = null,
       canvasOverrideUrl = null,
       canvasOverrideLabel = null,
       viewerHeightPx = null,
       garmentColorHex = null,
+      decorGenerateFill = null,
+      mobileShell = false,
+      underPreviewSlot,
     },
     ref,
   ) {
   const geometryKey = placementGeometryKey ?? colorId;
-  const refitCatalogSizeGuide = !!blankUrlOverride && !!catalogSizeAspectRatio;
+  const probeCatalogGuide = shouldProbeCatalogBlankGuide(catalogBlueprintId);
+  const isWallDecal =
+    catalogBlueprintId === CATALOG_SIZE_BLANK_BLUEPRINTS.wallDecals;
+  const refitCatalogSizeGuide =
+    !!(catalogSizeAspectRatio || catalogSizeKey) &&
+    (!!blankUrlOverride || isWallDecal);
   const calibOpts = useMemo(
     () => ({
       landscapeOrientation,
       sizeAspectRatio: catalogSizeAspectRatio,
       refitCatalogSizeGuide,
+      catalogBlueprintId,
+      catalogSizeKey,
     }),
-    [landscapeOrientation, catalogSizeAspectRatio, refitCatalogSizeGuide],
+    [
+      landscapeOrientation,
+      catalogSizeAspectRatio,
+      refitCatalogSizeGuide,
+      catalogBlueprintId,
+      catalogSizeKey,
+    ],
   );
   const defaultPlacement = useMemo<ArtworkPlacement>(
     () => ({
       ...DEFAULT_ARTWORK_PLACEMENT,
-      scale: flatDefaultPlacementScale({ edgeWrapMode, decorMode, fabricWeave }),
+      scale: flatDefaultPlacementScale({
+        edgeWrapMode,
+        decorMode,
+        fabricWeave,
+        probeCatalogGuide,
+        blueprintId: manifest.blueprintId,
+      }),
     }),
-    [edgeWrapMode, decorMode, fabricWeave],
+    [edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide, manifest.blueprintId],
   );
+  const syncScaleAcrossFaces = shouldSyncFlatFaceScale({
+    blueprintId: manifest.blueprintId,
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    probeCatalogGuide,
+  });
   const blank = useMemo(() => resolveFlatBlank(manifest, colorId), [manifest, colorId]);
   /** View-only zoom of the editor canvas (does not change print placement). */
   const [previewZoom, setPreviewZoom] = useState(1);
@@ -355,12 +438,23 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   });
   const [assetsLoading, setAssetsLoading] = useState(true);
   const [assetError, setAssetError] = useState<string | null>(null);
+  const resolveCalib = useCallback(
+    (view: ViewName) => resolveFlatViewCalibration(manifest, colorId, view, calibOpts),
+    [manifest, colorId, calibOpts],
+  );
 
   // ---------- Preload blank / mask / shading for every available view ----------
   useEffect(() => {
     let cancelled = false;
-    const hasExistingAssets = availableViews.some((v) => assets[v].blank);
-    if (!hasExistingAssets) setAssetsLoading(true);
+    // Catalog-size-blank (tapestry): drop the previous size's blank/mask/shading
+    // immediately. Colour-only swaps still keep prior pixels to avoid a flash.
+    if (refitCatalogSizeGuide) {
+      setAssets({ front: EMPTY_ASSETS, back: EMPTY_ASSETS });
+      setAssetsLoading(true);
+    } else {
+      const hasExistingAssets = availableViews.some((v) => assets[v].blank);
+      if (!hasExistingAssets) setAssetsLoading(true);
+    }
     setAssetError(null);
     (async () => {
       const next: Record<ViewName, LoadedAssets> = {
@@ -377,15 +471,17 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         // Version-pin harvest assets to the manifest generation — stable
         // canonical URLs are overwritten on re-harvest and a stale cached
         // mask silently desyncs the clip from the fresh guide geometry.
+        const loadCatalogTapestryMask = probeCatalogGuide && refitCatalogSizeGuide;
         const [b, m, s] = await Promise.all([
           loadFlatImageRelaxed(
             isOverrideBlank
               ? blankUrl
               : withFlatAssetVersion(blankUrl, manifest.generatedAt),
           ),
-          !refitCatalogSizeGuide && calib.maskUrl
+          (loadCatalogTapestryMask || !refitCatalogSizeGuide) && calib.maskUrl
             ? loadFlatImageRelaxed(withFlatAssetVersion(calib.maskUrl, manifest.generatedAt))
             : Promise.resolve(null),
+          !refitCatalogSizeGuide &&
           calib.shadingUrl &&
           (edgeWrapMode ||
             calib.shadingMode === "map" ||
@@ -393,14 +489,16 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             ? loadFlatImageRelaxed(withFlatAssetVersion(calib.shadingUrl, manifest.generatedAt))
             : Promise.resolve(null),
         ]);
+        const mask =
+          loadCatalogTapestryMask && m ? await featherCatalogGuideMask(m) : m;
         if (
           !refitCatalogSizeGuide &&
           flatCalibrationSwappedToLandscape(manifest, colorId, v, landscapeOrientation)
         ) {
-          const oriented = await orientFlatHarvestPixelsForLandscape(m, s);
+          const oriented = await orientFlatHarvestPixelsForLandscape(mask, s);
           next[v] = { blank: b, mask: oriented.mask, shading: oriented.shading };
         } else {
-          next[v] = { blank: b, mask: m, shading: s };
+          next[v] = { blank: b, mask, shading: s };
         }
       }
       if (cancelled) return;
@@ -415,7 +513,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keep prior assets visible during colour swap
-  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride]);
+  }, [availableViews, manifest, blank, colorId, edgeWrapMode, onAssetsFailed, geometryKey, calibOpts, blankUrlOverride, probeCatalogGuide]);
 
   useEffect(() => {
     if (!assetsLoading && availableViews.length === 0) {
@@ -471,6 +569,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         typeof parentEnabledBack === "boolean" ? parentEnabledBack : prev.enabled.back;
       if (prev.enabled.front === front && prev.enabled.back === back) return prev;
       const placements = { ...prev.placements };
+      // One-shot seed when back first turns on (rising edge only). Apparel can
+      // then diverge; later scale edits do not re-apply this copy.
       if (back && !prev.enabled.back) {
         placements.back = { ...placements.back, scale: placements.front.scale };
       }
@@ -498,9 +598,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       for (const v of availableViews) {
         placements[v] = { ...defaultPlacement };
       }
-      return { ...prev, placements };
+      return {
+        ...prev,
+        placements,
+        needsSafeFit: flatShouldFitToSafeArea({
+          edgeWrapMode,
+          decorMode,
+          fabricWeave,
+          probeCatalogGuide,
+          blueprintId: manifest.blueprintId,
+        }),
+      };
     });
-  }, [geometryKey, availableViews, defaultPlacement]);
+  }, [geometryKey, availableViews, defaultPlacement, edgeWrapMode, decorMode, fabricWeave, probeCatalogGuide]);
 
   // ---------- Artwork loading (always from artworkSourceUrl) ----------
   const [artworkImg, setArtworkImg] = useState<HTMLImageElement | null>(null);
@@ -525,12 +635,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         setArtworkCorsClean(true);
         setArtworkImg(withCors);
         setArtworkLoading(false);
-        if (edgeWrapMode) {
-          try {
-            setArtPalette(extractArtworkPalette(withCors, 4));
-          } catch {
-            setArtPalette([]);
-          }
+        try {
+          setArtPalette(extractArtworkPalette(withCors, 4));
+        } catch {
+          setArtPalette([]);
         }
         return;
       }
@@ -548,6 +656,69 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     };
   }, [artworkSourceUrl, edgeWrapMode]);
 
+  // First render of a design into this product's dashed guide: contain-fit
+  // (scale down + center). Decor / edge-wrap / tapestry skip. After this,
+  // user drags are never overwritten (needsSafeFit cleared; placement edits
+  // also clear it via applyPlacementToState).
+  useEffect(() => {
+    if (!flatShouldFitToSafeArea({
+      edgeWrapMode,
+      decorMode,
+      fabricWeave,
+      probeCatalogGuide,
+      blueprintId: manifest.blueprintId,
+    })) {
+      if (stateRef.current?.needsSafeFit) {
+        setState((prev) => (prev?.needsSafeFit ? { ...prev, needsSafeFit: false } : prev));
+      }
+      return;
+    }
+    if (assetsLoading || !artworkImg) return;
+    if (!stateRef.current?.needsSafeFit) return;
+    const artW = artworkImg.naturalWidth || artworkImg.width || 0;
+    const artH = artworkImg.naturalHeight || artworkImg.height || 0;
+    if (artW <= 0 || artH <= 0) return;
+
+    const prev = stateRef.current;
+    const placements = { ...prev.placements };
+    let anyFitted = false;
+    for (const v of availableViews) {
+      const cal = resolveCalib(v);
+      const va = assets[v];
+      if (!cal || !va?.blank) continue;
+      const mW = va.blank.naturalWidth || cal.mockupDims?.width || 1;
+      const mH = va.blank.naturalHeight || cal.mockupDims?.height || 1;
+      const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
+      });
+      if (!(pRect.width > 0 && pRect.height > 0)) continue;
+      const cur = placements[v] ?? defaultPlacement;
+      placements[v] = flatFitPlacementToSafeArea(pRect, artW, artH, cur);
+      anyFitted = true;
+    }
+    if (!anyFitted) return;
+    setState((s) => {
+      if (!s?.needsSafeFit) return s;
+      return { ...s, placements, needsSafeFit: false };
+    });
+  }, [
+    assets,
+    assetsLoading,
+    artworkImg,
+    availableViews,
+    calibOpts,
+    colorId,
+    decorMode,
+    defaultPlacement,
+    edgeWrapMode,
+    fabricWeave,
+    probeCatalogGuide,
+    manifest,
+    state?.needsSafeFit,
+  ]);
+
   // ---------- Bounding-box visibility ----------
   const [overlayVisible, setOverlayVisible] = useState(true);
 
@@ -559,10 +730,15 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   }, [applyStatus, onApplyStatusChange]);
 
   // ---------- Core render helper ----------
-  const scaleMax = flatPlacementScaleMax({ edgeWrapMode, decorMode, fabricWeave });
+  const scaleMax = flatPlacementScaleMax({
+    edgeWrapMode,
+    decorMode,
+    fabricWeave,
+    probeCatalogGuide,
+  });
 
   const clampPlacementScale = useCallback(
-    (scale: number) => Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, scale)),
+    (scale: number) => Math.max(FLAT_SCALE_FIT_FLOOR, Math.min(scaleMax, scale)),
     [scaleMax],
   );
 
@@ -589,9 +765,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (canvas: HTMLCanvasElement, v: ViewName, forApply: boolean): boolean => {
       if (!state) return false;
       const a = assets[v];
-      const calib = resolveFlatViewCalibration(manifest, colorId, v, calibOpts);
+      const calib = resolveCalib(v);
       if (!a?.blank || !calib) return false;
       const enabled = !!state.enabled[v];
+      if (forApply && !enabled && !decorMode && !edgeWrapMode) return false;
       const rawPlacement = state.placements[v] ?? defaultPlacement;
       const placement = {
         ...rawPlacement,
@@ -610,15 +787,23 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           artworkCorsClean,
           forceShadingMap: edgeWrapMode,
           edgeWrapMode,
-          printCanvasBackgroundColor: edgeWrapMode
-            ? state.backgroundColor
-            : null,
+          printCanvasBackgroundColor: printCanvasFillForView({
+            backgroundColor: normalizeBgHex(String(state.backgroundColor ?? "")),
+            enabled,
+            decorMode,
+            edgeWrapMode,
+          }),
           decorMode,
           fabricWeave,
+          catalogBlankShade: shouldApplyCatalogBlankShading(
+            catalogBlueprintId ?? manifest.blueprintId,
+          ),
           cropToBackFace: false,
           sizeId: colorId,
           layerAdjust: resolveCalibratorLayerAdjust(manifest, colorId, v),
           garmentColorHex,
+          blueprintId: manifest.blueprintId,
+          generationModel,
         });
         return true;
       } catch (e) {
@@ -637,16 +822,22 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       edgeWrapMode,
       decorMode,
       fabricWeave,
+      decorGenerateFill,
       calibOpts,
+      resolveCalib,
       clampPlacementScale,
       defaultPlacement,
       garmentColorHex,
+      probeCatalogGuide,
+      generationModel,
     ],
   );
 
   // ---------- Live canvas ----------
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const eyedropperActiveRef = useRef(false);
   useEffect(() => {
+    if (eyedropperActiveRef.current) return;
     if (!state) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -724,13 +915,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
 
   const computeTrimStatus = useCallback((): FlatTrimStatus => {
     const empty: FlatTrimStatus = { front: false, back: false, clippedSides: [] };
-    if (!state || !artworkImg || edgeWrapMode || decorMode || fabricWeave) {
+    // 241 uses bg-gap (tapestryMaskGap), not apparel overflow/trim.
+    if (
+      !state ||
+      !artworkImg ||
+      edgeWrapMode ||
+      decorMode ||
+      fabricWeave ||
+      probeCatalogGuide
+    ) {
       return empty;
     }
     const clippedSides: Array<"front" | "back"> = [];
     for (const view of availableViews) {
       if (!state.enabled[view]) continue;
-      const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+      const cal = resolveCalib(view);
       if (!cal) continue;
       const va = assets[view];
       const mW = va.blank?.naturalWidth || cal.mockupDims?.width || 1;
@@ -738,6 +937,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
         edgeWrapMode,
         decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
       });
       const placed = {
         ...(state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT),
@@ -745,8 +945,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           (state.placements[view] ?? DEFAULT_ARTWORK_PLACEMENT).scale,
         ),
       };
-      const box = flatVisibleArtBoxAxisAligned(pRect, placed, artworkImg);
-      if (flatApparelGuideTrimmed(pRect, box)) {
+      if (flatApparelOpaqueTrimmed(pRect, placed, artworkImg)) {
         clippedSides.push(view);
       }
     }
@@ -761,6 +960,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     edgeWrapMode,
     decorMode,
     fabricWeave,
+    probeCatalogGuide,
     availableViews,
     manifest,
     colorId,
@@ -820,6 +1020,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
       if (!prev) return prev;
       const enabled = { ...prev.enabled, [view]: on };
       const placements = { ...prev.placements };
+      // One-shot seed — same rising-edge as the Print Side dropdown sync.
       if (view === "back" && on && !prev.enabled.back) {
         placements.back = { ...placements.back, scale: placements.front.scale };
       }
@@ -831,10 +1032,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     (view: ViewName, next: ArtworkPlacement) => {
       const clamped = { ...next, scale: clampPlacementScale(next.scale) };
       setState((prev) =>
-        prev ? applyPlacementToState(prev, view, clamped, availableViews) : prev,
+        prev ? applyPlacementToState(prev, view, clamped, availableViews, syncScaleAcrossFaces) : prev,
       );
     },
-    [availableViews, clampPlacementScale],
+    [availableViews, clampPlacementScale, syncScaleAcrossFaces],
   );
 
   const setScale = useCallback(
@@ -847,10 +1048,11 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           view,
           { ...cur, scale: clampPlacementScale(scale) },
           availableViews,
+          syncScaleAcrossFaces,
         );
       });
     },
-    [availableViews, clampPlacementScale, defaultPlacement],
+    [availableViews, clampPlacementScale, defaultPlacement, syncScaleAcrossFaces],
   );
 
   const setBgColor = useCallback((hex: string | null) => {
@@ -862,19 +1064,19 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     });
   }, []);
 
-  const triggerEyedropper = useCallback(async () => {
-    const W = window as unknown as {
-      EyeDropper?: new () => { open: () => Promise<{ sRGBHex?: string }> };
-    };
-    if (!W.EyeDropper) return;
-    try {
-      const ed = new W.EyeDropper();
-      const r = await ed.open();
-      if (r?.sRGBHex) setBgColor(r.sRGBHex);
-    } catch {
-      /* cancelled */
-    }
-  }, [setBgColor]);
+  const [eyedropperOn, setEyedropperOn] = useState(false);
+  useEffect(() => {
+    eyedropperActiveRef.current = eyedropperOn;
+  }, [eyedropperOn]);
+  const closeEyedropper = useCallback(() => setEyedropperOn(false), []);
+  const pickEyedropper = useCallback(
+    (hex: string) => {
+      setBgColor(hex);
+      decorGenerateFill?.onChange(hex);
+      setEyedropperOn(false);
+    },
+    [setBgColor, decorGenerateFill],
+  );
 
   const resetView = useCallback(
     (view: ViewName) => {
@@ -885,17 +1087,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           view,
           { ...defaultPlacement },
           availableViews,
+          syncScaleAcrossFaces,
         );
       });
     },
-    [availableViews, defaultPlacement],
+    [availableViews, defaultPlacement, syncScaleAcrossFaces],
   );
 
   const nudgePlacement = useCallback(
     (view: ViewName, axis: "x" | "y", direction: 1 | -1) => {
       setState((prev) => {
         if (!prev) return prev;
-        const cal = resolveFlatViewCalibration(manifest, colorId, view, calibOpts);
+        const cal = resolveCalib(view);
         const va = assets[view];
         const canvas = canvasRef.current;
         if (!cal || !va.blank || !canvas) return prev;
@@ -908,6 +1111,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         const pRect = flatPlacementRectPx(cal, va.mask, mW, mH, {
           edgeWrapMode,
           decorMode,
+          skipApparelPrintGuideBoost: isWallDecal,
         });
         const cr = canvas.getBoundingClientRect();
         const deltaMock = mockupDeltaFromScreenNudge(
@@ -930,10 +1134,10 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           offsetY:
             axis === "y" ? clamp(cur.offsetY + dOff) : cur.offsetY,
         };
-        return applyPlacementToState(prev, view, next, availableViews);
+        return applyPlacementToState(prev, view, next, availableViews, syncScaleAcrossFaces);
       });
     },
-    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts],
+    [manifest, colorId, assets, edgeWrapMode, decorMode, availableViews, calibOpts, syncScaleAcrossFaces],
   );
 
   const hasDisplayableAssets = availableViews.some((v) => assets[v].blank);
@@ -973,12 +1177,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           srcW = canvas.width;
           srcH = canvas.height;
         } else if (state) {
-          const cal = resolveFlatViewCalibration(
-            manifest,
-            colorId,
-            state.view,
-            calibOpts,
-          );
+          const cal = resolveCalib(state.view);
           if (cal) {
             const dims = flatPrintCanvasPreviewDims(cal);
             srcW = dims.width;
@@ -1023,6 +1222,78 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     state,
   ]);
 
+  const tapestryView = state?.view ?? "front";
+  const tapestryMask = assets[tapestryView]?.mask ?? null;
+  const tapestryBlank = assets[tapestryView]?.blank ?? null;
+  const tapestryEnabled = !!state?.enabled[tapestryView];
+  const tapestryPlacement =
+    state?.placements[tapestryView] ?? DEFAULT_ARTWORK_PLACEMENT;
+  const [tapestryMaskGap, setTapestryMaskGap] = useState(false);
+  const tapestryGapRafRef = useRef(0);
+
+  useEffect(() => {
+    const calib = state ? resolveCalib(tapestryView) : undefined;
+    if (!probeCatalogGuide || !tapestryEnabled || !tapestryMask || !calib) {
+      setTapestryMaskGap(false);
+      return;
+    }
+    const mW = tapestryBlank?.naturalWidth || calib.mockupDims?.width || 1;
+    const mH = tapestryBlank?.naturalHeight || calib.mockupDims?.height || 1;
+    // Same +15% display rect as renderFlatView / overlay — not the raw harvest box.
+    const bp = catalogBlueprintId ?? manifest.blueprintId;
+    const displayRect = applyFlatPreviewPlacementRect(
+      bp,
+      flatPlacementRectPx(calib, tapestryMask, mW, mH, {
+        edgeWrapMode,
+        decorMode,
+        skipApparelPrintGuideBoost: isWallDecal,
+      }),
+      generationModel,
+    );
+    const placed = {
+      ...tapestryPlacement,
+      scale: clampPlacementScale(tapestryPlacement.scale),
+    };
+    const artW = artworkImg?.naturalWidth || artworkImg?.width || 0;
+    const artH = artworkImg?.naturalHeight || artworkImg?.height || 0;
+    // Same contain box the canvas draws (displayRect × user scale).
+    const artBox =
+      artworkImg && artW > 0 && artH > 0
+        ? flatArtBox(displayRect, placed, artW, artH, flatArtFitForBlueprint(bp))
+        : null;
+    cancelAnimationFrame(tapestryGapRafRef.current);
+    tapestryGapRafRef.current = requestAnimationFrame(() => {
+      setTapestryMaskGap(
+        flatPrintAreaUncoveredByComposite(tapestryMask, mW, mH, {
+          fillRect: state?.backgroundColor ? displayRect : null,
+          artBox,
+          artRotationDeg: placed.rotationDeg ?? 0,
+        }),
+      );
+    });
+    return () => cancelAnimationFrame(tapestryGapRafRef.current);
+  }, [
+    probeCatalogGuide,
+    tapestryEnabled,
+    tapestryMask,
+    tapestryBlank,
+    tapestryView,
+    tapestryPlacement.scale,
+    tapestryPlacement.offsetX,
+    tapestryPlacement.offsetY,
+    tapestryPlacement.rotationDeg,
+    artworkImg,
+    catalogBlueprintId,
+    manifest.blueprintId,
+    state,
+    resolveCalib,
+    state?.backgroundColor,
+    edgeWrapMode,
+    decorMode,
+    clampPlacementScale,
+    generationModel,
+  ]);
+
   // ---------- Render guards ----------
   if (!state || (assetsLoading && !hasDisplayableAssets)) {
     return (
@@ -1042,7 +1313,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     );
   }
 
-  const calib = resolveFlatViewCalibration(manifest, colorId, state.view, calibOpts);
+  const calib = resolveCalib(state.view);
   const viewAssets = assets[state.view];
   const placement = state.placements[state.view] ?? DEFAULT_ARTWORK_PLACEMENT;
   const viewEnabled = !!state.enabled[state.view];
@@ -1059,14 +1330,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
   const displayMockupW = printCanvasLayout?.previewW ?? mockupW;
   const displayMockupH = printCanvasLayout?.previewH ?? mockupH;
 
+  // 241 shares the harvested mask AABB with overlay, coverage, and renderFlatView
+  // so scale/offset, the dashed box, and the warning use one coordinate system.
   const placementRect =
     edgeWrapMode && calib
       ? printCanvasLayout!.printCanvas
       : calib
-        ? flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
-            edgeWrapMode,
-            decorMode,
-          })
+        ? applyFlatPreviewPlacementRect(
+            manifest.blueprintId,
+            flatPlacementRectPx(calib, viewAssets.mask, mockupW, mockupH, {
+              edgeWrapMode,
+              decorMode,
+              skipApparelPrintGuideBoost: isWallDecal,
+            }),
+            generationModel,
+          )
         : null;
 
   const displayEdgeGuides =
@@ -1084,18 +1362,37 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
     };
     // Opaque-content bounds: transparent PNG padding must not trigger false
     // trim warnings (nothing visible is clipped) nor fake print-area coverage.
-    const box = flatVisibleArtBoxAxisAligned(placementRect, placed, artworkImg);
+    const box = flatVisibleArtBoxAxisAligned(
+      placementRect,
+      placed,
+      artworkImg,
+      flatArtFitForBlueprint(manifest.blueprintId),
+    );
     if (edgeWrapMode) {
       // Phone: gap warn only when no customer bg fills the blue canvas.
       if (!state.backgroundColor && !flatCovers(placementRect, box)) {
         coverageWarning = "edge-gap";
       }
-    } else if (decorMode || fabricWeave) {
-      if (!flatCovers(placementRect, box)) {
+    } else if (probeCatalogGuide) {
+      // 241: composite gap (art box and/or bg fill vs droop core). Same +15% rect.
+      if (tapestryMaskGap) {
         coverageWarning = "edge-gap";
       }
-    } else if (flatApparelGuideTrimmed(placementRect, box)) {
-      // Apparel: opaque pixels touching/crossing the dashed guide only.
+    } else if (decorMode || fabricWeave) {
+      // Live fill covers the opening independently of motif scale.
+      if (!state.backgroundColor && !flatCovers(placementRect, box)) {
+        coverageWarning = "edge-gap";
+      }
+    } else if (
+      flatApparelOpaqueTrimmed(
+        placementRect,
+        placed,
+        artworkImg,
+        flatArtFitForBlueprint(manifest.blueprintId),
+      )
+    ) {
+      // Apparel: only real opaque pixels past the guide — a rotated design's
+      // hollow bounding-box corners are empty and must never warn.
       coverageWarning = "trim";
     }
   }
@@ -1224,6 +1521,8 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               innerGuideRect={displayEdgeGuides?.inner ?? null}
               outerGuideRect={displayEdgeGuides?.outer ?? null}
               placementRect={placementRect}
+              artFit={flatArtFitForBlueprint(manifest.blueprintId)}
+              guideMask={probeCatalogGuide ? viewAssets.mask : null}
               mockupWidth={displayMockupW}
               mockupHeight={displayMockupH}
               scaleMax={scaleMax}
@@ -1270,24 +1569,62 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           )
         : null;
 
+  const viewRow =
+    availableViews.length > 1 ? (
+          <div
+            className={mobileShell ? "appai-mobile-viewrow" : undefined}
+            data-testid="flat-placer-view-row"
+          >
+            {!mobileShell && (
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              View
+            </div>
+            )}
+            <div className="grid grid-cols-2 gap-1">
+              {availableViews.map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  aria-pressed={state.view === v}
+                  className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
+                    state.view === v
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-card text-card-foreground hover:bg-muted border border-border"
+                  }`}
+                >
+                  {v === "front" ? "Front" : "Back"}
+                </button>
+              ))}
+            </div>
+          </div>
+    ) : null;
+
   // Layout mirrors HoodieAopPlacer: canvas flex-1 + controls lg:w-80 inside
   // the page's left 2/3 (col-span-2 of the wide 3-column embed grid).
   return (
     <div
       className={
         edgeWrapMode
-          ? "flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start"
-          : "flex w-full flex-col gap-4 lg:flex-row"
+          ? `flex w-full flex-col items-stretch gap-4 lg:flex-row lg:items-start${mobileShell ? " appai-mobile-placer" : ""}`
+          : `flex w-full flex-col gap-4 lg:flex-row${mobileShell ? " appai-mobile-placer" : ""}`
       }
     >
-      {/* Live canvas + overlay (or lifestyle/context override) */}
+      <ArtworkEyedropperSession
+        canvasRef={canvasRef}
+        active={eyedropperOn}
+        onPick={pickEyedropper}
+        onCancel={closeEyedropper}
+      />
+      {/* Live canvas + overlay. Outer wrapper lets carousel labels sit under
+          the mockup and above Front/Back without overflow clipping. */}
+      <div className="relative flex min-w-0 flex-1 flex-col self-stretch">
       <div
         className={
           // Phone cases: height is matched to the form/prompt column (px), not
           // viewport stretch — Zoom stays on the bottom of that card.
           edgeWrapMode
-            ? "relative flex w-full flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card self-start"
-            : "relative flex-1 overflow-hidden rounded-lg border border-border bg-card"
+            ? `relative flex w-full flex-col overflow-hidden rounded-lg border border-border bg-card self-start${mobileShell ? " appai-mobile-placer-card" : ""}`
+            : `relative overflow-hidden rounded-lg border border-border bg-card${mobileShell ? " appai-mobile-placer-card" : ""}`
         }
         style={
           edgeWrapCardHeight
@@ -1355,6 +1692,18 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             )}
           </div>
         )}
+        {/* Mobile: nudge under preview. Desktop: in controls column (below). */}
+        {!edgeWrapMode && viewEnabled && artworkImg && (
+          <FinePositionNudgeInline
+            className="relative z-10 border-t border-border bg-card px-3 py-2 lg:hidden"
+            onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
+          />
+        )}
+      </div>
+      {mobileShell ? viewRow : null}
+      {underPreviewSlot ? (
+        <div className="appai-under-preview-slot shrink-0">{underPreviewSlot}</div>
+      ) : null}
       </div>
 
       {/* Placement controls (middle column width — mirrors HoodieAopPlacer) */}
@@ -1365,33 +1714,21 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             : "w-full shrink-0 space-y-4 lg:w-80"
         }
       >
-        {/* View row: Front always; Back only when available */}
-        {availableViews.length > 1 && (
-          <div>
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              View
-            </div>
-            <div className="grid grid-cols-2 gap-1">
-              {availableViews.map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  aria-pressed={state.view === v}
-                  className={`rounded px-2 py-1.5 text-xs font-semibold transition ${
-                    state.view === v
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-card text-card-foreground hover:bg-muted border border-border"
-                  }`}
-                >
-                  {v === "front" ? "Front" : "Back"}
-                </button>
-              ))}
-            </div>
-          </div>
+        {isBeanieBlueprint(manifest.blueprintId) && (
+          <p
+            className="rounded border border-border bg-muted/40 px-3 py-2 text-[11px] leading-snug text-muted-foreground"
+            data-testid="beanie-both-sides-note"
+          >
+            This beanie prints the same design on the front and back.
+          </p>
         )}
 
-        {/* Artwork enabled — skip for phone cases (single print side only). */}
-        {!edgeWrapMode && (
+        {/* View row: Front always; Back only when available */}
+        {!mobileShell ? viewRow : null}
+
+        {/* Artwork enabled — skip for phone cases and any product with only
+            one print face (single side has nothing to toggle between). */}
+        {!edgeWrapMode && availableViews.length > 1 && (
           <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-3 py-2">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Print on {state.view === "front" ? "front" : "back"}
@@ -1404,7 +1741,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {/* Phone cases: Printers Mockup replaces the Print-on-front toggle slot. */}
-        {edgeWrapMode && lifestyleAction && (
+        {edgeWrapMode && lifestyleAction && !mobileShell && (
           <div className="flex flex-col gap-1">
             <button
               type="button"
@@ -1451,7 +1788,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
         )}
 
         {/* Phone cases: fill under cutout art out to the blue dashed print canvas. */}
-        {edgeWrapMode && (
+        {edgeWrapMode && !mobileShell && (
           <div data-testid="flat-edge-wrap-background">
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Background
@@ -1493,17 +1830,20 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 className="h-8 flex-1 rounded border border-border bg-card px-2 text-xs text-card-foreground"
                 spellCheck={false}
               />
-              {typeof window !== "undefined" && "EyeDropper" in window && (
-                <button
-                  type="button"
-                  onClick={() => void triggerEyedropper()}
-                  className="flex h-8 w-8 items-center justify-center rounded border border-border bg-card text-card-foreground hover:bg-muted"
-                  title="Pick a colour from anywhere on screen"
-                  aria-label="Eyedropper"
-                >
-                  <Pipette className="h-4 w-4" />
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setEyedropperOn((on) => !on)}
+                aria-pressed={eyedropperOn}
+                className={`flex h-8 w-8 items-center justify-center rounded border bg-card hover:bg-muted ${
+                  eyedropperOn
+                    ? "border-primary text-primary"
+                    : "border-border text-card-foreground"
+                }`}
+                title="Pick a colour from the artwork"
+                aria-label="Eyedropper"
+              >
+                <Pipette className="h-4 w-4" />
+              </button>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {[...artPalette.slice(0, 4), ...EDGE_WRAP_FIXED_SWATCHES].map((s) => (
@@ -1522,12 +1862,31 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 />
               ))}
             </div>
+            <ShadeSpectrumRow
+              hex={state.backgroundColor}
+              selected={state.backgroundColor}
+              onPick={setBgColor}
+            />
             <p className="mt-1.5 text-[10px] text-muted-foreground leading-snug">
               Fills the masked phone case (including wrap edges) under your
               artwork. The grey print-canvas guide stays grey. Use None for
               floating cutout designs with no fill.
             </p>
           </div>
+        )}
+
+        {!edgeWrapMode && decorGenerateFill && !mobileShell && (
+          <DecorFloatingFillPicker
+            value={decorGenerateFill.value}
+            onChange={(next) => {
+              setBgColor(next === "none" ? null : next);
+              decorGenerateFill.onChange(next);
+            }}
+            swatches={artPalette.slice(0, 4)}
+            canvasRef={canvasRef}
+            eyedropperOn={eyedropperOn}
+            onEyedropperToggle={() => setEyedropperOn((on) => !on)}
+          />
         )}
 
         {/* Scale slider (capped at 1.0) */}
@@ -1560,7 +1919,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
             </div>
             <input
               type="range"
-              min={FLAT_SCALE_MIN}
+              min={FLAT_SCALE_FIT_FLOOR}
               max={scaleMax}
               step={0.01}
               value={displayScale}
@@ -1589,7 +1948,7 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
                 tapestry weave under your design.
               </p>
             )}
-            <div className="mt-2">
+            <div className="mt-2 hidden lg:block">
               <FinePositionNudge
                 onNudge={(axis, dir) => nudgePlacement(state.view, axis, dir)}
                 hint="Drag the artwork box to move freely — it snaps to center within 10px. Tap the mockup backdrop to show or hide the bounding box. Right-click a nudge arrow for the opposite direction."
@@ -1623,8 +1982,25 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
           </div>
         )}
 
+        {viewEnabled && artworkImg && coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave && !edgeWrapMode && !decorMode && (
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-tapestry-gap-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Artwork doesn&apos;t reach the print edges — white strips will
+              show. Scale up so the design covers the area, or pick a fill
+              colour.
+            </span>
+          </div>
+        )}
+
         {viewEnabled && artworkImg && coverageWarning === "edge-gap" && decorMode && !edgeWrapMode && !fabricWeave && (
-          <div className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          <div
+            className="flex items-start gap-2 rounded border border-amber-400/50 bg-amber-50 px-3 py-2 text-[11px] text-amber-700"
+            data-testid="flat-mat-gap-warning"
+          >
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
               Artwork doesn&apos;t fully cover the mat opening — scale up or
@@ -1669,9 +2045,13 @@ const FlatProductPlacer = forwardRef<FlatProductPlacerHandle, FlatProductPlacerP
               </>
             ) : applyStatus === "error" ? (
               <span className="text-destructive">Couldn't save — try add to cart again</span>
-            ) : coverageWarning === "trim" && !fabricWeave ? (
+            ) : coverageWarning === "trim" && !fabricWeave && !probeCatalogGuide ? (
               <span className="font-medium text-amber-700" data-testid="flat-trim-status">
                 Edges will be trimmed — scale down or reposition
+              </span>
+            ) : coverageWarning === "edge-gap" && probeCatalogGuide && !fabricWeave ? (
+              <span className="font-medium text-amber-700" data-testid="flat-tapestry-gap-status">
+                White strips will show — scale up or pick a background colour
               </span>
             ) : hasPendingChanges() ? (
               <span className="opacity-80">

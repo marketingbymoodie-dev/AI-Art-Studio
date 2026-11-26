@@ -1,0 +1,12 @@
+---
+description: Before any production promotion or go-live, read the launch checklist and list unticked items. Never answer yes to a go-live prompt.
+alwaysApply: true
+---
+
+# Launch checklist before go-live
+
+Before any production promotion or go-live work, read `docs/LAUNCH_CHECKLIST.md` and list every unticked item first, under its section heading. That includes merging or pushing `production`, `npm run shopify:deploy:production`, a creators production deploy, and answering a go-live prompt.
+
+Do not start the promotion while a listed item is still unticked, unless the user has said in this conversation that the item can wait.
+
+Never answer yes to “Ready to set this feature live for merchants?” or any other go-live prompt. Do not merge or push `production`.

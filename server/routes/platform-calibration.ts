@@ -39,6 +39,7 @@ import {
   type FlatCalibratorGeometry,
   type ViewName,
 } from "../flat-calibration";
+import { operatorCatalogueForShop } from "@shared/operatorCatalogue";
 import { isPlatformAdminRequest, requirePlatformAdmin } from "../platformAdmin";
 import {
   parseFlatCalibrationManifest,
@@ -53,8 +54,21 @@ import {
 } from "../supabaseFlatCalibration";
 import { detectPrintifyAllOverPrint } from "../printify-aop-detection";
 import { shouldAllowFlatHarvest } from "@shared/productLayoutPolicy";
-import { isPrintifyDecoratorUnavailableError } from "../printifyDecoratorErrors";
+import {
+  isPrintifyAuthError,
+  isPrintifyDecoratorUnavailableError,
+  isPrintifyShopAccessError,
+} from "../printifyDecoratorErrors";
 import { normalizeMyshopifyShopDomain } from "../shopDomain";
+import {
+  catalogSizeCalibratorModels,
+  isCatalogSizeBlankBlueprint,
+  printFileDimsForAspectRatio,
+  resolveCatalogSizeBlankUrlMap,
+  shouldProbeCatalogBlankGuide,
+  visibleRectForCatalogSizeBlank,
+} from "@shared/catalogSizeBlanks";
+import { getSupabaseDesignPublicUrl } from "../supabaseDesigns";
 import { db } from "../db";
 import { customizerPages } from "@shared/schema";
 import { eq, inArray } from "drizzle-orm";
@@ -515,6 +529,86 @@ async function listBlueprintProductTypes(
   return out;
 }
 
+type HarvestCred = { token: string; shopId: string; label: string };
+
+function pushHarvestCred(
+  list: HarvestCred[],
+  token: string | null | undefined,
+  shopId: string | number | null | undefined,
+  label: string,
+) {
+  const trimmed = token?.trim();
+  if (!trimmed || shopId == null || shopId === "") return;
+  const sid = String(shopId);
+  if (list.some((t) => t.token === trimmed && t.shopId === sid)) return;
+  list.push({ token: trimmed, shopId: sid, label });
+}
+
+function harvestListHasToken(list: HarvestCred[], token: string | null | undefined): boolean {
+  const trimmed = token?.trim();
+  return !!trimmed && list.some((t) => t.token === trimmed);
+}
+
+/**
+ * Append every shop on each token already in `list`, and drop tokens Printify rejects.
+ * A stored shop id that shops.json does not return is dropped (stale id, often a 401 on create).
+ * Extra shops stay in this list so a platform account is exhausted before any merchant token.
+ * Decorator 6002 is shop-scoped (US vs EU shops on the same token).
+ */
+async function expandHarvestCredShops(list: HarvestCred[]): Promise<HarvestCred[]> {
+  const deadTokens = new Set<string>();
+  const confirmedShops = new Map<string, Set<string>>();
+  for (const token of [...new Set(list.map((t) => t.token))]) {
+    try {
+      const resp = await fetch("https://api.printify.com/v1/shops.json", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (resp.status === 401 || resp.status === 403) {
+        deadTokens.add(token);
+        console.warn(
+          `[platform-canonical] Printify token rejected (${resp.status}) while listing shops; skipping that account`,
+        );
+        continue;
+      }
+      if (!resp.ok) continue;
+      const shops = await resp.json();
+      const shopsList = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
+      const liveIds = new Set<string>();
+      for (const shop of shopsList) {
+        const id = shop?.id ?? shop?.attributes?.id;
+        if (id == null) continue;
+        liveIds.add(String(id));
+        pushHarvestCred(list, token, id, `printify-shop:${id}`);
+      }
+      if (liveIds.size > 0) confirmedShops.set(token, liveIds);
+    } catch {
+      /* ignore shop list failures */
+    }
+  }
+  return list.filter((t) => {
+    if (deadTokens.has(t.token)) return false;
+    const liveIds = confirmedShops.get(t.token);
+    if (liveIds && !liveIds.has(t.shopId)) {
+      console.warn(
+        `[platform-canonical] shop ${t.shopId} (${t.label}) is not on this Printify account; skipping`,
+      );
+      return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Credential order for canonical harvest — a platform operation.
+ *
+ * 1. PRINTIFY_API_TOKEN and every shop on that token, but only when PRINTIFY_SHOP_ID
+ *    is also set. If the shop id is absent, this slot is the owner merchant even
+ *    when the env token is present.
+ * 2. Merchant listings, only after the platform account fails. Printify 6002 is
+ *    shop-scoped: the platform shop often does not have a US decorator enabled,
+ *    and the shop that imported the product type usually does. A revoked merchant
+ *    token must not run before the platform account.
+ */
 async function listHarvestCredsForProvider(
   storage: StorageLike,
   args: {
@@ -522,58 +616,51 @@ async function listHarvestCredsForProvider(
     platformCreds: { token: string; shopId: string; merchant: any };
     sessionMerchant: any | null;
   },
-): Promise<Array<{ token: string; shopId: string; label: string }>> {
-  const tried: Array<{ token: string; shopId: string; label: string }> = [];
-  const pushPair = (token: string | null | undefined, shopId: string | number | null | undefined, label: string) => {
-    if (!token || shopId == null || shopId === "") return;
-    const sid = String(shopId);
-    if (tried.some((t) => t.token === token && t.shopId === sid)) return;
-    tried.push({ token, shopId: sid, label });
+): Promise<HarvestCred[]> {
+  const platform: HarvestCred[] = [];
+  const merchants: HarvestCred[] = [];
+  const envToken = (process.env.PRINTIFY_API_TOKEN || "").trim();
+  const envShopId = (process.env.PRINTIFY_SHOP_ID || "").trim();
+  if (envToken && envShopId) {
+    pushHarvestCred(platform, envToken, envShopId, "env-printify");
+  } else {
+    pushHarvestCred(platform, args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
+    pushHarvestCred(
+      platform,
+      args.platformCreds.merchant?.printifyApiToken,
+      args.platformCreds.merchant?.printifyShopId,
+      "platform-merchant",
+    );
+  }
+
+  const pushMerchantFallback = (token: string | null | undefined, shopId: string | number | null | undefined, label: string) => {
+    if (harvestListHasToken(platform, token)) return;
+    pushHarvestCred(merchants, token, shopId, label);
   };
-  const pushMerchant = (m: any | null | undefined, label: string) => {
-    pushPair(m?.printifyApiToken, m?.printifyShopId, label);
-  };
+
   if (args.refProduct?.merchantId) {
     try {
       const m = await storage.getMerchant(String(args.refProduct.merchantId));
-      pushMerchant(m, `listing-merchant:${args.refProduct.merchantId}`);
+      pushMerchantFallback(m?.printifyApiToken, m?.printifyShopId, `listing-merchant:${args.refProduct.merchantId}`);
     } catch {
       /* ignore */
     }
   }
-  pushMerchant(args.sessionMerchant, "session-merchant");
-  pushMerchant(args.platformCreds.merchant, "platform-merchant");
-  pushPair(args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
+  pushMerchantFallback(
+    args.sessionMerchant?.printifyApiToken,
+    args.sessionMerchant?.printifyShopId,
+    "session-merchant",
+  );
+  pushMerchantFallback(
+    args.platformCreds.merchant?.printifyApiToken,
+    args.platformCreds.merchant?.printifyShopId,
+    "platform-merchant",
+  );
+  pushMerchantFallback(args.platformCreds.token, args.platformCreds.shopId, "platform-creds");
 
-  // Same Printify token can own multiple shops (US vs EU). Decorator 6002 is
-  // often shop-scoped — try every shop on each distinct token.
-  const tokens = [...new Set(tried.map((t) => t.token))];
-  for (const token of tokens) {
-    try {
-      const resp = await fetch("https://api.printify.com/v1/shops.json", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) continue;
-      const shops = await resp.json();
-      const list = Array.isArray(shops) ? shops : Array.isArray(shops?.data) ? shops.data : [];
-      for (const shop of list) {
-        const id = shop?.id ?? shop?.attributes?.id;
-        if (id != null) pushPair(token, id, `printify-shop:${id}`);
-      }
-    } catch {
-      /* ignore shop list failures */
-    }
-  }
-
-  return tried.length > 0
-    ? tried
-    : [
-        {
-          token: args.platformCreds.token,
-          shopId: String(args.platformCreds.shopId),
-          label: "platform-creds",
-        },
-      ];
+  const platformLive = await expandHarvestCredShops(platform);
+  const merchantLive = await expandHarvestCredShops(merchants);
+  return [...platformLive, ...merchantLive];
 }
 
 async function findReferenceProduct(
@@ -726,11 +813,44 @@ function phoneModelsFromProduct(productType: any): Array<{ id: string; name: str
     .map((s: any) => ({ id: String(s.id), name: String(s.name || s.id) }));
 }
 
+function applyCatalogSizeGuideToCalibratorView(
+  blueprintId: number,
+  sizeKey: string,
+  baseView: Record<string, any> | null,
+  exactMaskUrl?: string | null,
+): Record<string, any> | null {
+  if (!baseView) return baseView;
+  const dim = sizeKey.includes("x") ? sizeKey : null;
+  const [w, h] = dim ? dim.split("x").map(Number) : [0, 0];
+  const aspect = w > 0 && h > 0 ? `${w}:${h}` : null;
+  const rect = visibleRectForCatalogSizeBlank(blueprintId, sizeKey, aspect);
+  if (!rect) return baseView;
+  const dims = printFileDimsForAspectRatio(aspect);
+  const tapestry = shouldProbeCatalogBlankGuide(blueprintId);
+  return {
+    ...baseView,
+    visibleRectNormalized: rect,
+    printBoundsNormalized: rect,
+    ...(dims ? { printFileDims: dims } : {}),
+    mockupDims:
+      baseView.mockupDims?.width &&
+      baseView.mockupDims.width === baseView.mockupDims.height
+        ? baseView.mockupDims
+        : { width: 1024, height: 1024 },
+    ...(tapestry ? { maskUrl: exactMaskUrl ?? null, shadingUrl: null } : {}),
+  };
+}
+
 function resolveCalibratorModels(
   entry: FlatCanonicalEntry,
   manifest: Awaited<ReturnType<typeof loadCanonicalManifest>>,
   refProduct: any | null,
 ): Array<{ id: string; name: string }> {
+  // Tapestry / comforter / wall decals: Printify harvest is one shared colour
+  // blank. Size variants live in seeded catalog PNGs — list those, not harvest keys.
+  const catalogModels = catalogSizeCalibratorModels(entry.blueprintId);
+  if (catalogModels && catalogModels.length > 0) return catalogModels;
+
   if (manifest?.blanks && Object.keys(manifest.blanks).length > 0) {
     return Object.keys(manifest.blanks).map((id) => ({
       id,
@@ -798,6 +918,7 @@ async function assetUrlsForStorage(
   view: ViewName,
   baseView: Record<string, any> | null,
   blankFallbackUrl?: string | null,
+  opts?: { skipSharedMask?: boolean },
 ) {
   const safe = modelId.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
   const paths = calibratorLayerPaths(storageKey, safe, view);
@@ -810,7 +931,8 @@ async function assetUrlsForStorage(
     resolveFlatCalibrationAssetUrl(paths.blank, blankFallbackUrl),
     resolveFlatCalibrationAssetUrl(
       paths.mask,
-      baseView?.maskUrl ?? publicFlatCalibrationUrl(shared.mask) ?? null,
+      baseView?.maskUrl ??
+        (opts?.skipSharedMask ? null : publicFlatCalibrationUrl(shared.mask) ?? null),
     ),
     resolveFlatCalibrationAssetUrl(
       paths.shading,
@@ -845,8 +967,29 @@ export function registerPlatformCalibrationRoutes(
 ) {
   const { storage, isAuthenticated } = deps;
 
-  app.get("/api/platform/admin/status", isAuthenticated, (req: any, res: Response) => {
-    res.json({ isPlatformAdmin: isPlatformAdminRequest(req) });
+  app.get("/api/platform/admin/status", isAuthenticated, async (req: any, res: Response) => {
+    const isPlatformAdmin = isPlatformAdminRequest(req);
+    if (!isPlatformAdmin) {
+      res.json({ isPlatformAdmin: false });
+      return;
+    }
+    const profile = operatorCatalogueForShop(req.shopDomain);
+    const { cataloguePrintifyMerchant, defaultCatalogueTypeId } = await import("../operatorCatalogue");
+    const [defaultProductTypeId, merchant] = await Promise.all([
+      defaultCatalogueTypeId(req.shopDomain),
+      cataloguePrintifyMerchant(null, profile.shop),
+    ]);
+    const host = String(req.get("host") || "");
+    const railwayEnv = String(process.env.RAILWAY_ENVIRONMENT_NAME || "");
+    const publicDomain = String(process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || "");
+    const stagingBackend = /staging/i.test(host) || /staging/i.test(railwayEnv) || /staging/i.test(publicDomain);
+    res.json({
+      isPlatformAdmin: true,
+      stagingBackend,
+      catalogueShop: profile.shop,
+      defaultProductTypeId,
+      printifyShopId: merchant?.printifyShopId || null,
+    });
   });
 
   app.get("/api/platform/generation-health", isAuthenticated, async (req: any, res: Response) => {
@@ -876,6 +1019,11 @@ export function registerPlatformCalibrationRoutes(
   app.get("/api/platform/canonical/products", isAuthenticated, async (req: any, res: Response) => {
     if (!requirePlatformAdmin(req, res)) return;
     const entries = await listFlatCanonicalEntries();
+    const printSidesOffBlueprints = new Set(
+      (await storage.getProductTypes())
+        .filter((pt) => pt.printSidesEnabled === false && pt.printifyBlueprintId != null)
+        .map((pt) => Number(pt.printifyBlueprintId)),
+    );
     const products = await Promise.all(
       entries.map(async (e) => {
         const manifest =
@@ -883,6 +1031,7 @@ export function registerPlatformCalibrationRoutes(
         const harvest = manifest ? resolveHarvestOutcome(manifest) : { outcome: "none" as const };
         return {
           ...e,
+          printSidesEnabled: !printSidesOffBlueprints.has(e.blueprintId),
           harvestComplete: e.kind === "flat" ? isHarvestComplete(manifest) : false,
           harvestOutcome: e.kind === "flat" ? harvest.outcome : undefined,
           harvestError: e.kind === "flat" ? harvest.error : undefined,
@@ -922,25 +1071,48 @@ export function registerPlatformCalibrationRoutes(
 
       const models = resolveCalibratorModels(entry, manifest, refProduct);
       const harvest = resolveHarvestOutcome(manifest);
+      const catalogBlankUrls = isCatalogSizeBlankBlueprint(blueprintId)
+        ? resolveCatalogSizeBlankUrlMap(blueprintId, getSupabaseDesignPublicUrl)
+        : null;
       const modelPickerLabel =
         models.length <= 1
           ? null
           : entry.category === "phone-cases"
             ? "phone"
-            : "variant";
+            : catalogBlankUrls
+              ? "size"
+              : "variant";
 
       const view: ViewName = "front";
       const modelPayload = await Promise.all(
         models.map(async (m) => {
-          const baseView = mergeViewCalibration(manifest as any, m.id, view);
+          const merged = mergeViewCalibration(manifest as any, m.id, view);
+          const exactMask =
+            (manifest as any)?.geometryByBlank?.[m.id]?.[view]?.maskUrl ?? null;
+          const baseView = catalogBlankUrls
+            ? applyCatalogSizeGuideToCalibratorView(
+                blueprintId,
+                m.id,
+                merged,
+                typeof exactMask === "string" ? exactMask : null,
+              )
+            : merged;
           const blankFallbackUrl =
+            catalogBlankUrls?.[m.id] ??
             (manifest as any)?.blanks?.[m.id]?.[view] ??
             (manifest as any)?.blanks?.[m.id]?.front ??
             null;
           return {
             modelId: m.id,
             name: m.name,
-            assets: await assetUrlsForStorage(storageKey, m.id, view, baseView, blankFallbackUrl),
+            assets: await assetUrlsForStorage(
+              storageKey,
+              m.id,
+              view,
+              baseView,
+              blankFallbackUrl,
+              { skipSharedMask: shouldProbeCatalogBlankGuide(blueprintId) },
+            ),
             geometry: geometry?.models?.[m.id]?.[view] ?? defaultCalibratorModelEntry(),
             baseView,
           };
@@ -1060,6 +1232,9 @@ export function registerPlatformCalibrationRoutes(
         const providersUsed: number[] = [];
         const harvestWarnings: string[] = [];
         let wiped = false;
+        const deadTokens = new Set<string>();
+        const authError =
+          "Printify API token unauthenticated (401). Reconnect Printify for that merchant, or set a valid PRINTIFY_API_TOKEN.";
 
         const writeManifest = async (
           manifest: FlatCalibrationManifest,
@@ -1097,8 +1272,8 @@ export function registerPlatformCalibrationRoutes(
         try {
           // Pass 1: first provider that can create products wins for masks/geometry.
           // Pass 2+: other providers only add blank colours not already harvested
-          // (e.g. JAMS Black/Red after UK White/*). Each provider tries the Printify
-          // shop tied to that listing first — owner shops often reject US decorators.
+          // (e.g. JAMS Black/Red after UK White/*). Credentials: platform Printify
+          // account first; the listing merchant shop is only the 6002 fallback.
           for (let i = 0; i < providerCandidates.length; i++) {
             const providerId = providerCandidates[i]!;
             const providerPts = blueprintProducts.filter(
@@ -1108,11 +1283,13 @@ export function registerPlatformCalibrationRoutes(
             const skipBlankColorIds = accumulated ? existingBlankIds() : [];
             const shopifyBlankSources = await resolveShopifyBlankSources(storage, providerPts);
             const shopifyBlankSource = shopifyBlankSources[0];
-            const credOptions = await listHarvestCredsForProvider(storage, {
-              refProduct: ref,
-              platformCreds: creds,
-              sessionMerchant,
-            });
+            const credOptions = (
+              await listHarvestCredsForProvider(storage, {
+                refProduct: ref,
+                platformCreds: creds,
+                sessionMerchant,
+              })
+            ).filter((c) => !deadTokens.has(c.token));
             console.log(
               `[platform-canonical] harvest bp ${blueprintId} v${version} provider ${providerId}` +
                 ` (${i + 1}/${providerCandidates.length}` +
@@ -1128,7 +1305,11 @@ export function registerPlatformCalibrationRoutes(
 
             let providerOk = false;
             let providerLastErr = "";
+            if (credOptions.length === 0) {
+              providerLastErr = authError;
+            }
             for (const shopCreds of credOptions) {
+              if (deadTokens.has(shopCreds.token)) continue;
               try {
                 const result = await harvestFlatCalibration({
                   productTypeId: 0,
@@ -1252,6 +1433,21 @@ export function registerPlatformCalibrationRoutes(
                 const msg = (err as Error)?.message || String(err);
                 providerLastErr = msg;
                 lastError = msg;
+                if (isPrintifyShopAccessError(msg)) {
+                  providerLastErr = msg;
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} shop rejected; trying next shop: ${msg.slice(0, 180)}`,
+                  );
+                  continue;
+                }
+                if (isPrintifyAuthError(msg)) {
+                  deadTokens.add(shopCreds.token);
+                  providerLastErr = authError;
+                  console.warn(
+                    `[platform-canonical] provider ${providerId} via ${shopCreds.label} token unauthenticated; trying next Printify account: ${msg.slice(0, 180)}`,
+                  );
+                  continue;
+                }
                 if (isPrintifyDecoratorUnavailableError(msg)) {
                   console.warn(
                     `[platform-canonical] provider ${providerId} via ${shopCreds.label} decorator error; trying next shop: ${msg}`,
@@ -1586,6 +1782,33 @@ export function registerPlatformCalibrationRoutes(
     } catch (e: any) {
       console.error("[platform-canonical] fabric-weave update failed:", e);
       res.status(500).json({ error: e?.message || "Failed to update fabric weave" });
+    }
+  });
+
+  /**
+   * Operator override for the Print sides option. On = derived default (null:
+   * offered wherever front+back costs exist); off = false on every imported
+   * product type for the blueprint. Takes effect on the next product (re)create.
+   */
+  app.patch("/api/platform/canonical/:blueprintId/print-sides", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const blueprintId = parseInt(req.params.blueprintId, 10);
+      const enabled = req.body?.enabled;
+      if (!Number.isFinite(blueprintId) || typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "enabled must be a boolean" });
+      }
+      const allTypes = await storage.getProductTypes();
+      let propagated = 0;
+      for (const pt of allTypes) {
+        if (Number(pt.printifyBlueprintId) !== blueprintId) continue;
+        await storage.updateProductType(pt.id, { printSidesEnabled: enabled ? null : false });
+        propagated += 1;
+      }
+      res.json({ ok: true, enabled, propagated });
+    } catch (e: any) {
+      console.error("[platform-canonical] print-sides update failed:", e);
+      res.status(500).json({ error: e?.message || "Failed to update Print sides" });
     }
   });
 

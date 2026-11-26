@@ -28,6 +28,14 @@ export const FULFILLMENT_LAYOUT_LABELS: Record<FulfillmentLayout, string> = {
 
 /** Printify blueprint: Adjustable Tote Bag (AOP). */
 export const ADJUSTABLE_TOTE_BLUEPRINT_ID = 1300;
+/** Printify blueprint: Shoulder Tote Bag (AOP) — flat on-the-fly, not folded. */
+export const SHOULDER_TOTE_BLUEPRINT_ID = 836;
+
+/** Flat totes that keep front/back scale matched (40a5a6c). */
+export function isFlatToteBlueprint(blueprintId: number | null | undefined): boolean {
+  const bp = Number(blueprintId);
+  return bp === ADJUSTABLE_TOTE_BLUEPRINT_ID || bp === SHOULDER_TOTE_BLUEPRINT_ID;
+}
 
 export type LayoutPolicySource = {
   isAllOverPrint?: boolean | null;

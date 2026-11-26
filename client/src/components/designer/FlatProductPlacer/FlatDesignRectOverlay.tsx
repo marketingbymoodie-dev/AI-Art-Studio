@@ -12,12 +12,15 @@ import {
   flatArtBox,
   flatArtContentFractionsCached,
   flatVisibleRectPx,
+  tapestryMaskOutlinePoints,
   FLAT_SCALE_MAX,
   FLAT_SCALE_MIN,
   type ArtContentFractions,
   type Rect,
 } from "./lib/flatRender";
+import type { FlatArtFit } from "@shared/hoodieTemplate";
 import type { FlatViewCalibration } from "@/pages/embed-design";
+import { useTwoFingerTransform } from "../useTwoFingerTransform";
 
 /**
  * Self-contained drag/resize/rotate overlay for the flat-product placer.
@@ -46,6 +49,13 @@ export type FlatDesignRectOverlayProps = {
   outerGuideRect?: Rect | null;
   /** Placement coordinate rect in mockup px (defaults to visible print rect). */
   placementRect?: Rect | null;
+  /** 576 contain; default cover (241 / apparel / decor). */
+  artFit?: FlatArtFit;
+  /**
+   * 241 droop mask: stroke this silhouette as the dashed print guide instead
+   * of the AABB/letterbox rectangle. Placement math still uses placementRect.
+   */
+  guideMask?: HTMLImageElement | null;
   /**
    * Canvas bitmap size (blank px). Prefer this over reading canvasRef.width
    * during render — internal canvas resize does not re-render the overlay, so
@@ -73,6 +83,8 @@ export default function FlatDesignRectOverlay({
   innerGuideRect = null,
   outerGuideRect = null,
   placementRect = null,
+  artFit = "cover",
+  guideMask = null,
   mockupWidth,
   mockupHeight,
   scaleMax = FLAT_SCALE_MAX,
@@ -104,6 +116,33 @@ export default function FlatDesignRectOverlay({
       }
   >(null);
 
+  // Pinch-to-scale + two-finger-twist-to-rotate — additive to the drag modes
+  // above, never fighting them. Snapshot the placement once when the 2nd
+  // finger arms the gesture; every move computes scale/rotation fresh off
+  // that snapshot (never compounding tick-to-tick), exactly like the
+  // existing corner-drag/rotate-handle math below.
+  const twoFingerStartRef = useRef<ArtworkPlacement | null>(null);
+  const twoFinger = useTwoFingerTransform({
+    onGestureStart: () => {
+      // Cancel any in-progress single-finger translate so the two systems
+      // never run at once and fight over onChange.
+      dragRef.current = null;
+      twoFingerStartRef.current = latestPlacementRef.current;
+      onDragActivity?.();
+    },
+    onChange: ({ scaleRatio, rotateDeltaDeg }) => {
+      const start = twoFingerStartRef.current;
+      if (!start) return;
+      onDragActivity?.();
+      const nextScale = Math.max(FLAT_SCALE_MIN, Math.min(scaleMax, start.scale * scaleRatio));
+      let nextRotation = normalizeRotationDeg((start.rotationDeg ?? 0) + rotateDeltaDeg);
+      if (Math.abs(nextRotation) <= ROTATION_SNAP_DEG) nextRotation = 0;
+      const next: ArtworkPlacement = { ...start, scale: nextScale, rotationDeg: nextRotation };
+      latestPlacementRef.current = next;
+      onChange(next);
+    },
+  });
+
   // Prefer parent-provided blank/canvas bitmap size (stable across renders).
   const mockupW =
     (mockupWidth && mockupWidth > 0 ? mockupWidth : 0) ||
@@ -129,9 +168,16 @@ export default function FlatDesignRectOverlay({
     if (edgeWrapMode && innerGuideRect) return innerGuideRect;
     return rect;
   }, [edgeWrapMode, innerGuideRect, rect]);
+  const maskOutline = useMemo(
+    () =>
+      !edgeWrapMode && guideMask
+        ? tapestryMaskOutlinePoints(guideMask, mockupW, mockupH)
+        : null,
+    [edgeWrapMode, guideMask, mockupW, mockupH],
+  );
   const box = useMemo(
-    () => flatArtBox(rect, placement, artW, artH),
-    [rect, placement, artW, artH],
+    () => flatArtBox(rect, placement, artW, artH, artFit),
+    [rect, placement, artW, artH, artFit],
   );
 
   // Opaque-content bounds: the visible ring/handles hug the artwork pixels,
@@ -216,7 +262,7 @@ export default function FlatDesignRectOverlay({
       const drag = dragRef.current;
       if (drag?.mode === "translate") {
         const cur = latestPlacementRef.current;
-        const currentBox = flatArtBox(drag.rect, cur, artW, artH);
+        const currentBox = flatArtBox(drag.rect, cur, artW, artH, artFit);
         const snapX = SNAP_SCREEN_PX * (mockupW / drag.canvasRect.width);
         const snapY = SNAP_SCREEN_PX * (mockupH / drag.canvasRect.height);
         const rectCx = drag.rect.x + drag.rect.width / 2;
@@ -350,7 +396,29 @@ export default function FlatDesignRectOverlay({
         />
       )}
 
-      {showInnerGuide && (edgeWrapMode ? safeGuideRect : rect) && (
+      {showInnerGuide && maskOutline && maskOutline.length > 2 && (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox={`0 0 ${mockupW} ${mockupH}`}
+          preserveAspectRatio="none"
+          data-testid="flat-tapestry-mask-outline"
+        >
+          <polygon
+            points={maskOutline.map((p) => `${p.x},${p.y}`).join(" ")}
+            fill="none"
+            stroke="rgb(125 211 252 / 0.95)"
+            strokeWidth={2}
+            strokeDasharray="7 5"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            style={{ filter: "drop-shadow(0 0 1px rgba(0,0,0,0.55))" }}
+          />
+        </svg>
+      )}
+
+      {showInnerGuide &&
+        !(maskOutline && maskOutline.length > 2) &&
+        (edgeWrapMode ? safeGuideRect : rect) && (
       <div
         className={`pointer-events-none absolute border-2 border-dashed ${
           edgeWrapMode
@@ -405,7 +473,12 @@ export default function FlatDesignRectOverlay({
           onClick={(e) => e.stopPropagation()}
         >
           <div
-            onPointerDown={(e) => startDrag(e, "translate")}
+            onPointerDown={(e) => {
+              // A 2nd concurrent finger arms/continues pinch-scale +
+              // twist-rotate instead of starting a translate drag.
+              if (twoFinger.onPointerDown(e)) return;
+              startDrag(e, "translate");
+            }}
             className="absolute inset-0 cursor-move ring-2 ring-primary/70 transition hover:bg-primary/5"
             style={{ touchAction: "none" }}
             title="Drag to move artwork"

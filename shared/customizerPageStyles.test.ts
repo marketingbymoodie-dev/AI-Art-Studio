@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  collapseStyleNameTwins,
+  dedupeStylePresets,
   filterStylePresetsForPage,
+  findSurvivingStyleTwin,
   parseCustomizerPageStyleConfig,
+  remapCustomizerStyleConfigAfterGraphicsRetire,
   styleExampleImageUrl,
   stylesForCustomizerPagePicker,
 } from "./customizerPageStyles";
@@ -90,6 +94,101 @@ describe("filterStylePresetsForPage", () => {
     });
     const shown = filterStylePresetsForPage(twins, cfg, "generic");
     expect(shown.map((s) => s.id)).toEqual(["cg-graphics", "quotes"]);
+  });
+
+  it("maps a dropped apparel twin onto the surviving graphics option", () => {
+    const cfg = parseCustomizerPageStyleConfig({ mode: "category", category: "all" });
+    const shown = filterStylePresetsForPage(twins, cfg, "generic");
+    const survivor = findSurvivingStyleTwin(twins[0], shown);
+    expect(survivor?.id).toBe("cg-graphics");
+  });
+});
+
+describe("Pet Portraits apparel/decor name twins", () => {
+  const pair = [
+    {
+      id: "13",
+      name: "Pet Portraits",
+      category: "apparel",
+      catalogSlug: "pet-portraits",
+    },
+    {
+      id: "19",
+      name: "Pet Portraits",
+      category: "decor",
+      catalogSlug: "pet-portraits-decor",
+    },
+  ];
+
+  it("dedupes by id/slug, not display name", () => {
+    expect(dedupeStylePresets(pair).map((p) => p.id)).toEqual(["13", "19"]);
+    expect(dedupeStylePresets([...pair, pair[0]]).map((p) => p.id)).toEqual(["13", "19"]);
+  });
+
+  it("does not collapse apparel vs decor in collapseStyleNameTwins", () => {
+    expect(collapseStyleNameTwins(pair, "generic").map((p) => p.id)).toEqual(["13", "19"]);
+    expect(collapseStyleNameTwins(pair, "framed-print").map((p) => p.id)).toEqual(["13", "19"]);
+  });
+
+  it("routes All Apparel / All Decor / All / selected [19]", () => {
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "apparel" }, "apparel").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["13"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "decor" }, "framed-print").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["19"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "category", category: "all" }, "generic").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["13", "19"]);
+    expect(
+      filterStylePresetsForPage(pair, { mode: "selected", presetIds: ["19"] }, "framed-print").map(
+        (p) => p.id,
+      ),
+    ).toEqual(["19"]);
+  });
+});
+
+describe("remapCustomizerStyleConfigAfterGraphicsRetire", () => {
+  it("rewrites Graphics category bundles to All types", () => {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(
+      { mode: "category", category: "graphics" },
+      new Map(),
+    );
+    expect(next).toEqual({
+      changed: true,
+      config: { mode: "category", category: "all" },
+    });
+  });
+
+  it("rewrites selected Graphics twin ids to the keeper id", () => {
+    const next = remapCustomizerStyleConfigAfterGraphicsRetire(
+      { mode: "selected", presetIds: ["16", "9"] },
+      new Map([["16", "14"]]),
+    );
+    expect(next.changed).toBe(true);
+    expect(next.config).toEqual({ mode: "selected", presetIds: ["14", "9"] });
+  });
+});
+
+describe("All-types floating styles on a Decor page bundle", () => {
+  it("includes category=all keepers on default decor pages", () => {
+    const presets = [
+      { id: "w", name: "Watercolor", category: "decor" },
+      { id: "cg", name: "Centered Graphic", category: "all" },
+      { id: "q", name: "Quotes", category: "apparel" },
+    ];
+    const shown = filterStylePresetsForPage(
+      presets,
+      { mode: "category", category: "decor" },
+      "framed-print",
+    );
+    expect(shown.map((s) => s.id)).toEqual(["w", "cg"]);
   });
 });
 

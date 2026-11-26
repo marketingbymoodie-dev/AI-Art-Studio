@@ -74,3 +74,28 @@ jobs:
               echo "origin/production contains the current origin/main commit."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+          EXT_CHANGED="$(git diff --name-only origin/production...origin/main -- extensions || true)"
+          if [ -n "$EXT_CHANGED" ]; then
+            MESSAGE="extensions/ changed since origin/production. App deploys still needed: staging, default, production, petposterous (npx shopify app deploy --config petposterous --allow-updates), and creators."
+            echo "::warning title=Extension deploys pending::$MESSAGE"
+            {
+              echo ""
+              echo "### Extension deploys still needed"
+              echo ""
+              echo "$MESSAGE"
+              echo ""
+              echo '```'
+              echo "$EXT_CHANGED"
+              echo '```'
+              echo ""
+              echo '- `npx shopify app deploy --config staging --allow-updates`'
+              echo '- `npx shopify app deploy --allow-updates`'
+              echo '- `npx shopify app deploy --config production --allow-updates`'
+              echo '- `npx shopify app deploy --config petposterous --allow-updates`'
+              echo '- `npx shopify app deploy --config creators --allow-updates`'
+              echo ""
+              echo "While Petposterous runs on the staging backend, a staging push reaches the Petposterous store immediately."
+              echo "This reminder does not deploy extensions and does not promote."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

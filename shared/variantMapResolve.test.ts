@@ -19,6 +19,13 @@ describe("normalizeSelectionId", () => {
   it("does not rewrite apparel sizes that contain an x", () => {
     expect(normalizeSelectionId("xl")).toBe("xl");
     expect(normalizeSelectionId("2xl")).toBe("2xl");
+    expect(normalizeSelectionId("2_xl")).toBe("2xl");
+  });
+
+  it("matches multi-word colour slugs across underscore / hyphen / space", () => {
+    expect(normalizeSelectionId("caribbean_blue")).toBe(normalizeSelectionId("caribbean-blue"));
+    expect(normalizeSelectionId("Heather Dark Grey")).toBe(normalizeSelectionId("heather-dark-grey"));
+    expect(normalizeSelectionId("black")).toBe("black");
   });
 });
 
@@ -102,9 +109,12 @@ describe("capVariantSelectionForShopifyLimit", () => {
     const map = denseMap(sizes, colors);
     expect(countActiveVariantMapKeys(map, sizes, colors)).toBe(120);
 
-    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map);
+    expect(capVariantSelectionForShopifyLimit(sizes, colors, map).capped).toBe(false);
+    expect(SHOPIFY_MAX_VARIANTS_PER_PRODUCT).toBe(2048);
+
+    const capped = capVariantSelectionForShopifyLimit(sizes, colors, map, 100);
     expect(capped.capped).toBe(true);
-    expect(capped.variantCount).toBeLessThanOrEqual(SHOPIFY_MAX_VARIANTS_PER_PRODUCT);
+    expect(capped.variantCount).toBeLessThanOrEqual(100);
     expect(capped.sizeIds).toEqual(sizes);
     expect(capped.colorIds.length).toBe(16); // 6 * 16 = 96
   });
