@@ -53,6 +53,7 @@ import {
 } from "./shopify-product-graphql";
 import { storage } from "./storage";
 import { ensureValidOfflineAccessToken } from "./shopify-offline-token";
+import { warmCatalogueImageUrls } from "./catalogue-image-warm";
 import { paceVendor, shopifyGraphqlErrors, shopifyThrottled, vendorRetryDelayMs } from "./vendor-backoff";
 
 const PRINTIFY_API = "https://api.printify.com/v1";
@@ -1131,6 +1132,28 @@ export async function promoteCatalogueCandidate(args: {
   } catch (err) {
     await rollback();
     throw err instanceof PromoteRefusal ? err : new PromoteRefusal([err instanceof Error ? err.message : String(err)]);
+  }
+
+  try {
+    const media = await adminGql(
+      shop,
+      installation!.accessToken,
+      `query($id: ID!) {
+        product(id: $id) {
+          media(first: 50) { nodes { ... on MediaImage { image { url } } } }
+        }
+      }`,
+      { id: `gid://shopify/Product/${shopifyProductId.replace(/\D/g, "")}` },
+    );
+    const urls = (media?.product?.media?.nodes || [])
+      .map((node: { image?: { url?: string | null } | null }) => String(node?.image?.url || ""))
+      .filter(Boolean);
+    const warm = await warmCatalogueImageUrls(urls);
+    if (warm.failed.length) {
+      console.warn(`[catalogue-image-warm] ${shopifyProductId} ${warm.failed.length} resized image(s) still failing`);
+    }
+  } catch (err) {
+    console.warn(`[catalogue-image-warm] ${shopifyProductId} ${err instanceof Error ? err.message : err}`);
   }
 
   return { shopifyProductId, printifyProductId, status };
