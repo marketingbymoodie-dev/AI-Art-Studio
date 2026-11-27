@@ -49,6 +49,8 @@ export type CatalogueImportRow = {
   /** Set when an upload, draft, or commit failed. Empty when the row can still proceed. */
   failureReason?: string;
   contentHash?: string;
+  /** Library path of the staged PNG. Set when the file is stored, before Create. */
+  imagePath?: string;
   importStatus?: CatalogueImportStatus;
   candidateId?: string;
   selected?: boolean;

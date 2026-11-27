@@ -249,6 +249,7 @@ export default function CatalogueBulkImportPage() {
   const urlsRef = useRef<string[]>([]);
   const rowsRef = useRef<ReviewRow[]>([]);
   const saveChain = useRef(new Map<string, Promise<boolean>>());
+  const pngStores = useRef(new Map<string, Promise<void>>());
   const batchIdRef = useRef("");
   const generation = useRef(0);
   const draftQueue = useRef<ReviewRow[]>([]);
@@ -317,6 +318,9 @@ export default function CatalogueBulkImportPage() {
       },
       selected: current.selected,
       acknowledgedWarnings: current.acknowledgedWarnings,
+      contentHash: current.contentHash || incoming.contentHash,
+      imagePath: current.imagePath || incoming.imagePath,
+      previewUrl: current.previewUrl || incoming.previewUrl,
     };
   }
 
@@ -326,11 +330,11 @@ export default function CatalogueBulkImportPage() {
       const body = await res.json().catch(() => ({}));
       if (cancelled || !res.ok || !body.batch?.batchId || filesRef.current.length || generation.current) return;
       batchIdRef.current = String(body.batch.batchId);
-      const restored: ReviewRow[] = (body.batch.rows || []).map((row: CatalogueImportRow) => ({
+      const restored: ReviewRow[] = (body.batch.rows || []).map((row: CatalogueImportRow & { previewUrl?: string }) => ({
         ...row,
         selected: row.selected !== false,
         importStatus: row.importStatus || "drafted",
-        previewUrl: "",
+        previewUrl: row.previewUrl || "",
         draftState: row.importStatus === "failed" ? "failed" as const : "done" as const,
         draftError: row.failureReason || "",
         costUsd: null,
@@ -444,7 +448,7 @@ export default function CatalogueBulkImportPage() {
     draftQueue.current = draftQueue.current.filter((row) => row.filename.toLowerCase() !== key);
     applyRows((prev) => {
       const row = prev.find((item) => item.filename.toLowerCase() === key);
-      if (row?.previewUrl) {
+      if (row?.previewUrl.startsWith("blob:")) {
         URL.revokeObjectURL(row.previewUrl);
         urlsRef.current = urlsRef.current.filter((url) => url !== row.previewUrl);
       }
@@ -487,12 +491,15 @@ export default function CatalogueBulkImportPage() {
     const revived: ReviewRow = {
       ...current,
       previewUrl: url,
+      contentHash: undefined,
+      imagePath: undefined,
       importStatus: "drafted",
       failureReason: "",
       draftError: "",
       draftState: needsDraft ? "waiting" : "done",
     };
     applyRows((prev) => prev.map((row) => row.filename.toLowerCase() === key && row.importStatus !== "queued" ? revived : row));
+    rememberPng(revived, generation.current);
     if (needsDraft) enqueueDrafts([revived]);
     else void queueSave(revived);
   }
@@ -507,6 +514,7 @@ export default function CatalogueBulkImportPage() {
     const gen = mode === "replace" ? (generation.current += 1) : generation.current;
     if (mode === "replace" || !batchIdRef.current) batchIdRef.current = crypto.randomUUID();
     if (mode === "replace") {
+      pngStores.current.clear();
       draftQueue.current = [];
       forgetPreviews();
       applyRows([]);
@@ -610,6 +618,7 @@ export default function CatalogueBulkImportPage() {
       }
       setBusy("");
       for (const file of reviveFiles) attachDroppedPng(file);
+      for (const row of next) rememberPng(row, gen);
       enqueueDrafts(next);
     } catch (e: any) {
       console.error("[catalogue-import] takeFiles failed", e);
@@ -670,12 +679,31 @@ export default function CatalogueBulkImportPage() {
     });
   }
 
+  function rememberPng(row: ReviewRow, gen: number) {
+    const batchId = batchIdRef.current;
+    const key = row.filename.toLowerCase();
+    if (!batchId || row.contentHash) return;
+    const pending = uploadRow(row, batchId).then((stored) => {
+      if (generation.current !== gen || !stored.contentHash) return;
+      applyRows((prev) => prev.map((item) => {
+        if (item.filename.toLowerCase() !== key || item.importStatus === "queued") return item;
+        return { ...item, contentHash: stored.contentHash, imagePath: stored.imagePath || item.imagePath };
+      }));
+    });
+    const tracked = pending.finally(() => {
+      if (pngStores.current.get(key) === tracked) pngStores.current.delete(key);
+    });
+    pngStores.current.set(key, tracked);
+  }
+
   async function uploadRow(row: ReviewRow, batchId: string): Promise<ReviewRow> {
-    const file = filesRef.current.find((item) => item.name.toLowerCase() === row.filename.toLowerCase());
+    const live = rowsRef.current.find((item) => item.filename.toLowerCase() === row.filename.toLowerCase()) || row;
+    if (live.contentHash) return live;
+    const file = filesRef.current.find((item) => item.name.toLowerCase() === live.filename.toLowerCase());
     if (!file) {
-      if (row.importStatus === "uploaded" || row.contentHash) return row;
-      const failureReason = `${row.filename} is not in the folder.`;
-      return { ...row, importStatus: "failed", failureReason, draftError: failureReason };
+      if (live.importStatus === "uploaded" || live.contentHash) return live;
+      const failureReason = `${live.filename} is not in the folder.`;
+      return { ...live, importStatus: "failed", failureReason, draftError: failureReason };
     }
     const imageBase64 = await fileToDataUrl(file);
     const send = () => apiFetch("/api/platform/catalogue-studio/candidates/import/file", {
@@ -687,9 +715,16 @@ export default function CatalogueBulkImportPage() {
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const failureReason = String(body.error || body.message || `${file.name} was not stored.`);
-      return { ...row, importStatus: "failed", failureReason, draftError: failureReason };
+      return { ...live, importStatus: "failed", failureReason, draftError: failureReason };
     }
-    return { ...row, importStatus: "uploaded", contentHash: String(body.hash || row.contentHash || ""), failureReason: "", draftError: "" };
+    return {
+      ...live,
+      importStatus: "uploaded",
+      contentHash: String(body.hash || live.contentHash || ""),
+      imagePath: String(body.imagePath || live.imagePath || ""),
+      failureReason: "",
+      draftError: "",
+    };
   }
 
   async function createBatch() {
@@ -699,7 +734,7 @@ export default function CatalogueBulkImportPage() {
     setError("");
     setCreated(null);
     try {
-      await Promise.all([...saveChain.current.values()]);
+      await Promise.all([...saveChain.current.values(), ...pngStores.current.values()]);
       const chosen = readyRows(rowsRef.current);
       if (!chosen.length) {
         setError("Nothing is ready to queue. Fix the flagged rows first.");

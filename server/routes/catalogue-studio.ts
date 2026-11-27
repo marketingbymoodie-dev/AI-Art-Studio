@@ -1559,7 +1559,7 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
     if (!requirePlatformAdmin(req, res)) return;
     try {
       const stored = await stageCataloguePng(String(req.body?.batchId || ""), String(req.body?.filename || ""), String(req.body?.imageBase64 || ""), req.shopDomain);
-      res.json({ ok: true, hash: stored.hash });
+      res.json({ ok: true, hash: stored.hash, imagePath: stored.imagePath });
     } catch (e: any) {
       res.status(400).json({ error: String(e?.message || e) });
     }
