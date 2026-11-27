@@ -4271,6 +4271,70 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.openingCover = null;
     }
 
+    // A brand-new generate closes the progress modal before the hero has the
+    // new file. Your designs already covers the product image until that file
+    // is on the hero. This does the same for the first paint.
+    function beginFreshDesignCover(url) {
+      var token = (state.freshCoverToken = (state.freshCoverToken || 0) + 1);
+      state.freshCover = { token: token, url: url || '', startedAt: Date.now(), matchedAt: 0 };
+      showOpeningCover();
+      watchFreshDesignCover(token);
+    }
+
+    function retargetFreshDesignCover(url) {
+      var live = state.freshCover;
+      if (!live || !url || urlsMatch(live.url, url)) return;
+      live.url = url;
+      live.matchedAt = 0;
+    }
+
+    function endFreshDesignCover(reason) {
+      if (!state.freshCover) return;
+      state.freshCover = null;
+      if (designTransitionActive()) return;
+      removeOpeningCover();
+      myPetLog(TAG, 'generate cover off reason=' + reason);
+    }
+
+    function watchFreshDesignCover(token) {
+      function tick() {
+        var live = state.freshCover;
+        if (!live || live.token !== token) return;
+        if (!designTransitionActive()) {
+          if (!state.openingCover || !state.openingCover.isConnected) showOpeningCover();
+          else placeOpeningCover();
+        }
+        if (Date.now() - live.startedAt >= 8000) {
+          endFreshDesignCover('cap');
+          return;
+        }
+        var hero = findVisibleHeroImg() || state.inlineHero;
+        if (live.url && hero && heroReady(hero, live.url)) {
+          if (!live.matchedAt) live.matchedAt = Date.now();
+          if (Date.now() - live.matchedAt >= 200) {
+            var release = function () {
+              var stillHold = state.freshCover;
+              if (!stillHold || stillHold.token !== token) return;
+              var still = findVisibleHeroImg() || state.inlineHero;
+              if (still && heroReady(still, stillHold.url)) {
+                endFreshDesignCover('decoded');
+                return;
+              }
+              stillHold.matchedAt = 0;
+              setTimeout(tick, 60);
+            };
+            if (typeof hero.decode === 'function') hero.decode().then(release, release);
+            else release();
+            return;
+          }
+        } else {
+          live.matchedAt = 0;
+        }
+        setTimeout(tick, 60);
+      }
+      tick();
+    }
+
     // position:fixed is viewport-relative only on document.body. Horizon's
     // section morph removes a cover that lives inside the gallery, so a
     // missing cover is created again here.
@@ -8886,12 +8950,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             preloadPreviewUrls(state.previewUrlByColor);
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
             probeCartForRender(genRes.renderId);
+            beginFreshDesignCover(genRes.previewUrl);
             picker.overlay.remove();
-            refreshCapStatus().then(function () {
+            refreshCapStatus().catch(function () { return null; }).then(function () {
               if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) {
+                var livePaint = liveColourChoice();
+                retargetFreshDesignCover((livePaint && livePaint.url) || state.previewUrl || genRes.previewUrl);
                 warmColourPreviews(genRes.colourNames);
                 return;
               }
+              endFreshDesignCover('modal');
               openPreviewStep(genRes.previewUrl);
             });
           })
@@ -9564,11 +9632,47 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       }
     }
 
-    // Desktop exit-intent (mouse leaving toward the browser chrome). Mobile has
-    // no reliable equivalent — visibilitychange only fires once the page is
-    // already hidden, too late to show new UI, so this is a best-effort nudge.
-    document.addEventListener('mouseleave', function (e) {
-      if (e.clientY <= 0) maybePromptEmailSave();
+    // Desktop exit-intent. The header sits on the top edge, so a move toward
+    // CATALOG used to look like leaving the window. Show the save prompt only
+    // after 20s on the site, once per tab session, and only when the pointer
+    // has actually gone out through the top — not while it is on the menu.
+    var EXIT_INTENT_KEY = 'appai_my_pet_exit_intent_v1';
+    var SITE_ARRIVAL_KEY = 'appai_my_pet_site_arrival_v1';
+    function siteArrivalMs() {
+      try {
+        var raw = window.sessionStorage.getItem(SITE_ARRIVAL_KEY);
+        var n = Number(raw);
+        if (raw && isFinite(n) && n > 0) return n;
+        var now = Date.now();
+        window.sessionStorage.setItem(SITE_ARRIVAL_KEY, String(now));
+        return now;
+      } catch (err) {
+        return Date.now();
+      }
+    }
+    var siteArrivedAt = siteArrivalMs();
+    function exitIntentUsed() {
+      try { return window.sessionStorage.getItem(EXIT_INTENT_KEY) === '1'; } catch (err) { return false; }
+    }
+    function markExitIntentUsed() {
+      try { window.sessionStorage.setItem(EXIT_INTENT_KEY, '1'); } catch (err) {}
+    }
+    function nodeInHeaderOrNav(node) {
+      if (!node || node.nodeType !== 1 || !node.closest) return false;
+      return !!node.closest('header, nav, header-component, #header-component, #header-group, [role="banner"], [role="navigation"], .header, .header-menu, .menu-list');
+    }
+    document.addEventListener('mouseout', function (e) {
+      if (e.clientY >= 0) return;
+      if (e.relatedTarget || e.toElement) return;
+      if (nodeInHeaderOrNav(e.target)) return;
+      var under = null;
+      try { under = document.elementFromPoint(e.clientX, 0); } catch (err) {}
+      if (nodeInHeaderOrNav(under)) return;
+      if (Date.now() - siteArrivedAt < 20000) return;
+      if (exitIntentUsed()) return;
+      if (!state.renderId || state.emailModalOpen || isDismissed(state.renderId)) return;
+      markExitIntentUsed();
+      maybePromptEmailSave();
     });
 
     function onLeaveGuardClick(event) {
