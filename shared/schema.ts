@@ -1439,6 +1439,8 @@ export const designCandidates = pgTable("design_candidates", {
   renderProbeResultId: integer("render_probe_result_id"),
   /** Source artwork in the mockup library. Set when the design is imported or uploaded. */
   artworkPath: text("artwork_path"),
+  /** PNG hash from catalogue import. Kept after the import row is cleared so the same file is not created twice. */
+  sourceContentHash: text("source_content_hash"),
   /** Stored print file. Set at approval. Null while the design is still pending. */
   printFilePath: text("print_file_path"),
   /** Scene chosen for this design. Re-approval reads this and does not pick another. */

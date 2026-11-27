@@ -90,22 +90,66 @@ export function catalogueImportObjectName(filename: string): string | null {
 }
 
 /**
+ * Storage key for a PNG. Names storage already accepts stay as they are, so a
+ * staged file is still found. Everything else is lowercased and commas, spaces,
+ * and other rejected characters become hyphens. The import row keeps the
+ * original filename. Null when the file is not a PNG or nothing safe remains.
+ */
+export function catalogueStorageName(filename: string): string | null {
+  const safe = catalogueImportObjectName(filename);
+  if (safe) return safe;
+  const base = filename.split(/[/\\]/).pop()?.trim() || "";
+  if (!/\.png$/i.test(base)) return null;
+  const stem = base.slice(0, -4).toLowerCase();
+  const cleaned = stem
+    .replace(/[\s,]+/g, "-")
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_.]+|[-_.]+$/g, "");
+  if (!cleaned) return null;
+  return `${cleaned}.png`;
+}
+
+/**
  * A storage name for a PNG the current rule rejects.
- * Commas and other rejected characters become hyphens. Null when no safe name exists.
  * Already-safe names return null so the caller leaves them alone.
  */
 export function proposeCatalogueFilename(filename: string): string | null {
-  const base = filename.split(/[/\\]/).pop()?.trim() || "";
-  if (catalogueImportObjectName(base)) return null;
-  if (!/\.png$/i.test(base)) return null;
-  const stem = base.slice(0, -4);
-  const cleaned = stem
-    .replace(/,/g, "-")
-    .replace(/[^\w .()-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[\s.-]+|[\s.-]+$/g, "");
-  if (!cleaned) return null;
-  return catalogueImportObjectName(`${cleaned}.png`);
+  if (catalogueImportObjectName(filename)) return null;
+  return catalogueStorageName(filename);
+}
+
+export type CatalogueCandidateRef = {
+  id: string;
+  status: string;
+  artworkPath?: string | null;
+  contentHash?: string | null;
+};
+
+/** The candidate this import row already created, or null when it has not. */
+export function createdImportRowMatch(
+  row: Pick<CatalogueImportRow, "filename" | "contentHash" | "candidateId">,
+  candidates: CatalogueCandidateRef[],
+): { candidateId: string; status: string; via: "id" | "hash" | "filename" } | null {
+  const own = row.candidateId ? candidates.find((candidate) => candidate.id === row.candidateId) : undefined;
+  if (own) return { candidateId: own.id, status: own.status, via: "id" };
+  const hash = String(row.contentHash || "").trim();
+  if (hash) {
+    const byHash = candidates.find((candidate) => candidate.contentHash && candidate.contentHash === hash);
+    if (byHash) return { candidateId: byHash.id, status: byHash.status, via: "hash" };
+  }
+  const names = new Set<string>();
+  const original = row.filename.trim().toLowerCase();
+  if (original) names.add(original);
+  const stored = catalogueStorageName(row.filename);
+  if (stored) names.add(stored.toLowerCase());
+  if (!names.size) return null;
+  const byName = candidates.find((candidate) => {
+    const base = String(candidate.artworkPath || "").split(/[/\\]/).pop()?.toLowerCase() || "";
+    return !!base && names.has(base);
+  });
+  if (!byName) return null;
+  return { candidateId: byName.id, status: byName.status, via: "filename" };
 }
 
 /** One candidate id per PNG hash. The second claim returns the id from the first. */
@@ -183,27 +227,27 @@ export function emptyCatalogueRow(filename: string, rowNumber: number, source: "
   };
 }
 
-function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failures: string[]; proposals: Map<string, string> } {
+function uploadMap(filenames: string[]): { uploaded: Map<string, string>; failures: string[] } {
   const failures: string[] = [];
   const uploaded = new Map<string, string>();
-  const proposals = new Map<string, string>();
+  const storageOwner = new Map<string, string>();
   for (const filename of filenames) {
     const label = filename.split(/[/\\]/).pop()?.trim() || filename;
-    const proposed = proposeCatalogueFilename(label);
-    const objectName = catalogueImportObjectName(label) || proposed;
-    if (!objectName) {
+    const storage = catalogueStorageName(label);
+    if (!storage) {
       failures.push(`${label} is not a PNG named with letters, numbers, spaces, dots, underscores, or hyphens.`);
       continue;
     }
-    if (proposed) proposals.set(label, proposed);
-    const prior = uploaded.get(objectName);
+    const key = label.toLowerCase();
+    const prior = uploaded.get(key) || storageOwner.get(storage);
     if (prior) {
       failures.push(`${label} duplicates ${prior}.`);
       continue;
     }
-    uploaded.set(objectName, label);
+    uploaded.set(key, label);
+    storageOwner.set(storage, label);
   }
-  return { uploaded, failures, proposals };
+  return { uploaded, failures };
 }
 
 /**
@@ -304,7 +348,7 @@ export function catalogueRowAttention(row: CatalogueImportRow, peers: CatalogueI
   if (row.importStatus === "failed" || row.failureReason) {
     notes.push({ tone: "block", field: "filename", message: row.failureReason || "This row failed." });
   }
-  if (row.proposedFilename) {
+  if (row.proposedFilename && !catalogueStorageName(row.filename)) {
     notes.push({ tone: "block", field: "filename", message: `Storage name cannot keep this filename. Rename to ${row.proposedFilename}.` });
   }
   if (row.lowConfidence?.style) notes.push({ tone: "block", field: "style", message: "Style is low confidence." });
@@ -435,17 +479,12 @@ export function catalogueDraftCostUsd(usage: CatalogueDraftUsage, model: string)
  * No CSV: every PNG is a draft row. A CSV row wins and is not drafted.
  * A PNG with no CSV row is a draft row, not a failure.
  */
-function withProposal(row: CatalogueImportRow, proposals: Map<string, string>): CatalogueImportRow {
-  const proposed = proposals.get(row.filename);
-  return proposed ? { ...row, proposedFilename: proposed } : row;
-}
-
 export function planCatalogueImport(input: { csv?: string; filenames: string[] }): CatalogueImportPlan {
-  const { uploaded, failures, proposals } = uploadMap(input.filenames);
+  const { uploaded, failures } = uploadMap(input.filenames);
   const csv = String(input.csv || "");
   if (!csv.trim()) {
     if (!uploaded.size && !failures.length) failures.push("The folder has no PNGs.");
-    const rows = [...uploaded.values()].map((filename, index) => withProposal(emptyCatalogueRow(filename, index + 1, "draft"), proposals));
+    const rows = [...uploaded.values()].map((filename, index) => emptyCatalogueRow(filename, index + 1, "draft"));
     return { rows, failures };
   }
 
@@ -472,8 +511,8 @@ export function planCatalogueImport(input: { csv?: string; filenames: string[] }
     const truthRaw = (cells[4] || "").trim();
     const deviceRaw = (cells[5] || "").trim();
     const wordingRaw = trimEdges(cells[6] || "");
-    const proposed = proposeCatalogueFilename(filename);
-    const objectName = catalogueImportObjectName(filename) || proposed;
+    const storage = catalogueStorageName(filename);
+    const key = filename.toLowerCase();
     const style = (PETPOSTEROUS_ART_STYLE_LAUNCH as readonly string[]).includes(styleRaw) ? styleRaw : "";
     const speciesClipped = clip(speciesRaw, LIMITS.species + 1);
     const humourOperator = humourOperatorId(humourRaw) || "";
@@ -481,17 +520,17 @@ export function planCatalogueImport(input: { csv?: string; filenames: string[] }
     const deviceClipped = clip(deviceRaw, LIMITS.device + 1);
 
     if (!filename) failures.push(blank(rowNumber, "", "filename"));
-    else if (!objectName) failures.push(`Row ${rowNumber} (${filename}): filename must be a PNG name using letters, numbers, spaces, dots, underscores, or hyphens.`);
+    else if (!storage) failures.push(`Row ${rowNumber} (${filename}): filename must be a PNG name using letters, numbers, spaces, dots, underscores, or hyphens.`);
     else {
-      const prior = seen.get(objectName);
+      const prior = seen.get(key);
       if (prior) failures.push(`${filename} is on more than one row (${prior} and ${rowNumber}).`);
-      else seen.set(objectName, rowNumber);
-      if (!uploaded.has(objectName)) failures.push(`${filename} is in the CSV and was not uploaded.`);
+      else seen.set(key, rowNumber);
+      if (!uploaded.has(key)) failures.push(`${filename} is in the CSV and was not uploaded.`);
     }
 
     rows.push({
       rowNumber,
-      filename: objectName ? uploaded.get(objectName) || filename : filename,
+      filename: storage ? uploaded.get(key) || filename : filename,
       style: style || styleRaw,
       species: speciesClipped.length > LIMITS.species ? speciesRaw : speciesClipped,
       humourOperator: humourOperator || humourRaw,
@@ -500,14 +539,13 @@ export function planCatalogueImport(input: { csv?: string; filenames: string[] }
       exactWording: wordingRaw,
       source: "csv",
       lowConfidence: { style: false, humourOperator: false },
-      ...(proposed ? { proposedFilename: proposed } : {}),
     });
   }
 
   let nextNumber = (rows[rows.length - 1]?.rowNumber || 1) + 1;
-  for (const [objectName, label] of uploaded) {
-    if (seen.has(objectName)) continue;
-    rows.push(withProposal(emptyCatalogueRow(label, nextNumber, "draft"), proposals));
+  for (const [key, label] of uploaded) {
+    if (seen.has(key)) continue;
+    rows.push(emptyCatalogueRow(label, nextNumber, "draft"));
     nextNumber += 1;
   }
   if (!rows.length && !failures.length) failures.push("The folder has no PNGs.");
@@ -519,22 +557,23 @@ export function reviewCatalogueImport(input: { filenames: string[]; rows: Catalo
   const { uploaded, failures } = uploadMap(input.filenames);
   const seen = new Map<string, number>();
   for (const row of input.rows) {
-    const objectName = catalogueImportObjectName(row.filename);
-    if (!objectName) {
+    const storage = catalogueStorageName(row.filename);
+    const key = row.filename.trim().toLowerCase();
+    if (!storage) {
       failures.push(`${row.filename || "A row"} is not a PNG named with letters, numbers, spaces, dots, underscores, or hyphens.`);
       continue;
     }
-    const prior = seen.get(objectName);
+    const prior = seen.get(key);
     if (prior) {
       failures.push(`${row.filename} is on more than one row (${prior} and ${row.rowNumber}).`);
       continue;
     }
-    seen.set(objectName, row.rowNumber);
-    if (!uploaded.has(objectName)) failures.push(`${row.filename} was not uploaded.`);
+    seen.set(key, row.rowNumber);
+    if (!uploaded.has(key)) failures.push(`${row.filename} was not uploaded.`);
     failures.push(...catalogueRowIssues(row));
   }
-  for (const [objectName, label] of uploaded) {
-    if (!seen.has(objectName)) failures.push(`${label} was uploaded and has no row.`);
+  for (const [key, label] of uploaded) {
+    if (!seen.has(key)) failures.push(`${label} was uploaded and has no row.`);
   }
   if (!input.rows.length && !failures.length) failures.push("The folder has no PNGs.");
   return { failures };

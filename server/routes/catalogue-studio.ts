@@ -4,7 +4,7 @@
  */
 import type { Express, RequestHandler, Response } from "express";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { abortCatalogueImport, assertCatalogueImportShop, commitCatalogueImport, decodeCataloguePng, ensureCatalogueImportBatch, readOpenCatalogueImport, stageCataloguePng, upsertCatalogueImportRow } from "../catalogue-bulk-import";
+import { abortCatalogueImport, assertCatalogueImportShop, clearCreatedCatalogueImportRows, commitCatalogueImport, decodeCataloguePng, ensureCatalogueImportBatch, readOpenCatalogueImport, stageCataloguePng, upsertCatalogueImportRow } from "../catalogue-bulk-import";
 import {
   catalogueConceptOptions,
   catalogueConceptShopAllowed,
@@ -1597,6 +1597,17 @@ export function registerCatalogueStudioRoutes(app: Express, deps: { isAuthentica
       res.json(result);
     } catch (e: any) {
       res.status(400).json({ created: 0, firstId: "", studioPath: "", failures: [String(e?.message || e)] });
+    }
+  });
+
+  app.post("/api/platform/catalogue-studio/candidates/import/clear-created", isAuthenticated, async (req: any, res: Response) => {
+    if (!requirePlatformAdmin(req, res)) return;
+    try {
+      const shop = await assertCatalogueImportShop(req.shopDomain);
+      const cleared = await clearCreatedCatalogueImportRows(shop, String(req.body?.batchId || ""));
+      res.json({ ok: true, removed: cleared.removed });
+    } catch (e: any) {
+      res.status(400).json({ error: String(e?.message || e), removed: [] });
     }
   });
 

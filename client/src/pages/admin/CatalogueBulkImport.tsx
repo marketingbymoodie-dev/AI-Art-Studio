@@ -741,7 +741,12 @@ export default function CatalogueBulkImportPage() {
       });
       const body = await res.json().catch(() => ({}));
       const messages = Array.isArray(body.failures) ? body.failures.map(String) : [];
+      const removed = new Set<string>(Array.isArray(body.removed) ? body.removed.map(String) : []);
       const queued = (Number(body.created) || 0) + (Number(body.reused) || 0);
+      if (!removed.size && res.ok && !messages.length && queued === toQueue.length) {
+        for (const row of toQueue) removed.add(row.filename);
+      }
+      if (removed.size) applyRows((prev) => prev.filter((item) => !removed.has(item.filename)));
       if (!res.ok || messages.length || queued !== toQueue.length) {
         const shown = messages.length ? messages : [body.error || body.message || "Not every row was queued."];
         console.error("[catalogue-import] commit failed", shown);
@@ -759,8 +764,6 @@ export default function CatalogueBulkImportPage() {
         setCreated(null);
         return;
       }
-      const queuedNames = new Set(toQueue.map((row) => row.filename));
-      applyRows((prev) => prev.map((item) => queuedNames.has(item.filename) ? { ...item, importStatus: "queued", failureReason: "" } : item));
       setCreated({ created: queued, studioPath: String(body.studioPath || "") });
     } catch (e: any) {
       console.error("[catalogue-import] create failed", e);
@@ -772,6 +775,27 @@ export default function CatalogueBulkImportPage() {
 
   function retryFailed() {
     enqueueDrafts(catalogueRowsToRetry(rows));
+  }
+
+  async function clearCreated() {
+    const batchId = batchIdRef.current;
+    if (!batchId) return;
+    setBusy("Clearing created rows");
+    setError("");
+    try {
+      const res = await apiFetch("/api/platform/catalogue-studio/candidates/import/clear-created", {
+        method: "POST",
+        body: JSON.stringify({ batchId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Created rows were not cleared.");
+      const removed = new Set((Array.isArray(body.removed) ? body.removed : []).map((name: unknown) => String(name).toLowerCase()));
+      applyRows((prev) => prev.filter((row) => !removed.has(row.filename.toLowerCase())));
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setBusy("");
+    }
   }
 
   const draftRows = rows.filter((row) => row.source === "draft");
@@ -982,6 +1006,7 @@ export default function CatalogueBulkImportPage() {
             {catalogueRowsToRetry(rows).some((row) => row.source === "draft") ? (
               <Button type="button" size="sm" variant="outline" disabled={!!busy || drafting} onClick={retryFailed}>Retry failed only</Button>
             ) : null}
+            <Button type="button" size="sm" variant="outline" disabled={!!busy} onClick={() => void clearCreated()}>Clear created rows</Button>
             {blockers.length ? <p className="text-xs" data-testid="catalogue-bulk-import-blockers">{blockers.join("; ")}</p> : null}
           </div>
         ) : null}

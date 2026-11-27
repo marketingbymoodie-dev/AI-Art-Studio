@@ -4,8 +4,8 @@
  * refused batch is removed.
  */
 import { createHash, randomUUID } from "crypto";
-import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
-import { catalogueBlockingNotes, claimCatalogueHash, reviewCatalogueImport, catalogueImportObjectName, type CatalogueImportRow } from "@shared/catalogueBulkImport";
+import { and, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { catalogueBlockingNotes, catalogueStorageName, claimCatalogueHash, createdImportRowMatch, reviewCatalogueImport, type CatalogueCandidateRef, type CatalogueImportRow } from "@shared/catalogueBulkImport";
 import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
 import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
@@ -18,6 +18,7 @@ export type CatalogueImportResult = {
   firstId: string;
   studioPath: string;
   failures: string[];
+  removed: string[];
 };
 
 function batchIdOk(batchId: string): boolean {
@@ -25,7 +26,7 @@ function batchIdOk(batchId: string): boolean {
 }
 
 export function catalogueImportStagePath(batchId: string, filename: string): string {
-  const objectName = catalogueImportObjectName(filename);
+  const objectName = catalogueStorageName(filename);
   if (!batchIdOk(batchId) || !objectName) throw new Error("That upload is not a catalogue batch.");
   return `catalogue-import/${batchId}/${objectName}`;
 }
@@ -60,7 +61,7 @@ export async function assertCatalogueImportShop(shop: string | null | undefined)
 async function removeStaged(batchId: string, filenames: string[]): Promise<void> {
   if (!batchIdOk(batchId)) return;
   for (const filename of filenames) {
-    if (!catalogueImportObjectName(filename)) continue;
+    if (!catalogueStorageName(filename)) continue;
     try {
       await removeLibraryObject(catalogueImportStagePath(batchId, filename));
     } catch (err) {
@@ -201,6 +202,16 @@ async function knownCatalogueHashes(shop: string): Promise<Map<string, string>> 
   for (const row of rows) {
     if (row.hash && row.candidateId) known.set(row.hash, row.candidateId);
   }
+  const stored = await db.select({
+    id: designCandidates.id,
+    hash: designCandidates.sourceContentHash,
+  }).from(designCandidates).where(and(
+    eq(designCandidates.shopDomain, shop),
+    isNotNull(designCandidates.sourceContentHash),
+  ));
+  for (const row of stored) {
+    if (row.hash) known.set(row.hash, row.id);
+  }
   return known;
 }
 
@@ -211,7 +222,7 @@ export async function commitCatalogueImport(args: {
   shop?: string | null;
 }): Promise<CatalogueImportResult> {
   const shop = await assertCatalogueImportShop(args.shop);
-  const empty = { created: 0, reused: 0, firstId: "", studioPath: "", failures: [] as string[] };
+  const empty = { created: 0, reused: 0, firstId: "", studioPath: "", failures: [] as string[], removed: [] as string[] };
   if (!batchIdOk(args.batchId)) {
     return { ...empty, failures: ["That upload is not a catalogue batch."] };
   }
@@ -220,6 +231,7 @@ export async function commitCatalogueImport(args: {
     const review = reviewCatalogueImport({ filenames: args.filenames, rows: args.rows });
     const known = await knownCatalogueHashes(shop);
   const failures: string[] = [];
+  const removed: string[] = [];
   const ids: string[] = [];
   let created = 0;
 
@@ -267,6 +279,7 @@ export async function commitCatalogueImport(args: {
             productFamily: "apparel",
             credentialRef: "replicate:shared",
             artworkPath: path,
+            sourceContentHash: hash,
             updatedAt: now,
             createdAt: now,
           });
@@ -276,17 +289,22 @@ export async function commitCatalogueImport(args: {
             selectedColors: [],
             updatedAt: now,
           });
+        } else if (hash) {
+          await tx.update(designCandidates).set({ sourceContentHash: hash }).where(and(
+            eq(designCandidates.id, claim.candidateId),
+            eq(designCandidates.shopDomain, shop),
+            isNull(designCandidates.sourceContentHash),
+          ));
         }
-        await upsertCatalogueImportRow(shop, args.batchId, {
-          ...row,
-          contentHash: hash,
-          importStatus: "queued",
-          failureReason: "",
-          candidateId: claim.candidateId,
-        }, tx);
+        await tx.delete(catalogueImportRows).where(and(
+          eq(catalogueImportRows.batchId, args.batchId),
+          eq(catalogueImportRows.shopDomain, shop),
+          eq(catalogueImportRows.filename, row.filename),
+        ));
       });
       if (claim.created) created += 1;
       ids.push(claim.candidateId);
+      removed.push(row.filename);
       } catch (err) {
         if (claim.created) known.delete(hash);
         throw err;
@@ -305,5 +323,63 @@ export async function commitCatalogueImport(args: {
     firstId,
     studioPath: firstId ? `/admin/catalogue-studio?candidate=${firstId}` : "",
     failures,
+    removed,
   };
+}
+
+/** Drop import rows whose candidate already exists. Uncreated rows stay. The artwork file stays. */
+export async function clearCreatedCatalogueImportRows(shop: string, batchId: string): Promise<{ removed: string[] }> {
+  const domain = await assertCatalogueImportShop(shop);
+  if (!batchIdOk(batchId)) throw new Error("That upload is not a catalogue batch.");
+  const stored = await db.select().from(catalogueImportRows).where(and(
+    eq(catalogueImportRows.batchId, batchId),
+    eq(catalogueImportRows.shopDomain, domain),
+  ));
+  const candidates = await db.select({
+    id: designCandidates.id,
+    status: designCandidates.status,
+    artworkPath: designCandidates.artworkPath,
+    contentHash: designCandidates.sourceContentHash,
+  }).from(designCandidates).where(eq(designCandidates.shopDomain, domain));
+  const hashed = await db.select({
+    hash: catalogueImportRows.contentHash,
+    candidateId: catalogueImportRows.candidateId,
+  }).from(catalogueImportRows).where(and(
+    eq(catalogueImportRows.shopDomain, domain),
+    isNotNull(catalogueImportRows.contentHash),
+    isNotNull(catalogueImportRows.candidateId),
+    ne(catalogueImportRows.candidateId, ""),
+  ));
+  const hashByCandidate = new Map<string, string>();
+  for (const row of hashed) {
+    if (row.hash && row.candidateId && !hashByCandidate.has(row.candidateId)) hashByCandidate.set(row.candidateId, row.hash);
+  }
+  const refs: CatalogueCandidateRef[] = candidates.map((candidate) => ({
+    id: candidate.id,
+    status: candidate.status,
+    artworkPath: candidate.artworkPath,
+    contentHash: candidate.contentHash || hashByCandidate.get(candidate.id) || null,
+  }));
+  const removed: string[] = [];
+  for (const row of stored) {
+    const match = createdImportRowMatch({
+      filename: row.filename,
+      contentHash: row.contentHash,
+      candidateId: row.candidateId,
+    }, refs);
+    if (!match) continue;
+    if (row.contentHash) {
+      await db.update(designCandidates).set({ sourceContentHash: row.contentHash }).where(and(
+        eq(designCandidates.id, match.candidateId),
+        eq(designCandidates.shopDomain, domain),
+        isNull(designCandidates.sourceContentHash),
+      ));
+    }
+    await db.delete(catalogueImportRows).where(and(
+      eq(catalogueImportRows.id, row.id),
+      eq(catalogueImportRows.shopDomain, domain),
+    ));
+    removed.push(row.filename);
+  }
+  return { removed };
 }

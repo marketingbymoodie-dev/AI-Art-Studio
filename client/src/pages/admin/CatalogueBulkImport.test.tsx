@@ -5,7 +5,7 @@ import path from "path";
 import sharp from "sharp";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const calls: { url: string; body: { filenames?: string[]; filename?: string; rows?: { filename: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string }[]; row?: { filename?: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string } } }[] = [];
+const calls: { url: string; body: { batchId?: string; filenames?: string[]; filename?: string; rows?: { filename: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string }[]; row?: { filename?: string; exactWording?: string; acknowledgedWarnings?: boolean; importStatus?: string } } }[] = [];
 const commitFailures = vi.hoisted(() => ({ current: [] as string[] }));
 const draftFailure = vi.hoisted(() => ({ current: "" }));
 const draftFailuresFor = vi.hoisted(() => ({ current: [] as string[] }));
@@ -38,6 +38,9 @@ vi.mock("@/lib/queryClient", () => ({
     }
     if (String(url).endsWith("/open")) {
       return { ok: true, json: async () => ({ batch: openBatch.current }) };
+    }
+    if (String(url).endsWith("/clear-created")) {
+      return { ok: true, json: async () => ({ ok: true, removed: ["kept.png"] }) };
     }
     if (String(url).endsWith("/commit") && commitFailures.current.length) {
       return { ok: false, status: 400, json: async () => ({ created: 0, reused: 0, firstId: "", studioPath: "", failures: commitFailures.current }) };
@@ -300,6 +303,49 @@ describe("catalogue import file inputs", () => {
     await waitFor(() => expect(screen.getByText("boxer-a.png is not in the folder.")).toBeTruthy());
     expect(drafts().length).toBe(before);
     expect(drafts().some((call) => call.body.filename === "kept.png")).toBe(false);
+  });
+
+  it("clears a created row and leaves the one that was not created", async () => {
+    openBatch.current = {
+      batchId: "batch-1",
+      rows: [
+        {
+          rowNumber: 1,
+          filename: "kept.png",
+          style: "woodcut",
+          species: "dog",
+          humourOperator: "pp-sleep-warfare",
+          truth: "asleep",
+          device: "on the bed",
+          exactWording: "",
+          source: "draft",
+          lowConfidence: { style: false, humourOperator: false },
+          importStatus: "queued",
+          candidateId: "c1",
+          selected: true,
+        },
+        {
+          rowNumber: 2,
+          filename: "boxer-a.png",
+          style: "woodcut",
+          species: "dog",
+          humourOperator: "pp-sleep-warfare",
+          truth: "asleep",
+          device: "on the bed",
+          exactWording: "Nap",
+          source: "draft",
+          lowConfidence: { style: false, humourOperator: false },
+          importStatus: "drafted",
+          selected: true,
+        },
+      ],
+    };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByText("kept.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear created rows" }));
+    await waitFor(() => expect(screen.queryByText("kept.png")).toBeNull());
+    expect(screen.getByText("boxer-a.png")).toBeTruthy();
+    expect(calls.some((call) => call.url.endsWith("/clear-created") && call.body.batchId === "batch-1")).toBe(true);
   });
 
   function restoredRow(overrides: Record<string, unknown> = {}) {

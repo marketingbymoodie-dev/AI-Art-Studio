@@ -10,8 +10,10 @@ import {
   catalogueRowIssues,
   catalogueRowsToRetry,
   catalogueSignageHint,
+  catalogueStorageName,
   catalogueWordingWarning,
   claimCatalogueHash,
+  createdImportRowMatch,
   normaliseCatalogueDraft,
   planCatalogueImport,
   reviewCatalogueImport,
@@ -139,15 +141,26 @@ describe("catalogue bulk import", () => {
     expect(reviewCatalogueImport({ filenames: ["dog.png"], rows: [filled] }).failures).toEqual([]);
   });
 
-  it("offers a rename for a comma filename and does not fail the rest of the batch", () => {
-    const plan = planCatalogueImport({
-      filenames: ["ChatGPT Image Oct 9, 2026, 02_15_30 PM.png", "dog.png"],
-    });
+  it("keeps a comma filename and stores it under a hyphenated name", () => {
+    const name = "ChatGPT Image Oct 9, 2026, 02_15_30 PM.png";
+    const plan = planCatalogueImport({ filenames: [name, "dog.png"] });
     expect(plan.failures).toEqual([]);
-    const renamed = plan.rows.find((row) => row.filename.includes(","));
-    expect(renamed?.proposedFilename).toBe("chatgpt image oct 9- 2026- 02_15_30 pm.png");
-    expect(catalogueRowAttention(renamed!, plan.rows).some((note) => note.tone === "block" && note.message.includes("Rename to"))).toBe(true);
-    expect(plan.rows.find((row) => row.filename === "dog.png")?.proposedFilename).toBeUndefined();
+    const renamed = plan.rows.find((row) => row.filename === name);
+    expect(renamed?.proposedFilename).toBeUndefined();
+    expect(catalogueStorageName(name)).toBe("chatgpt-image-oct-9-2026-02_15_30-pm.png");
+    expect(catalogueStorageName("dog.png")).toBe("dog.png");
+    expect(catalogueRowAttention(renamed!, plan.rows).some((note) => note.message.includes("Storage name"))).toBe(false);
+    const filled = {
+      ...renamed!,
+      style: "woodcut",
+      species: "dog",
+      humourOperator: "pp-sleep-warfare",
+      truth: "asleep",
+      device: "on the bed",
+      proposedFilename: "chatgpt image oct 9- 2026- 02_15_30 pm.png",
+    };
+    expect(catalogueBlockingNotes(filled, [filled]).some((note) => note.message.includes("Storage name"))).toBe(false);
+    expect(reviewCatalogueImport({ filenames: [name], rows: [filled] }).failures).toEqual([]);
   });
 
   it("warns on long wording without refusing the folder", () => {
@@ -183,6 +196,18 @@ describe("catalogue bulk import", () => {
     const ordered = [...rows].sort((a, b) => catalogueAttentionRank(a, rows) - catalogueAttentionRank(b, rows));
     expect(ordered.map((row) => row.filename)).toEqual(["copy-a.png", "copy-b.png", "clean.png"]);
     expect(catalogueRowAttention(rows[1], rows).some((note) => note.message.includes("copy-b.png"))).toBe(true);
+  });
+
+  it("matches a created row by candidate id, image hash, or filename", () => {
+    const candidates = [
+      { id: "c-id", status: "pending", artworkPath: "catalogue-import/batch/kept.png", contentHash: "hash-kept" },
+      { id: "c-hash", status: "promoted", artworkPath: "catalogue-import/batch/other.png", contentHash: "hash-1" },
+      { id: "c-file", status: "approved", artworkPath: "catalogue-import/batch/chatgpt-image-oct-9-2026-11_21_16-pm.png", contentHash: null },
+    ];
+    expect(createdImportRowMatch({ filename: "kept.png", candidateId: "c-id" }, candidates)).toMatchObject({ candidateId: "c-id", status: "pending", via: "id" });
+    expect(createdImportRowMatch({ filename: "copy.png", contentHash: "hash-1" }, candidates)).toMatchObject({ candidateId: "c-hash", status: "promoted", via: "hash" });
+    expect(createdImportRowMatch({ filename: "ChatGPT Image Oct 9, 2026, 11_21_16 PM.png" }, candidates)).toMatchObject({ candidateId: "c-file", status: "approved", via: "filename" });
+    expect(createdImportRowMatch({ filename: "new.png", contentHash: "missing" }, candidates)).toBeNull();
   });
 
   it("returns the same candidate id when the same file hash is claimed twice", () => {

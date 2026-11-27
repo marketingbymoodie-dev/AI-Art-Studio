@@ -263,6 +263,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   // Confirm checks on a catalogue import row. Soft warnings stay visible; this flag
   // is what lets Create proceed after a reload.
   { table: "catalogue_import_rows",     column: "acknowledged_warnings",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  // Hash of an imported PNG. Survives clearing the import row so a re-drop finds the candidate.
+  { table: "design_candidates",         column: "source_content_hash",     type: "TEXT" },
 ];
 
 /** One-time data fixes (idempotent WHERE clauses). */
