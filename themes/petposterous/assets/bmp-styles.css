@@ -1,0 +1,2467 @@
+/* ==========================================================================
+   BMP static override asset — the BuildMyPOD layer's single stylesheet.
+   Loaded from snippets/bmp-globals.liquid AFTER Horizon's base.css, so rules
+   here can win by SOURCE ORDER without extra specificity or !important.
+   The bmp-globals render in layout/theme.liquid (BMP-HOOK:globals) is
+   load-bearing — pre-commit + canaries guard it.
+   ========================================================================== */
+
+/* -- Cross-document view transitions: RETIRED override (4.1.3 upgrade) ---
+   Until Horizon 4.1.1 the MPA opt-in (`@view-transition { navigation: auto }`)
+   sat unconditionally in core base.css and froze Meta in-app WebViews, so this
+   file carried an unconditional `navigation: none` kill. Horizon 4.1.3 gates
+   the opt-in per-layout on `page_transition_enabled` /
+   `transition_to_main_product` (both false in our settings_data.json — the
+   opt-in never renders) and its view-transitions.js disables the feature at
+   runtime in every Android WebView plus the FB/IG/TikTok in-app browsers.
+   The native mechanism is strictly better, so the kill is retired; if a
+   merchant enables the settings, the stock WebView protection applies. */
+/* a11y-slideshow-aria (zero-core CSS half of the aria-selected->aria-current fix)
+   The slideshow pagination markup emits aria-current initially, and
+   assets/bmp-aria-current.js mirrors the runtime aria-selected the (byte-
+   identical) core slideshow.js writes onto aria-current — valid on <button>;
+   aria-selected is invalid ARIA on a button (WCAG 4.1.2 / axe aria-allowed-attr).
+   The matching active-state CSS lives inside the slideshow-controls.liquid
+   {% stylesheet %} block, which must stay pure static CSS (theme-check
+   StaticStylesheetAndJavascriptTags forbids Liquid/markers inside it), so its
+   aria-selected selectors are left byte-identical to upstream (now inert — the
+   shim removes aria-selected at runtime) and the active styling is restored here,
+   keyed on aria-current. Selectors + declarations mirror the snippet's
+   .slideshow-controls__dots / __thumbnails rules exactly (no visual change).
+   bmp-styles.css loads after the compiled bundle, so these win for aria-current. */
+.slideshow-controls__dots button[aria-current='true'] {
+  --color: var(--color-active);
+}
+
+.slideshow-controls__dots button[aria-current='true']::after {
+  box-shadow: inset 0 0 0 1.5px hsl(0 0% 0% / 0.4);
+}
+
+@supports not (view-timeline-axis: inline) {
+  .slideshow-controls__dots button::after[aria-current='true'] {
+    --color: var(--color-active);
+  }
+}
+
+.slideshow-controls__thumbnails .slideshow-control[aria-current='true'] {
+  outline: var(--focus-outline-width) solid currentcolor;
+  outline-offset: calc(var(--focus-outline-offset) / 2);
+  border: var(--style-border-width) solid rgb(var(--color-border-rgb) / var(--media-border-opacity));
+}
+
+/* a11y-slideshow-dot-target (zero-core, WCAG 2.5.8 Target Size minimum)
+   Slideshow pagination dots compute to ~17.9px buttons (calc(var(--size) * 2)
+   with --size: 0.56rem), below the 24x24px minimum; the negative
+   margin: calc(var(--size) / -2) also makes adjacent hit areas overlap.
+   Fix the HIT AREA only: clamp the button box to >=24px and drop the negative
+   margin. The VISIBLE dot is the button's ::after (sized by --size) — untouched,
+   so the dot looks identical; only the invisible tap target grows.
+   Specificity: the slideshow-controls ancestor + .slideshow-controls__dots
+   out-specifies the snippet's `.slideshow-controls__dots button` rule — the
+   snippet's {% stylesheet %} can land after this file in the compiled bundle,
+   so an equal-specificity rule would lose the tie. */
+slideshow-controls .slideshow-controls__dots button {
+  width: max(calc(var(--size) * 2), 24px);
+  height: max(calc(var(--size) * 2), 24px);
+  margin: 0;
+}
+
+
+/* ==========================================================================
+   Visual-parity layer — the design-reference treatments. Each block states
+   the reference values (measured on the production design) and any cascade
+   constraint the rule depends on. Selectors carry one extra level of
+   specificity vs base.css AND this file loads after it — both ways they win.
+   ========================================================================== */
+
+/* Shared product-card title/price pattern — SINGLE SOURCE OF TRUTH.
+   Change these three tokens once and every product card restyles in
+   lockstep: collection, search results, the search modal, home Best
+   Sellers and the PDP recommendation rows. The cart-page recs keep their
+   own regular-weight exception further down. */
+:root {
+  --bmp-card-title-transform: uppercase;
+  --bmp-card-title-weight: 600;
+  --bmp-card-price-weight: 400;
+}
+
+/* Device-visibility utilities (bound by the bmp_device_visibility
+   setting in snippets/section.liquid - the binding stays there, the CSS
+   lives here so the modified core file carries zero CSS). */
+@media screen and (max-width: 749px) {
+  .bmp-hide-on-mobile {
+    display: none;
+  }
+}
+
+@media screen and (min-width: 750px) {
+  .bmp-hide-on-desktop {
+    display: none;
+  }
+}
+
+/* Page frame: the design uses 60px desktop side margins and caps the
+   central column at 1600px - header, body and footer all share that frame
+   (measured: header__columns/footer-content both 1600px at 1920w, margins
+   160). One token each. That 1600px cap is the NORMAL tier only (see the
+   second rule below); on Narrow and Wide the frame is whatever stock's own
+   tier says, so "identical to stock below 1720w" holds for Normal and the
+   crossover sits elsewhere on the other two. The FAQ keeps its own narrower
+   1200px tier (rule below); the header divider stays full-bleed by design.
+   Mobile (16px) untouched. */
+@media screen and (min-width: 750px) {
+  /* Margin stays uniform across tiers: stock is uniform here too
+     (base.css:303-310 sets 40px for all four), so overriding it for all four
+     flattens nothing. */
+  body:is(.page-width-wide, .page-width-normal, .page-width-narrow, .page-width-content) {
+    --page-margin: 60px;
+  }
+
+  /* The 1600px design frame is the "Normal" tier specifically. Narrow (90rem
+     = 1440px) and Wide (150rem = 2400px) fall through to stock's own per-class
+     rules (base.css:312-333), so Horizon's Page width setting keeps working —
+     it was inert while this value applied to all four classes.
+     Beats stock's `.page-width-normal` on specificity: (0,1,1) vs (0,1,0).
+
+     Normal is BMP's tier, in both places that can select one:
+       config/settings_data.json  current.page_width: "normal"
+       config/settings_schema.json  page_width default: "normal"
+     Upstream Horizon 4.1.3 has "narrow" in both. BMP already overrode the
+     first; the schema default was aligned to match so the two
+     cannot disagree — that disagreement is what made this scoping look risky
+     while every tier still rendered at 1600px and hid it.
+
+     Why it matters that they agree: config/settings_data.json's
+     `presets.Default` is `{}` here (upstream ships it populated), so applying
+     that preset selects no page_width and falls through to the schema default.
+     With both set to "normal" that path lands on the design frame instead of
+     dropping to 1440px. The empty preset itself is a pre-existing repo
+     condition affecting every setting and is not addressed here.
+
+     Note for Horizon upgrades: that schema default is a deliberate BMP
+     divergence from upstream inside a core config file, so an upgrade diff
+     will show it. Keep it — reverting to "narrow" silently changes the
+     shipped frame.
+
+     `.page-width-content` is deliberately NOT listed here: it is a section
+     wrapper class (sections/main-page.liquid:13), never a body class —
+     layout/theme.liquid:56 emits only narrow|normal|wide — so the
+     `body:is(…, .page-width-content)` branch it used to sit in was dead.
+     Static pages keep stock's 42rem reading measure (base.css:330-332). */
+  body.page-width-normal {
+    --page-content-width: 100rem;
+  }
+}
+
+/* Add-to-cart (main buy button): black-on-white foreground/background
+   tokens - a deliberate design exception to the orange primary; do not
+   "fix" it to the brand color - 18px/700, 60px tall, text-only (no cart
+   glyph), hover visually static. Radius is left to the stock
+   primary-button token (6px) so it matches the drawer/cart Checkout and
+   the hero CTA - consistency over a bespoke radius. COLORS are scoped off
+   the sticky-bar clone, which stays stock, and off Horizon's native Custom
+   style - Custom therefore owns every color whose matching global CTA
+   setting is blank, and bmp-cta-button-style-vars overrides only
+   configured properties. The SIZING treatment deliberately lives in its
+   own rule below, without the Custom exclusion. */
+add-to-cart-component
+  .add-to-cart-button:not(.sticky-add-to-cart__button):not(.button-custom) {
+  /* --button-color is pinned, not just `color`, because the checkmark burst
+     reads it: the SVG strokes are currentColor and
+     add-to-cart-button-styles.liquid:144-146 sets
+     `[data-added='true'] .add-to-cart__added { color: var(--button-color) }`.
+     That token FLIPS ON HOVER — base.css:1087 vs :1096 swap
+     --color-primary-button-text for --color-primary-button-hover-text — and on
+     this palette the two are opposite: #ffffff idle, #000000 on hover
+     (palette_primary_button_background #d65322 has brightness 116.58, so
+     util-palette-hover-shift lightens it 5% to rgb(223,98,51) at brightness
+     130.017, which crosses color-palette.liquid:45-48's `> 128` branch and
+     resolves hover text to palette_darkest). Overriding only background-color
+     therefore left the burst BLACK ON BLACK while hovering — invisible for the
+     whole 800ms window, and the pointer is necessarily on the button because a
+     click is what starts the animation. Pinning the token at (0,3,1) beats
+     `.button:hover` (0,2,0) in every state, including added+hover, where the BMP
+     hover rule below deliberately does not apply. `.button-custom` does not
+     match this rule; its equivalent token is supplied by Horizon's native
+     scoped style, or by the conditional global CTA rule when configured.
+     Removes the dependency on the palette's derived hover token entirely rather
+     than re-deriving contrast here.
+     scripts/check-add-to-cart-added-state.mjs enforces this (invariant 3). */
+  --button-color: var(--color-background);
+
+  background-color: var(--color-foreground);
+  color: var(--color-background);
+}
+
+/* Sizing treatment (never a color source) stays shared by EVERY Add to
+   Cart style, including Horizon's native Custom - the design contract is
+   that icon-hiding and layout are not color sources, so they must not
+   ride along with the color exclusions above: sharing one rule shrank a
+   Custom-styled button to the stock 14px/auto size. Still scoped off the
+   sticky-bar clone, which stays stock. */
+add-to-cart-component .add-to-cart-button:not(.sticky-add-to-cart__button) {
+  font-size: 1.125rem;
+  min-height: 60px;
+}
+
+/* Hover repeats the same black-on-white treatment (visually static) EXCEPT
+   during the added state, where the label must go transparent so the checkmark
+   burst shows. That exclusion is load-bearing, not decorative: without it this
+   higher-specificity hover rule could otherwise keep the label opaque over the
+   lower-specificity restore below. The added state is entered by a click, so on
+   desktop the pointer sits on the button for the whole 800ms window and
+   `:hover` is live throughout. `:not([data-added='true'])` makes the two match
+   sets disjoint, so specificity and order cannot revive the label.
+   scripts/check-add-to-cart-added-state.mjs enforces this (invariant 2). */
+add-to-cart-component
+  .add-to-cart-button:not(.sticky-add-to-cart__button):not(.button-custom):not([data-added='true']):hover {
+  background-color: var(--color-foreground);
+  color: var(--color-background);
+}
+
+add-to-cart-component .add-to-cart-button:not(.sticky-add-to-cart__button) .add-to-cart-icon {
+  display: none;
+}
+
+/* Stock hides this button's label during the added state with
+   `color: transparent` (add-to-cart-button-styles.liquid:122) so the checkmark
+   burst is visible. This button renders its label as a bare text node — unlike
+   the sticky bar, which wraps it in .add-to-cart-text and is hidden via
+   opacity/clip-path (add-to-cart-button-styles.liquid:148-154) — so `color` is
+   the ONLY mechanism available here, and the black-on-white override above
+   out-specifies it ((0,3,1) beats (0,2,0)). Restore it for the added state
+   only, at (0,3,1), so the design is untouched the rest of the time.
+   product-form.js clears data-added 800ms after the add.
+
+   SCOPE, deliberate: this also covers product-card quick-add buttons.
+   snippets/quick-add.liquid:121 renders through add-to-cart-button.liquid with
+   `add-to-cart-button` in the class list, inside <add-to-cart-component>, so
+   the override above already paints those black — a pre-existing scope leak
+   that this restore inherits, and correctly so: they carry the identical
+   pre-existing defect. What is NOT verified is the burst's own contrast there. On a
+   card button the burst colour is a (0,3,0) tie between
+   add-to-cart-button-styles.liquid:144-146 (--button-color, #ffffff) and
+   quick-add-styles.liquid:169-171 (--quick-add-foreground fallback
+   --color-foreground, #000000, since --quick-add-foreground is only defined on
+   .custom-color-quick-add), decided by theme stylesheet concatenation order,
+   which source cannot settle. If black wins, a mobile card quick-add reads as a
+   blank black pill for 800ms. Needs a real mobile viewport; tracked separately.
+   Do not narrow this selector to dodge it — narrowing restores the bug on those
+   buttons. */
+add-to-cart-component .add-to-cart-button:not(.sticky-add-to-cart__button)[data-added='true'] {
+  color: transparent;
+}
+
+/* FAQ/accordion question rows: 18px/600 desktop, 16px/600 mobile, 15px row
+   padding (design reference). Stock renders 20px/500 (the block's heading
+   preset, h5) with tighter rows; no 18px tier exists in the heading scale,
+   so the size/weight land here. Stock paints the text on .details__header
+   via inline --summary-* custom properties - the override must out-rank
+   `.accordion .details__header`, hence the details hop. Facet/menu
+   summaries are untouched. */
+.accordion details > summary {
+  padding-block: 15px;
+}
+
+.accordion details .details__header {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+@media screen and (max-width: 749px) {
+  .accordion details .details__header {
+    font-size: 1rem;
+  }
+}
+
+/* Button weight: the design's buttons are bold (700); stock exposes no
+   button-weight setting and renders 400. Scoped away from button-unstyled
+   (icon/utility buttons). */
+body .button:not(.button-unstyled),
+body .button-secondary {
+  font-weight: 700;
+}
+
+/* Cart drawer layout: the BMP bar/announcements render as siblings of the
+   scroll-hint .cart-drawer__content inside the flex-column
+   .cart-items-component (snippets/cart-drawer.liquid hooks). Stock gives
+   the content a hard calc(100% - var(--header-height)) height, which
+   becomes its flex-basis — with the extra siblings the column only fits by
+   flex-shrinking against their min-content floors. Zero the basis instead
+   so the content takes exactly the remaining space and the sticky summary
+   lands above the announcements. */
+.cart-drawer__inner:has(.bmp-free-shipping-bar, .bmp-cart-announcements) .cart-drawer__content {
+  height: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* With the bar above it, the items table otherwise starts flush against
+   the bar's bottom border (measured: table y == bar bottom), clipping the
+   first thumbnail visually. Margin inside the scroll container, so
+   scrolled items still pass right up to the bar. */
+.cart-drawer__inner:has(.bmp-free-shipping-bar) .cart-drawer__content .cart-items {
+  margin-block-start: var(--margin-md);
+}
+
+/* Full-bleed product lists (home Best Sellers): the grid runs edge-to-edge
+   by design, but text must not sit glued to the screen edge - the
+   reference insets the section content ~13px (measured: title x13, both
+   viewports); 16px = the mobile gutter token. The product-list schema has
+   no inline-padding settings, so this lives here. Page-width product lists
+   (e.g. cart recommendations) are untouched. */
+.section--full-width.section-resource-list {
+  padding-inline: 16px;
+}
+
+/* FAQ-style accordions (accordion blocks placed directly in a generic
+   section): constrained to a centered 1200px container, answers inset 8px
+   and rendered at 75% foreground. Scheme-driven color — no hardcoded hex. */
+.section-content-wrapper > .accordion {
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+}
+
+/* Accordions with dividers (FAQ home + PDP, PDP product-details, and any
+   future one): hide the two OUTER dividers — the border above the first
+   item and below the last — for a cleaner, more contained look. The
+   between-rows dividers stay. Applied globally to every
+   `.accordion--dividers` so the pattern lives in ONE place rather than
+   being duplicated per surface. Targets the `<details>` tag (not the
+   `.details` class) so theme check's ValidScopedCSSClass count stays at
+   the stock baseline. Stock hides the outer dividers itself by default
+   (--show-fallback-borders: 0 in accordion-styles.liquid) but re-shows
+   them as a fallback when the block draws no box border — these
+   higher-specificity rules keep them hidden in that case too. */
+.accordion.accordion--dividers accordion-custom:first-child details {
+  border-block-start: 0;
+}
+
+.accordion.accordion--dividers accordion-custom:last-child details {
+  border-block-end: 0;
+}
+
+/* Divider tone: hairline dividers render at ~19% foreground (#CFCFCF on
+   white in the design reference), not solid black. Horizon 4.x wires
+   --color-border to the raw page text color (snippets/color-palette.liquid),
+   so every divider would inherit full black. Token-based (foreground-rgb)
+   so niche palettes keep adapting.
+   Selectors mirror accordion-styles.liquid's divider rules at one class
+   higher specificity — the stock rules paint via the border-block-start/end
+   SHORTHAND, so equal specificity would lose the color longhand to source
+   order (section stylesheets render after this file loads).
+   The matching drawer hairlines are settings-driven instead
+   (drawer_border_color in config/settings_data.json, alpha #00000030);
+   the header rule below covers the desktop row border, the mobile
+   drawer-style header (ID-scoped in sections/header.liquid), and the
+   sticky-scroll state, which reuse the same element + custom properties. */
+.accordion.accordion--dividers accordion-custom:not(:first-child) details {
+  border-block-start-color: rgb(var(--color-foreground-rgb) / 19%);
+}
+
+body .header__row--top:not(.divider--page-width),
+body .header__row--top.divider--page-width .header__columns,
+body .header__row--bottom,
+body #header-component[data-menu-style='drawer'] .header__row--top:not(.divider--page-width),
+body #header-component[data-menu-style='drawer'] .header__row--top.divider--page-width .header__columns {
+  border-bottom-color: rgb(var(--color-foreground-rgb) / 19%);
+}
+
+/* Same tone for the search modal's input divider. Redefines --color-border
+   at the header scope instead of the border property: the stock focus rule
+   (search-modal.liquid) paints `border-color: var(--color-border)
+   !important` while the modal's input is focused — unbeatable by any
+   normal declaration — but it still resolves through this var, so every
+   state (idle + focused, both breakpoints) picks up the 19% tone. */
+body .dialog-modal .predictive-search-form__header {
+  --color-border: rgb(var(--color-foreground-rgb) / 19%);
+}
+
+/* Search modal "CLEAR" (recently viewed): same size and color as stock but
+   semibold; the element is button-unstyled, so the global 700
+   button-weight rule above deliberately skips it. */
+body .predictive-search-results__clear.button-unstyled {
+  font-weight: 600;
+}
+
+/* Input focus ring: the input look (gray fill, borderless) ships via the
+   Input Fields settings, but the stock focus shadow derives its width from
+   the input border width — zero border leaves a 0.5px ring nobody can see.
+   Restore a real one in dark foreground. The search modal's input is
+   exempt by design: its focus is signaled by the header divider. */
+body .field__input:focus,
+body .search-page-input:focus {
+  box-shadow: 0 0 0 2px rgb(var(--color-foreground-rgb) / 60%);
+  outline: none;
+}
+
+/* Current-page nav indicator: stock only dims the non-active siblings
+   (opacity-subdued in _header-menu.liquid), a cue that is easy to miss.
+   The underline ADDS to the native dimming — both cues mark the current
+   page. Scoped to the header top nav; the mobile menu drawer uses its own
+   menu-drawer__* classes and is untouched. */
+.header .menu-list__link--active {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 6px;
+}
+
+/* Variant text buttons (size selector): ~32px-tall subtle pills
+   (pixel-measured on the design reference) where stock draws ~46px boxes
+   (padding-sm/lg + touch-target min-height). Scoped away from swatch
+   labels (color circles keep their own geometry) and away from dropdowns.
+   Trade-off (accepted): below the 44px touch-target guideline, as the
+   reference design was. */
+.variant-option--buttons .variant-option__button-label:not(.variant-option__button-label--has-swatch) {
+  min-height: 32px;
+  padding-block: 2px;
+  padding-inline: 12px;
+  font-size: 0.8125rem;
+}
+
+/* Mobile arm of the rule above: the full POD size run
+   (S–4XL = 7 pills) must fit one row on a 360–414px viewport. Width,
+   not height, is what overflows: stock flex-basis 3.25em + the 12px
+   inline padding above + stock 0.7rem gap totals ~390px for 7 pills vs
+   ~343px available at a 375px viewport; 3em + 8px + 6px totals ~315px.
+   Scoped to --default-width-buttons so swatch rows (--swatches) and the
+   equal-width-buttons grid mode keep their geometry. The extra
+   .variant-option class level on the gap rule beats stock's
+   equal-specificity .variant-option--buttons gap regardless of
+   stylesheet order. */
+@media screen and (max-width: 749px) {
+  .variant-option.variant-option--default-width-buttons {
+    gap: 6px;
+  }
+
+  .variant-option--default-width-buttons .variant-option__button-label:not(.variant-option__button-label--has-swatch) {
+    flex-basis: 3em;
+    padding-inline: 8px;
+  }
+}
+
+.accordion .details-content > .text-block {
+  padding-inline-start: 8px;
+}
+
+/* Descendant rule needed: text blocks set an inline --color custom property
+   consumed by their own p rule, which beats a color on the wrapper. */
+.accordion .details-content > .text-block > * {
+  color: rgb(var(--color-foreground-rgb) / 75%);
+}
+
+/* Product card hover:
+   (1) titles carry a transparent underline that animates to currentColor
+   on card hover (0.125s ease-in-out);
+   (2) the media zooms to 1.1 inside its clipped container on media hover
+   (0.3s ease) when settings.bmp_card_hover_effect == 'zoom'. Both apply
+   without pointer-type guards (tap-hover on touch behaves the same) and
+   the stock lift effect stays off — the card_hover_effect setting must
+   remain 'none'.
+   The zoom rules below are gated on the ABSENCE of [data-bmp-hover]
+   (negative gate) rather than a positive one for 'zoom': snippets/bmp-
+   card-hover.liquid only emits data-bmp-hover for the non-default modes,
+   so the default 'zoom' setting renders NO extra markup and this CSS
+   stays byte-identical to stock. Do not flip this to a positive gate —
+   that would require emitting the attribute for the default case too,
+   breaking the byte-identity guarantee. The attribute is also emitted
+   for 'none', which is how 'none' switches the zoom off with no extra
+   CSS. */
+.product-card .text-block:not(product-price),
+.product-card .text-block:not(product-price) > * {
+  font-weight: var(--bmp-card-title-weight);
+  text-transform: var(--bmp-card-title-transform);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.3rem;
+  transition: text-decoration-color 0.125s ease-in-out;
+}
+
+.product-card:hover .text-block:not(product-price),
+.product-card:hover .text-block:not(product-price) > * {
+  text-decoration-color: currentColor;
+}
+
+/* Price: non-bold per the shared token (stock renders the card price at
+   the h6 preset weight). */
+.product-card product-price,
+.product-card product-price * {
+  font-weight: var(--bmp-card-price-weight);
+}
+
+/* Search modal (predictive) product cards.
+
+   These used to render the resource-card snippet, which reads one theme
+   setting and so missed the .product-card pattern above; the two rules that
+   used to live here re-applied the shared tokens at a deliberately reduced
+   13px. The popup now renders snippets/bmp-global-product-card.liquid, a real
+   .product-card, so it picks the pattern up directly and follows the global
+   bmp_card_title_* / bmp_card_price_* sizes like every other surface. The
+   size lock is gone on purpose: the requirement is that a popup card and the
+   same product's collection-grid card match.
+
+   Two compensating rules are needed, because the popup <li> is not one of the
+   grid containers the stock card CSS assumes.
+
+   (1) The box. snippets/product-card-styles.liquid sizes .product-card only
+   under .product-grid__item / .resource-list__item. The popup wrapper is
+   .predictive-search-results__card--product, so without this the custom
+   element computes display: inline, .product-card__link gets a fragmented
+   inline containing block and the content box escapes it. */
+.predictive-search-results__card--product .product-card {
+  display: grid;
+  height: 100%;
+}
+
+/* (2) Slide sizing. snippets/predictive-search-styles.liquid declares
+   --slide-width: 27.5% and --slideshow-gap on
+   .predictive-search-results__list to size the collection/article result
+   CAROUSEL — and the products <ul> carries that same class. Custom properties
+   inherit, and snippets/slideshow-styles.liquid reads --slide-width on every
+   slideshow-slide, so the card gallery's own slides would collapse to a
+   quarter width with neighbours peeking. Re-pin them at the gallery, which
+   sits below the <ul> and above every slide. */
+.predictive-search-results__wrapper-products .card-gallery {
+  --slide-width: 100%;
+  --slideshow-gap: 0;
+}
+
+.product-card .card-gallery {
+  overflow: hidden;
+}
+
+.product-card .card-gallery:not([data-bmp-hover]) slideshow-slide img {
+  transition: transform 0.3s ease;
+}
+
+.product-card .card-gallery:not([data-bmp-hover]):hover slideshow-slide img {
+  transform: scale(1.1);
+}
+
+/* PDP media gallery: slide navigation lives in the thumbnail row (the
+   design has no arrows over the main image - see the contracted edit in
+   product-media-gallery-content.liquid). The strip is centered with the
+   arrows hugging it, and capped so overflowing thumbnails dissolve through
+   the stock scroll-hint edge fade (reference: image width minus the two
+   80px arrow zones = 615px at 1920w). */
+.product-information__media slideshow-controls {
+  justify-content: center;
+}
+
+.product-information__media .slideshow-controls__thumbnails-container {
+  max-width: min(100%, 615px);
+}
+
+/* Predictive-search "View all" (search modal): the stock button
+   padding-block token is 16px; the design's is 12px, so the stock button
+   renders 8px taller. The token is re-pinned on this one button (the stock
+   .button rule consumes it via padding-block: var(--button-padding-block));
+   every other button keeps the stock 16px. */
+.predictive-search-form__footer .predictive-search__search-button {
+  --button-padding-block: 12px;
+}
+
+/* Mobile collection toolbar: the "Filter and sort" toggle is accompanied
+   by a visible product count; stock hides the count below 750px. The span
+   is rendered (gated on bmp_show_bar_labels) next to the toggle button in
+   blocks/filters.liquid. */
+.bmp-facets-mobile-count {
+  display: none;
+}
+
+@media screen and (max-width: 749px) {
+  .bmp-facets-mobile-count {
+    display: block;
+    margin-inline-start: auto;
+    font-size: var(--font-size--sm);
+    white-space: nowrap;
+  }
+}
+
+/* Collection filter bar labels (gated on the filters block's
+   bmp_show_bar_labels setting): bold 'Filter:' / 'Sort by:' labels, the
+   selected sort value visible on desktop at body weight, and the product
+   count as the last item on the row. The color is explicit because
+   'Filter:' sits inside .facets__form-wrapper (foreground-muted) while
+   'Sort by:' gets foreground from the stock .facets__label rule — without
+   it the two labels render different colors. */
+.facets--bmp-labels .bmp-facets-bar-label,
+.facets--bmp-labels sorting-filter-component .facets__label {
+  color: var(--color-foreground);
+  font-size: var(--font-size--sm);
+  font-weight: 600;
+}
+
+@media screen and (min-width: 750px) {
+  .facets--bmp-labels .bmp-facets-bar-label {
+    align-self: center;
+  }
+
+  .facets--bmp-labels sorting-filter-component {
+    margin-inline-start: auto;
+  }
+
+  /* .facets doubled for specificity (0,3,0): stock filters.liquid declares
+     `.facets--horizontal .products-count-wrapper { margin-left: auto }` at
+     (0,2,0) in the compiled section bundle, which loads AFTER this file —
+     an equal-specificity rule here would lose the cascade tie. */
+  .facets.facets--bmp-labels .products-count-wrapper {
+    order: 2;
+    margin-inline-start: 0;
+  }
+
+  /* Stock hides the selected value on desktop (.facets--horizontal
+     .sorting-filter .facets__status) - extra class for specificity. */
+  .facets.facets--bmp-labels .sorting-filter .facets__status {
+    display: flex;
+    font: inherit;
+    font-size: var(--font-size--sm);
+    font-weight: 400;
+    margin: 0;
+  }
+}
+
+/* Cart estimated total: 24px, regular - emphasized against the 14px
+   summary rows. Stock sizes the value with var(--cart-font-size--xl),
+   which is REFERENCED but defined nowhere (so the declaration is invalid
+   and the value inherits 14px) - defining the token feeds the stock rule
+   on the cart page and in the drawer alike; the mobile branch uses its own
+   rule, matched below. */
+.cart-totals {
+  --cart-font-size--xl: 1.5rem;
+  --cart-secondary-font-weight: 400;
+}
+
+@media screen and (max-width: 749px) {
+  .cart-totals .cart-totals__total .cart-totals__total-value {
+    font-size: 1.5rem;
+  }
+}
+
+/* Cart page line-item totals: 16px; stock renders 14px (--font-size--sm).
+   main:has() scopes the bump to the cart page - the drawer renders the
+   same cart-products snippet from the header and stays at its vetted 14px
+   (matching the design there too). */
+main:has(cart-items-component) .cart-items__price {
+  font-size: var(--font-size--md);
+}
+
+/* Quantity stepper: 126x46 box, 1px foreground@30% border, 4px radius -
+   and identical on the cart page and in the drawer (stock renders them
+   differently). */
+cart-items-component .quantity-selector {
+  background-color: var(--color-background);
+  border: 1px solid rgb(var(--color-foreground-rgb) / 30%);
+  border-radius: 4px;
+  min-width: 126px;
+  min-height: 46px;
+}
+
+/* The cart-page recommendation cards carried a scoped exception here until
+   2026-08-18 (regular-weight titles, 14px regular prices, ported from the
+   old theme in the visual-parity round and pinned by A7's ceiling leg).
+   Removed by team decision: /cart recommendations now follow the always-on
+   card baseline and the global card layer exactly like every other page.
+   Cart LINE ITEMS were never part of the card system and are unaffected. */
+
+/* Mobile nav drawer links: 13px body-size items at every level; stock
+   hardcodes the drawer to the 2xl menu tier (28px) with no setting. The
+   extra ancestor out-ranks the per-level stock rules. */
+@media screen and (max-width: 749px) {
+  .menu-drawer__navigation :is(.menu-drawer__menu-item--mainlist, .menu-drawer__menu-item--parent, .menu-drawer__menu-item--child) {
+    font-size: 0.875rem;
+  }
+}
+
+/* Nav drawer colours: fixed level hierarchy regardless of the Submenu size
+   option. The stock submenu-font-styles map inverts colour on Medium/Large
+   (parent subdued, child foreground) because it was written for the
+   mega-menu's column headers; in the drawer's cascading lists that renders
+   children darker than their parents. Same product decision as the desktop
+   dropdown card (2026-08-19): parents foreground, children subdued, at
+   every option. These resolve the same tokens the stock vars alias, so the
+   block's colour settings still apply. Not media-scoped: the drawer is a
+   cascading list at any viewport. The extra ancestor out-ranks the
+   per-level stock rules, and the :hover legs out-rank stock's own hover,
+   which re-asserts the inverted var at equal specificity later in the
+   document; stock's drawer hover changes nothing (it re-declares the rest
+   colour), so rest and hover stay identical here too. */
+.menu-drawer__navigation .menu-drawer__menu-item--parent,
+.menu-drawer__navigation .menu-drawer__menu-item--parent:hover {
+  color: var(--color-foreground);
+}
+
+.menu-drawer__navigation .menu-drawer__menu-item--child,
+.menu-drawer__navigation .menu-drawer__menu-item--child:hover {
+  color: var(--color-foreground-subdued);
+}
+
+/* Hero slides on desktop: subtitles at 1.25rem over stock's 14px paragraph
+   default, and heading/subtitle/CTA stacked with an 8px group gap where
+   stock uses 16. Scoped like the mobile rules below: plain
+   (non-custom-font-size) text blocks = subtitles, headings keep their
+   custom size; mobile (vetted at 18px / 16px gap) untouched. The gap
+   property out-ranks the group's inline --gap custom property, which only
+   feeds the stock gap: var(--gap). */
+@media screen and (min-width: 750px) {
+  slideshow-slide .text-block:not(.custom-font-size) p {
+    font-size: 1.25rem;
+  }
+
+  slideshow-slide .group-block-content {
+    gap: 8px;
+  }
+}
+
+/* Hero slide content: follow the page frame so hero copy always aligns
+   with the header columns. Stock's .slide__content spans the full-bleed
+   slide instead: past the frame width the header center-caps while the hero
+   copy stays pinned to the 60px edge - the two visibly diverge. On the
+   Normal tier that crossover is 1720px (--page-content-width 1600 + 2x60
+   margin); since the 1600px cap was scoped to Normal, Narrow crosses at
+   1560px and Wide at 2520px. Nothing here hardcodes those numbers - capping
+   to var(--page-width) tracks whichever tier is active (base.css: content +
+   2*margin), so the rule is a no-op below the crossover on every tier.
+   Scoped to section-level slideshows like the dot rules below - PDP gallery
+   slides stay stock. Canary: 'hero content aligns with the header frame at
+   2560w'. */
+.slideshow-section .slide__content {
+  max-width: var(--page-width);
+  margin-inline: auto;
+}
+
+/* Hero slideshow dots: plain 8px filled circles - no ring (stock adds an
+   inset 1.5px box-shadow ring at black 15%/40% which reads as harsh
+   outlines under the shared mix-blend-mode: difference) and the gap
+   collapsed to 0. The 24px WCAG 2.5.8 hit area stays (adjacent >=24px
+   targets satisfy the spacing rule). Color tokens and the blend mode are
+   stock. Scoped to section-level slideshows (.slideshow-section);
+   PDP/card-gallery dots stay stock. */
+.slideshow-section .slideshow-controls__dots {
+  gap: 0;
+}
+
+.slideshow-section .slideshow-controls__dots button {
+  --size: 0.5rem;
+}
+
+.slideshow-section .slideshow-controls__dots button::after,
+.slideshow-section .slideshow-controls__dots button[aria-current='true']::after {
+  box-shadow: none;
+}
+
+/* Hero slides on mobile: center slide content and cap oversized custom
+   headings (custom text sizes are breakpoint-fixed in the block schema,
+   so the desktop size would otherwise render on mobile). Static rules, no
+   per-instance CSS. */
+@media screen and (max-width: 749px) {
+  slideshow-slide .text-block.custom-font-size,
+  slideshow-slide .text-block.custom-font-size :is(h1, h2, h3) {
+    font-size: 2.5rem;
+  }
+
+  /* Same cap for non-heading hero headings: niche provisioning writes the
+     slide-1 heading as <p>, and paragraphs read the block's --font-size var
+     directly, so the container cap above never reaches them. Scoped to the
+     hero section because the announcement rotator also nests p inside
+     slideshow-slide .text-block.custom-font-size and must keep its own size. */
+  .slideshow-section slideshow-slide .text-block.custom-font-size p {
+    font-size: 2.5rem;
+  }
+
+  slideshow-slide :is(.text-block, .text-block > *) {
+    text-align: center;
+  }
+
+  slideshow-slide .group-block,
+  slideshow-slide .group-block-content {
+    align-items: center;
+  }
+
+  /* Subtitle at 1.125rem; titles are .custom-font-size, handled above -
+     this only reaches the plain subtitle text blocks. */
+  slideshow-slide .text-block:not(.custom-font-size) p {
+    font-size: 1.125rem;
+  }
+}
+
+/* Hero slide overlay link (bmp_slide_link): stretches over the whole slide
+   at the content layer's z-index; as an EARLIER sibling of .slide__content
+   it paints under it. The content wrapper spans the full slide and would
+   swallow every click, so with a slide link present it stops capturing
+   clicks and its interactive descendants opt back in — text clicks fall
+   through to the link, buttons keep winning. Inactive slides keep their
+   with_hints click-to-select: the link goes inert on [aria-hidden='true'].
+   Desktop drag: the opt-in rule below is (0,3,2) and DOES out-specify stock's
+   `slideshow-component[dragging] *` (0,1,1) (slideshow-styles.liquid:107-112),
+   so those descendants keep their pointer events mid-drag. That is harmless,
+   not an oversight: assets/slideshow.js:713 takes pointer capture on
+   <slideshow-component> the moment a drag starts, so the post-drag click
+   retargets to the component and never reaches a descendant — and :753
+   `controller.abort()` tears down the one-shot click guard registered at :716
+   before any click dispatches. The only residual delta is :hover / :active /
+   cursor on those descendants during a drag.
+
+   Two accepted limits, recorded so they are not rediscovered as bugs:
+
+   (a) Mouse and touch text selection started INSIDE .slide__content is not
+       possible while a slide link is set — the overlay <a> wins the hit test.
+       Select-all, keyboard selection, and dragging a selection in from outside
+       the slide all still work.
+
+   (b) A non-current slide is aria-hidden="true" but its overlay link stays
+       keyboard-focusable: `content-visibility: auto` keeps skipped content in
+       the tab order by spec, and the `content-visibility: hidden` rule at
+       slideshow-styles.liquid:176-178 is DEAD — it is nested inside
+       `slideshow-slide {}` at :158, so it resolves to a selector requiring a
+       slideshow-slide ancestor of a slideshow-component. Axe
+       `aria-hidden-focus` / WCAG 4.1.2. Closing it needs an `inert` shim;
+       core's own sibling component does exactly that at
+       assets/layered-slideshow.js:304. Tracked as follow-up F1. */
+.bmp-slide-link {
+  position: absolute;
+  inset: 0;
+  z-index: var(--layer-flat);
+}
+
+/* This link's border box IS the slide's padding box, and <slideshow-slide> is
+   `overflow: hidden` (slideshow-styles.liquid:169) — so the theme's default
+   0.2em POSITIVE outline-offset paints the whole focus ring outside the clip
+   rect and nothing is drawn: no visible keyboard focus (WCAG 2.4.7). Pull it
+   inside with the negative offset base.css ships as `.focus-inset` (:280-282),
+   and match the slide's own corner radius. Done in CSS rather than by adding
+   the .focus-inset class to the snippet, because gate A4 pins the literal
+   class="bmp-slide-link". */
+.bmp-slide-link:focus-visible {
+  outline-offset: calc(var(--focus-outline-width) * -1);
+  border-radius: var(--corner-radius, 0);
+}
+
+slideshow-slide[aria-hidden='true'] .bmp-slide-link {
+  pointer-events: none;
+}
+
+slideshow-slide:has(> a.bmp-slide-link) .slide__content {
+  pointer-events: none;
+  /* Keep the content stack in the positioned layer whenever a slide link is
+     present. Below-media layouts (stock `.slideshow--content-below-media`
+     at (0,2,1), and the bmp-slide-below-mobile rules below) set the content
+     `position: static`; a static box ignores z-index, drops below the z:1
+     link, and the link would then win hit-testing even directly over a
+     button. Relative-with-no-offsets is layout-identical to static inside
+     the grid; on-media layouts already carry exactly these two declarations
+     from the block's stylesheet. (0,2,2) — the `a` in the :has() argument —
+     outranks both static rules regardless of load order. */
+  position: relative;
+  z-index: var(--layer-flat);
+}
+
+slideshow-slide:has(> a.bmp-slide-link) .slide__content :is(a, button, input, select, textarea, details, label, iframe, video, audio, [tabindex], [role='button'], [role='link']) {
+  pointer-events: auto;
+}
+
+/* Theme editor: the wrapper above stops capturing clicks, so a click on a
+   heading/text child block retargets to the overlay <a> and the editor selects
+   the parent slide instead of the child. Stock ships this escape hatch in four
+   places, in two idioms — .shopify-design-mode prefixed
+   (snippets/collection-card.liquid:124, blocks/_featured-blog-posts-card.liquid
+   :174, both under "allow all blocks to be selectable in editor preview") and
+   a Liquid-emitted --design-mode class (blocks/_card.liquid:181,
+   snippets/group.liquid:97). We use the prefix form: layout/theme.liquid:4
+   stamps .shopify-design-mode on <html> whenever request.design_mode, so no
+   Liquid change is needed. pointer-events inherits, so restoring the wrapper
+   restores every descendant; (0,3,2) outranks the (0,2,2) rule above. */
+.shopify-design-mode slideshow-slide:has(> a.bmp-slide-link) .slide__content {
+  pointer-events: auto;
+}
+
+/* Mobile-only "content below media" (bmp_content_below_mobile): replicates
+   the native below-media grid — media row + content row, both layers
+   static — per slide and only under 750px; desktop keeps on-media. The
+   --grid-template-rows custom property is already set inline on EVERY
+   slideshow-slide by snippets/slideshow-slide.liquid whatever the section's
+   content_position, so these rules only consume it. (0,2,1) specificity
+   beats the stock `slideshow-slide > .slide__image-container` (0,1,1)
+   absolute positioning and `.slide__content` (0,1,0) relative positioning
+   without relying on load order vs the stylesheet-block CSS. Known limit,
+   accepted at design time: the native contrast pass still computes text
+   color for the on-media layout, so a slide relying on image contrast needs
+   its colors checked at mobile — QA step in the plan. */
+@media screen and (max-width: 749px) {
+  slideshow-slide.bmp-slide-below-mobile {
+    display: grid;
+    grid-template-rows: var(--grid-template-rows);
+  }
+
+  slideshow-slide.bmp-slide-below-mobile > .slide__image-container,
+  slideshow-slide.bmp-slide-below-mobile .slide__content {
+    position: static;
+  }
+}
+
+/* Footer: two fixes for top-of-column harmony on desktop.
+   (1) Consistent 36px block padding. Stock derives it from spacing-style,
+   whose responsive scale floors the section's 36px setting down to 20px at
+   these widths; pin it so the footer breathes evenly top and bottom.
+   (2) Align the three columns at the top. The policies menu renders its
+   "OUR POLICIES" title in a `<summary>` that carries an 11.2px top padding
+   (stock summary styling) which the text-block headings ("Your Style",
+   "FOLLOW US") don't have — so the menu title sat lower than the rest.
+   Dropping the summary's top padding lines all three headings up; its
+   bottom padding (the gap to the link list) is kept. */
+footer .footer-content {
+  padding-block: 36px;
+}
+
+footer .footer-content .menu__heading {
+  padding-block-start: 0;
+}
+
+/* Theme-editor placeholder --------------------------------------------------
+   Rendered by the three deprecated bmp-*-badge blocks under
+   request.design_mode (blocks/bmp-auto-badge.liquid,
+   blocks/bmp-product-badge.liquid, blocks/bmp-product-discount-badge.liquid)
+   so a merchant who still has one of these blocks in a template sees a
+   deliberate "deprecated" notice in the editor instead of unstyled full-width
+   body text. Never reaches the storefront. */
+.bmp-badge-placeholder {
+  display: inline-flex;
+  align-items: center;
+  align-self: start;
+  width: fit-content;
+  padding-block: 4px;
+  padding-inline: 8px;
+  border: 1px dashed var(--color-border, currentcolor);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: normal;
+  opacity: 0.6;
+}
+
+/* ==========================================================================
+   BMP product labels — the global overlay label system.
+
+   One container per product media, absolutely positioned over the image. The
+   four anchor classes set flex alignment through custom properties, the same
+   technique Symmetry uses. Per-type colors arrive as custom properties on the
+   pill itself (settings reach CSS as custom properties on
+   the element, never as a style block interpolating settings) — only the two
+   or three pills actually rendered carry them, so the byte cost is trivial
+   even on a 50-card grid.
+
+   Shape and typography inherit from the stock Badges settings, emitted onto
+   the container by snippets/bmp-product-labels.liquid.
+
+   Sizing (font size, padding, gap) is deliberately NOT merchant-configurable.
+   Symmetry hard-codes it and stock Horizon exposes no equivalent either
+   (padding lives in snippets/theme-styles-variables.liquid:537-542, font size
+   is var(--font-size--xs)). See the spec's decision D13.
+   ========================================================================== */
+
+.bmp-product-labels {
+  position: absolute;
+  z-index: var(--layer-flat);
+  display: flex;
+  flex-direction: column;
+  align-items: var(--bmp-labels-align, flex-start);
+  justify-content: var(--bmp-labels-justify, flex-start);
+  gap: 5px;
+  inset: var(--bmp-labels-inset, 7.5px);
+  pointer-events: none;
+}
+
+/* Inset scales with the surface: a PDP hero needs more breathing room than a
+   grid thumbnail. Set by the snippet's context parameter. */
+.bmp-product-labels--card {
+  --bmp-labels-inset: 7.5px;
+}
+
+.bmp-product-labels--pdp {
+  --bmp-labels-inset: 15px;
+}
+
+/* -- The three anchors ----------------------------------------------------
+   BMP labels follow Horizon's native badge_position (Theme settings > Badges),
+   which offers top-left, top-right and bottom-left (spec D1 amended
+   2026-08-07). */
+
+.bmp-product-labels--top-left {
+  --bmp-labels-justify: flex-start;
+  --bmp-labels-align: flex-start;
+}
+
+.bmp-product-labels--top-right {
+  --bmp-labels-justify: flex-start;
+  --bmp-labels-align: flex-end;
+}
+
+.bmp-product-labels--bottom-left {
+  --bmp-labels-justify: flex-end;
+  --bmp-labels-align: flex-start;
+}
+
+/* -- The pill ------------------------------------------------------------- */
+
+.bmp-label {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 4px;
+  padding-inline: 10px;
+  border-radius: var(--bmp-label-radius, 40px);
+  background: var(--bmp-label-bg, var(--color-background));
+  color: var(--bmp-label-text, var(--color-foreground));
+  font-family: var(--bmp-label-font-family, var(--font-body--family));
+  font-weight: var(--bmp-label-font-weight, var(--font-body--weight));
+  font-size: var(--font-size--2xs);
+  line-height: 1.2;
+  text-transform: var(--bmp-label-text-transform, none);
+  white-space: nowrap;
+}
+
+@media screen and (min-width: 750px) {
+  .bmp-label {
+    font-size: var(--font-size--xs);
+  }
+}
+
+/* -- Native overlay suppression ------------------------------------------
+   Horizon's stock Sale/Sold-out overlay never renders on this theme. The BMP
+   label system is the only overlay on a card.
+
+   Unconditional, deliberately. The earlier version used a scoped selector
+   with a :has() pseudo-class, which made the stock red "Sale" badge reappear
+   the moment a merchant turned the label system off -- the bug reported on
+   2026-08-06 -- and left browsers without :has() support (Safari < 15.4,
+   Firefox < 121) painting it even when the system was on. See the spec's
+   decision D12.
+
+   Suppressing in CSS rather than gating the Liquid in
+   blocks/_product-card-gallery.liquid keeps that core file byte-identical to
+   stock -- nothing to re-apply on a Horizon bump. display:none also drops the
+   badge text out of the accessibility tree, so it is never announced.
+
+   This takes Horizon's Sold out badge with it. Accepted: print-on-demand
+   products stay purchasable, which is why the BMP sold-out label was deleted
+   too (spec D3). */
+
+.product-badges {
+  display: none;
+}
+
+/* -- Zoom-out grid density -------------------------------------------------
+   Stock Horizon strips every card overlay in the zoom-out density view by
+   flipping .card-gallery from flex to block and hiding the other overlay
+   elements outright (snippets/card-gallery.liquid: the
+   `[product-grid-view='zoom-out'] .card-gallery > :is(quick-add-component,
+   .product-badges, slideshow-component > slideshow-controls)` rule). Our
+   container is `position: absolute`, so it stays out of flow and paints over
+   the bare thumbnail instead of disappearing with the rest. Mirror the stock
+   rule here so the two stay in sync on a future Horizon bump. */
+
+[product-grid-view='zoom-out'] .card-gallery > bmp-product-labels {
+  display: none;
+}
+
+/* ==========================================================================
+   BMP nav dropdown — content-sized desktop dropdown card.
+
+   Turns the stock full-viewport mega-menu band into a card anchored under its
+   parent item, for menu items WITH children only. Markup:
+   snippets/bmp-nav-dropdown.liquid. Behaviour: assets/bmp-header-menu.js.
+   Guarded by scripts/check-nav-dropdown.mjs (A6).
+
+   -- CASCADE: WHY EVERY OVERRIDE CARRIES AN ID PREFIX -----------------------
+
+   This group is the one place in this file that CANNOT rely on source order.
+   Every other BMP override wins because bmp-styles.css is linked after
+   assets/base.css. The core rules overridden here are NOT in base.css: they
+   live in a block `{% stylesheet %}` in blocks/_header-menu.liquid and
+   sections/header.liquid, which Shopify aggregates into
+   compiled_assets/styles.css and injects around {{ content_for_header }}.
+
+   Measured on the running storefront (2026-08-11,
+   Array.from(document.styleSheets).map(s => s.href)):
+
+       [0] assets/base.css
+       [5] assets/bmp-styles.css        <- this file
+       [6] compiled_assets/styles.css   <- ALL 13 .menu-list__submenu rules
+
+   So core loads AFTER us and wins every EQUAL-specificity tie. The
+   `#header-component[data-menu-style='menu']` prefix takes these rules to
+   (1,4,0)+ against core's highest (0,3,0)
+   (`.menu-list__list-item:has([aria-expanded='true']) > .menu-list__submenu`).
+
+   Precisely what the prefix is and is not doing, because the honest version
+   matters more than the scary version: most rules in this group would already
+   out-specify core unprefixed, since they name BMP classes core's selectors do
+   not have — e.g. `.bmp-nav-item:not([slot='overflow']) > .bmp-nav-panel` is
+   (0,3,0) against core's (0,2,0), because `:where()` in core's selector
+   contributes nothing. The prefix is therefore defence-in-depth plus scope
+   (`[data-menu-style='menu']` is what core flips to `drawer` on touch), NOT
+   the only thing holding the layout up. What the measured load order really
+   means is this: any FUTURE rule added to this group that does not add a BMP
+   class of its own would lose to core on source order alone, silently. That
+   is the trap the prefix convention exists to close, and why
+   scripts/check-nav-dropdown.mjs (A6) enforces it on every rule here rather
+   than only where it is load-bearing today.
+
+   Zero !important — the layer is at zero and stays there.
+
+   -- SCOPE ------------------------------------------------------------------
+
+   min-width: 750px mirrors the stock desktop gate (sections/header.liquid),
+   and the prefix's [data-menu-style='menu'] is what assets/utilities.js
+   flips to 'drawer' on touch — so nothing here can reach the mobile drawer
+   (R7). Geometry and surface additionally exclude [slot='overflow'], because
+   an overflowed item is re-slotted into the "More" flyout, where core has its
+   own layout rules and the band must still grow. The accordion rules below
+   are deliberately NOT slot-scoped: level-3 has to stay operable there too.
+   ========================================================================== */
+
+@media screen and (min-width: 750px) {
+  /* -- Anchor -------------------------------------------------------------
+     Moves the panel's containing block from .header__row to the <li>, which
+     is what makes R1's left-edge alignment fall out of `left: 0` instead of
+     needing a JS measurement. Measured: leftDelta 0px at 1440/1280/1024.
+
+     The alternative (leaving the <li> static, as v1.1.5 did, so the panel
+     takes its static position) was measured and REJECTED: it put the panel
+     87px LEFT of the parent item, because the static position of an
+     absolutely-positioned child of a flex container resolves against the flex
+     line, not the item's own content box. Do not "simplify" back to it. */
+  #header-component[data-menu-style='menu'] .bmp-nav-item:not([slot='overflow']) {
+    position: relative;
+  }
+
+  /* -- Panel box ----------------------------------------------------------
+     Replaces `width: 100%; left: 0` on the full-viewport band with a
+     content-sized box, and drops the clip-path reveal, which was cut to that
+     band's geometry and would slice a card (v1.1.5 patched the same symptom
+     with a setTimeout(50) height write — its bug #6; nothing here needs one,
+     because no clip is applied in the first place).
+
+     `top` adds two terms to 100%:
+       --focus-outline-size  the 4px inset overflow-list's shadow-DOM list
+                             part puts around the <li>, so the <li>'s bottom
+                             sits 4px above the header row's content bottom.
+                             It inherits through the shadow boundary onto the
+                             <li> and resolves in the same 14px font context
+                             on the panel, so the em term matches exactly.
+       --border-bottom-width the header row's own hairline.
+     Together they land the card exactly on the row's bottom edge: measured
+     topDelta 0px. Without the first term the card overlaps the header's last
+     4px and its top border cuts across the row.
+
+     content-visibility is forced visible because the stock optimisation
+     (sections/header.liquid) keys `visible` on [data-active], which only
+     core's own activate() writes — the BMP click path never does, and a
+     panel left with content-visibility: auto cannot be measured for the
+     edge clamp. */
+  #header-component[data-menu-style='menu'] .bmp-nav-item:not([slot='overflow']) > .bmp-nav-panel {
+    left: 0;
+    top: calc(100% + var(--focus-outline-size, 0px) + var(--border-bottom-width, 0px));
+    width: max-content;
+    min-width: 12rem;
+    max-width: min(30rem, calc(100vw - 2rem));
+    padding-inline: 0;
+    clip-path: none;
+    content-visibility: visible;
+    contain-intrinsic-size: auto none;
+    translate: var(--bmp-nav-shift, 0) 0;
+    transition: visibility var(--submenu-animation-speed) var(--animation-easing);
+  }
+
+  /* -- The card is open IF AND ONLY IF ITS TRIGGER is expanded -------------
+     Core's reveal rule is
+     `.menu-list__list-item:has([aria-expanded='true']) > .menu-list__submenu`
+     (blocks/_header-menu.liquid) — ANY descendant carrying
+     aria-expanded="true", not the trigger specifically. That was safe for a
+     stock mega menu, whose panel contains no such element. It is NOT safe
+     here: this feature's own level-2 accordion puts a second aria-expanded
+     INSIDE the same <li>, so an expanded group satisfied core's rule by
+     itself and kept the card painted after the trigger had closed.
+
+     Measured before this rule existed (open card -> expand a group -> move
+     focus out, i.e. what Tab does): trigger aria-expanded="false" while the
+     panel was still `visibility: visible`, `pointer-events: auto`, 309x295px
+     over the page — and neither an outside click nor Escape could clear it,
+     because both correctly saw a closed trigger and did nothing. Only
+     clicking the trigger twice, or a reload, recovered.
+
+     So the state signal is narrowed here rather than in core: the panel is
+     hidden whenever the item's OWN trigger is not expanded. (1,6,0) against
+     core's (0,3,0). This also demotes the module's close path to
+     belt-and-braces for painting — the three routes where core closes a
+     trigger behind the module's back (blur, hovering "More", opening a
+     sibling) can no longer strand a visible card. */
+  #header-component[data-menu-style='menu']
+    .bmp-nav-item:not([slot='overflow']):not(:has(> .bmp-nav-trigger[aria-expanded='true']))
+    > .bmp-nav-panel {
+    visibility: hidden;
+
+    --submenu-content-opacity: 0;
+  }
+
+  /* -- "More" flyout reveal (4.1.4 companion) ------------------------------
+     Inside the flyout the dropdown is CORE's to drive (see inOverflow in
+     assets/bmp-header-menu.js) and until 4.1.3 core's own reveal rule —
+     `.menu-list__link[aria-expanded='true'] + .menu-list__submenu` — matched
+     this markup as-is. 4.1.4 re-keyed that rule on the new
+     `.menu-list__disclosure[aria-expanded='true']`, a button this card
+     deliberately does not render, so the flyout reveal needs the mirrored
+     rule keyed on the BMP trigger (where core's #expandableFor fallback
+     writes the state). Core still clears the panel's `inert` on activate. */
+  #header-component[data-menu-style='menu']
+    .bmp-nav-item[slot='overflow']:has(> .bmp-nav-trigger[aria-expanded='true'])
+    > .bmp-nav-panel {
+    visibility: visible;
+  }
+
+  /* -- Panel inner --------------------------------------------------------
+     Sheds the band's translateY(--full-open-header-height - --submenu-height)
+     entrance and its --padding-3xl block padding. The max-height keeps a very
+     long menu scrollable inside the viewport rather than running off it; it is
+     NOT a content cap like v1.1.5's `max-height: 500px` on the level-3 list —
+     that one clipped with overflow: hidden and no way to reach the rest. */
+  #header-component[data-menu-style='menu'] .bmp-nav-item:not([slot='overflow']) > .bmp-nav-panel > .menu-list__submenu-inner {
+    transform: none;
+    padding-block: 0;
+    padding-inline: 0;
+    max-height: min(70vh, calc(100vh - var(--header-height) - 2rem));
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  /* -- Card surface (R2) --------------------------------------------------
+     .menu-list__submenu is `background-color: transparent` and only picks up
+     the .color-custom-<block.id> scope when the menu background differs from
+     the row, so the card element carries the surface and inherits whichever
+     scheme scope applies — which is what makes the dark-header case work with
+     no extra rule.
+
+     The 1px border width is set here rather than taken from Horizon's own
+     --style-border-popover token: that token measures `0px solid #000000` on
+     this store, so it would render no border at all and miss R2's explicit
+     "1px border". The COLOUR still comes from --color-border-rgb, so switching
+     the header scheme moves it (no hardcoded hex — v1.1.5's #fff / #ddd /
+     #f5f5f5 are its bug #4).
+
+     Two values corrected 2026-08-12 after Iago reported the style did not match
+     v1.1.5:
+
+     - `border-radius: 4px`, not `var(--style-border-radius-popover)`. That token
+       measures 12px on this store, and R2 asks for "4px radius" in those words.
+       Reusing the popover token was the wrong call: it is the right token for a
+       theme-native popover, but this card is a v1.1.5 recreate with a specified
+       radius, so the requirement wins over the convention.
+     - The border carries an opacity so it reads as a hairline rather than a hard
+       black rule. `--color-border` is `#000000` on this store, so a fully opaque
+       border made this the only popover in the theme with a solid black outline,
+       against v1.1.5's light `#ddd`. Still entirely token-derived — the RGB comes
+       from the scheme and follows a dark header — so R2 holds, and the opacity is
+       exposed as `--bmp-nav-border-opacity` for tuning without touching the rule. */
+  #header-component[data-menu-style='menu'] .bmp-nav-item:not([slot='overflow']) .bmp-nav-panel__card {
+    background-color: var(--color-background);
+    border: 1px solid rgb(var(--color-border-rgb) / var(--bmp-nav-border-opacity, 0.18));
+    border-radius: 4px;
+    box-shadow: var(--shadow-popover);
+    padding-block: var(--padding-sm);
+  }
+
+  /* -- Underlay neutralisation --------------------------------------------
+     .header__underlay-open is `position: absolute; inset: 0` inside
+     #header-component with `height: var(--full-open-header-height)`, which
+     core sets to panelHeight + headerHeight — sized for a panel that spans
+     the viewport. With a card that paints a full-width band and a full-width
+     ::after drop shadow behind a ~300px popover. Collapsing it to 100% of
+     #header-component restores the plain header, and takes the ::after with
+     it: that shadow is clipped to `inset(var(--header-height) 0 -100px 0)`,
+     so at header height there is nothing left to paint. The card carries its
+     own box-shadow instead.
+
+     Keyed on the LIVE state of a non-overflow trigger rather than on a flag the
+     module writes. An earlier version had assets/bmp-header-menu.js set a
+     data-bmp-nav-open attribute; that measurably went stale. Open a card, then
+     hover "More": core's activate reassigns its own active item and sets the
+     card trigger's aria-expanded to false directly, so the module's close()
+     never runs, the attribute stuck, and the band stayed collapsed underneath a
+     flyout that needs it — clipping the flyout. A selector that reads
+     aria-expanded cannot drift from it, and the module needs no cleanup path.
+
+     The :not([slot='overflow']) is load-bearing: when the "More" flyout opens,
+     core sets the FIRST overflowed item's aria-expanded to true
+     (#getFirstOverflowMenuItem in assets/header-menu.js) to show its submenu in
+     the flyout's right column. On this store that item IS a BMP dropdown, so
+     without the exclusion opening the flyout would collapse the very band the
+     flyout is drawn on. */
+  #header-component[data-menu-style='menu']:has(
+      .menu-list__list-item:not([slot='overflow']) > .bmp-nav-trigger[aria-expanded='true']
+    )
+    .header__underlay-open {
+    height: 100%;
+  }
+
+  /* -- Dead safety box (D8) ------------------------------------------------
+     .menu-list__link::after is the hover-travel safety box, sized from
+     --box-height, which core writes on the element it resolves as
+     [ref="menuitem"] — now this button. It existed to keep the pointer's
+     journey into a full-width band from crossing dead space. Hover no longer
+     opens anything here, so it is inert; it is also now positioned against
+     the <li> rather than .header__row, so leaving it enabled would paint an
+     arbitrary invisible block over the card. */
+  #header-component[data-menu-style='menu'] .bmp-nav-trigger::after {
+    content: none;
+  }
+
+  /* -- Trigger ------------------------------------------------------------
+     .menu-list__link is `display: flex; flex-direction: column`, which would
+     stack the caret under the label. */
+  #header-component[data-menu-style='menu'] .bmp-nav-trigger {
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+  }
+
+  #header-component[data-menu-style='menu'] .bmp-nav-trigger__caret {
+    display: inline-flex;
+    transition: rotate var(--animation-speed, 0.2s) var(--animation-easing);
+  }
+
+  #header-component[data-menu-style='menu'] .bmp-nav-trigger[aria-expanded='true'] .bmp-nav-trigger__caret {
+    rotate: 180deg;
+  }
+
+  /* -- Panel rows ---------------------------------------------------------
+     Font family, weight and case come from the same --menu-parent-* /
+     --menu-child-* variables snippets/submenu-font-styles.liquid already
+     writes onto the panel inner for the stock mega menu, so the merchant's
+     submenu type settings reach these rows unchanged: level-2 titles read as
+     "parent", level-3 links as "child". Size, line-height and colour are
+     re-derived locally — see the Submenu size ladder immediately below. */
+  .bmp-nav-panel__parent,
+  .bmp-nav-group__link,
+  .bmp-nav-group__item {
+    display: block;
+    text-decoration: none;
+    white-space: normal;
+  }
+
+  /* -- Submenu size map ----------------------------------------------------
+     snippets/submenu-font-styles.liquid maps Medium/Large to an INVERTED
+     hierarchy (level 2 sm+subdued, level 3 md/xl+foreground) because it was
+     written for the mega-menu, where level-2 entries are column headers over
+     a list of links. This card is a cascading list, so consuming those vars
+     literally renders children bigger than their parents. The card first
+     re-derived a monotonic 16/14 → 18/16 → 20/18 pair ladder here; a product
+     decision (2026-08-19) collapsed each pair to ONE size — the merchant's
+     Submenu size now means "the size of every submenu row": Small 14,
+     Medium 16, Large 18. Level hierarchy is carried by colour (level 2
+     foreground, level 3 subdued) and indent, never by size. Both
+     --bmp-nav-l{2,3}-size vars stay declared — equal by design — because
+     every row rule and the A10 gate assertions key on them; the merchant's
+     font family, weight and case still come from the stock vars.
+
+     These rules add no id prefix on purpose: they define custom properties on
+     a BMP-only element and override no core declaration. The A6 selector
+     assertion carves __card / __parent out by word boundary for exactly this
+     reason (scripts/check-nav-dropdown.mjs:383-390). */
+  .bmp-nav-panel__card {
+    /* default = the Small map, so markup that somehow arrives without the
+       attribute still renders the value sections/header-group.json ships. */
+    --bmp-nav-l2-size: var(--menu-font-sm--size);
+    --bmp-nav-l2-line-height: var(--menu-font-sm--line-height);
+    --bmp-nav-l3-size: var(--menu-font-sm--size);
+    --bmp-nav-l3-line-height: var(--menu-font-sm--line-height);
+  }
+
+  .bmp-nav-panel__card[data-bmp-submenu-size='regular'] {
+    /* Small — every row 14 */
+    --bmp-nav-l2-size: var(--menu-font-sm--size);
+    --bmp-nav-l2-line-height: var(--menu-font-sm--line-height);
+    --bmp-nav-l3-size: var(--menu-font-sm--size);
+    --bmp-nav-l3-line-height: var(--menu-font-sm--line-height);
+  }
+
+  .bmp-nav-panel__card[data-bmp-submenu-size='inverse'] {
+    /* Medium — every row 16 */
+    --bmp-nav-l2-size: var(--menu-font-md--size);
+    --bmp-nav-l2-line-height: var(--menu-font-md--line-height);
+    --bmp-nav-l3-size: var(--menu-font-md--size);
+    --bmp-nav-l3-line-height: var(--menu-font-md--line-height);
+  }
+
+  .bmp-nav-panel__card[data-bmp-submenu-size='inverse_large'] {
+    /* Large — every row 18. The --menu-font-lg tier was DELETED from
+       theme-styles-variables in Horizon 4.1.4 (unused by stock once the
+       mega-menu moved off it), so each read carries the tier's last stock
+       values as the fallback — if upstream ever reintroduces the tier, its
+       value wins. */
+    --bmp-nav-l2-size: var(--menu-font-lg--size, 1.125rem);
+    --bmp-nav-l2-line-height: var(--menu-font-lg--line-height, calc(1.1 + 0.5 * min(16 / 18)));
+    --bmp-nav-l3-size: var(--menu-font-lg--size, 1.125rem);
+    --bmp-nav-l3-line-height: var(--menu-font-lg--line-height, calc(1.1 + 0.5 * min(16 / 18)));
+  }
+
+  .bmp-nav-panel__parent {
+    padding-block: 8px;
+    padding-inline: 16px;
+    font-family: var(--menu-parent-font-family);
+    font-size: var(--bmp-nav-l2-size);
+    font-weight: var(--menu-parent-font-weight);
+    line-height: var(--bmp-nav-l2-line-height);
+    text-transform: var(--menu-parent-font-case);
+    color: var(--color-foreground);
+  }
+
+  .bmp-nav-group__title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding-inline: 16px;
+  }
+
+  .bmp-nav-group__link {
+    flex: 1;
+    padding-block: 8px;
+    font-family: var(--menu-parent-font-family);
+    font-size: var(--bmp-nav-l2-size);
+    font-weight: var(--menu-parent-font-weight);
+    line-height: var(--bmp-nav-l2-line-height);
+    text-transform: var(--menu-parent-font-case);
+    color: var(--color-foreground);
+  }
+
+  .bmp-nav-panel__parent:hover,
+  .bmp-nav-group__link:hover {
+    color: var(--color-foreground-subdued);
+    text-decoration: underline;
+    text-underline-offset: 0.3rem;
+  }
+
+  /* -- Level-2 expand control (R6) ----------------------------------------
+     WCAG 2.5.8 minimum target, same max()-clamp technique as the
+     a11y-slideshow-dot-target group at the top of this file. v1.1.5's arrow
+     was a 4px-padded icon with no accessible name at all (its bug #7). */
+  .bmp-nav-group__toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    min-width: 24px;
+    min-height: 24px;
+    /* follows level 2, whose colour is now re-derived */
+    color: var(--color-foreground);
+    cursor: pointer;
+  }
+
+  .bmp-nav-group__caret {
+    display: inline-flex;
+    transition: rotate var(--animation-speed, 0.2s) var(--animation-easing);
+  }
+
+  .bmp-nav-group__toggle[aria-expanded='true'] .bmp-nav-group__caret {
+    rotate: 180deg;
+  }
+
+  /* -- Level-3 accordion (R3) ---------------------------------------------
+     grid-template-rows 0fr -> 1fr animates to the content's OWN height, so
+     there is no cap to clip against and no height to measure in JS. This is
+     the same mechanism Horizon's own sort popover uses
+     (snippets/sorting.liquid: `display: grid; grid-template-rows: 0fr` with a
+     grid-template-rows transition), not a BMP invention.
+
+     v1.1.5 instead used `max-height: 0` -> `max-height: 500px` with
+     overflow: hidden, which silently clips any group with enough links (its
+     bug #2) and forced the setTimeout(50) height patch (its bug #6).
+
+     `> * { min-height: 0 }` is load-bearing: without it the grid item's
+     automatic minimum size floors the row at its content height and the
+     collapsed state never reaches zero. Where grid-template-rows
+     interpolation is unsupported the panel snaps open instead of animating —
+     still fully expanded, never clipped. */
+  .bmp-nav-group__panel {
+    display: grid;
+    grid-template-rows: 0fr;
+    overflow: hidden;
+    /* visibility, not just the 0fr row: `grid-template-rows: 0fr` with
+       overflow hidden clips the list VISUALLY but leaves every level-3 link in
+       the tab order and in the accessibility tree. Measured on a collapsed
+       group (panel height 0): a .bmp-nav-group__item still accepted focus()
+       and still reported a 307x38 rect — so a keyboard user tabbed through
+       links they cannot see, and a screen reader read out the contents of a
+       group whose own aria-expanded says "collapsed".
+
+       visibility is the right tool rather than `display: none` (which would
+       kill the row animation) or `inert` (not yet safe across the supported
+       range): hidden subtrees are skipped by sequential focus navigation and
+       by AT, and visibility participates in transitions, so it stays visible
+       for the duration of the collapse instead of the content vanishing
+       before the box finishes closing. */
+    visibility: hidden;
+    transition: grid-template-rows var(--animation-speed-slow, 0.25s) var(--animation-easing),
+      visibility var(--animation-speed-slow, 0.25s) var(--animation-easing);
+  }
+
+  .bmp-nav-group__panel > * {
+    min-height: 0;
+  }
+
+  /* The recessed tint that separates an expanded level-3 list from the level-2
+     rows above it. v1.1.5 did this with a hardcoded `#f5f5f5`; derived from the
+     foreground token here so it follows the scheme and inverts correctly on a
+     dark header, which a fixed light grey cannot. Added 2026-08-12 - it was
+     missing, and its absence was part of why the card did not read like
+     v1.1.5. */
+  .bmp-nav-group__list {
+    background-color: rgb(var(--color-foreground-rgb) / var(--bmp-nav-group-tint-opacity, 0.04));
+  }
+
+  .bmp-nav-group[data-bmp-open] > .bmp-nav-group__panel {
+    grid-template-rows: 1fr;
+    visibility: visible;
+  }
+
+  .bmp-nav-group__item {
+    padding-block: 6px;
+    padding-inline: 24px;
+    font-family: var(--menu-child-font-family);
+    font-size: var(--bmp-nav-l3-size);
+    font-weight: var(--menu-child-font-weight);
+    line-height: var(--bmp-nav-l3-line-height);
+    text-transform: var(--menu-child-font-case);
+    color: var(--color-foreground-subdued);
+  }
+
+  .bmp-nav-group__item:hover {
+    color: var(--color-foreground);
+    text-decoration: underline;
+    text-underline-offset: 0.3rem;
+  }
+}
+
+/* ==========================================================================
+   BMP forced size selection (gate + cta-prompt)
+
+   One visual surface ships: the cta-prompt on the button. Presentation B's
+   size-group outline (chosen 2026-08-13) and its companion warning-message
+   element were both retired by the cta-prompt round and its correction — the
+   owner asked for the button to be the only visual reaction. The cta-prompt: on a REFUSED add — and only then — the Add to Cart button itself
+   turns solid error, prints the locale prompt, and nudges once; it returns
+   to normal the moment a size is chosen. Click-triggered, never always-on:
+   the coaches confirmed (Slack, 2026-08-18) the page must look normal until
+   the shopper tries to buy, so an always-on prompt would repaint every gated
+   PDP's primary CTA by default. The two candidate CTA treatments B
+   originally beat were deleted in the teardown (§10);
+   scripts/check-size-required.mjs A11 fails the build if either reappears
+   anywhere in the tree — including by name, which is why neither retired
+   value is spelled out here.
+
+   The JS module sets state and never styles (D8). The treatment below is
+   selected by attributes on the product-form-component wrapper:
+   data-bmp-size-required (a bare presence marker with no value, emitted by
+   Liquid ONLY when the feature is on AND the product has the gated option),
+   data-bmp-size-satisfied (server-rendered or trusted intent) and
+   data-bmp-size-missing (a refused interaction).
+
+   EVERY selector here is prefixed with [data-bmp-size-required]. That is what
+   makes the off state genuinely unreachable rather than merely unused: with the
+   checkbox unchecked the attribute is never emitted, so no rule in this group
+   can match — and an ungated product (one-size items, mugs, single-variant)
+   stays byte-identical to stock in the cascade for the same reason.
+   scripts/check-size-required.mjs A7 fails the build on an unscoped selector.
+
+   THE CTA PROMPT: core renders the button's own label as a bare TEXT NODE
+   (snippets/add-to-cart-button.liquid:49), which no selector can target, so
+   the swap collapses the button's font-size to 0 and prints the prompt in
+   ::after at the real size. The prompt string arrives as an inheriting custom
+   property from blocks/buy-buttons.liquid#size-required-gate, never hardcoded
+   here — it is shopper-facing copy and belongs in the locale files (the
+   alternatives were editing a fourth core file, which §8 does not allow, or
+   rewriting textContent, which D8 forbids — and a JS rewrite would anyway be
+   reverted by the childrenOnly button morph on every variant change,
+   assets/product-form.js#onProductSelect). The state is keyed on
+   [data-bmp-size-missing='true'] — set by a blocked click, cleared by a
+   trusted size pick — never on the unsatisfied wrapper.
+   scripts/check-size-required.mjs A7 pins the string to the custom property
+   so the swap cannot hardcode shopper-facing copy, and pins the missing key
+   so the prompt cannot silently become always-on again.
+
+   THE FIELDSET OUTLINE uses :has() scoped to the section, not a sibling
+   combinator: <variant-picker> is a PRECEDING sibling of
+   <product-form-component>, so `~` cannot reach it. It also targets
+   [data-bmp-size-control], the app-rendered group the module marks at runtime —
+   the §9.1 probe measured the native fieldset at display:none on the Globo
+   store this ticket is about, so on those stores the app group is the only
+   outline target that exists and the cta-prompt on the button itself is the
+   guaranteed surface (§12).
+   ========================================================================== */
+
+:root {
+  /* Derived from the scheme token, never a hex literal.
+     color-mix() rather than an --color-error-rgb triple because Horizon defines
+     no such token, and inventing one would create a second source of truth for
+     the same colour. */
+  --bmp-size-required-error: var(--color-error);
+  --bmp-size-required-error-surface: color-mix(in srgb, var(--color-error) 8%, transparent);
+  --bmp-size-required-error-border: color-mix(in srgb, var(--color-error) 55%, transparent);
+}
+
+/* -- Shared: the CTA prompt label -------------------------------------------
+   min(): shrink toward the viewport so the label never wraps at ~320px.
+   4.5vw is about 14.4px at a 320px viewport; the md token wins everywhere
+   wider. Avoiding a media query keeps every selector in this group flat for
+   the A7 scoping walker. */
+[data-bmp-size-required] .add-to-cart-button::after {
+  content: var(--bmp-size-required-prompt);
+  display: none;
+  font-size: min(var(--font-size--md), 4.5vw);
+  white-space: nowrap;
+}
+
+/* -- The cta-prompt state ---------------------------------------------------
+   Shown ONLY after a refused add — data-bmp-size-missing, which
+   assets/bmp-size-required.js sets on a blocked click and clears on a
+   trusted size pick (openGate). Solid error treatment per the approved
+   Proposal A mock: error background, scheme-background text, one 0.4s nudge
+   (replayed per blocked click by the module's attribute re-toggle).
+   font-size: 0 collapses the bare text-node label; the ::after reveal below
+   prints the prompt at the real size. The border rides base.css's inset
+   box-shadow tokens and the sizing rule near the top of this file pins the
+   height — no layout shift either way.
+
+   Specificity is load-bearing THREE ways since the global CTA colors
+   landed: the base (0,5,1)
+   beats bmp-cta-button-style-vars' configured merchant colors (up to
+   (0,4,1) non-hover) even though that sheet loads later and wins ties; the
+   :hover twin (0,6,1) beats both that sheet's hover rules (0,5,1) and this
+   file's own (0,5,1) black-on-white hover repaint; and the [ref] attribute
+   — deliberately not .buy-buttons-block — carries the boost into the
+   quick-add dialog, where the wrapper class is left behind when quick-add
+   lifts <product-form-component>. An error state a merchant color can
+   override is a dead feature on exactly the stores that configure colors. */
+[data-bmp-size-required][data-bmp-size-missing='true'] add-to-cart-component[ref='addToCartButtonContainer'] .add-to-cart-button:not(.sticky-add-to-cart__button):not([data-added='true']),
+[data-bmp-size-required][data-bmp-size-missing='true'] add-to-cart-component[ref='addToCartButtonContainer'] .add-to-cart-button:not(.sticky-add-to-cart__button):not([data-added='true']):hover {
+  --button-border-width: var(--style-border-width);
+  --button-border-color: var(--bmp-size-required-error);
+
+  font-size: 0;
+  background-color: var(--bmp-size-required-error);
+  color: var(--color-background);
+  animation: bmp-size-required-nudge 0.4s ease;
+}
+
+[data-bmp-size-required][data-bmp-size-missing='true'] add-to-cart-component[ref='addToCartButtonContainer'] .add-to-cart-button:not(.sticky-add-to-cart__button)::after {
+  display: block;
+}
+
+/* One horizontal nudge, the approved mock's exact curve. */
+@keyframes bmp-size-required-nudge {
+  0%, 100% { transform: translateX(0); }
+  18% { transform: translateX(-6px); }
+  38% { transform: translateX(5px); }
+  62% { transform: translateX(-3px); }
+  82% { transform: translateX(2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-bmp-size-required][data-bmp-size-missing='true'] add-to-cart-component[ref='addToCartButtonContainer'] .add-to-cart-button:not(.sticky-add-to-cart__button) {
+    animation: none;
+  }
+}
+
+/* -- Follow-up: the legend must not claim a size while the gate is
+   shut. Liquid already omits the legend value on an unchosen cold load, but
+   a SECTION render resolved from a partial option_values list (a colour
+   click before any size choice) arrives with a legend value nobody chose
+   (measured live), and Liquid cannot tell that request from a real
+   ?variant= load — so the unsatisfied state hides the claim in CSS, the
+   same way it collapses the CTA label. Scoped like the outline rule below;
+   the satisfied state shows the value everywhere, including deep links. */
+.shopify-section:has(
+    [data-bmp-size-required]:not([data-bmp-size-satisfied='true'])
+  ) [data-bmp-size-fieldset] legend .variant-option__swatch-value,
+dialog:has(
+    [data-bmp-size-required]:not([data-bmp-size-satisfied='true'])
+  ) [data-bmp-size-fieldset] legend .variant-option__swatch-value {
+  display: none;
+}
+
+/* The size-group OUTLINE was retired in the cta-prompt correction round: the
+   owner asked for the button to be the only visual reaction (Proposal A).
+   The module still marks [data-bmp-size-control] and still scrolls/focuses
+   the size group on a blocked add — those are behavior, not paint — so a
+   future re-enable is one rule keyed on data-bmp-size-missing. */
+
+/* -- Shared: the unselected fieldset parks the sliding pill ----------------
+   Stock's selection indicator (.variant-option__button-label__pill, painted
+   with --color-selected-variant-background) is placed by
+   translateX(var(--pill-offset, 0)), and every rule that sets --pill-offset
+   keys off a sibling's :checked (snippets/variant-picker-styles.liquid:283-289).
+   Stock never renders a buttons fieldset with ZERO checked radios, so the 0
+   fallback never painted — until this feature suppressed `checked` in
+   snippets/variant-main-picker.liquid#size-required-unselected. In that state
+   every label keeps offset 0: the selected-state background sits under every
+   button while the text keeps its unselected colour, and on schemes where
+   those two resolve to the same colour the whole size row reads as blank
+   filled pills. Park the pill at the exact value stock uses for labels after
+   the checked one (variant-picker-styles.liquid:288); the shopper's first
+   click makes the fieldset :has(:checked), this rule stops matching, and
+   stock's own machinery slides the pill in.
+
+   body:has(), not .shopify-section:has() like the outline rule above: the
+   quick-add dialog is rendered from layout/theme.liquid outside every section
+   wrapper, and the product content injected into it carries this same gated
+   fieldset. Liquid emits data-bmp-size-fieldset under exactly the condition
+   that emits data-bmp-size-required, so the prefix restates the A7 scoping
+   contract rather than narrowing it. */
+body:has([data-bmp-size-required]) [data-bmp-size-fieldset]:not(:has(:checked)) .variant-option__button-label {
+  --pill-offset: calc(-100% - 1px);
+}
+
+.shopify-section:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] .variant-option__button-label,
+dialog:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] .variant-option__button-label {
+  box-shadow: inset 0 0 0 2px var(--bmp-size-required-error, #b42318);
+}
+
+.shopify-section:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] legend,
+dialog:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.4rem;
+}
+
+.shopify-section:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] legend::after,
+dialog:has([data-bmp-size-missing='true']) [data-bmp-size-fieldset] legend::after {
+  content: var(--bmp-size-required-prompt);
+  color: var(--bmp-size-required-error, #b42318);
+  font-size: 0.875rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+/* ==========================================================================
+   THIRD-PARTY OVERHANG CONTAINMENT
+   ========================================================================== */
+
+/* -- The page frame owns its horizontal extent on mobile -------------------
+   Apps that inject markup into the PDP -- swatch and variant apps above all --
+   routinely ship absolutely-positioned tooltips that are HIDDEN but still
+   LAID OUT: `visibility: hidden; opacity: 0`, anchored to the swatch with
+   `left: 50%; transform: translateX(-50%)` and `white-space: pre`. A hidden
+   box still contributes to its scroll container's scrollable overflow, so the
+   tooltip on the right-most swatch of a row widens the DOCUMENT past the
+   viewport and the whole page scrolls sideways on a phone, with nothing
+   visible on screen to explain it. Measured on the reporting client's
+   storefront: 49px at a 390px viewport, reproduced identically on stock
+   Horizon, so this is app behaviour rather than anything we render.
+
+   Deliberately generic: it names no vendor class, so it holds for the next
+   app too. The app keeps its own markup, layout and rendering -- only the
+   document's scrollable extent stops growing.
+
+   `clip`, never `hidden`. `overflow-x: hidden` forces `overflow-y` from
+   `visible` to `auto` (CSS Overflow 3: `visible` survives only alongside
+   `visible` or `clip`), which would make .page-wrapper a scroll container on
+   mobile -- breaking the sticky header, whose scrollport would become
+   .page-wrapper instead of the document, and desyncing
+   assets/scroll-container.js, which branches on >=990px for whether
+   .page-wrapper or document.scrollingElement is the scroller. `clip` is not a
+   scroll container and establishes no containing block, so sticky keeps
+   sticking, `overflow-y` stays visible, and `position: fixed` descendants
+   (drawers, modals, sticky add-to-cart) are unaffected.
+
+   Scoped to <=989px because at >=990px core base.css already makes
+   .page-wrapper the scroll container (`height: 100dvh; overflow-y: auto`),
+   where overflow-x computes to `auto` anyway. The two queries are exclusive.
+
+   Loses on purpose to core's `html[scroll-lock] .page-wrapper { overflow:
+   hidden }` (0,2,1 beats our 0,1,0), so scroll-locked drawer and modal state
+   stays byte-identical to stock.
+
+   The focusable skip-to-content link is safe: layout/theme.liquid renders the
+   main one OUTSIDE this wrapper, and the in-wrapper instance
+   (snippets/product-information-content.liquid) parks at `left: -99999px` but
+   repositions to `left: var(--margin-lg)` on focus, landing inside the clip
+   box exactly when it needs to be seen.
+
+   Known limit: Safari <16, Chrome <90 and Firefox <81 drop the declaration at
+   parse time and keep today's behaviour. No fallback -- `hidden` is not one,
+   for the reason above. */
+
+@media screen and (max-width: 989px) {
+  .page-wrapper {
+    overflow-x: clip;
+  }
+}
+
+/* -- Merchant embeds fit the frame they are pasted into --------------------
+   Consequence of the containment rule above, fixed in the same breath rather
+   than left as a trap. Core base.css caps `img, picture, video, canvas, svg`
+   at `max-width: 100%` and assets/rte-formatter.js wraps RTE tables in a
+   horizontal scroller, but `iframe` is in neither list. A pasted oEmbed
+   (`<iframe width="560">`) therefore overhangs a 390px phone by ~170px.
+
+   Before containment that produced a sideways-scrolling page; after it the
+   right edge would be clipped and unreachable, which is worse. Capping the
+   width keeps the whole embed on screen and reachable in both worlds.
+
+   Width only, no `aspect-ratio` and no height rewrite: the embedded player
+   letterboxes itself inside the narrowed box, whereas forcing a ratio would
+   distort the non-video embeds that use the same element (maps, forms,
+   booking widgets). */
+
+.rte iframe {
+  max-width: 100%;
+}
+
+/* -- PDP title auto-fit + per-device size ---------------------------------
+   Emitted by BMP-HOOK:pdp-title-fit-open/-close in blocks/product-title.liquid.
+   The <bmp-title-fit> wrapper renders only when the feature is engaged
+   (bmp_title_autofit on, real product, title 1-48 chars) or when the
+   block-local mobile size is set — default state ships zero of these nodes.
+
+   MUST stay above the "GLOBAL CARD STYLE — Plan 1" banner: gate A8 in
+   scripts/check-card-global-style.mjs forbids font-size (and friends) from
+   the first `div.bmp-card-global-title {` rule to EOF; this group declares
+   font-size and lives before that anchor on purpose.
+
+   One-line commitment is CSS-first: [data-bmp-fit] applies nowrap from the
+   very first paint, so the line box is the configured-size line box from
+   frame one. assets/bmp-title-fit.js only shrinks the glyphs inside that
+   constant box (and re-runs on document.fonts.ready), which is what keeps
+   the webfont swap from shifting layout. Pre-JS, a title too wide for the
+   box clips its tail for a frame (overflow-x: clip — NOT hidden: with the
+   clamp's overflow:hidden a Blink line box is scrollable, clip is not; see
+   the line-clamp rationale further down).
+
+   Accepted degraded state, stated plainly: the tail stays clipped until the
+   module runs — one frame on a warm cache, a real interval on a slow
+   connection (the loader is type="module" fetchpriority="low") — and stays
+   clipped indefinitely if the module never loads at all, so a title too wide
+   for its column loses its tail with no ellipsis. That is the price of
+   committing to one line in CSS, which is what keeps the webfont swap from
+   shifting layout; the (scripting: none) block below covers only the
+   JS-disabled case, never a failed fetch.
+
+   The engaged rule also resets the title line clamp: auto-fit and truncate
+   are mutually exclusive on one node, and auto-fit wins — (0,2,1) over the
+   clamp's (0,1,0). Known limit: with JS disabled AND truncate configured on
+   the same engaged block, (scripting: none) reverts to plain wrapping, not
+   to the clamp; the clamp's display:-webkit-box stays reset. */
+
+bmp-title-fit {
+  display: contents;
+}
+
+bmp-title-fit[data-bmp-fit] .text-block > * {
+  display: block;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  white-space: nowrap;
+  overflow-x: clip;
+}
+
+/* JS handoff: bmp-title-fit.js measures, writes the two custom properties on
+   the wrapper, then stamps data-bmp-fit-ready. (0,3,1) — the doubled class is
+   deliberate: it out-ranks the token-gated global card rules (0,2,1) from
+   snippets/bmp-card-style-vars.liquid, which render later and would otherwise
+   win the tie, and both per-device rules below. line-height is pinned to the
+   pixel value measured at the base size so the box height cannot move while
+   the font shrinks. */
+
+bmp-title-fit[data-bmp-fit-ready] .text-block.text-block > * {
+  font-size: var(--bmp-title-fit-size);
+  line-height: var(--bmp-title-fit-lh);
+}
+
+/* Block-local mobile size (bmp_font_size_mobile): the wrapper carries the
+   value as an inline custom property (sanctioned travel — CONVENTIONS §6).
+   Only emitted when the block is NOT following the global card style and the
+   preset is custom, mirroring where native font_size is live
+   (snippets/typography-style.liquid gates on the custom preset). (0,2,0)
+   beats core's .custom-font-size > * (0,1,0). Desktop keeps the native
+   font_size value; blank mobile = rule absent = desktop governs everywhere,
+   the same fallback-by-construction as the hero adapt ratio. */
+
+@media screen and (max-width: 749px) {
+  .bmp-title-fit--msize .text-block > * {
+    font-size: var(--bmp-title-size-mobile);
+  }
+}
+
+/* No JS, no fit: give the committed one-line box back its wrapping. */
+
+@media (scripting: none) {
+  bmp-title-fit[data-bmp-fit] .text-block > * {
+    white-space: normal;
+    overflow-x: visible;
+  }
+}
+
+/* ============================================================
+   GLOBAL CARD STYLE — Plan 1 (Title + Price).
+   Scope: only elements inside div.bmp-card-global-title, or carrying
+   .bmp-card-global-price — i.e. blocks whose bmp_use_global_style
+   toggle is ON. Tokens come from snippets/bmp-card-style-vars.liquid
+   (:root). Wins over block-level styling without !important, but the
+   mechanism differs by property class:
+
+   1. title case + title/price weight — MOVED OUT of this file on
+      2026-08-14. They used to be static rules whose var() fallback
+      chained onto the always-on card baseline
+      (--bmp-card-title-transform / --bmp-card-title-weight /
+      --bmp-card-price-weight). That reproduced the baseline exactly at
+      "Default" *inside a card* — but those tokens are declared at bare
+      :root while every always-on rule consuming them is scoped under
+      .product-card, and these global selectors deliberately are not
+      (design decision 6: an ON toggle acts wherever the block renders).
+      So a block toggled ON outside a card took uppercase/600 with every
+      global still at "Default". They are token-gated rules now (class 2
+      below): at "Default" no rule exists and nothing is imposed
+      anywhere, while inside a card the always-on baseline still
+      applies. Guarded by A14.
+      The type prefix on every selector below remains load-bearing: the
+      always-on card rule `.product-card .text-block:not(product-price)`
+      is (0,2,1) — :not() contributes its argument — so these selectors
+      must reach (0,2,1) to win the tie by source order. A review found
+      the classes-only form (0,2,0) silently lost that
+      contest. A7 now computes this rather than grepping for the prefix.
+      The floor is per-scope, not a flat (0,2,1): the TITLE rules contend
+      with `.product-card .text-block:not(product-price)` (0,2,1), the
+      PRICE rules with `.product-card product-price` (0,1,1), so the
+      static price rules below are legitimately (0,1,1). The token-gated
+      price rules do carry a doubled class, because they contend with the
+      preset rules `.h6.h6` / `.text-block.h6 > *` at (0,2,0) instead.
+
+   2. font / size / line-height / letter-spacing / color / price case
+      (NOT here): their baseline comes from per-instance preset
+      classes (.paragraph, .h6, ...), which no static rule can
+      reproduce as a var() fallback — an `inherit` fallback stomps
+      preset values on the element and flattens .compare-at-price /
+      .unit-price on descendants (second review finding; price case
+      has no always-on baseline token, so a static `none` fallback
+      would strip an uppercase custom preset the same way). Those
+      properties are emitted as token-gated RULES by
+      snippets/bmp-card-style-vars.liquid, which renders AFTER this
+      stylesheet: the rule only exists when the merchant set the
+      global, so "Default" is untouched by construction.
+
+   3. layout (width / align / padding): tokens are always emitted.
+      Background, radius and the minimum-padding floor are NOT — they
+      are emitted only inside the bmp_card_title_background guard, which
+      is why every consumer of those three carries a var() fallback and
+      why the padding longhands are max(<pad>, var(--minpad, 0px)).
+      For all of them the GLOBAL value is the intended winner
+      wherever the toggle is ON. Values resolve from the SCHEMA
+      DEFAULTS — corrected 2026-08-14: the old text claimed they were
+      "seeded from the collection card in settings_data.json", which
+      was never true. config/settings_data.json is byte-identical to
+      the merge-base and holds exactly one bmp_card_* key
+      (bmp_card_hover_effect). The shipped card templates
+      are reconciled to the defaults instead, so the stored merchant
+      data and the render agree.
+      Note the alignment token has two forms: --bmp-cardg-*-align
+      (left/center/right, for text-align on the child) and
+      --bmp-cardg-*-align-flex (flex-start/center/flex-end, for
+      align-self on the box). Both are needed — at the default
+      fit-content width the box hugs its text, so text-align has
+      nothing to align and only align-self moves the block.
+   ============================================================ */
+
+/* The toggle wrapper is a pure CSS scope carrier. `display: contents` keeps
+   it layout-inert, so wrapping the block's output changes no geometry — but
+   NOT selector-inert: it is still a DOM node, so any `>` combinator aimed at
+   .text-block from its parent stops here. That costs nothing in practice
+   because Horizon already interposes <a class="contents"> around the same
+   render (blocks/product-title.liquid, stock) for every non-blank product, so
+   the child-combinator rules in snippets/text.liquid were already severed on
+   that path before this feature existed — but do not add a wrapper elsewhere
+   without checking the same thing.
+   It is a DIV, not a span (2026-08-14 review round): snippets/text.liquid
+   emits <div> or <rte-formatter>, i.e. flow content, which is invalid inside
+   phrasing-only <span>. `div.` is one type selector exactly as `span.` was, so
+   every rule below stays (0,2,1) and the source-order tie against the always-on
+   `.product-card .text-block:not(product-price)` is preserved byte-for-byte.
+   The prefix is hardcoded a SECOND time in snippets/bmp-card-style-vars.liquid;
+   scripts/check-card-global-style.mjs A7 derives it from here and fails when
+   the two files disagree. */
+div.bmp-card-global-title {
+  display: contents;
+}
+
+/* Layout, part 1 of 2 — the BOX. Everything here shapes the block element
+   itself: its cross-axis placement in the card column (align-self), where its
+   own children sit if they are narrower than it (align-items), its size and its
+   panel. `margin-inline: 0` cancels the `margin-inline: auto` that a STALE
+   local `.text-block--align-center` / `--align-right` class would otherwise
+   apply — an auto margin on a flex item beats align-self, so without this the
+   global alignment loses to a hidden local setting. */
+div.bmp-card-global-title .text-block {
+  align-self: var(--bmp-cardg-title-align-flex, flex-start);
+  align-items: var(--bmp-cardg-title-align-flex, flex-start);
+  width: var(--bmp-cardg-title-width, fit-content);
+  text-align: var(--bmp-cardg-title-align, left);
+  margin-inline: 0;
+  background-color: var(--bmp-cardg-title-bg, transparent);
+  border-radius: var(--bmp-cardg-title-radius, 0);
+  /* Plain longhands. A minimum-padding floor mirroring Horizon's
+     .text-block--background lived here on 2026-08-14 and was reverted: padding
+     is a MIRRORED setting (the design spec lists Title as mirroring corner_radius
+     and padding x4), so clamping it made a control the merchant can still pick
+     in the panel silently unreachable — the exact failure this feature exists
+     to remove. The cosmetic consequence is accepted and documented: a global
+     background with a corner radius and all four paddings at 0 renders glyphs
+     outside the tint at the corners, where the local path would have applied
+     Horizon's floor. If that is ever unwanted, raise the padding defaults or
+     add a separate global, do not clamp the merchant's value. */
+  padding-block-start: var(--bmp-cardg-title-pad-top, 0px);
+  padding-block-end: var(--bmp-cardg-title-pad-bottom, 0px);
+  padding-inline-start: var(--bmp-cardg-title-pad-left, 0px);
+  padding-inline-end: var(--bmp-cardg-title-pad-right, 0px);
+}
+
+/* Layout, part 2 of 2 — the TEXT. Load-bearing, and NOT collapsible into the
+   rule above.
+   `.text-block` is `display: flex; flex-direction: column`, so the visible text
+   lives in its direct child, and snippets/text.liquid styles that child with
+   its own `width: var(--width)` and
+   `text-align: var(--text-align, var(--text-align-default))`. A declared value
+   on the child never inherits the parent's, so the box rule above cannot reach
+   the text: without this rule `bmp_card_title_align` is inert at every width
+   and `bmp_card_title_width` only half-applies (2026-08-14 review, thread 1).
+   Overriding the custom properties instead is impossible — text.liquid emits
+   --width / --max-width / --text-align in the element's own style="" attribute
+   from the LOCAL settings that visible_if hides, and inline beats every
+   selector. !important is banned in this layer, so the real properties have
+   to be declared on the child.
+   (0,2,1) against stock's `.text-block > *` (0,1,0) — won on specificity alone,
+   no source-order dependence.
+   Keep this rule separate from the box rule above: that one also carries
+   background-color, border-radius and four paddings, which on a child would
+   repaint the panel and double the padding per child. Folding the two selector
+   lists together is what A12b exists to reject. */
+div.bmp-card-global-title .text-block > * {
+  width: var(--bmp-cardg-title-width, fit-content);
+  /* The `, 100%` fallback is load-bearing: min() with an undefined custom
+     property is invalid at computed-value time and would drop the clamp
+     entirely rather than degrade to "no maximum". */
+  max-inline-size: min(100%, var(--bmp-cardg-title-max-width, 100%));
+  text-align: var(--bmp-cardg-title-align, left);
+  margin-inline: 0;
+}
+
+/* Price, layout part 1 of 2 — the BOX. <product-price> carries .text-block
+   itself, so there is no descendant step here, unlike the title. */
+product-price.bmp-card-global-price {
+  align-self: var(--bmp-cardg-price-align-flex, flex-start);
+  align-items: var(--bmp-cardg-price-align-flex, flex-start);
+  width: var(--bmp-cardg-price-width, 100%);
+  text-align: var(--bmp-cardg-price-align, left);
+  margin-inline: 0;
+  padding-block-start: var(--bmp-cardg-price-pad-top, 0px);
+  padding-block-end: var(--bmp-cardg-price-pad-bottom, 0px);
+  padding-inline-start: var(--bmp-cardg-price-pad-left, 0px);
+  padding-inline-end: var(--bmp-cardg-price-pad-right, 0px);
+}
+
+/* Price, layout part 2 of 2 — the TEXT. Same mechanism as the title's child
+   rule above: `.text-block > *` re-declares width and text-align on
+   <product-price>'s direct children — the priceContainer, .tax-note and
+   .installments — from the per-instance --width (inline, blocks/price.liquid)
+   and --text-align (from the `text-{{ alignment }}` class the block still
+   stamps from its HIDDEN local setting, assets/base.css .text-left/.text-center
+   /.text-right). Without this rule the global price alignment loses to that
+   hidden local value.
+   (0,1,1) against stock's `.text-block > *` and `.text-left` (both (0,1,0)).
+   `> *`, never ` *`: .compare-at-price and .unit-price live deeper and must
+   keep inheriting. */
+product-price.bmp-card-global-price > * {
+  width: var(--bmp-cardg-price-width, 100%);
+  text-align: var(--bmp-cardg-price-align, left);
+  margin-inline: 0;
+}
+
+/* -- Announcement bar: device visibility + alignment -----------------------
+   sections/header-announcements.liquid gates two settings through
+   BMP-HOOK:announcement-bar-classes. bmp_device_visibility reuses the
+   .bmp-hide-on-mobile / .bmp-hide-on-desktop utilities defined above (no
+   new CSS needed for it); bmp_alignment emits bmp-announcement-align-left
+   / -right on the <aside>, nothing at the "center" default. This is the
+   CSS those alignment classes depend on, plus the zero-visible-slides fix
+   the design spec calls for.
+
+   Alignment: stock hard-centers every slide's text via an inherited
+   --text-align: center custom property, set inline on <slideshow-slide>
+   in blocks/_announcement.liquid, which the global `.text-block > *` rule
+   in snippets/text.liquid turns into `text-align: var(--text-align, ...)`
+   on EVERY direct child of the slide -- not just the announcement text,
+   also the countdown timer (blocks/_announcement.liquid renders
+   <bmp-countdown-timer> as a sibling of <p class="announcement-bar__text">
+   inside the same slide; it computes to display:block, so it is positioned
+   by text-align exactly like the paragraph is). An inline style declaration
+   cannot be beaten by any external selector without !important, so rather
+   than fight it on the slide element we target its rendered children
+   directly: `.announcement-bar__slide, .announcement-bar__slide > *` is
+   still (0,2,0) -- the compound selector's specificity is the higher of
+   the two branches, both two classes -- which beats the global rule's
+   (0,1,0) regardless of source order, and it covers the text, the timer,
+   and any future sibling child without having to name each one. The slide
+   itself is included too, defensively, in case a future child positions
+   itself off the slide's own text-align rather than its own (e.g. an
+   inline-level element that does not match `> *`'s block behavior).
+   .text-block--align-center also puts `margin-inline: auto` on the slide
+   and its children (own stylesheet in blocks/_announcement.liquid); at
+   --width: 100% that auto margin already resolves to 0px and moves
+   nothing, but it is zeroed explicitly here so a future width change
+   cannot silently reintroduce centering under a left/right class.
+
+   What "left"/"right" are relative to, spelled out because it is easy to
+   misread from the class name alone: stock's own
+   `.announcement-bar__slides { max-width: 680px; margin-inline: auto; }`
+   (sections/header-announcements.liquid, untouched) already centers that
+   680px column inside the full-width bar. These rules align text INSIDE
+   that column, not against the bar or the viewport -- at a wide viewport,
+   `bmp_alignment: left` starts the text near the column's left edge,
+   which sits well short of the page's own left edge, not flush against
+   it. This matches the design spec ("slides stay full-width" -- the
+   680px column is that fixed width, alignment moves text within it). */
+.bmp-announcement-align-left .announcement-bar__slide,
+.bmp-announcement-align-left .announcement-bar__slide > * {
+  margin-inline: 0;
+  text-align: left;
+}
+
+.bmp-announcement-align-right .announcement-bar__slide,
+.bmp-announcement-align-right .announcement-bar__slide > * {
+  margin-inline: 0;
+  text-align: right;
+}
+
+/* Countdown timer: one line, side by side with the announcement text
+   (Iago, 2026-08-13 design call -- an announcement bar is a thin strip;
+   stacking the timer under the text doubles its height and shifts the
+   whole page below it, and the ticket's named behavioural reference,
+   Symmetry, renders its countdown inline with the text).
+
+   Gated on :has(.bmp-countdown): a slide with no countdown -- the
+   overwhelming majority, and every slide until a merchant turns
+   bmp_countdown_show on -- never matches this selector at all, so it
+   keeps the stock single-child column layout untouched. Same specificity
+   pattern as the alignment rules above: one class + one :has() pseudo-
+   class is (0,2,0), still beating the global `.text-block` rule's
+   (0,1,0) from snippets/text.liquid regardless of source order.
+
+   flex-wrap: wrap lets a long announcement on a narrow phone degrade to
+   two lines (text, then timer beneath) instead of overflowing the bar
+   horizontally -- verified at 375px. align-items: baseline lines up the
+   text and the timer's digits on their text baseline rather than their
+   box centers, which reads more like one sentence and less like two
+   stacked, disconnected labels.
+
+   The child override is required, not optional, and needs two parts,
+   both found empirically (a first draft with only the first part still
+   rendered wrong):
+   1. snippets/text.liquid's global `.text-block > *` rule sets `width:
+      var(--width)` (inherited --width: 100% from blocks/_announcement.liquid)
+      on every direct child, so without overriding it the text and the
+      timer each claim the full row width and wrap onto their own line
+      regardless of flex-direction. `width: auto` lets each child size to
+      its own content so two can share a row; `max-inline-size: none`
+      removes the same rule's 100% cap, which would otherwise still allow
+      (though not force) a child to stretch to the full row.
+   2. blocks/_announcement.liquid's own stylesheet unconditionally applies
+      `.text-block--align-center, .text-block--align-center > *
+      { margin-inline: auto; }` (the native class is always present,
+      independent of bmp_alignment) -- auto margins on flex ROW items
+      each grab their own share of free space, which at the default
+      center alignment pushed the two children apart by far more than
+      column-gap instead of centering them as one group. Zeroing
+      margin-inline on every child, regardless of which bmp_alignment
+      class (if any) is present, hands all centering/edge-packing back to
+      justify-content on the parent alone, which is what the alignment
+      rules below already control. */
+.announcement-bar__slide:has(.bmp-countdown) {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  column-gap: 0.5em;
+}
+
+.announcement-bar__slide:has(.bmp-countdown) > * {
+  width: auto;
+  max-inline-size: none;
+  margin-inline: 0;
+}
+
+/* Alignment compatibility: the text-align-based rules above position
+   content within a COLUMN-layout slide (the no-countdown case) and have
+   no effect once flex-direction flips to row here, because row-mode
+   distributes its children along the main (horizontal) axis via
+   justify-content, not text-align. Three classes of specificity, (0,3,0),
+   beats the (0,2,0) base rule just above regardless of source order, so
+   these override its centered justify-content at left/right. */
+.bmp-announcement-align-left .announcement-bar__slide:has(.bmp-countdown) {
+  justify-content: flex-start;
+}
+
+.bmp-announcement-align-right .announcement-bar__slide:has(.bmp-countdown) {
+  justify-content: flex-end;
+}
+
+/* Zero visible slides: when every announcement is server-skipped (e.g. a
+   countdown's hide-on-end wrapper, a future feature), stock still paints
+   the <aside class="announcement-bar"> as a colored strip of pure padding.
+   Empirically verified: the section's OTHER sibling element,
+   <div class="section-background">, paints the same color and is not
+   covered by hiding the aside alone -- both must go, so the rule targets
+   the shared .shopify-section wrapper instead of either element by itself.
+   (:has() cannot nest inside another :has(), so the "no slide" check is
+   written as :not(:has(...)) on the wrapper itself, gated on the wrapper
+   actually containing an .announcement-bar so it never matches unrelated
+   sections in the same group.) Deliberate small delta vs. stock: this also
+   hides the rarer case of an announcement whose text is blank, which stock
+   already left painting empty today (design spec, "Edge case" section).
+
+   Theme-editor guard, added after adversarial review caught the bug this
+   was shipped without: a merchant who clears an existing announcement's
+   text, or whose only announcement is a countdown that expired with
+   bmp_countdown_hide_on_end on (server-skipped by the hide-wrap), has
+   zero slides -- and this rule collapsed the whole section to
+   display:none in the customizer, with nothing to click or select. The
+   countdown case is the one that matters, because it strikes at exactly
+   the moment the merchant needs to select the block to turn the countdown
+   off. NOT a case, contrary to what this comment claimed until 2026-08-13:
+   a freshly added block. The `_announcement` preset omits `text`, but
+   Shopify fills a setting's own "default" for every key a preset omits, so
+   a fresh add renders "Shop our latest arrivals!" and the
+   `unless plain_text == ''` guard passes. `html:not(.shopify-design-mode)`
+   scopes the rule to real storefront visitors only. `.shopify-design-mode`
+   is this theme's own convention (layout/theme.liquid emits it on <html> from
+   `request.design_mode`, verified against this repo and Shopify's theme-
+   editor docs, not assumed), already used the same way elsewhere
+   (snippets/collection-card.liquid, blocks/_featured-blog-posts-card.liquid).
+   Storefront behaviour is unchanged -- a real shopper never carries that
+   class, so the rule still fires there exactly as before; only the
+   editor's own preview is exempted. */
+html:not(.shopify-design-mode) .shopify-section:has(.announcement-bar):not(:has(.announcement-bar__slide)) {
+  display: none;
+}
+
+/* First-surviving-slide fallback: NOT a CSS rule.
+
+   A CSS-only version of this fallback shipped briefly and
+   was reverted the same day by adversarial review. It matched
+   `.announcement-bar__slides:not(:has(.announcement-bar__slide
+   [aria-hidden='false'])) > .announcement-bar__slide:first-child` and
+   forced `opacity: 1; visibility: visible` on the survivor -- but stock
+   always PAIRS `aria-hidden="true"` with `visibility: hidden`, and
+   `visibility: hidden` is what removes an element from the focus order.
+   Breaking that pairing left `aria-hidden="true"` on the markup while
+   making the slide visually visible AND focusable -- measured in isolated
+   Chromium with a link in the announcement: the slide's `<a
+   class="announcement-bar__link">` (position: absolute; inset: 0, covering
+   the whole slide) became keyboard-reachable while still hidden from
+   assistive tech. That is axe-core's `aria-hidden-focus`, WCAG 4.1.2,
+   serious -- and stock does NOT have it (stock's pairing keeps a
+   server-skipped slide out of the focus order entirely). Only `aria-hidden`
+   itself can fix this correctly, and only JS can write that attribute.
+
+   The fix now lives in assets/bmp-countdown-fallback.js, a feature-scoped
+   module loaded from snippets/bmp-countdown.liquid (mode: 'fallback') only
+   when THIS block's own countdown state is 'hidden' -- i.e. only when the
+   countdown feature is actively removing a block from server output, never
+   at any default state, so the default render stays byte-identical to stock. See
+   that file for the full mechanism and scripts/check-announcement-
+   countdown.mjs for the gate that keeps this CSS rule from coming back.
+
+   SCOPE, deliberately narrow (Iago, 2026-08-13): this fix covers ONLY the
+   case the countdown feature introduced -- a countdown's hide_on_end wrapper removing an
+   earlier block from server output. It does NOT cover the pre-existing,
+   countdown-independent stock Horizon defect where a merchant leaves the
+   FIRST announcement's text blank (native block_index is computed before
+   the native `unless plain_text == ''` check, same underlying gap, zero
+   countdown involvement) -- that bug predates this feature and is out of
+   scope here. A global always-loaded module was considered and
+   rejected specifically to avoid paying that cost on every page of every
+   store to repair a defect nobody filed. */
+
+/* Product title truncate: bmp_truncate_lines on
+   blocks/product-title.liquid gates a pure CSS line-clamp on the rendered
+   title — no JS, the full title stays in the DOM. blocks/product-title.liquid
+   passes the computed class straight to snippets/text.liquid's own `class`
+   param, so it lands on the text-block wrapper; the clamp targets that
+   wrapper's immediate child, which is where the title's <p role="heading">
+   (or RTE-formatted) markup actually renders.
+
+   Gated on the PRESENCE of a truncate class (unlike the card-hover zoom rule
+   above, which is gated on the absence of an attribute): at the default
+   'none', blocks/product-title.liquid's hook assigns class: '' — `{{ class }}`
+   interpolates a blank string the same way it interpolates nil, so
+   snippets/text.liquid renders byte-identically to stock and this CSS has
+   nothing to select. The three modifier classes only reach the DOM once a
+   merchant picks 1, 2 or 3.
+
+   Both the -webkit- prefixed property and the standard `line-clamp` longhand
+   are set; every shipping Safari still requires the prefixed form.
+
+   `overflow: hidden` is what ships, and it is also what stock Horizon itself
+   uses under every one of its own line clamps — snippets/card-gallery.liquid
+   (~L316-321), product-card-styles.liquid, product-grid.liquid and
+   resource-card.liquid all pair -webkit-box + line-clamp with
+   `overflow: hidden`. Diverging from that here would be a BMP-only deviation
+   in the one property those four core files agree on.
+
+   What was REJECTED here is specifically
+   `overflow: clip` WITH an `overflow-clip-margin`. It was tried to stop the
+   card-title hover underline being cut off on the last visible line: the
+   underline paints at text-underline-offset 0.3rem, and a box ending exactly
+   at N x line-height clips the stroke. Chrome's modern clamp still lays out
+   the discarded lines and merely clips them, so any clip margin reveals the
+   top of the next line as a smear under the ellipsis — measured in Chromium
+   148, worst at 1 line. WebKit is unaffected there (the classic -webkit-box
+   clamp never renders the extra lines), but the Chrome regression lands on
+   every clamped card at the default typography, which is far worse than the
+   underline it fixes.
+
+   Plain `overflow: clip` with NO clip margin was NOT rejected — it was never
+   measured in WebKit, so it is not shipped. Do not read the paragraph above as
+   evidence against it. Measured in Chromium 148 on a 2-line clamp, the two
+   differ in exactly one respect: hidden gives clientHeight 45 / scrollHeight
+   90 and `scrollTop` settles at 45, i.e. the clamped box is a real scroll
+   container and the discarded text is programmatically reachable (find-in-page
+   can scroll to it); clip gives the same clientHeight 45 / scrollHeight 90 and
+   the same 44.78px client rect, but `scrollTop` stays 0. Geometry, ellipsis and
+   box height are identical either way — the only delta is that stray
+   scrollability, which is a Blink-only, find-in-page-only effect and is why
+   this stays with the stock-matching value rather than chasing it.
+
+   Accepted trade-off of shipping hidden: at the tight line-height presets the
+   hover underline can be clipped on the last visible line. */
+.bmp-title-clamp > * {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--bmp-title-clamp-lines);
+  line-clamp: var(--bmp-title-clamp-lines);
+  overflow: hidden;
+}
+
+.bmp-title-clamp--1 {
+  --bmp-title-clamp-lines: 1;
+}
+
+.bmp-title-clamp--2 {
+  --bmp-title-clamp-lines: 2;
+}
+
+.bmp-title-clamp--3 {
+  --bmp-title-clamp-lines: 3;
+}
+
+/* ============================================================
+   GLOBAL CARD STYLE — Plan 2 (Card wrapper + Media + Swatches).
+   Same mechanism as Plan 1 above; tokens from
+   snippets/bmp-card-style-vars.liquid (:root). Type prefixes are
+   load-bearing (gate A7 doctrine): the competing rules are
+   .product-grid__card.product-grid__card (0,2,0) from
+   snippets/product-card-styles.liquid and the base utility classes
+   (0,1,0) — every selector here reaches (0,2,1) so it wins by
+   specificity, independent of stylesheet order.
+
+   Card wrapper: the toggle is carried by a display:contents DIV
+   emitted by blocks/_product-card.liquid / blocks/product-card.liquid
+   (title-wrapper precedent, including its later correction — the
+   wrapped <product-card> holds <a> and <div>, which is flow content
+   and invalid inside a phrasing-only <span>; the DOM is identical
+   either way, no <span> auto-closes on flow content, so this is
+   emitted-markup correctness, not a rendering fix). The wrapper form
+   exists so the shared snippets/product-card.liquid needs no BMP
+   logic for the STYLE layer; its one BMP edit is the contrast gate
+   below, which cannot live out here because it suppresses a Liquid
+   render, not a declaration. `div.` is one type selector exactly as
+   `span.` was, so every rule stays (0,2,1). The prefix is hardcoded
+   in the gate too — A7's cross-file parity leg is what catches a
+   half-applied rename. Border-color falls back to the same
+   scheme-aware expression border-override emits inline — resolved
+   HERE (at the element) on purpose: :root tokens cannot carry
+   element-scoped vars. Paddings/gap are plain px tokens (no
+   responsive spacing-scale), the same accepted divergence as the
+   Plan-1 title/price paddings. The always-on overflow:hidden from
+   .product-grid__card makes the global radius clip without help.
+   Background is a plain background-color override, and it is only
+   safe because the color-custom-<id> scheme class is no longer there
+   to argue with: snippets/product-card.liquid stops emitting both the
+   class and the contrast-override <style> when the toggle is on
+   (BMP-HOOK:card-global-contrast-off / -class). Overriding
+   background-color here while that class survived would have left
+   ~11 tokens — --color-background, --color, --color-foreground(-rgb),
+   -muted, -subdued, --color-border(-rgb), the brightness opacities
+   and four --input-disabled-* / --checkbox-border — all computed
+   against a background that no longer paints, and no rule in this
+   file can repair more than the two visible ones. What the global
+   layer deliberately does NOT do is derive a contrasting foreground
+   from bmp_card_background_color: bmp_card_title_color and
+   bmp_card_price_color are globals in the same settings group and,
+   unlike the local background_color, they stay visible with the
+   toggle on. Zoom-out grid paddings (--zoom-out-padding-*) stay
+   derived from the local values — accepted, zoom-out only.
+
+   Media: ratio is Liquid-substituted in snippets/card-gallery.liquid
+   (only Liquid resolves 'adapt' per product); border/padding land
+   here. padding-block keeps the --section-top-offset term to mirror
+   base.css .spacing-style exactly. Nothing is emitted for overflow:
+   snippets/card-gallery.liquid's own scoped stylesheet block declares
+   `.card-gallery { overflow: hidden }` unconditionally, so the global
+   radius clips without help — the same always-on argument as
+   .product-grid__card above. A token-gated overflow rule lived here
+   until 2026-08-15 and was removed as inert: native (0,1,0), the
+   inline copy border-override emits at a local radius, and the gated
+   rule (0,2,1) all declared the same value, so no combination of
+   local and global radius could ever produce overflow: visible.
+
+   Swatches: the native block declares its custom properties INLINE
+   on <product-swatches>, where inline always wins — so this rule
+   re-declares them on DESCENDANTS, which every consumer
+   (overflow-list.css, variant-swatches scoped styles) reads by
+   inheritance. A stylesheet declaration on the consuming element
+   beats an inherited inline value. PDP variant-picker swatches have
+   no product-swatches ancestor and are untouched.
+   ============================================================ */
+
+div.bmp-card-global-card {
+  display: contents;
+}
+
+.bmp-card-global-card div.product-card__content {
+  gap: var(--bmp-cardg-card-gap);
+  background-color: var(--bmp-cardg-card-bg, transparent);
+  border-width: var(--bmp-cardg-card-border-width);
+  border-style: var(--bmp-cardg-card-border-style);
+  border-color: var(--bmp-cardg-card-border-color, rgb(var(--color-border-rgb) / var(--bmp-cardg-card-border-opacity)));
+  border-radius: var(--bmp-cardg-card-border-radius);
+  padding-block: var(--bmp-cardg-card-pad-top, 0px) var(--bmp-cardg-card-pad-bottom, 0px);
+  padding-inline: var(--bmp-cardg-card-pad-left, 0px) var(--bmp-cardg-card-pad-right, 0px);
+}
+
+div.card-gallery.bmp-card-global-media {
+  border-width: var(--bmp-cardg-media-border-width);
+  border-style: var(--bmp-cardg-media-border-style);
+  border-color: var(--bmp-cardg-media-border-color, rgb(var(--color-border-rgb) / var(--bmp-cardg-media-border-opacity)));
+  border-radius: var(--bmp-cardg-media-border-radius);
+  padding-block: calc(var(--bmp-cardg-media-pad-top, 0px) + var(--section-top-offset, 0px)) var(--bmp-cardg-media-pad-bottom, 0px);
+  padding-inline: var(--bmp-cardg-media-pad-left, 0px) var(--bmp-cardg-media-pad-right, 0px);
+}
+
+product-swatches.bmp-card-global-swatches * {
+  --overflow-list-alignment: var(--bmp-cardg-sw-align);
+  --overflow-list-alignment-mobile: var(--bmp-cardg-sw-align-mobile);
+  --product-swatches-alignment: var(--bmp-cardg-sw-align-logical);
+  --product-swatches-alignment-mobile: var(--bmp-cardg-sw-align-logical-mobile);
+  --product-swatches-padding-block-start: var(--bmp-cardg-sw-pad-top, 0px);
+  --product-swatches-padding-block-end: var(--bmp-cardg-sw-pad-bottom, 0px);
+  --product-swatches-padding-inline-start: var(--bmp-cardg-sw-pad-left, 0px);
+  --product-swatches-padding-inline-end: var(--bmp-cardg-sw-pad-right, 0px);
+}
