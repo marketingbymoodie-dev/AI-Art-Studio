@@ -125,6 +125,54 @@ export function myPetQualityRetryAllowed(qaFailed: boolean, alreadyRetried: bool
   return qaFailed && !alreadyRetried;
 }
 
+/** Shown when both the first edit and the one retry miss the pose. The image is not saved. */
+export const MY_PET_POSE_REJECTED_MESSAGE = "We couldn't match this design's pose, so this one wasn't saved. Please try again.";
+
+export class MyPetPoseRejectedError extends Error {
+  constructor() {
+    super(MY_PET_POSE_REJECTED_MESSAGE);
+    this.name = "MyPetPoseRejectedError";
+  }
+}
+
+/** Reads the totals the pose note assigns. Null when that sentence is missing. */
+export function poseNotePawCounts(note: string): { front: number | null; hind: number | null } {
+  const read = (label: string) => {
+    const match = new RegExp(`visible ${label} paws:\\s*(\\d+)`, "i").exec(note || "");
+    if (!match) return null;
+    const n = Number(match[1]);
+    return Number.isInteger(n) && n >= 0 && n <= 12 ? n : null;
+  };
+  return { front: read("front"), hind: read("hind") };
+}
+
+/**
+ * The note's counts win. A matching count still fails when a paw is raised,
+ * planted, folded, hidden, or holding the wrong thing.
+ */
+export function myPetPawCheckPass(args: {
+  note: string;
+  visibleFrontPaws: number | null;
+  visibleHindPaws: number | null;
+  frontMatch: boolean;
+  hindMatch: boolean;
+}): { pass: boolean; reason: string } {
+  const expected = poseNotePawCounts(args.note);
+  if (expected.front == null || expected.hind == null) {
+    return { pass: false, reason: "The pose note does not give visible front and hind paw counts." };
+  }
+  if (args.visibleFrontPaws == null || args.visibleHindPaws == null) {
+    return { pass: false, reason: "The vision check did not return paw counts." };
+  }
+  const reason = `Visible front paws ${args.visibleFrontPaws} (note ${expected.front}). Visible hind paws ${args.visibleHindPaws} (note ${expected.hind}).`;
+  const countsOk = args.visibleFrontPaws === expected.front && args.visibleHindPaws === expected.hind;
+  if (!countsOk || !args.frontMatch || !args.hindMatch) {
+    const position = countsOk ? " A paw's position or what it holds does not match the note." : "";
+    return { pass: false, reason: `${reason}${position}` };
+  }
+  return { pass: true, reason };
+}
+
 export function clipMyPetNote(value: unknown, max = 500): string {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }

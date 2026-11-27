@@ -9,7 +9,9 @@ import { eq } from "drizzle-orm";
 import {
   clipMyPetNote,
   compositePetRegion,
+  myPetPawCheckPass,
   parsePetMask,
+  poseNotePawCounts,
   resolvedPetMask,
   type PetMask,
 } from "@shared/myPetQuality";
@@ -122,7 +124,7 @@ export async function readDesignPose(artwork: Buffer): Promise<DesignPoseRead> {
   const result = await askVision(
     artwork,
     "You read one finished shirt design. Return only JSON. The box is the animal only, not the lettering.",
-    'Return {"poseNote": string, "x": number, "y": number, "w": number, "h": number, "letteringOverlapsPet": boolean}. poseNote is one sentence: which body parts are visible, how many legs and which (left or right, front or hind), the tail position, and what is hidden. x, y, w, h are fractions from 0 to 1 of the image. letteringOverlapsPet is true only when lettering sits on the animal.',
+    'Return {"poseNote": string, "x": number, "y": number, "w": number, "h": number, "letteringOverlapsPet": boolean}. poseNote must start "Visible front paws: N. Visible hind paws: M." Then assign every limb as raised, planted, folded, or hidden, and say what each paw holds. Include a second animal or bird. Count flippers and wings as front paws and feet as hind paws. x, y, w, h are fractions from 0 to 1 of the image. letteringOverlapsPet is true only when lettering sits on the animal.',
   );
   const poseNote = clipMyPetNote(result.json?.poseNote, 500);
   const mask = parsePetMask({
@@ -141,11 +143,37 @@ export async function readDesignPose(artwork: Buffer): Promise<DesignPoseRead> {
   };
 }
 
-export type EditCheck = { pass: boolean; checked: boolean; reason: string; durationMs: number; costUsd: number };
+export type EditCheck = {
+  pass: boolean;
+  checked: boolean;
+  reason: string;
+  visibleFrontPaws: number | null;
+  visibleHindPaws: number | null;
+  noteFrontPaws: number | null;
+  noteHindPaws: number | null;
+  durationMs: number;
+  costUsd: number;
+};
 
-export async function checkMyPetEdit(original: Buffer, edited: Buffer): Promise<EditCheck> {
+const UNCHECKED: Pick<EditCheck, "visibleFrontPaws" | "visibleHindPaws" | "noteFrontPaws" | "noteHindPaws"> = {
+  visibleFrontPaws: null,
+  visibleHindPaws: null,
+  noteFrontPaws: null,
+  noteHindPaws: null,
+};
+
+function pawCount(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 12 ? n : null;
+}
+
+export async function checkMyPetEdit(original: Buffer, edited: Buffer, poseNote: string): Promise<EditCheck> {
+  const note = clipMyPetNote(poseNote, 500);
+  const expected = poseNotePawCounts(note);
   const key = anthropicApiKey();
-  if (!key) return { pass: true, checked: false, reason: "Vision is not configured.", durationMs: 0, costUsd: 0 };
+  if (!key) {
+    return { pass: true, checked: false, reason: "Vision is not configured.", ...UNCHECKED, noteFrontPaws: expected.front, noteHindPaws: expected.hind, durationMs: 0, costUsd: 0 };
+  }
   const [left, right] = await Promise.all([visionImage(original), visionImage(edited)]);
   const started = Date.now();
   const res = await fetch(VISION_URL, {
@@ -157,14 +185,14 @@ export async function checkMyPetEdit(original: Buffer, edited: Buffer): Promise<
     },
     body: JSON.stringify({
       model: MY_PET_VISION_MODEL,
-      max_tokens: 300,
-      system: "You compare an original shirt design with an edit. Return only JSON. Image 1 is the original. Image 2 is the edit.",
+      max_tokens: 800,
+      system: "You count paws on an edited shirt design. Return only JSON. Image 1 is the original design. Image 2 is the edit. The pose note is the required pose. Breed, coat, markings, and ear shape may change.",
       messages: [{
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: left.toString("base64") } },
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: right.toString("base64") } },
-          { type: "text", text: 'Return {"pass": boolean, "reason": string}. The edit is supposed to change the breed, coat, markings, and ear shape. Those changes pass. pass is false only for a wrong word, broken or much thicker lettering, an extra leg, a missing leg that Image 1 clearly shows, two of the same leg, or a head or tail appearing where Image 1 hides it. Otherwise pass is true.' },
+          { type: "text", text: `Pose note: ${note || "None."}\nReturn {"visibleFrontPaws": number, "visibleHindPaws": number, "frontMatch": boolean, "hindMatch": boolean, "reason": string}. Count every visible front paw and every visible hind paw in Image 2, including a second animal or bird. A flipper or wing counts as a front paw. A foot counts as a hind paw. frontMatch is true only when Image 2 has the note's front-paw count and each front paw is raised, planted, folded, or hidden as the note says, holding what the note says. hindMatch is the same for hind paws. reason states the counts and any paw that does not match.` },
         ],
       }],
     }),
@@ -173,7 +201,7 @@ export async function checkMyPetEdit(original: Buffer, edited: Buffer): Promise<
   const durationMs = Date.now() - started;
   if (!res.ok) {
     const detail = summarizeAnthropicError(res.status, redactAnthropicSecrets(bodyText));
-    return { pass: true, checked: false, reason: detail.anthropicMessage || "The check did not run.", durationMs, costUsd: 0 };
+    return { pass: true, checked: false, reason: detail.anthropicMessage || "The check did not run.", ...UNCHECKED, noteFrontPaws: expected.front, noteHindPaws: expected.hind, durationMs, costUsd: 0 };
   }
   let payload: { content?: Array<{ type?: string; text?: string }>; usage?: MyPetVisionUsage } = {};
   try { payload = JSON.parse(bodyText); } catch { payload = {}; }
@@ -185,15 +213,28 @@ export async function checkMyPetEdit(original: Buffer, edited: Buffer): Promise<
       try { json = JSON.parse(fenced[0]) as Record<string, unknown>; } catch { json = null; }
     }
   }
-  if (!json || typeof json.pass !== "boolean") {
-    return { pass: true, checked: false, reason: "The check could not be read.", durationMs, costUsd: myPetVisionCostUsd(payload.usage) };
+  const costUsd = myPetVisionCostUsd(payload.usage);
+  if (!json) {
+    return { pass: true, checked: false, reason: "The check could not be read.", ...UNCHECKED, noteFrontPaws: expected.front, noteHindPaws: expected.hind, durationMs, costUsd };
   }
+  const verdict = myPetPawCheckPass({
+    note,
+    visibleFrontPaws: pawCount(json.visibleFrontPaws),
+    visibleHindPaws: pawCount(json.visibleHindPaws),
+    frontMatch: json.frontMatch === true,
+    hindMatch: json.hindMatch === true,
+  });
+  const modelReason = String(json.reason || "").replace(/\s+/g, " ").trim();
   return {
-    pass: json.pass,
+    pass: verdict.pass,
     checked: true,
-    reason: clipMyPetNote(json.reason, 300),
+    reason: [verdict.reason, modelReason].filter(Boolean).join(" "),
+    visibleFrontPaws: pawCount(json.visibleFrontPaws),
+    visibleHindPaws: pawCount(json.visibleHindPaws),
+    noteFrontPaws: expected.front,
+    noteHindPaws: expected.hind,
     durationMs,
-    costUsd: myPetVisionCostUsd(payload.usage),
+    costUsd,
   };
 }
 

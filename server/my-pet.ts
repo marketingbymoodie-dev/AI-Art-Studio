@@ -42,7 +42,7 @@ import {
   type MyPetRenderParams,
   type MyPetSettings,
 } from "@shared/myPetSettings";
-import { myPetQualityRetryAllowed, parsePetMask, type PetMask } from "@shared/myPetQuality";
+import { MyPetPoseRejectedError, myPetQualityRetryAllowed, parsePetMask, type PetMask } from "@shared/myPetQuality";
 import { db } from "./db";
 import { chooseMyPetPanelId, myPetCompositeColours, resolveMyPetCompositeColor, type MyPetColour, type MyPetColourPalette } from "./my-pet-panel";
 import { lookupMyPetPrintifySubmission, type MyPetPrintifyCard } from "./my-pet-printify-retry";
@@ -604,26 +604,61 @@ export async function generateMyPetRender(args: {
   // original doubled the animal in the staging test, because the edit is not
   // in the same pixels as the artwork. The shopper gets the edit itself.
   if (originalArt) {
+    const logCheck = (qa: Awaited<ReturnType<typeof checkMyPetEdit>>) => {
+      console.log(`[my-pet] quality check ${JSON.stringify({
+        pass: qa.pass,
+        checked: qa.checked,
+        visibleFrontPaws: qa.visibleFrontPaws,
+        visibleHindPaws: qa.visibleHindPaws,
+        noteFrontPaws: qa.noteFrontPaws,
+        noteHindPaws: qa.noteHindPaws,
+        reason: qa.reason,
+      })}`);
+    };
+    let qa: Awaited<ReturnType<typeof checkMyPetEdit>> | null = null;
     try {
-      const qa = await checkMyPetEdit(originalArt, editedBuf);
+      qa = await checkMyPetEdit(originalArt, editedBuf, args.candidate.poseNote || "");
       visionCostUsd += qa.costUsd;
       visionMs += qa.durationMs;
-      console.log(`[my-pet] quality check pass=${qa.pass} checked=${qa.checked} reason=${JSON.stringify(qa.reason)}`);
-      if (myPetQualityRetryAllowed(qa.checked && !qa.pass, false)) {
-        const retry = await runMyPetImageEdit({
-          prompt: `${prompt} The previous attempt failed this check: ${qa.reason}. Correct only that.`,
-          designUrl,
-          petUrl,
-          renderParams,
-        });
-        sunburstCalls = 2;
-        editMs += retry.durationMs;
-        result = retry;
-        editedBuf = Buffer.from(retry.data, "base64");
-        console.log("[my-pet] quality retry used. The shopper is still charged for one generate.");
-      }
+      logCheck(qa);
     } catch (err) {
       console.warn(`[my-pet] quality check skipped: ${(err as Error)?.message}`);
+    }
+    if (qa && myPetQualityRetryAllowed(qa.checked && !qa.pass, false)) {
+      const retry = await runMyPetImageEdit({
+        prompt: `${prompt} The previous attempt failed this check: ${qa.reason}. Correct only that.`,
+        designUrl,
+        petUrl,
+        renderParams,
+      });
+      sunburstCalls = 2;
+      editMs += retry.durationMs;
+      result = retry;
+      editedBuf = Buffer.from(retry.data, "base64");
+      console.log("[my-pet] quality retry used.");
+      try {
+        qa = await checkMyPetEdit(originalArt, editedBuf, args.candidate.poseNote || "");
+        visionCostUsd += qa.costUsd;
+        visionMs += qa.durationMs;
+        logCheck(qa);
+      } catch (err) {
+        console.warn(`[my-pet] quality recheck skipped: ${(err as Error)?.message}`);
+        qa = null;
+      }
+      if (qa && qa.checked && !qa.pass) {
+        console.log("[my-pet] quality retry failed. The shopper is not shown this image and it is not saved.");
+        await recordMyPetGenerationEvent({
+          shop: args.shop,
+          success: false,
+          durationMs: editMs + visionMs,
+          estimatedCostUsd: sunburstCalls * MY_PET_SUNBURST_ESTIMATED_COST_USD + visionCostUsd,
+          model: MY_PET_REPLICATE_MODEL,
+          quality: renderParams.quality,
+          providerRequestId: result.providerRequestId,
+          error: qa.reason,
+        });
+        throw new MyPetPoseRejectedError();
+      }
     }
   }
   await writeLibraryObject(editedPath, editedBuf, "image/png");
