@@ -950,8 +950,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       'button.appai-atc-error > .appai-atc-face{height:auto;min-height:100%;bottom:auto;white-space:normal;background:#3d1212;color:#fff;}' +
       '.appai-atc-face--float{position:fixed;inset:auto;top:auto;right:auto;z-index:100000;display:flex;align-items:center;justify-content:center;gap:.5em;padding:.7em;box-sizing:border-box;background:#3d1212;color:#fff;border-radius:8px;text-align:center;font:600 15px/1.3 system-ui,sans-serif;pointer-events:none;white-space:normal;}' +
       '.appai-my-pet-modal__body #appai-my-pet-status:empty{display:none;margin:0;}' +
-      '.appai-my-pet-hero-wait{position:absolute;left:50%;top:50%;width:32px;height:32px;margin:-16px 0 0 -16px;border:3px solid rgba(0,0,0,.15);border-top-color:#111;border-radius:50%;animation:appai-atc-spin .7s linear infinite;z-index:5;pointer-events:none;}' +
-      '@media (prefers-reduced-motion:reduce){.appai-atc-spin{animation:none;opacity:.85;}}' +
+      '.appai-my-pet-hero-wait{position:absolute;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.55);pointer-events:none;}' +
+      '.appai-my-pet-hero-wait::before{content:"";width:36px;height:36px;border:3px solid rgba(0,0,0,.18);border-top-color:#111;border-radius:50%;animation:appai-atc-spin .7s linear infinite;}' +
+      '@media (prefers-reduced-motion:reduce){.appai-atc-spin,.appai-my-pet-hero-wait::before{animation:none;opacity:.85;}}' +
       // Attempts remaining caption
       '.appai-attempts{font-size:.8em;color:#666;text-align:center;margin-top:.5rem;}' +
       // Zoom overlay (preview full-screen)
@@ -3911,6 +3912,24 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       commitImgSrc(img, url);
     }
 
+    // The custom image can take about a second to decode onto the hero.
+    // Keep the existing wait spinner up until that paint finishes.
+    function noteHeroLoading(img) {
+      if (!img) return;
+      var hero = findVisibleHeroImg() || state.inlineHero;
+      if (!hero || (img !== hero && img !== state.inlineHero)) return;
+      var token = (state.heroWaitToken = (state.heroWaitToken || 0) + 1);
+      var finish = function () {
+        if (state.heroWaitToken !== token) return;
+        setHeroWaiting(false);
+      };
+      setHeroWaiting(true);
+      img.addEventListener('load', finish, { once: true });
+      img.addEventListener('error', finish, { once: true });
+      setTimeout(finish, 4000);
+      if (img.complete && img.naturalWidth > 0 && !img.__appaiSrcHeld) finish();
+    }
+
     function applyPreviewSrc(img, url) {
       if (!img || !url) return;
       url = preferDecodedUrl(url);
@@ -3935,6 +3954,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           try { img.decoding = 'sync'; } catch (eDec) {}
         }
         assignImgSrc(img, url);
+        noteHeroLoading(img);
         if (img.__appaiSrcHeld) return;
         img.__appaiAssertUrl = url;
         img.__appaiAssertAt = Date.now();
