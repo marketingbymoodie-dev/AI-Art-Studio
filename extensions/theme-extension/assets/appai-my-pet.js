@@ -156,11 +156,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     var choices = choicesFromRecord(prev);
     var own = choices[prev.renderId] || { colorName: '', sizeName: '' };
     var colour = colorName || own.colorName || '';
-    var size = sizeName || own.sizeName || '';
+    // Empty size clears a size. The variant on the form is often S before
+    // the shopper picks one, and keeping that value labelled and preselected it.
+    var size = sizeName || '';
     choices[prev.renderId] = { colorName: colour, sizeName: size };
     prev.choices = choices;
     if (colour) prev.colorName = colour;
     if (size) prev.sizeName = size;
+    else delete prev.sizeName;
     writeStoredRecord(shopifyProductId, prev);
     myPetLog(TAG, 'design pref write render=' + prev.renderId +
       ' colour=' + colour + ' size=' + size + ' reason=' + (reason || ''));
@@ -170,15 +173,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       sizeName: size,
     }).catch(function () {});
   }
-  // Make renderId active. Use its saved colour and size, or the pair on
-  // screen when this design has never saved one. Returns the pair to select.
+  // Make renderId active and remember the colour and size on screen.
+  // Opening a design keeps the swatch the shopper already selected, so the
+  // saved colour is that swatch, not the colour from when it was generated.
+  // Size is whatever they have actually picked, or blank.
   function activateStoredDesign(shopifyProductId, renderId, jobId, fallbackColor, fallbackSize) {
     var prev = readStoredRecord(shopifyProductId) || {};
     var choices = choicesFromRecord(prev);
-    var own = choices[renderId];
-    var hadOwn = !!(own && (own.colorName || own.sizeName));
-    var colorName = hadOwn && own.colorName ? own.colorName : '';
-    var sizeName = hadOwn && own.sizeName ? own.sizeName : '';
+    var colorName = fallbackColor || '';
+    var sizeName = fallbackSize || '';
+    choices[renderId] = { colorName: colorName, sizeName: sizeName };
     var next = {
       renderId: renderId,
       jobId: jobId || null,
@@ -192,9 +196,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     myPetLog(TAG, 'design pref write render=' + renderId +
       ' colour=' + colorName + ' size=' + sizeName + ' reason=activate');
     return {
-      colorName: colorName || fallbackColor || '',
-      sizeName: sizeName || fallbackSize || '',
-      hadOwn: hadOwn,
+      colorName: colorName,
+      sizeName: sizeName,
+      hadOwn: true,
     };
   }
   function storedChoiceFor(shopifyProductId, renderId) {
@@ -1976,7 +1980,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
     function currentSizeName() {
       if (window.__appaiRequireSize && !window.__appaiSizeChosen) return '';
-      return checkedProductOption('size') || (currentVariantInfo(root).sizeId || '') || '';
+      return checkedProductOption('size') || '';
     }
 
     function refreshDesignList() {
@@ -2079,8 +2083,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
 
     function designLabelPair(item) {
       var saved = storedChoiceFor(shopifyProductId, item.renderId);
-      var color = saved.colorName || item.colorName || '';
-      var size = saved.sizeName || item.sizeName || '';
+      var active = item.renderId === state.renderId;
+      var color = active
+        ? (currentColourName() || saved.colorName || item.colorName || '')
+        : (saved.colorName || item.colorName || '');
+      // The generate row used to store the form's default size (S) when the
+      // shopper had not picked one. Only a size they picked is labelled.
+      var size = active ? currentSizeName() : (saved.sizeName || '');
       if (color && size) return color + ' · ' + size;
       return color || size || '';
     }
@@ -2134,7 +2143,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var name = 'Design ' + (i + 1);
         var pair = designLabelPair(item);
         var savedChoice = storedChoiceFor(shopifyProductId, item.renderId);
-        var labelColour = savedChoice.colorName || item.colorName || '';
+        var labelColour = active
+          ? (currentColourName() || savedChoice.colorName || item.colorName || '')
+          : (savedChoice.colorName || item.colorName || '');
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'appai-my-pet-designs__thumb';
@@ -2612,18 +2623,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       cancelDesignHover(false);
       if (!isDesignSheet()) closeDesigns();
       var saved = storedChoiceFor(shopifyProductId, item.renderId);
-      var fallbackColor = currentColourName();
-      var fallbackSize = currentSizeName();
-      var wantedColor = saved.colorName || fallbackColor;
-      var wantedSize = saved.sizeName || fallbackSize;
-      var pair = resolveSavedCombo(root, wantedColor, wantedSize);
-      if (pair && pair.swapped) showSwapToast(pair);
-      var colorName = pair ? pair.color : wantedColor;
-      var sizeName = pair ? pair.size : wantedSize;
+      // Opening a design keeps the swatch and size already on screen and
+      // paints this artwork on that colour. It does not move the swatch back
+      // to the colour from generate, and it does not check a size.
+      var colorName = currentColourName();
+      var sizeName = currentSizeName();
       if (colorName) noteColourSelection(colorName, false);
       var same = item.renderId === state.renderId
-        && namesMatch(colorName, fallbackColor)
-        && namesMatch(sizeName, fallbackSize);
+        && namesMatch(colorName, currentColourName())
+        && namesMatch(sizeName, currentSizeName());
       var wasReverted = !!state.reverted || revertedFlagOn(shopifyProductId);
       if (wasReverted) {
         state.reverted = false;
@@ -2637,12 +2645,6 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         token = beginDesignTransition(item.renderId, colorName, sizeName);
         state.designSwitchColour = colorName || '';
         state.designSwitchSize = sizeName || '';
-        if (state.applyExactVariant && colorName) {
-          var explicitSize = sizeName || fallbackSize || '';
-          if (explicitSize || !window.__appaiRequireSize || window.__appaiSizeChosen) {
-            state.applyExactVariant(colorName, explicitSize || 'M');
-          }
-        }
         if (state.designTransition && state.designTransition.token === token) {
           state.designTransition.expectsRerender = !!(state.variantDispatchedAt && (Date.now() - state.variantDispatchedAt) < 300);
           if (state.designTransition.expectsRerender) armTransitionFallback(token);
@@ -2652,8 +2654,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         myPetLog(TAG, 'design select', item.renderId,
           'stored colour=' + (saved.colorName || '(none)'),
           'stored size=' + (saved.sizeName || '(none)'),
-          'selected colour=' + (fallbackColor || '(none)'),
-          'selected size=' + (fallbackSize || '(none)'));
+          'selected colour=' + (colorName || '(none)'),
+          'selected size=' + (sizeName || '(none)'));
         if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         revealHeroAboveSheet();
         lockProductGallery();
@@ -2686,9 +2688,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           endDesignTransition(token, 'resolve-failed');
           return;
         }
-        var picked = activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, fallbackColor, fallbackSize);
-        state.designSwitchColour = picked.colorName || colorName || '';
-        state.designSwitchSize = picked.sizeName || sizeName || '';
+        activateStoredDesign(shopifyProductId, item.renderId, res.jobId || item.jobId, colorName, sizeName);
+        state.designSwitchColour = colorName || '';
+        state.designSwitchSize = sizeName || '';
         if (state.designTransition && state.designTransition.token === token) {
           state.designTransition.colour = state.designSwitchColour;
           state.designTransition.sizeName = state.designSwitchSize;
@@ -3089,11 +3091,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       function selectRestoredVariant(storedRender, res) {
         if (window.__appaiVariantOnLoad) return restoredColour();
         var color = (storedRender && storedRender.colorName) || (res && res.colorName) || '';
-        var size = (storedRender && storedRender.sizeName) || (res && res.sizeName) || '';
-        if (!size && window.__appaiRequireSize && !window.__appaiSizeChosen) {
-          return color || restoredColour();
-        }
-        if (!size) size = 'M';
+        var size = (storedRender && storedRender.sizeName) || '';
+        if (!size) return color || restoredColour();
         if (!color) return applyExactVariant(restoredColour(), size) || restoredColour();
         var pair = resolveSavedCombo(root, color, size);
         if (pair && pair.swapped) showSwapToast(pair);
@@ -4367,11 +4366,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         return;
       }
       var sizeName = currentSizeName();
-      if (colour && state.applyExactVariant) {
-        if (sizeName || !window.__appaiRequireSize || window.__appaiSizeChosen) {
-          state.applyExactVariant(colour, sizeName || 'M');
-        }
-      }
+      if (colour && sizeName && state.applyExactVariant) state.applyExactVariant(colour, sizeName);
       if (colour && !customGalleryLocked()) showColourSlide(colour);
       var token = beginDesignTransition(genRes.renderId, colour, sizeName);
       var t = state.designTransition;
@@ -5411,8 +5406,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           };
           colourMark('swatch click captured', 'colour=' + colorName);
           if (!showColourSlide(colorName)) paintColourNow(colorName, url);
-          var prefSize = intent.sizeName || checkedProductOption('size') || '';
-          writeStoredVariantChoice(shopifyProductId, colorName, prefSize, 'colour-click');
+          writeStoredVariantChoice(shopifyProductId, colorName, currentSizeName(), 'colour-click');
           watchColourVisible(swapStarted, colorName, url);
           var paintSeq = state.colourPaintSeq;
           setTimeout(function () {
@@ -5425,14 +5419,15 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           setHeroWaiting(true);
           swapInlineColor(colorName);
           if (event.type === 'click') {
-            writeStoredVariantChoice(shopifyProductId, colorName, intent.sizeName || checkedProductOption('size') || '', 'colour-click');
+            writeStoredVariantChoice(shopifyProductId, colorName, currentSizeName(), 'colour-click');
           }
         } else if (event.type === 'click' && intent.kind === 'size') {
           writeStoredVariantChoice(shopifyProductId, state.selectedColour || colorName, intent.sizeName || '', 'size-click');
         }
+        if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
         scheduleShadowWarm(intent.kind === 'size' ? 'size' : 'colour', {
           colour: intent.kind === 'color' ? colorName : (intent.colorName || ''),
-          size: intent.sizeName || checkedProductOption('size') || '',
+          size: intent.kind === 'size' ? (intent.sizeName || '') : currentSizeName(),
         });
       };
       document.addEventListener('click', handler, true);
@@ -9002,7 +8997,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             if (!uploadRes || !uploadRes.ok) throw new Error((uploadRes && uploadRes.error) || 'Could not upload photo');
             var info = currentVariantInfo(root);
             var generateColour = currentColourName() || info.colorName || '';
-            var generateSize = currentSizeName() || info.sizeId || '';
+            var generateSize = currentSizeName();
             return postJson('my-pet/generate', {
               candidateId: candidateId,
               shopifyProductId: shopifyProductId,
