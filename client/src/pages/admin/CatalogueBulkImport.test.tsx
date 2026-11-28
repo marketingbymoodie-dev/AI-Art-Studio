@@ -367,11 +367,41 @@ describe("catalogue import file inputs", () => {
   }
 
   it("keeps Confirm checks after a reload when the image is already stored", async () => {
-    openBatch.current = { batchId: "batch-1", rows: [restoredRow({ acknowledgedWarnings: true, contentHash: "abc" })] };
+    openBatch.current = { batchId: "batch-1", rows: [restoredRow({ acknowledgedWarnings: true, contentHash: "abc", previewUrl: "https://cdn.example/boxer-a.png" })] };
     render(<CatalogueBulkImportPage />);
     expect(await screen.findByRole("button", { name: "Checks confirmed boxer-a.png" })).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('img[src="https://cdn.example/boxer-a.png"]')).toBeTruthy());
+    expect(screen.queryByText("Image missing — drop the PNG again")).toBeNull();
     const create = screen.getByRole("button", { name: /Create 1 pending candidate/ }) as HTMLButtonElement;
     await waitFor(() => expect(create.disabled).toBe(false));
+  });
+
+  it("stores a dropped PNG before Create", async () => {
+    render(<CatalogueBulkImportPage />);
+    const [folderInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
+    choose(folderInput, [png("boxer-a.png"), png("boxer-b.png")]);
+    await waitFor(() => expect(calls.filter((call) => call.url.endsWith("/file")).map((call) => call.body.filename).sort()).toEqual(["boxer-a.png", "boxer-b.png"]));
+    expect(calls.some((call) => call.url.endsWith("/commit"))).toBe(false);
+  });
+
+  it("warns when a reloaded batch has two copies of the same PNG", async () => {
+    openBatch.current = {
+      batchId: "batch-1",
+      rows: [
+        restoredRow({ contentHash: "same", previewUrl: "https://cdn.example/boxer-a.png" }),
+        restoredRow({
+          rowNumber: 2,
+          filename: "boxer-b.png",
+          exactWording: "A different line",
+          contentHash: "same",
+          previewUrl: "https://cdn.example/boxer-b.png",
+        }),
+      ],
+    };
+    render(<CatalogueBulkImportPage />);
+    expect(await screen.findByText("possible duplicate — check (boxer-b.png)")).toBeTruthy();
+    expect(screen.getByText("possible duplicate — check (boxer-a.png)")).toBeTruthy();
+    expect(screen.queryByText("Image missing — drop the PNG again")).toBeNull();
   });
 
   it("tells the operator to drop a PNG that a reload left behind", async () => {
@@ -427,6 +457,7 @@ describe("catalogue import file inputs", () => {
     const [, addInput] = Array.from(document.querySelectorAll('input[type="file"]')) as HTMLInputElement[];
     choose(addInput, [png("boxer-a.png")]);
     await waitFor(() => expect(screen.queryByText("Image missing — drop the PNG again")).toBeNull());
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/file") && call.body.filename === "boxer-a.png")).toBe(true));
     expect(screen.getAllByText("boxer-a.png")).toHaveLength(1);
     expect(plans()).toHaveLength(0);
     const create = await screen.findByRole("button", { name: /Create 1 pending candidate/ });

@@ -263,6 +263,8 @@ const COLUMN_MIGRATIONS: { table: string; column: string; type: string }[] = [
   // Confirm checks on a catalogue import row. Soft warnings stay visible; this flag
   // is what lets Create proceed after a reload.
   { table: "catalogue_import_rows",     column: "acknowledged_warnings",   type: "BOOLEAN NOT NULL DEFAULT FALSE" },
+  // Staged PNG path. Set when the file is dropped so a reload can show it.
+  { table: "catalogue_import_rows",     column: "image_path",              type: "TEXT" },
   // Hash of an imported PNG. Survives clearing the import row so a re-drop finds the candidate.
   { table: "design_candidates",         column: "source_content_hash",     type: "TEXT" },
 ];
@@ -2466,6 +2468,7 @@ const TABLE_MIGRATIONS: { name: string; sql: string }[] = [
         "filename" text NOT NULL,
         "proposed_filename" text,
         "content_hash" text,
+        "image_path" text,
         "import_status" text NOT NULL DEFAULT 'drafted',
         "failure_reason" text,
         "style" text NOT NULL DEFAULT '',

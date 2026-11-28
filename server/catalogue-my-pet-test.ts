@@ -9,7 +9,7 @@ import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
 import { PETPOSTEROUS_CATALOGUE_SHOP } from "@shared/operatorCatalogue";
 import { MY_PET_SUNBURST_ESTIMATED_COST_USD, buildMyPetPrompt } from "@shared/myPetSettings";
-import { myPetQualityRetryAllowed } from "@shared/myPetQuality";
+import { MyPetPoseRejectedError, myPetQualityRetryAllowed } from "@shared/myPetQuality";
 import { parseCatalogueConceptGeneration } from "@shared/catalogueConcept";
 import { designCandidates } from "@shared/schema";
 import { catalogueConceptShopAllowed } from "./catalogue-concept";
@@ -159,7 +159,7 @@ async function runOne(args: {
     let png = Buffer.from(result.data, "base64");
     let sunburstCalls = 1;
     const originalArt = await readLibraryObject(artworkPath);
-    const qa = await checkMyPetEdit(originalArt, png);
+    let qa = await checkMyPetEdit(originalArt, png, row.poseNote || "");
     visionCostUsd += qa.costUsd;
     if (myPetQualityRetryAllowed(qa.checked && !qa.pass, false)) {
       const retry = await runMyPetImageEdit({
@@ -170,6 +170,9 @@ async function runOne(args: {
       });
       sunburstCalls = 2;
       png = Buffer.from(retry.data, "base64");
+      qa = await checkMyPetEdit(originalArt, png, row.poseNote || "");
+      visionCostUsd += qa.costUsd;
+      if (qa.checked && !qa.pass) throw new MyPetPoseRejectedError();
     }
     if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50) throw new Error("The model did not return a PNG.");
     edited = `catalogue-my-pet-test/${randomUUID()}.png`;

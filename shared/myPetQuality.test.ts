@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   compositePetRegion,
   edgeEnergy,
+  myPetPawCheckPass,
   myPetQualityRetryAllowed,
   parsePetMask,
+  poseNotePawCounts,
   resolvedPetMask,
 } from "./myPetQuality";
 
@@ -41,6 +43,48 @@ describe("pet mask composite", () => {
     expect(myPetQualityRetryAllowed(true, false)).toBe(true);
     expect(myPetQualityRetryAllowed(true, true)).toBe(false);
     expect(myPetQualityRetryAllowed(false, false)).toBe(false);
+  });
+});
+
+describe("pose paw counts", () => {
+  const note = "Visible front paws: 2. Visible hind paws: 0. Left front paw: raised, holding the strings.";
+
+  it("reads the totals from the pose note", () => {
+    expect(poseNotePawCounts(note)).toEqual({ front: 2, hind: 0 });
+  });
+
+  it("fails when a visible paw count does not match the note", () => {
+    const verdict = myPetPawCheckPass({
+      note,
+      visibleFrontPaws: 3,
+      visibleHindPaws: 0,
+      frontMatch: false,
+      hindMatch: true,
+    });
+    expect(verdict.pass).toBe(false);
+    expect(verdict.reason).toContain("Visible front paws 3 (note 2)");
+  });
+
+  it("fails when the counts match but a paw is in the wrong place or holding the wrong thing", () => {
+    const verdict = myPetPawCheckPass({
+      note,
+      visibleFrontPaws: 2,
+      visibleHindPaws: 0,
+      frontMatch: false,
+      hindMatch: true,
+    });
+    expect(verdict.pass).toBe(false);
+    expect(verdict.reason).toContain("position");
+  });
+
+  it("passes only when both counts and both positions match", () => {
+    expect(myPetPawCheckPass({
+      note,
+      visibleFrontPaws: 2,
+      visibleHindPaws: 0,
+      frontMatch: true,
+      hindMatch: true,
+    }).pass).toBe(true);
   });
 });
 

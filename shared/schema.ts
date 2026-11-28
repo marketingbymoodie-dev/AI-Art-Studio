@@ -1495,6 +1495,8 @@ export const catalogueImportRows = pgTable("catalogue_import_rows", {
   filename: text("filename").notNull(),
   proposedFilename: text("proposed_filename"),
   contentHash: text("content_hash"),
+  /** Staged PNG in the library. Written when the file is dropped, not at Create. */
+  imagePath: text("image_path"),
   importStatus: text("import_status").notNull().default("drafted"),
   failureReason: text("failure_reason"),
   style: text("style").notNull().default(""),

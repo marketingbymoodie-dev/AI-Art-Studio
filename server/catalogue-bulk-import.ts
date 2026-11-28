@@ -10,7 +10,7 @@ import { catalogueStudioBlockMessage } from "@shared/cataloguePublishAccess";
 import { catalogueShopDomain } from "@shared/operatorCatalogue";
 import { catalogueCandidateChoices, catalogueImportBatches, catalogueImportRows, designCandidates } from "@shared/schema";
 import { db } from "./db";
-import { readLibraryObject, removeLibraryObject, writeLibraryObject } from "./mockup-library-store";
+import { readLibraryObject, removeLibraryObject, signedLibraryUrl, writeLibraryObject } from "./mockup-library-store";
 
 export type CatalogueImportResult = {
   created: number;
@@ -29,6 +29,13 @@ export function catalogueImportStagePath(batchId: string, filename: string): str
   const objectName = catalogueStorageName(filename);
   if (!batchIdOk(batchId) || !objectName) throw new Error("That upload is not a catalogue batch.");
   return `catalogue-import/${batchId}/${objectName}`;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const anyErr = err as { code?: string; cause?: { code?: string }; message?: string };
+  const code = anyErr?.code || anyErr?.cause?.code;
+  if (code === "23505") return true;
+  return /duplicate key|unique constraint/i.test(String(anyErr?.message || ""));
 }
 
 function isPng(buf: Buffer): boolean {
@@ -74,7 +81,7 @@ export function cataloguePngHash(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
-export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string, shop?: string | null): Promise<{ hash: string }> {
+export async function stageCataloguePng(batchId: string, filename: string, imageBase64: string, shop?: string | null): Promise<{ hash: string; imagePath: string }> {
   const domain = await assertCatalogueImportShop(shop);
   const buf = decodeCataloguePng(filename, imageBase64);
   const path = catalogueImportStagePath(batchId, filename);
@@ -82,8 +89,18 @@ export async function stageCataloguePng(batchId: string, filename: string, image
   await writeLibraryObject(path, buf, "image/png");
   const hash = cataloguePngHash(buf);
   await ensureCatalogueImportBatch(domain, batchId);
-  await upsertCatalogueImportRow(domain, batchId, { filename, contentHash: hash, importStatus: "uploaded" });
-  return { hash };
+  const [existing] = await db.select().from(catalogueImportRows).where(and(
+    eq(catalogueImportRows.batchId, batchId),
+    eq(catalogueImportRows.filename, filename),
+  )).limit(1);
+  await upsertCatalogueImportRow(domain, batchId, {
+    filename,
+    contentHash: hash,
+    imagePath: path,
+    importStatus: (existing?.importStatus as CatalogueImportRow["importStatus"]) || "drafted",
+    failureReason: existing?.failureReason || undefined,
+  });
+  return { hash, imagePath: path };
 }
 
 export async function abortCatalogueImport(shop: string, batchId: string, filenames: string[]): Promise<void> {
@@ -113,6 +130,7 @@ export async function upsertCatalogueImportRow(
   batchId: string,
   row: Partial<CatalogueImportRow> & { filename: string },
   exec: ImportDb = db,
+  attempt = 0,
 ): Promise<void> {
   if (!batchIdOk(batchId)) throw new Error("That upload is not a catalogue batch.");
   const filename = row.filename;
@@ -125,6 +143,7 @@ export async function upsertCatalogueImportRow(
     shopDomain: shop,
     proposedFilename: row.proposedFilename ?? existing?.proposedFilename ?? null,
     contentHash: row.contentHash ?? existing?.contentHash ?? null,
+    imagePath: row.imagePath ?? existing?.imagePath ?? null,
     importStatus: row.importStatus ?? existing?.importStatus ?? "drafted",
     failureReason: row.failureReason ?? (row.importStatus === "failed" ? existing?.failureReason ?? null : null),
     style: row.style ?? existing?.style ?? "",
@@ -142,8 +161,13 @@ export async function upsertCatalogueImportRow(
     updatedAt: now,
   };
   if (!existing) {
-    await exec.insert(catalogueImportRows).values({ id: randomUUID(), batchId, filename, createdAt: now, ...next });
-    return;
+    try {
+      await exec.insert(catalogueImportRows).values({ id: randomUUID(), batchId, filename, createdAt: now, ...next });
+      return;
+    } catch (err) {
+      if (attempt > 0 || !isUniqueViolation(err)) throw err;
+      return upsertCatalogueImportRow(shop, batchId, row, exec, attempt + 1);
+    }
   }
   await exec.update(catalogueImportRows).set(next).where(eq(catalogueImportRows.id, existing.id));
   const savedWording = row.exactWording;
@@ -156,15 +180,32 @@ export async function upsertCatalogueImportRow(
   }
 }
 
-export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: string; rows: CatalogueImportRow[] } | null> {
+function stagedImagePath(batchId: string, filename: string, imagePath: string | null): string {
+  if (imagePath) return imagePath;
+  try {
+    return catalogueImportStagePath(batchId, filename);
+  } catch {
+    return "";
+  }
+}
+
+export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: string; rows: Array<CatalogueImportRow & { previewUrl?: string }> } | null> {
   const batches = await db.select().from(catalogueImportBatches).where(eq(catalogueImportBatches.shopDomain, shop)).orderBy(desc(catalogueImportBatches.updatedAt)).limit(10);
   for (const batch of batches) {
     const stored = await db.select().from(catalogueImportRows).where(eq(catalogueImportRows.batchId, batch.id)).orderBy(catalogueImportRows.rowNumber);
     if (!stored.length) continue;
     if (stored.every((row) => row.importStatus === "queued")) continue;
-    return {
-      batchId: batch.id,
-      rows: stored.map((row) => ({
+    const rows = await Promise.all(stored.map(async (row) => {
+      const imagePath = row.contentHash || row.imagePath ? stagedImagePath(batch.id, row.filename, row.imagePath) : "";
+      let previewUrl = "";
+      if (imagePath) {
+        try {
+          previewUrl = await signedLibraryUrl(imagePath);
+        } catch (err) {
+          console.error(`[catalogue-import] preview ${row.filename}:`, err instanceof Error ? err.message : err);
+        }
+      }
+      return {
         rowNumber: row.rowNumber,
         filename: row.filename,
         style: row.style,
@@ -173,17 +214,20 @@ export async function readOpenCatalogueImport(shop: string): Promise<{ batchId: 
         truth: row.truth,
         device: row.device,
         exactWording: row.exactWording,
-        source: row.source === "csv" ? "csv" : "draft",
+        source: row.source === "csv" ? "csv" : "draft" as const,
         lowConfidence: row.lowConfidence || { style: false, humourOperator: false },
         proposedFilename: row.proposedFilename || undefined,
         failureReason: row.failureReason || undefined,
         contentHash: row.contentHash || undefined,
+        imagePath: imagePath || undefined,
+        previewUrl: previewUrl || undefined,
         importStatus: row.importStatus as CatalogueImportRow["importStatus"],
         candidateId: row.candidateId || undefined,
         selected: row.selected,
         acknowledgedWarnings: row.acknowledgedWarnings === true,
-      })),
-    };
+      };
+    }));
+    return { batchId: batch.id, rows };
   }
   return null;
 }

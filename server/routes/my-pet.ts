@@ -4,6 +4,8 @@
  */
 import type { Express, Request, RequestHandler, Response } from "express";
 import { isMyPetSettingsShop } from "@shared/myPetSettings";
+import { MyPetPoseRejectedError } from "@shared/myPetQuality";
+import { MyPetPoseRejectedError } from "@shared/myPetQuality";
 import { resubmitMyPetPrintify } from "../my-pet-printify-retry";
 import { clientIpFromReq } from "../creator-rate-limit";
 import { ensureMyPetDeviceKeyFromProxy } from "../my-pet-device";
@@ -213,6 +215,14 @@ export function registerMyPetRoutes(app: Express, deps: { isAuthenticated: Reque
       });
       res.json({ ok: true, ...result, deviceKey: signed });
     } catch (err: any) {
+      if (err instanceof MyPetPoseRejectedError) {
+        console.warn("[my-pet] generate pose rejected:", err.message);
+        return res.json({ ok: false, code: "pose_rejected", message: err.message, error: err.message, deviceKey: signed });
+      }
+      if (err instanceof MyPetPoseRejectedError) {
+        console.warn("[my-pet] generate pose rejected:", err.message);
+        return res.json({ ok: false, code: "pose_rejected", message: err.message, error: err.message, deviceKey: signed });
+      }
       if (err instanceof MyPetCandidateIneligibleError) {
         // Catalogue removed this candidate (unpromoted/missing artwork) — user-
         // facing, not a server crash. 200 so Shopify doesn't HTML-wrap it.

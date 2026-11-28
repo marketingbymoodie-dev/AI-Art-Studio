@@ -2082,12 +2082,33 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return color || size || '';
     }
 
+    // Server lists newest first. Number by when they were made so Design 1
+    // stays the oldest and a new design does not renumber the rest.
+    function designsInMadeOrder(list) {
+      var copy = [];
+      var i;
+      for (i = 0; i < list.length; i++) copy.push(list[i]);
+      var dated = copy.length > 0;
+      for (i = 0; i < copy.length; i++) {
+        if (!copy[i] || !copy[i].createdAt || !Date.parse(copy[i].createdAt)) dated = false;
+      }
+      if (dated) {
+        copy.sort(function (a, b) {
+          return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+        });
+        return copy;
+      }
+      copy.reverse();
+      return copy;
+    }
+
     function fillDesigns(list) {
       var row = designsPop.querySelector('.appai-my-pet-designs__row');
       if (!row) return;
       row.innerHTML = '';
-      for (var i = 0; i < list.length; i++) {
-        var item = list[i];
+      var ordered = designsInMadeOrder(list);
+      for (var i = 0; i < ordered.length; i++) {
+        var item = ordered[i];
         var active = item.renderId === state.renderId;
         var name = 'Design ' + (i + 1);
         var pair = designLabelPair(item);
@@ -4271,68 +4292,43 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       state.openingCover = null;
     }
 
-    // A brand-new generate closes the progress modal before the hero has the
-    // new file. Your designs already covers the product image until that file
-    // is on the hero. This does the same for the first paint.
-    function beginFreshDesignCover(url) {
-      var token = (state.freshCoverToken = (state.freshCoverToken || 0) + 1);
-      state.freshCover = { token: token, url: url || '', startedAt: Date.now(), matchedAt: 0 };
-      showOpeningCover();
-      watchFreshDesignCover(token);
-    }
-
-    function retargetFreshDesignCover(url) {
-      var live = state.freshCover;
-      if (!live || !url || urlsMatch(live.url, url)) return;
-      live.url = url;
-      live.matchedAt = 0;
-    }
-
-    function endFreshDesignCover(reason) {
-      if (!state.freshCover) return;
-      state.freshCover = null;
-      if (designTransitionActive()) return;
-      removeOpeningCover();
-      myPetLog(TAG, 'generate cover off reason=' + reason);
-    }
-
-    function watchFreshDesignCover(token) {
-      function tick() {
-        var live = state.freshCover;
-        if (!live || live.token !== token) return;
-        if (!designTransitionActive()) {
-          if (!state.openingCover || !state.openingCover.isConnected) showOpeningCover();
-          else placeOpeningCover();
-        }
-        if (Date.now() - live.startedAt >= 8000) {
-          endFreshDesignCover('cap');
-          return;
-        }
-        var hero = findVisibleHeroImg() || state.inlineHero;
-        if (live.url && hero && heroReady(hero, live.url)) {
-          if (!live.matchedAt) live.matchedAt = Date.now();
-          if (Date.now() - live.matchedAt >= 200) {
-            var release = function () {
-              var stillHold = state.freshCover;
-              if (!stillHold || stillHold.token !== token) return;
-              var still = findVisibleHeroImg() || state.inlineHero;
-              if (still && heroReady(still, stillHold.url)) {
-                endFreshDesignCover('decoded');
-                return;
-              }
-              stillHold.matchedAt = 0;
-              setTimeout(tick, 60);
-            };
-            if (typeof hero.decode === 'function') hero.decode().then(release, release);
-            else release();
-            return;
-          }
-        } else {
-          live.matchedAt = 0;
-        }
-        setTimeout(tick, 60);
+    // First paint after generate uses the same cover-and-swap as picking a
+    // saved design. The shirt stays covered until the visible hero is the
+    // new file, including when the theme replaces the gallery after the swap.
+    function paintGeneratedDesign(genRes) {
+      var info = currentVariantInfo(root);
+      var swatchColor = readSwatchColor(root);
+      var colour = (swatchColor && info.colorName && swatchColor !== info.colorName)
+        ? swatchColor
+        : (info.colorName || swatchColor || '');
+      var activationUrl = (colour && urlForColourMap(state.previewUrlByColor, colour)) || genRes.previewUrl;
+      if (!Object.keys(state.previewUrlByColor || {}).length && activationUrl) {
+        state.previewUrlByColor[colour || 'default'] = activationUrl;
+      } else if (colour && activationUrl && !urlForColourMap(state.previewUrlByColor, colour)) {
+        state.previewUrlByColor[canonicalPreviewColor(colour) || colour] = activationUrl;
       }
-      tick();
+      if (!colour) {
+        var keys = Object.keys(state.previewUrlByColor || {});
+        colour = keys[0] || '';
+      }
+      state.previewUrl = activationUrl;
+      if (previewMode !== 'inline') {
+        openPreviewStep(genRes.previewUrl);
+        return;
+      }
+      var token = beginDesignTransition(genRes.renderId, colour, currentSizeName());
+      var t = state.designTransition;
+      if (t && t.token === token) {
+        t.url = activationUrl;
+        t.colour = colour;
+      }
+      state.inlineApplied = true;
+      var heroNow = findVisibleHeroImg() || findProductHeroImg();
+      if (heroNow) state.inlineHero = heroNow;
+      installInlineATCIntercept();
+      scheduleTransitionSwap(token);
+      warmColourPreviews(genRes.colourNames);
+      fillMissingColours(genRes.renderId, state.renderGeneration || 0);
     }
 
     // position:fixed is viewport-relative only on document.body. Horizon's
@@ -8950,18 +8946,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             preloadPreviewUrls(state.previewUrlByColor);
             writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
             probeCartForRender(genRes.renderId);
-            beginFreshDesignCover(genRes.previewUrl);
+            paintGeneratedDesign(genRes);
             picker.overlay.remove();
-            refreshCapStatus().catch(function () { return null; }).then(function () {
-              if (previewMode === 'inline' && activateInlinePreview(genRes.previewUrl)) {
-                var livePaint = liveColourChoice();
-                retargetFreshDesignCover((livePaint && livePaint.url) || state.previewUrl || genRes.previewUrl);
-                warmColourPreviews(genRes.colourNames);
-                return;
-              }
-              endFreshDesignCover('modal');
-              openPreviewStep(genRes.previewUrl);
-            });
+            refreshCapStatus().catch(function () { return null; });
           })
           .catch(function (err) {
             settleGeneration();
