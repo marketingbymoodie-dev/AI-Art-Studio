@@ -38,13 +38,20 @@ function firstHttps(candidates) {
   return "";
 }
 
+/** App origin baked in at deploy from that config's application_url (process.env.APP_URL). */
+function creatorAppOrigin() {
+  const raw = process.env.APP_URL;
+  return String(raw || "").trim().replace(/\/$/, "");
+}
+
 function fallbackFromUsername(username) {
   const handle = String(username || "")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9-]/g, "");
-  if (!handle) return "";
-  return `https://ai-art-studio-staging.up.railway.app/c/${handle}`;
+  const origin = creatorAppOrigin();
+  if (!handle || origin.indexOf("https://") !== 0) return "";
+  return `${origin}/c/${handle}`;
 }
 
 export function resolveCreatorReturn(cartReturn, cartName, lines) {
