@@ -107,18 +107,21 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
   function writeStoredRecord(shopifyProductId, next) {
     try { window.localStorage.setItem(renderStorageKey(shopifyProductId), JSON.stringify(next)); } catch (e) {}
   }
-  function writeStoredRender(shopifyProductId, renderId, jobId) {
+  function writeStoredRender(shopifyProductId, renderId, jobId, colorName, sizeName) {
     var prev = readStoredRecord(shopifyProductId) || {};
     var choices = choicesFromRecord(prev);
-    var own = choices[renderId];
+    var own = choices[renderId] || { colorName: '', sizeName: '' };
+    if (colorName) own.colorName = colorName;
+    if (sizeName) own.sizeName = sizeName;
+    if (own.colorName || own.sizeName) choices[renderId] = { colorName: own.colorName || '', sizeName: own.sizeName || '' };
     var next = {
       renderId: renderId,
       jobId: jobId || (prev.renderId === renderId ? prev.jobId : null) || null,
       savedAt: Date.now(),
       choices: choices,
     };
-    if (own && own.colorName) next.colorName = own.colorName;
-    if (own && own.sizeName) next.sizeName = own.sizeName;
+    if (own.colorName) next.colorName = own.colorName;
+    if (own.sizeName) next.sizeName = own.sizeName;
     if (revertedFlagOn(shopifyProductId)) next.reverted = true;
     writeStoredRecord(shopifyProductId, next);
   }
@@ -2102,6 +2105,24 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       return copy;
     }
 
+    function requestListedThumb(renderId, colour, img, zoomImg) {
+      postJson('my-pet/recomposite', { renderId: renderId, colorName: colour }).then(function (res) {
+        if (!res || !res.ok || !res.previewUrl) return;
+        if (!img || !img.isConnected) return;
+        assignImgSrc(img, res.previewUrl);
+        if (zoomImg) assignImgSrc(zoomImg, res.previewUrl);
+        if (state.renderId === renderId) {
+          state.previewUrlByColor = state.previewUrlByColor || {};
+          var name = res.colorName || colour;
+          if (!urlForColourMap(state.previewUrlByColor, name)) state.previewUrlByColor[name] = res.previewUrl;
+          var hero = findVisibleHeroImg();
+          if (hero && !heroShowsCustom(hero, res.previewUrl) && namesMatch(currentColourName(), name)) {
+            paintColourNow(name, res.previewUrl);
+          }
+        }
+      }).catch(function () {});
+    }
+
     function fillDesigns(list) {
       var row = designsPop.querySelector('.appai-my-pet-designs__row');
       if (!row) return;
@@ -2113,6 +2134,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var name = 'Design ' + (i + 1);
         var pair = designLabelPair(item);
         var savedChoice = storedChoiceFor(shopifyProductId, item.renderId);
+        var labelColour = savedChoice.colorName || item.colorName || '';
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'appai-my-pet-designs__thumb';
@@ -2120,12 +2142,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         btn.setAttribute('aria-label', name + (pair ? ', ' + pair : '') + (active ? ', current' : ''));
         var frame = document.createElement('span');
         frame.className = 'appai-my-pet-designs__frame';
-        var shirt = shirtHex(savedChoice.colorName || item.colorName || '');
+        var shirt = shirtHex(labelColour);
         frame.style.backgroundColor = shirt;
-        var savedMock = active
-          ? (urlForColourMap(state.previewUrlByColor, savedChoice.colorName || item.colorName || '') || '')
+        var colourMatchesFile = !savedChoice.colorName || !item.colorName || namesMatch(savedChoice.colorName, item.colorName);
+        var savedMock = (active && labelColour)
+          ? (urlForColourMap(state.previewUrlByColor, labelColour) || '')
           : '';
-        var thumbSrc = savedMock || item.thumbnailUrl || '';
+        var thumbSrc = savedMock || (colourMatchesFile ? (item.thumbnailUrl || '') : '');
         var img = document.createElement('img');
         img.alt = '';
         assignImgSrc(img, thumbSrc);
@@ -2137,6 +2160,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         zoomImg.alt = '';
         assignImgSrc(zoomImg, thumbSrc);
         zoom.appendChild(zoomImg);
+        if (!thumbSrc && labelColour && item.renderId) requestListedThumb(item.renderId, labelColour, img, zoomImg);
         var title = document.createElement('span');
         title.className = 'appai-my-pet-designs__name';
         title.textContent = name;
@@ -2530,7 +2554,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var colour = colourOverride || currentInlineColour();
       var key = colour ? canonicalPreviewColor(colour) : '';
       var mapped = (key && state.previewUrlByColor[key]) || (colour && state.previewUrlByColor[colour]) || '';
-      var activationUrl = mapped || res.previewUrl;
+      var sameFile = !colour || !res.colorName || namesMatch(res.colorName, colour);
+      var activationUrl = mapped || (sameFile ? res.previewUrl : '');
       if (designTransitionActive()) {
         state.previewUrl = activationUrl;
         state.designTransition.url = activationUrl;
@@ -2540,12 +2565,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (heroNow) state.inlineHero = heroNow;
         installInlineATCIntercept();
         fillMissingColours(res.renderId, state.renderGeneration || 0);
-        scheduleTransitionSwap(state.designTransition.token);
+        if (!activationUrl && colour) swapInlineColor(colour);
+        else scheduleTransitionSwap(state.designTransition.token);
         return activationUrl;
       }
-      activateInlinePreviewWithRetry(activationUrl);
+      if (activationUrl) activateInlinePreviewWithRetry(activationUrl);
       fillMissingColours(res.renderId, state.renderGeneration || 0);
-      if (recompositeMissing && !mapped && colour) swapInlineColor(colour);
+      if ((recompositeMissing || !activationUrl) && !mapped && colour) swapInlineColor(colour);
       return activationUrl;
     }
 
@@ -3578,6 +3604,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var img = imgs[i];
         if (!galleryImgAllowed(img)) continue;
         if (img.closest && img.closest('dialog, zoom-dialog')) continue;
+        var slide = img.closest ? img.closest('slideshow-slide') : null;
+        if (slide && slideIsHidden(slide)) continue;
         var rect;
         try { rect = img.getBoundingClientRect(); } catch (e) { continue; }
         if (rect.width < 160 || rect.height < 160) continue;
@@ -3706,10 +3734,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     // so the old selector list returned null and the guard stayed on the
     // base/black slide. Never the first product-media__image.
     function resolveActiveHero(colour) {
+      // The pinned node can be a slide that has since scrolled off screen.
+      // The cover and the colour check have to follow the slide the shopper sees.
+      var visibleNow = findVisibleHeroImg();
+      if (visibleNow) return visibleNow;
       if (customGalleryLocked()) {
         var pinned = state.inlineHero;
         if (pinned && document.body.contains(pinned)) return pinned;
-        return findVisibleHeroImg();
+        return null;
       }
       var want = colour || selectedHeroColour();
       var mediaId = want ? mediaIdForColour(want) : '';
@@ -3920,9 +3952,27 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       } catch (ePrev) {}
       if (isMyPetSignedPreview(url)) {
         img.onerror = function () {
-          if (img.__appaiResignUrl === url) return;
+          var tries = img.__appaiResignTries || 0;
+          if (img.__appaiResignUrl === url && tries >= 4) return;
           img.__appaiResignUrl = url;
+          img.__appaiResignTries = tries + 1;
           img.__appaiSrcHeld = true;
+          // A brand-new preview often 404s for a moment. Putting the catalogue
+          // src back is what made the shirt snap to the original design while
+          // the new thumbnail was already Current.
+          var keepCustom = designTransitionActive() || (!!state.renderId && !!state.inlineApplied && !state.reverted);
+          if (keepCustom && img.__appaiResignTries < 4) {
+            setTimeout(function () {
+              if (!img || !img.isConnected) return;
+              img.__appaiSrcHeld = false;
+              commitImgSrc(img, url);
+            }, 350 * img.__appaiResignTries);
+            return;
+          }
+          if (keepCustom) {
+            resignPreviewUrl(url, img);
+            return;
+          }
           if (previous) {
             try { img.onerror = null; } catch (eOff) {}
             commitImgSrc(img, previous);
@@ -3948,7 +3998,12 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       img.addEventListener('load', finish, { once: true });
       img.addEventListener('error', finish, { once: true });
       setTimeout(finish, 4000);
-      if (img.complete && img.naturalWidth > 0 && !img.__appaiSrcHeld) finish();
+      // complete can still describe the previous bitmap in the same turn we
+      // assign the new src. Only drop the spinner once those pixels match.
+      var want = img.__appaiAssertUrl || '';
+      var shown = '';
+      try { shown = img.currentSrc || ''; } catch (eShown) {}
+      if (img.complete && img.naturalWidth > 0 && !img.__appaiSrcHeld && (!want || urlsMatch(shown, want))) finish();
     }
 
     function applyPreviewSrc(img, url) {
@@ -3974,11 +4029,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         if (state.colourPaint && state.colourPaint.url && urlsMatch(state.colourPaint.url, url)) {
           try { img.decoding = 'sync'; } catch (eDec) {}
         }
+        img.__appaiAssertUrl = url;
+        img.__appaiAssertAt = Date.now();
         assignImgSrc(img, url);
         noteHeroLoading(img);
         if (img.__appaiSrcHeld) return;
-        img.__appaiAssertUrl = url;
-        img.__appaiAssertAt = Date.now();
         img.setAttribute('data-appai-my-pet-preview', 'true');
       } finally {
         resumeMediaObservers(img);
@@ -4296,37 +4351,41 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     // saved design. The shirt stays covered until the visible hero is the
     // new file, including when the theme replaces the gallery after the swap.
     function paintGeneratedDesign(genRes) {
-      var info = currentVariantInfo(root);
-      var swatchColor = readSwatchColor(root);
-      var colour = (swatchColor && info.colorName && swatchColor !== info.colorName)
-        ? swatchColor
-        : (info.colorName || swatchColor || '');
-      var activationUrl = (colour && urlForColourMap(state.previewUrlByColor, colour)) || genRes.previewUrl;
-      if (!Object.keys(state.previewUrlByColor || {}).length && activationUrl) {
-        state.previewUrlByColor[colour || 'default'] = activationUrl;
-      } else if (colour && activationUrl && !urlForColourMap(state.previewUrlByColor, colour)) {
-        state.previewUrlByColor[canonicalPreviewColor(colour) || colour] = activationUrl;
-      }
-      if (!colour) {
-        var keys = Object.keys(state.previewUrlByColor || {});
-        colour = keys[0] || '';
+      // The file the server just wrote belongs to genRes.colorName only.
+      // Storing it under the swatch name painted the new colour's label on
+      // the previous colour's shirt.
+      var colour = (genRes && genRes.colorName) || currentColourName() || '';
+      var activationUrl = (colour && urlForColourMap(state.previewUrlByColor, colour)) || (genRes && genRes.previewUrl) || '';
+      state.previewUrlByColor = state.previewUrlByColor || {};
+      if (colour && activationUrl && !urlForColourMap(state.previewUrlByColor, colour)) {
+        state.previewUrlByColor[colour] = activationUrl;
       }
       state.previewUrl = activationUrl;
+      state.chosenColour = colour;
       if (previewMode !== 'inline') {
         openPreviewStep(genRes.previewUrl);
         return;
       }
-      var token = beginDesignTransition(genRes.renderId, colour, currentSizeName());
+      var sizeName = currentSizeName();
+      if (colour && state.applyExactVariant) {
+        if (sizeName || !window.__appaiRequireSize || window.__appaiSizeChosen) {
+          state.applyExactVariant(colour, sizeName || 'M');
+        }
+      }
+      if (colour && !customGalleryLocked()) showColourSlide(colour);
+      var token = beginDesignTransition(genRes.renderId, colour, sizeName);
       var t = state.designTransition;
       if (t && t.token === token) {
         t.url = activationUrl;
         t.colour = colour;
+        t.expectsRerender = !!(state.variantDispatchedAt && (Date.now() - state.variantDispatchedAt) < 300);
+        if (t.expectsRerender) armTransitionFallback(token);
       }
       state.inlineApplied = true;
       var heroNow = findVisibleHeroImg() || findProductHeroImg();
       if (heroNow) state.inlineHero = heroNow;
       installInlineATCIntercept();
-      scheduleTransitionSwap(token);
+      if (!t || !t.expectsRerender) scheduleTransitionSwap(token);
       warmColourPreviews(genRes.colourNames);
       fillMissingColours(genRes.renderId, state.renderGeneration || 0);
     }
@@ -4384,7 +4443,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           return;
         }
         endDesignTransition(token, 'cap');
-      }, 4000);
+      }, 8000);
       return token;
     }
 
@@ -4436,8 +4495,9 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       finally { t.allowSwap = false; }
       if (t.colour) {
         noteColourSelection(t.colour, false);
-        lockProductGallery();
+        if (!customGalleryLocked()) showColourSlide(t.colour);
         var lockedUrl = previewUrlForColour(t.colour) || t.url;
+        lockProductGallery();
         if (lockedUrl) paintColourNow(t.colour, lockedUrl);
       }
       watchOpeningCover(token);
@@ -4451,7 +4511,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var live = state.designTransition;
         if (!live || live.token !== token) return;
         var hero = resolveActiveHero(live.colour);
-        if (Date.now() - live.startedAt >= 4000) {
+        if (live.url && hero && !heroReady(hero, live.url)) {
+          if (!live.repaintAt || Date.now() - live.repaintAt > 250) {
+            live.repaintAt = Date.now();
+            paintColourNow(live.colour, live.url);
+          }
+        }
+        if (Date.now() - live.startedAt >= 8000) {
           live.watching = false;
           endDesignTransition(token, 'cap');
           return;
@@ -4494,7 +4560,16 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
       var elapsed = Date.now() - t.startedAt;
       var switchColour = t.colour || '';
       var heroNow = resolveActiveHero(switchColour);
-      var capped = reason === 'cap' || elapsed >= 4000;
+      var capped = reason === 'cap' || reason === 'cap-final' || elapsed >= 8000;
+      if (t.capExtended && reason !== 'cap-final') return;
+      if (capped && t.url && !heroReady(heroNow, t.url) && !t.capExtended) {
+        t.capExtended = true;
+        paintColourNow(t.colour, t.url);
+        myPetLog(TAG, 'cover waiting reason=' + coverWaitDetail(t), 'elapsedMs=' + elapsed);
+        clearTimeout(t.hardTimer);
+        t.hardTimer = setTimeout(function () { endDesignTransition(token, 'cap-final'); }, 2000);
+        return;
+      }
       if (!capped && t.url && !heroReady(heroNow, t.url)) {
         if (!t.holdLogged) {
           t.holdLogged = true;
@@ -4630,8 +4705,10 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
     }
 
     function previewUrlForColour(colorName) {
-      var mapped = colorName ? urlForColourMap(state.previewUrlByColor, colorName) : '';
-      return mapped || state.previewUrl || null;
+      if (!colorName) return null;
+      // Never borrow another colour's file. That painted Military Green with
+      // the previous white composite while the label already said the new colour.
+      return urlForColourMap(state.previewUrlByColor, colorName) || null;
     }
 
     function looksLikeThumb(img) {
@@ -4979,6 +5056,8 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
         var img = imgs[i];
         if (!galleryImgAllowed(img)) continue;
         if (img.closest && img.closest('dialog, zoom-dialog')) continue;
+        var heroSlide = img.closest ? img.closest('slideshow-slide') : null;
+        if (heroSlide && slideIsHidden(heroSlide)) continue;
         var rect;
         try { rect = img.getBoundingClientRect(); } catch (e2) { continue; }
         var ix = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
@@ -6004,6 +6083,13 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             var one = {};
             one[name] = res.previewUrl;
             swapVariantSlides(one);
+            if (namesMatch(name, state.selectedColour || (state.designTransition && state.designTransition.colour) || '')) {
+              if (state.designTransition && namesMatch(state.designTransition.colour, name)) {
+                state.designTransition.url = res.previewUrl;
+              }
+              paintColourNow(name, res.previewUrl);
+              if (designsPop && !designsPop.hidden) fillDesigns(state.designs || []);
+            }
             myPetLog(TAG, 'colour map arrived', name);
           }).catch(function () {});
         })(missing[m]);
@@ -6897,7 +6983,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           var sawGallery = false;
           for (var dm = 0; dm < mutations.length; dm++) {
             var addedNow = mutations[dm].addedNodes;
-            if (addedNow && addedNow.length) { sawGallery = true; break; }
+            if (!addedNow || !addedNow.length) continue;
+            for (var da = 0; da < addedNow.length; da++) {
+              var addedLive = addedNow[da];
+              if (addedLive && addedLive.classList && (addedLive.classList.contains('appai-my-pet-veil') || addedLive.classList.contains('appai-my-pet-switch-cover') || addedLive.classList.contains('appai-my-pet-hero-wait') || addedLive.classList.contains('appai-my-pet-opening'))) continue;
+              sawGallery = true;
+              break;
+            }
+            if (sawGallery) break;
           }
           if (sawGallery) noteDesignGalleryMutation();
           return;
@@ -6915,7 +7008,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           if (!addedNodes || !addedNodes.length) continue;
           for (var a = 0; a < addedNodes.length; a++) {
             var addedNode = addedNodes[a];
-            if (addedNode && addedNode.classList && (addedNode.classList.contains('appai-my-pet-veil') || addedNode.classList.contains('appai-my-pet-switch-cover'))) continue;
+            if (addedNode && addedNode.classList && (addedNode.classList.contains('appai-my-pet-veil') || addedNode.classList.contains('appai-my-pet-switch-cover') || addedNode.classList.contains('appai-my-pet-hero-wait') || addedNode.classList.contains('appai-my-pet-opening'))) continue;
             sawAdded = true;
             break;
           }
@@ -7190,6 +7283,11 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           if (state.selectedColour && !namesMatch(state.selectedColour, colorName)) return;
           if (!state.inlineApplied) return;
           state.previewUrl = res.previewUrl;
+          if (state.designTransition && namesMatch(state.designTransition.colour, colorName)) {
+            state.designTransition.url = res.previewUrl;
+            state.designTransition.swapped = false;
+            scheduleTransitionSwap(state.designTransition.token);
+          }
           setHeroWaiting(false);
           reassertColourPreview('recomposite', colorName, res.previewUrl);
           var singletonMap = {}; singletonMap[colorName] = res.previewUrl;
@@ -8903,12 +9001,14 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
           .then(function (uploadRes) {
             if (!uploadRes || !uploadRes.ok) throw new Error((uploadRes && uploadRes.error) || 'Could not upload photo');
             var info = currentVariantInfo(root);
+            var generateColour = currentColourName() || info.colorName || '';
+            var generateSize = currentSizeName() || info.sizeId || '';
             return postJson('my-pet/generate', {
               candidateId: candidateId,
               shopifyProductId: shopifyProductId,
               photoId: uploadRes.photoId,
-              colorName: info.colorName,
-              sizeId: info.sizeId,
+              colorName: generateColour,
+              sizeId: generateSize,
             });
           })
           .then(function (genRes) {
@@ -8944,7 +9044,7 @@ myPetLog('[My Pet] script build=debug-quiet loaded');
             // keeps the decoded bytes around for the matching URL, so our
             // real <img> later reuses them.
             preloadPreviewUrls(state.previewUrlByColor);
-            writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId);
+            writeStoredRender(shopifyProductId, genRes.renderId, genRes.jobId, genRes.colorName || currentColourName(), currentSizeName());
             probeCartForRender(genRes.renderId);
             paintGeneratedDesign(genRes);
             picker.overlay.remove();
